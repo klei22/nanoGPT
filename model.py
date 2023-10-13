@@ -15,6 +15,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+import admin_torch as admin
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -127,12 +129,20 @@ class Block(nn.Module):
             self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
             self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
 
+        self.omega = None # To hold admin params
+        if config.use_admin:
+            self.omega = getattr(self, 'omega')
+
         self.attn = CausalSelfAttention(config)
         self.mlp = MLP(config)
 
     def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        if self.omega: # Use admin if enabled
+            x = x + self.omega * self.attn(self.ln_1(x))
+            x = x + self.mlp(self.ln_2(x))
+        else:
+            x = x + self.attn(self.ln_1(x))
+            x = x + self.mlp(self.ln_2(x))
         return x
 
 @dataclass
@@ -145,6 +155,7 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     use_softermax: bool = False # True: uses softermax; False uses softmax
+    use_admin: bool = False # True: uses admin; False does not utilize admin
     use_rmsnorm: bool = True # Add option for RMSNorm
 
 class GPT(nn.Module):
@@ -155,6 +166,7 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
+
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
@@ -162,6 +174,10 @@ class GPT(nn.Module):
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
+
+        if config.use_admin:
+             admin.as_parameter(self.transformer.h, 'omega', config.n_layer, config.n_embd)
+
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
