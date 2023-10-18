@@ -1,3 +1,4 @@
+import math
 import random
 import argparse
 
@@ -11,6 +12,23 @@ def parse_args():
         type=int,
         choices=[1, 2, 4, 8, 16],
         default=16,
+    )
+    parser.add_argument(
+        "-m",
+        "--modulo",
+        help="modulo to utilize",
+        type=int,
+        default=64,
+    )
+    parser.add_argument(
+        "--no_separator",
+        action='store_true',
+        help="do not separate numbers with spaces",
+    )
+    parser.add_argument(
+        "--little_endian",
+        action='store_true',
+        help="reverse order of numbers",
     )
     parser.add_argument("-s", "--seed", type=int, help="random seed")
     return parser.parse_args()
@@ -28,28 +46,30 @@ def to_base_4(num):
 
     return "".join(reversed(digits))
 
+def max_digits_modulo_in_base(digits, base):
+    return math.ceil(math.log(digits, base))
 
-def convert_to_base(num, base):
+def convert_to_base(num, base, digits):
     if base == 1:
         return "1" * num
     elif base == 2:
-        return bin(num)[2:]
+        return str(bin(num)[2:].zfill(max_digits_modulo_in_base(digits, base)))[::-1]
     elif base == 4:
-        return to_base_4(num)
+        return str(to_base_4(num).zfill(max_digits_modulo_in_base(digits, base)))[::-1]
     elif base == 8:
-        return oct(num)[2:]
+        return str(oct(num)[2:].zfill(max_digits_modulo_in_base(digits, base)))[::-1]
     else:
         return hex(num)[2:]
 
 
 def main(args):
     results = []
-    for num1 in range(16):
-        for num2 in range(16):
+    for num1 in range(args.modulo):
+        for num2 in range(args.modulo):
             result = (
-                convert_to_base(num1, args.base),
-                convert_to_base(num2, args.base),
-                convert_to_base((num1 + num2) % 16, args.base),
+                convert_to_base(num1, args.base, args.modulo),
+                convert_to_base(num2, args.base, args.modulo),
+                convert_to_base((num1 + num2) % args.modulo, args.base, args.modulo),
             )
             results.append(result)
 
@@ -59,7 +79,10 @@ def main(args):
     random.shuffle(results)
 
     for result in results:
-        print(" ".join(result))
+        if args.no_separator:
+            print("".join(result))
+        else:
+            print(" ".join(result))
 
 
 if __name__ == "__main__":
