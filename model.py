@@ -37,47 +37,54 @@ class RMSNorm(nn.Module):
         rms = x.norm(2, dim=-1, keepdim=True) / math.sqrt(x.size(-1))
         return x / rms * self.gain
 
-
-
-
 class Softermax(nn.Module):
-    def __init__(self, dim=-1):
+    def __init__(self, dim=-1, min_clip=-100, max_clip=100):
         super(Softermax, self).__init__()
         self.dim = dim
-
+        self.min_clip = min_clip
+        self.max_clip = max_clip
 
     def forward(self, x):
-        # Compute 2^x elementwise for input tensor x
+
+        # Ensure no NaN values before starting
+        assert not torch.isnan(x).any(), "NaN detected at the beginning of Softermax"
+
+        # Saturate x values to avoid underflow/overflow in the exponential calculation
+        x = torch.clamp(x, self.min_clip, self.max_clip)
+
+        # Compute base-2 exponential of input
         base2_exp = torch.pow(2, x)
 
-        # If dim is negative, convert it to its positive equivalent
-        if self.dim < 0:
-            self.dim += x.dim()
+        # Check for NaN after exponential
+        assert not torch.isnan(base2_exp).any(), "NaN detected after base-2 exponential"
 
-        # Compute cumulative maximum in the specified dimension
-        running_max = torch.cummax(x, dim=self.dim).values
+        # Track running maximum for online normalization
+        running_max, _ = torch.cummax(base2_exp, dim=self.dim)
 
-        # Ensure that running_max has the same shape as x
-        assert running_max.shape == x.shape, f"Expected running_max shape {x.shape}, but got {running_max.shape}"
+        # Check for NaN after cummax
+        assert not torch.isnan(running_max).any(), "NaN detected after cummax"
 
-        # Adjust dimensions for broadcasting by adding a singleton dimension
-        dims_to_keep = list(range(running_max.dim()))
-        if self.dim in dims_to_keep:
-            dims_to_keep.remove(self.dim)
-
-        for dim in dims_to_keep:
-            running_max = running_max.unsqueeze(dim)
-
-        # Normalize using the running maximum
+        # Online normalization
         normalized_exp = base2_exp / torch.pow(2, running_max)
 
-        # Compute sum of the normalized exponentials in the specified dimension
+        # Check for NaN after normalization
+        assert not torch.isnan(normalized_exp).any(), "NaN detected after normalization"
+
+        # Sum along the specified dimension
         sum_exp = torch.sum(normalized_exp, dim=self.dim, keepdim=True)
 
-        # Compute the final Softermax values
-        y = normalized_exp / sum_exp
+        # Check for NaN after summation
+        assert not torch.isnan(sum_exp).any(), "NaN detected after summation"
 
-        return y
+        # Before the division:
+        assert not (sum_exp == 0).any(), "Zero detected in sum_exp before division"
+        # Compute final softermax values
+        softermax_values = normalized_exp / sum_exp
+
+        # Check for NaN in the final output
+        assert not torch.isnan(softermax_values).any(), "NaN detected in final Softermax values"
+
+        return softermax_values
 
 
 
@@ -219,6 +226,7 @@ class GPT(nn.Module):
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.softermax_layer = Softermax()
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
@@ -411,8 +419,10 @@ class GPT(nn.Module):
 
             probs = None
             if self.config.use_softermax:
-                probs = softermax(logits, dim=-1)
+                probs = self.softermax_layer(logits)
+                print("softermax")
             else:
+                print("softmax")
                 probs = F.softmax(logits, dim=-1)
             assert probs != None
             idx_next = torch.multinomial(probs, num_samples=1)
