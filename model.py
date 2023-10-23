@@ -38,9 +38,33 @@ class RMSNorm(nn.Module):
         return x / rms * self.gain
 
 
-def softermax(x, dim=-1):
-    e_x = torch.pow(2.0, x - x.max(dim=dim, keepdim=True).values)
-    return e_x / e_x.sum(dim=dim, keepdim=True)
+class Softermax(nn.Module):
+    def __init__(self, dim=-1):
+        super(Softermax, self).__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        # Compute 2^x elementwise for input tensor x
+        base2_exp = torch.pow(2, x)
+
+        # Compute cumulative maximum in the specified dimension
+        running_max = torch.cummax(x, dim=self.dim).values
+
+        # Adjust dimensions for broadcasting during division
+        running_max_dim = running_max.view(*base2_exp.shape[:-1], 1)
+
+        # Normalize using the running maximum
+        normalized_exp = base2_exp / torch.pow(2, running_max_dim)
+
+        # Compute sum of the normalized exponentials in the specified dimension
+        sum_exp = torch.sum(normalized_exp, dim=self.dim, keepdim=True)
+
+        # Compute the final Softermax values
+        y = normalized_exp / sum_exp
+
+        return y
+
+
 
 class CausalSelfAttention(nn.Module):
 
@@ -62,6 +86,7 @@ class CausalSelfAttention(nn.Module):
         self.use_softermax = config.use_softermax
         if self.use_softermax == True:
             # TODO: Add softermax support into flashattention from pytorch 2.0
+            self.softermax_layer = Softermax()
             self.flash = False
         else:
             self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -81,24 +106,40 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+                # causal self-attention
         if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
         else:
-            # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             if self.use_softermax:
-                att = softermax(att, dim=-1)
+                att = self.softermax_layer(att) # Use the Softermax layer
             else:
                 att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+            y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
 
-        # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
+        # if self.flash:
+        #     # efficient attention using Flash Attention CUDA kernels
+        #     y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+        # else:
+        #     # manual implementation of attention
+        #     att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        #     att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        #     if self.use_softermax:
+        #         att = softermax(att, dim=-1)
+        #     else:
+        #         att = F.softmax(att, dim=-1)
+        #     att = self.attn_dropout(att)
+        #     y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        # y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+
+        # # output projection
+        # y = self.resid_dropout(self.c_proj(y))
+        # return y
 
 class MLP(nn.Module):
 
@@ -144,7 +185,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    use_softermax: bool = False # True: uses softermax; False uses softmax
+    use_softermax: bool = True # True: uses softermax; False uses softmax
     use_rmsnorm: bool = True # Add option for RMSNorm
 
 class GPT(nn.Module):
