@@ -38,23 +38,38 @@ class RMSNorm(nn.Module):
         return x / rms * self.gain
 
 
+
+
 class Softermax(nn.Module):
     def __init__(self, dim=-1):
         super(Softermax, self).__init__()
         self.dim = dim
 
+
     def forward(self, x):
         # Compute 2^x elementwise for input tensor x
         base2_exp = torch.pow(2, x)
 
+        # If dim is negative, convert it to its positive equivalent
+        if self.dim < 0:
+            self.dim += x.dim()
+
         # Compute cumulative maximum in the specified dimension
         running_max = torch.cummax(x, dim=self.dim).values
 
-        # Adjust dimensions for broadcasting during division
-        running_max_dim = running_max.view(*base2_exp.shape[:-1], 1)
+        # Ensure that running_max has the same shape as x
+        assert running_max.shape == x.shape, f"Expected running_max shape {x.shape}, but got {running_max.shape}"
+
+        # Adjust dimensions for broadcasting by adding a singleton dimension
+        dims_to_keep = list(range(running_max.dim()))
+        if self.dim in dims_to_keep:
+            dims_to_keep.remove(self.dim)
+
+        for dim in dims_to_keep:
+            running_max = running_max.unsqueeze(dim)
 
         # Normalize using the running maximum
-        normalized_exp = base2_exp / torch.pow(2, running_max_dim)
+        normalized_exp = base2_exp / torch.pow(2, running_max)
 
         # Compute sum of the normalized exponentials in the specified dimension
         sum_exp = torch.sum(normalized_exp, dim=self.dim, keepdim=True)
