@@ -22,6 +22,9 @@ def index():
             file_path = os.path.join(args.directory, filename)
             df = pd.read_csv(file_path)
 
+            # Print DataFrame for debugging
+            print(df.head())  # Print first few rows of the DataFrame
+
             # Convert all columns except the first one (timestamp) to numeric, handling non-numeric data
             for col in df.columns[1:]:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -29,10 +32,16 @@ def index():
             # Create a Plotly figure
             fig = px.line(df, x=df.columns[0], y=df.columns[1:], title=f'Plot of {filename}')
 
+            # Print figure for debugging
+            print(fig)
+
             # Convert Plotly figure to HTML and concatenate
             plots_html += pio.to_html(fig, full_html=False) + '<hr>'
 
     return render_template('index.html', plots_html=plots_html)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=6006, debug=True)
 
 
 if __name__ == '__main__':

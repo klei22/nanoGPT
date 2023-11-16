@@ -14,19 +14,27 @@ args = parseargs()
 app = Flask(__name__)
 
 x = []
-y = []
+y_series = []
 
 with open(args.input_file) as csvfile:
     plots = csv.reader(csvfile, delimiter=',')
     for row in plots:
-        x.append(datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S'))  # Convert string to datetime object
-        # Handle empty strings in the data
-        if row[1] != '':
-            y.append(float(row[1]))
-        else:
-            y.append(None)  # or use 0.0 if that's more appropriate
+        # Add the timestamp to the x-axis data list
+        x.append(datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S'))
+        
+        # For each column, add the data point to the respective y-series list
+        for i in range(1, len(row)):
+            # Expand y_series list to hold new columns as they are encountered
+            if len(y_series) < i:
+                y_series.append([])
+            
+            # Append data to the appropriate y-series list, handling empty strings
+            y_series[i-1].append(float(row[i]) if row[i] != '' else None)
 
-fig = px.line(x=x, y=y)
+# Plotting each y-series as a separate line on the same graph
+fig = px.line()
+for i, ys in enumerate(y_series):
+    fig.add_scatter(x=x, y=ys, mode='lines', name=f'Column {i+1}')
 
 @app.route('/')
 def index():
