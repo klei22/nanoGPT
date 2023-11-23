@@ -10,6 +10,7 @@ set -x
 
 time_csv="$1"
 data_csv="$2"
+exclude_labels="$3"
 data_shuffled_txt="${2}.shuffled.txt"
 processed_txt="${2}.processed.txt"
 
@@ -27,7 +28,7 @@ set -x
 # 1. _prepend_ labels to the data
 # 2. (optionally) shuffle the data
 # Also 'e' is used for scientific notation, skip this letter when doing labelling
-python3 process_csv.py "$data_csv" "$data_shuffled_txt" --shuffle --exclude e
+python3 process_csv.py "$data_csv" "$data_shuffled_txt" --shuffle --exclude "$exclude_labels"
 
 # preview the result
 set +x
