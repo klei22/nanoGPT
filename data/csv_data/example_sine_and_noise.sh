@@ -10,7 +10,7 @@ set -x
 # 1. time data called:    `time_filename.csv`
 # 2. signal data called:  `data_filename.csv`
 # Note: for training may want to set the modulo < points to help with timeseries forecast
-python3 sine_noise_generator.py --noise_level 0.3 --filename sine_data.csv --scientific --precision 2 --modulo 10000 --points 1000 --split
+python3 sine_noise_generator.py --noise_level 0.3 --filename sine_data.csv --scientific --precision 2 --modulo 1000 --points 1000000 --split
 
 set +x
 echo -e "\nPreview: Generated Times"
