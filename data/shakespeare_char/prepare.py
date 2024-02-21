@@ -4,6 +4,29 @@ import numpy as np
 import pickle
 import sentencepiece as spm
 import tiktoken
+def tokenize_custom_tokens_and_replace(data, tokens):
+    """Tokenize data using custom tokens and replace found tokens with underscores."""
+    stoi = {token: i for i, token in enumerate(tokens)}
+    encoded_data = []
+    remaining_data = []
+    i = 0
+    covered_chars = 0
+    while i < len(data):
+        matched = False
+        for token in tokens:
+            if data.startswith(token, i):
+                encoded_data.append(stoi[token])
+                remaining_data.append("_" * len(token))
+                i += len(token)
+                covered_chars += len(token)
+                matched = True
+                break
+        if not matched:
+            remaining_data.append(data[i])
+            i += 1  # Move to the next character if no token matches
+    coverage = covered_chars / len(data)
+    remaining_text = ''.join(remaining_data)
+    return encoded_data, coverage, stoi, {i: token for i, token in enumerate(tokens)}, remaining_text
 
 def tokenize_custom_tokens(data, tokens):
     """Tokenize data using custom tokens."""
@@ -77,7 +100,7 @@ def main():
     parser.add_argument(
         "--method",
         type=str,
-        choices=["sentencepiece", "tiktoken", "char", "custom"],
+        choices=["sentencepiece", "tiktoken", "char", "custom", "replace"],
         default="sentencepiece",
         help="Tokenization method",
     )
@@ -136,6 +159,25 @@ def main():
         enc = tiktoken.get_encoding("gpt2")
         train_ids = tokenize_tiktoken(enc, train_data)
         val_ids = tokenize_tiktoken(enc, val_data)
+
+    if args.method == "replace":
+        if args.tokens_file is None:
+            raise ValueError("Tokens file must be provided for custom tokenization method.")
+        with open(args.tokens_file, "r") as f:
+            tokens = [line.strip() for line in f.readlines() if line.strip()]
+        train_ids, train_coverage, stoi, itos, remaining_train = tokenize_custom_tokens_and_replace(train_data, tokens)
+        val_ids, val_coverage, _, _, remaining_val = tokenize_custom_tokens_and_replace(val_data, tokens)
+        print(f"Training data coverage by tokens: {train_coverage*100:.2f}%")
+        print(f"Validation data coverage by tokens: {val_coverage*100:.2f}%")
+
+        # Write the remaining data (with tokens replaced by underscores) to remaining.txt
+        with open("remaining.txt", "w") as f:
+            f.write(remaining_train + "\n" + remaining_val)
+
+        # Save metadata including stoi and itos in a pickle file
+        meta = {"vocab_size": len(tokens), "stoi": stoi, "itos": itos}
+        with open("meta.pkl", "wb") as f:
+            pickle.dump(meta, f)
 
     elif args.method == "custom":
         if args.tokens_file is None:
