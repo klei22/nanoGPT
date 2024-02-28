@@ -16,6 +16,36 @@ from torch.utils.tensorboard import SummaryWriter
 
 from model import GPTConfig, GPT
 
+def print_qkv_counts(model):
+    sequence_length = model.config.block_size  # Adjust as needed based on your model configuration.
+
+    for i, block in enumerate(model.transformer.h):
+        attn_layer = block.attn
+
+        n_heads = attn_layer.n_head
+        embd_size_per_head = attn_layer.n_embd // n_heads
+        n_query_sets = attn_layer.n_query_sets  # This line is added to fetch the number of query sets.
+
+        # Adjusted calculations to account for n_query_sets
+        total_qs_per_head = sequence_length * n_query_sets  # Adjusted for multiple query sets
+        total_ks_per_head = sequence_length  # Remains the same
+        total_vs_per_head = sequence_length  # Remains the same
+
+        total_qs = total_qs_per_head * n_heads
+        total_ks = total_ks_per_head * n_heads
+        total_vs = total_vs_per_head * n_heads
+
+        print(f"Layer {i}:")
+        print(f"  Number of Heads: {n_heads}")
+        print(f"  Embedding Size per Head: {embd_size_per_head}")
+        print(f"  Total Q Vectors: {total_qs}")
+        print(f"  Total K Vectors: {total_ks}")
+        print(f"  Total V Vectors: {total_vs}")
+        print(f"  Total QKV Vectors: {total_qs + total_ks + total_vs}\n")
+
+
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -199,6 +229,8 @@ class Trainer:
             self.model_args['vocab_size'] = self.meta_vocab_size if self.meta_vocab_size is not None else 50304
             gptconf = GPTConfig(**self.model_args)
             self.model = GPT(gptconf)
+            # Assuming `model` is your instance of the GPT or similar model
+            print_qkv_counts(self.model)
             self.iter_num = 0 # for starting from scratch
             self.best_val_loss = 1e9 # really big number
         elif self.args.init_from == 'resume':
