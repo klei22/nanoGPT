@@ -174,7 +174,6 @@
     ],
     "max_iters": ["30000"],
     "use_post_ln": [false],
-    "sharing_mlp": [true],
     "compile": [true],
     "block_size": ["256"],
     "device": ["cuda"],
