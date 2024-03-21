@@ -78,6 +78,7 @@ def train_sentencepiece_model(input_files, model_prefix, vocab_size):
     # Train the SentencePiece model
     spm.SentencePieceTrainer.train(
         num_threads=num_threads,
+        user_defined_symbols="\n, ",
         input=input_arg,
         model_prefix=model_prefix,
         split_digits=True,
