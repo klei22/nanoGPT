@@ -14,6 +14,7 @@ def interleave_files(
     output_prefix,
     output_folder,
     forbidden_strings,
+    sp_bos=False,
 ):
     # Ensure the output directory exists
     os.makedirs(output_folder, exist_ok=True)
@@ -38,9 +39,12 @@ def interleave_files(
             if skip_flag:
                 continue
             for line in lines:
-                output_file.write(line)
+                if sp_bos:
+                    output_file.write("<s>" + line + "</s>")
+                else:
+                    output_file.write(line)
 
-            output_file.write('\n')  # Write blank line after each pair
+            output_file.write('\n') # Write blank line after each pair
 
             if output_file.tell() > file_size_limit:
                 output_file.close()
@@ -59,6 +63,7 @@ def main():
     parser.add_argument("-o", "--output_prefix", required=True, help="Prefix for the output files.")
     parser.add_argument("--output_folder", default="interleaved_files", help="The folder to store output files.")
     parser.add_argument("--forbidden_strings", nargs='*', default=[], help="List of strings that, if present in a line, will cause the line to be skipped.")
+    parser.add_argument("--sp_bos", action="store_true", help="demark sentence boundaries with <s> </s> for sentencepiece")
 
     args = parser.parse_args()
 
@@ -70,6 +75,7 @@ def main():
         args.output_prefix,
         args.output_folder,
         args.forbidden_strings,
+        args.sp_bos,
     )
 
 if __name__ == "__main__":
