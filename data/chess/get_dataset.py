@@ -99,7 +99,7 @@ def parse_games_to_json(input_file, output_json):
 
 def setup_argparse():
     parser = argparse.ArgumentParser(description='Download and decompress Lichess dataset')
-    default_url = f'https://database.lichess.org/standard/lichess_db_standard_rated_2013-01.pgn.zst'
+    default_url = f'https://database.lichess.org/standard/lichess_db_standard_rated_2015-01.pgn.zst'
     parser.add_argument('--url', type=str, default=default_url, help='URL of the file to download')
     return parser.parse_args()
 

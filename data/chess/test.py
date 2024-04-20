@@ -1,22 +1,32 @@
-import json
+import re
 import argparse
 
-def extract_movesets(json_file, output_file):
-    with open(json_file, 'r') as file:
-        data = json.load(file)
+def preprocess_movesets(input_file, output_file):
+    with open(input_file, 'r') as file:
+        lines = file.readlines()
+
+    preprocessed_lines = []
+    for line in lines:
+        # Replace " numeral." with underscore
+        preprocessed_line = re.sub(r' (\d+\.)', r'_\1', line)
+
+        # Replace ". " with lowercase omega
+        preprocessed_line = re.sub(r'\. ', 'ω', preprocessed_line)
+
+        # Replace remaining with beta
+        preprocessed_line = re.sub(r' ', r'β', preprocessed_line)
+
+        preprocessed_lines.append(preprocessed_line)
 
     with open(output_file, 'w') as file:
-        for entry in data:
-            if 'Moveset' in entry:
-                file.write(entry['Moveset'] + '\n')
+        file.write(''.join(preprocessed_lines))
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract Movesets from JSON file.")
-    parser.add_argument('json_file', type=str, help='Path to the JSON file')
-    parser.add_argument('output_file', type=str, help='Path to the output text file where Movesets will be saved')
-
+    parser = argparse.ArgumentParser(description="Preprocess movesets.")
+    parser.add_argument('input_file', type=str, help='Path to the input text file containing movesets')
+    parser.add_argument('output_file', type=str, help='Path to the output text file where preprocessed movesets will be saved')
     args = parser.parse_args()
-    extract_movesets(args.json_file, args.output_file)
+    preprocess_movesets(args.input_file, args.output_file)
 
 if __name__ == '__main__':
     main()

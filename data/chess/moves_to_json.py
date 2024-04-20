@@ -3,10 +3,10 @@ import json
 def parse_chess_data(input_file_path, output_file_path):
     with open(input_file_path, 'r') as file:
         lines = file.readlines()
-    
+
     games = []
     game_data = {}
-    
+
     for line in lines:
         if line.startswith('[Event'):
             # If there's an ongoing game data, save it before starting a new one
@@ -28,7 +28,7 @@ def parse_chess_data(input_file_path, output_file_path):
     # Append the last game if not already added
     if game_data:
         games.append(game_data)
-    
+
     # Write to output file as JSON
     with open(output_file_path, 'w') as outfile:
         for game in games:
