@@ -1,10 +1,9 @@
-import pandas as pd
-import requests
-import os
 import argparse
+import os
+import requests
 import json
-from tqdm import tqdm
 from zipfile import ZipFile
+from tqdm import tqdm
 
 def download_file(url, filename):
     """
@@ -33,25 +32,26 @@ def unzip_file(zip_path, extract_to):
         zip_ref.extractall(extract_to)
     print(f"Extracted {zip_path} to {extract_to}")
 
-def process_jsonl(jsonl_path, output_text_file):
+def process_jsonl(jsonl_path, output_text_file, illegal_chars_file):
     """
-    Process a JSONL file and extract specific fields.
-    Optionally, write the output to a text file.
+    Process a JSONL file and extract specific fields while skipping lines containing illegal characters.
     """
-    with open(jsonl_path, 'r') as json_file, open(output_text_file, 'a') as f:
+    # Load illegal characters from file
+    with open(illegal_chars_file, 'r') as f:
+        illegal_chars = f.read().strip()
+    illegal_set = set(illegal_chars)
+
+    with open(jsonl_path, 'r') as json_file, open(output_text_file, 'w') as f:
         for line in json_file:
             item = json.loads(line)
-            content_line = f"{item['instruction']}"
-            f.write(content_line.strip())
-            f.write("\n")  # Separator between items
-            content_line = f"{item['input']}"
-            f.write(content_line.strip())
-            f.write("\n")  # Separator between items
-            content_line = f"{item['output']}"
-            f.write(content_line.strip())
-            f.write("\n\n")  # Separator between items
+            # Check for illegal characters in fields
+            if any(char in illegal_set for field in item.values() for char in field if char != '\n'):
+                continue  # Skip lines containing any illegal character
+            for field in ['instruction', 'input', 'output']:
+                content_line = f"{item[field]}"
+                f.write(content_line.strip() + "\n\n")
 
-def main(output_text_file):
+def main(output_text_file, illegal_chars_file):
     zip_file_url = "https://github.com/masanorihirano/llm-japanese-dataset/releases/download/1.0.3/release-1.0.3-cc-by-sa.zip"
     zip_file_name = "./release-1.0.3-cc-by-sa.zip"
     extract_to = "./"
@@ -65,21 +65,13 @@ def main(output_text_file):
     unzip_file(zip_file_name, extract_to)
 
     # Process the JSONL file
-    process_jsonl(jsonl_file_name, output_text_file)
+    process_jsonl(jsonl_file_name, output_text_file, illegal_chars_file)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Download and process a JSONL file from a zip archive."
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output_text_file",
-        type=str,
-        default="processed_output.txt",
-        help="Path to the output text file where the contents should be saved.",
-    )
+    parser = argparse.ArgumentParser(description="Download and process a JSONL file from a zip archive.")
+    parser.add_argument("-o", "--output_text_file", type=str, default="processed_output.txt", help="Path to the output text file where the contents should be saved.")
+    parser.add_argument("-i", "--illegal_chars_file", type=str, required=True, help="Path to the file containing illegal characters to exclude from the dataset.")
 
     args = parser.parse_args()
-    main(args.output_text_file)
+    main(args.output_text_file, args.illegal_chars_file)
 
