@@ -147,9 +147,9 @@ def main():
         help="Path to the SentencePiece vocabulary file (not always needed but can be used for additional functionality)",
     )
     parser.add_argument(
-        "--skip_sp_tokenization",
+        "--skip_tokenization",
         action="store_true",
-        help="Skip tokenization and creation of .bin files after training SentencePiece model",
+        help="Skip creation of .bin files",
     )
 
     # Tiktoken only argument
@@ -237,7 +237,7 @@ def main():
             train_sentencepiece_model(input_files, spm_model_prefix, args.vocab_size)
             sp = spm.SentencePieceProcessor()
             sp.load(f"{spm_model_prefix}.model")
-            if args.skip_sp_tokenization:
+            if args.skip_tokenization:
                 print("SentencePiece model training complete. Skipping tokenization and .bin file creation.")
                 return
 
@@ -337,6 +337,7 @@ def main():
         print("All unique characters:", "".join(chars))
         print(f"Vocab size: {vocab_size}")
 
+
         train_ids, stoi, itos = encode_char_level(train_data, chars)
         if val_data != None:
             val_ids, _, _ = encode_char_level(val_data, chars)
@@ -345,6 +346,10 @@ def main():
         meta = {"vocab_size": vocab_size, "itos": itos, "stoi": stoi}
         with open(os.path.join(os.path.dirname(__file__), "meta.pkl"), "wb") as f:
             pickle.dump(meta, f)
+
+        if args.skip_tokenization:
+            print("Char method skipping tokenization and .bin file creation.")
+            return
 
     # Print token counts and export to bin files
     print(f"train has {len(train_ids):,} tokens")

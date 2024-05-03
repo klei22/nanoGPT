@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 
 
 def line_contains_forbidden_string(line, forbidden_strings):
@@ -29,6 +30,8 @@ def interleave_files(
         file2_lines = file2.readlines()
 
         for line1, line2 in zip(file1_lines, file2_lines):
+            line1 = "eNgl'ish " + line1
+            line2 = ",espan^'Ol " + line2
             lines = [line2, line1] if start_with_file2 else [line1, line2]
             skip_flag = False
             for line in lines:
@@ -38,10 +41,13 @@ def interleave_files(
 
             if skip_flag:
                 continue
-            for line in lines:
-                if sp_bos:
-                    output_file.write("<s>" + line + "</s>")
-                else:
+
+            if sp_bos:
+                random.shuffle(lines)
+                for line in lines:
+                    output_file.write(line)
+            else:
+                for line in lines:
                     output_file.write(line)
 
             output_file.write('\n') # Write blank line after each pair

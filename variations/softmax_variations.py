@@ -167,7 +167,8 @@ class SaturatingConSmax(nn.Module):
 
         self.divisor = config.constantmax_initial_gamma
         self.beta = config.constantmax_initial_beta
-        self.x_sat = 11 + config.constantmax_initial_beta
+        self.max_value = 11
+        self.x_sat = self.max_value + config.constantmax_initial_beta
 
     def forward(self, x):
         # Overview:
@@ -181,7 +182,7 @@ class SaturatingConSmax(nn.Module):
             torch.tensor(0.0, device=x.device))
 
         # flat section
-        flat_piece = torch.where(x >= (self.x_sat), torch.tensor(self.x_sat, device=x.device), torch.tensor(0.0, device=x.device))
+        flat_piece = torch.where(x >= (self.x_sat), torch.tensor(self.max_value, device=x.device), torch.tensor(0.0, device=x.device))
 
         # Combine sections
         return (exponential_piece + flat_piece)/self.divisor

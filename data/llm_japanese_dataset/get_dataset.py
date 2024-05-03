@@ -49,29 +49,34 @@ def process_jsonl(jsonl_path, output_text_file, illegal_chars_file):
                 continue  # Skip lines containing any illegal character
             for field in ['instruction', 'input', 'output']:
                 content_line = f"{item[field]}"
-                f.write(content_line.strip() + "\n\n")
+                f.write(content_line.strip() + "\n")
+            f.write("\n")
 
-def main(output_text_file, illegal_chars_file):
-    zip_file_url = "https://github.com/masanorihirano/llm-japanese-dataset/releases/download/1.0.3/release-1.0.3-cc-by-sa.zip"
-    zip_file_name = "./release-1.0.3-cc-by-sa.zip"
-    extract_to = "./"
-    jsonl_file_name = "release-1.0.3-cc-by-sa/data-cc-by-sa.jsonl"
+def main(output_text_file, illegal_chars_file, jsonl_path=None):
+    if jsonl_path is None:
+        zip_file_url = "https://github.com/masanorihirano/llm-japanese-dataset/releases/download/1.0.3/release-1.0.3-cc-by-sa.zip"
+        zip_file_name = "./release-1.0.3-cc-by-sa.zip"
+        extract_to = "./"
+        jsonl_file_name = "release-1.0.3-cc-by-sa/data-cc-by-sa.jsonl"
 
-    # Ensure the output directory exists
-    os.makedirs(extract_to, exist_ok=True)
+        # Ensure the output directory exists
+        os.makedirs(extract_to, exist_ok=True)
 
-    # Download and unzip the dataset
-    download_file(zip_file_url, zip_file_name)
-    unzip_file(zip_file_name, extract_to)
+        # Download and unzip the dataset
+        download_file(zip_file_url, zip_file_name)
+        unzip_file(zip_file_name, extract_to)
+    else:
+        jsonl_file_name = jsonl_path
 
     # Process the JSONL file
     process_jsonl(jsonl_file_name, output_text_file, illegal_chars_file)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download and process a JSONL file from a zip archive.")
+    parser = argparse.ArgumentParser(description="Download and process a JSONL file from a zip archive or process an existing JSONL file.")
     parser.add_argument("-o", "--output_text_file", type=str, default="processed_output.txt", help="Path to the output text file where the contents should be saved.")
     parser.add_argument("-i", "--illegal_chars_file", type=str, required=True, help="Path to the file containing illegal characters to exclude from the dataset.")
+    parser.add_argument("-j", "--jsonl_path", type=str, help="Optional: Direct path to a JSONL file to process without downloading. If not provided, will download from the preset URL.")
 
     args = parser.parse_args()
-    main(args.output_text_file, args.illegal_chars_file)
+    main(args.output_text_file, args.illegal_chars_file, args.jsonl_path)
 
