@@ -1,6 +1,5 @@
 import chess
 import argparse
-import re
 
 def print_compact_ascii_board(board, file=None):
     output = []
@@ -12,9 +11,9 @@ def print_compact_ascii_board(board, file=None):
             row += symbol
         output.append(row)
     if file:
-        file.write("\n".join(output) + "\n\n")
+        file.write("\n".join(output))
     else:
-        print("\n".join(output) + "\n")
+        print("\n".join(output))
 
 def resolve_ambiguous_move(board, move):
     if len(move) == 4 and move[0] in "NBRQK" and move[1] in "abcdefgh":
@@ -37,16 +36,19 @@ def apply_moves_and_print_boards(moves, output_file=None):
         print_compact_ascii_board(board, output_file)
     else:
         print_compact_ascii_board(board)
-    last_move = None
+    last_move = "S"  # Initialize last_move as "S" for the start
     for move in moves.split():
         try:
             board.push_san(move)
-            current_move = f"D{last_move}W{move}" if board.turn == chess.BLACK else f"W{last_move}D{move}"
+            if last_move == "S" and board.turn == chess.BLACK:  # Special case for the first move
+                current_move = f"\nSW{move}"
+            else:
+                current_move = f"D{last_move}W{move}" if board.turn == chess.BLACK else f"W{last_move}D{move}"
             if output_file:
-                output_file.write(f"{current_move}\n")
+                output_file.write(f"\n{current_move}\n")
                 print_compact_ascii_board(board, output_file)
             else:
-                print(f"{current_move}\n")
+                print(f"\n{current_move}\n")
                 print_compact_ascii_board(board)
             last_move = move
         except ValueError:
@@ -68,8 +70,8 @@ def apply_moves_and_print_boards(moves, output_file=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Process a file of chess games and print each board state in ASCII format.")
-    parser.add_argument("filename", type=str, help="The filename containing the chess games, each on a new line.")
-    parser.add_argument("--output", type=str, help="Optional filename to write output to a text file.")
+    parser.add_argument('-i', "--filename", default='movesets_txt/moveset.txt', type=str, help="The filename containing the chess games, each on a new line.")
+    parser.add_argument('-o', "--output", default='input.txt', type=str, help="Optional filename to write output to a text file.")
     args = parser.parse_args()
 
     if args.output:

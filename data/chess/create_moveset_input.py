@@ -23,8 +23,8 @@ def preprocess_movesets(input_file, output_file):
 
 def main():
     parser = argparse.ArgumentParser(description="Preprocess movesets.")
-    parser.add_argument('input_file', type=str, help='Path to the input text file containing movesets')
-    parser.add_argument('output_file', type=str, help='Path to the output text file where preprocessed movesets will be saved')
+    parser.add_argument('-i', '--input_file', default="movesets_txt/moveset.txt", type=str, help='Path to the input text file containing movesets')
+    parser.add_argument('-o', '--output_file', default="input.txt", type=str, help='Path to the output text file where preprocessed movesets will be saved')
     args = parser.parse_args()
     preprocess_movesets(args.input_file, args.output_file)
 

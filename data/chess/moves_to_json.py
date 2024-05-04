@@ -1,4 +1,5 @@
 import json
+import os
 
 def parse_chess_data(input_file_path, output_file_path):
     with open(input_file_path, 'r') as file:
@@ -37,8 +38,17 @@ def parse_chess_data(input_file_path, output_file_path):
 
 # Specify the path to your dataset and the output file
 input_file_path = 'datasets/lichess_games.txt'
-output_file_path = 'parsed_games.json'
+json_dir = 'json/'
+output_filename = 'parsed_games.json'
+output_path = os.path.join(json_dir, output_filename)
+
+# Ensure the directory exists
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+# Check if the file is already downloaded and decompressed
+if os.path.exists(output_path):
+    print(f"{output_path} already exists. Skipping download.")
 
 # Call the function to parse and write the data
-parse_chess_data(input_file_path, output_file_path)
+parse_chess_data(input_file_path, output_path)
 
