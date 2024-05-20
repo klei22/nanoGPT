@@ -44,7 +44,7 @@ def parse_args():
     # Data args
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)
     training_group.add_argument('--gradient_accumulation_steps', default=1, type=int)
-    training_group.add_argument('--batch_size', default=64, type=int)
+    training_group.add_argument('--batch_size', default=128, type=int)
     training_group.add_argument("--seed", default=1337, type=int)
 
     # Model args
@@ -180,7 +180,7 @@ def parse_args():
     training_group.add_argument('--grad_clip', default=1.0, type=float)
 
     # LR schedule args
-    training_group.add_argument('--decay_lr', action='store_true')
+    training_group.add_argument('--decay_lr', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--warmup_iters', default=100, type=int)
     training_group.add_argument('--lr_decay_iters', default=3500, type=int)
     training_group.add_argument('--min_lr', default=1e-4, type=float)
