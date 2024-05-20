@@ -1,5 +1,6 @@
 import chess
 import argparse
+from tqdm import tqdm
 
 def print_compact_ascii_board(board, file=None):
     output = []
@@ -85,7 +86,8 @@ def main():
 
 def process_games_from_file(filename, output_file=None):
     with open(filename, 'r') as file:
-        for line in file:
+        lines = file.readlines()
+        for line in tqdm(lines, desc="Processing games"):
             if line.strip():  # Ensure the line is not empty
                 moves = line.strip()
                 apply_moves_and_print_boards(moves, output_file)
