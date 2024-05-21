@@ -44,7 +44,7 @@ def parse_args():
     # Data args
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)
     training_group.add_argument('--gradient_accumulation_steps', default=1, type=int)
-    training_group.add_argument('--batch_size', default=128, type=int)
+    training_group.add_argument('--batch_size', default=64, type=int)
     training_group.add_argument("--seed", default=1337, type=int)
 
     # Model args
