@@ -12,7 +12,9 @@ class GPTConfig:
     window_size: int = 128
     gate: bool = False
 
+    # MLP Options
     use_parallel_mlp: bool = False
+    use_swiglu: bool = False
 
     # Shared parameters
     # MLP
@@ -23,14 +25,22 @@ class GPTConfig:
     shared_attn_sym: bool = False
 
     # Softmax Alternatives and Options
-    softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "constantmax"
-    softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "constantmax"
+    softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
+    softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
 
-    ## Constantmax Options
-    constantmax_initial_beta: float = 0.0 # denominator to utilize for Constantmax
-    constantmax_initial_gamma: float = 1.0 # denominator to utilize for Constantmax
-    constantmax_use_euler_base: bool = True # use 'e' as base for Constantmax
-    constantmax_base: float = 2.0 # denominator to utilize for Constantmax
+    ## General Options
+    div_by_seq_len: bool = False # for supported functions will divide by seq length
+
+    ## ConSmax Options
+    consmax_initial_beta: float = 2.0 # beta adjustment
+    consmax_initial_gamma: float = 100.0 # denominator adjustment
+    consmax_use_euler_base: bool = True # use 'e' as base for ConSmax, default
+    consmax_base: float = 2.0 # base to utilize for ConSmax
+
+    ## SaturatingConSmax special options (otherwise same as ConSmax)
+    consmax_saturation: float = 11.0 # for SaturatingConSmax saturation point
+    consmax_learnable_beta: bool = True
+    consmax_learnable_gamma: bool = True
 
     ## Softermax options
     softermax_use_xmax: bool = True # Softermax Option active is softermax selected - True: uses (x - x_max) normalization; False: removes normalization (potential overflow)
@@ -52,10 +62,17 @@ class GPTConfig:
     strongermax_use_xmax: bool = True # Softermax with option of 'stronger' (larger integer) bases
 
     ## ExpPolymax options
+    exppolymax_use_euler_base: bool = True
     exppolymax_base: float = 2.719
     exppolymax_y_intercept: float = 1.0
     exppolymax_power: float = 2.0
     exppolymax_divisor: float = 1.0
+
+    ## Softplus options
+    softplus_divisor: float = 100.0
+
+    ## Squareplus options
+    squareplus_divisor: float = 100.0
 
     # Positional Embeddings Variations
     use_abs_pos_embeddings: bool = True # Note: one can use this AND rotary embeddings
