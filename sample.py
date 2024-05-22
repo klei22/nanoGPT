@@ -1,7 +1,5 @@
-"""
-Sample from a trained model
-"""
 import os
+import re
 import pickle
 from contextlib import nullcontext
 import torch
@@ -11,21 +9,42 @@ from model import GPTConfig, GPT
 import argparse
 
 def parseargs():
-  parser = argparse.ArgumentParser(description='')
-  parser.add_argument("--device", type=str, help="device to run inference, e.g. 'cpu' or 'cuda' or 'cuda:0', 'cuda:1', etc...")
-  parser.add_argument("--out_dir", type=str, help="directory to load checkpoint from")
-  parser.add_argument("--init_from", type=str, default="resume", help="Either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')")
-  parser.add_argument("--start", type=str, default="\n", help="\\n or '<|endoftext|>' or etc. Can also specify a file, use as: 'FILE:prompt.txt'")
-  parser.add_argument("--num_samples", type=int, default=3, help="number of inference streams to draw")
-  parser.add_argument("--max_new_tokens", type=int, default=500, help="number of tokens generated in each sample")
-  parser.add_argument("--temperature", type=float, default=0.8, help="1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions")
-  parser.add_argument("--top_k", type=int, default=200, help="retain only the top_k most likely tokens, clamp others to have 0 probability")
-  parser.add_argument("--seed", type=int, default=1337, help="seed for psuedorandom number generator")
-  parser.add_argument("--dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"], help="torch data type for inference, e.g. 'int8'")
-  parser.add_argument('--compile', default=False, action=argparse.BooleanOptionalAction)
-  parser.add_argument('--sample_file', type=str, default=None, help="output file for inference")
+    parser = argparse.ArgumentParser(description='')
+    parser.add_argument("--device", type=str, help="device to run inference, e.g. 'cpu' or 'cuda' or 'cuda:0', 'cuda:1', etc...")
+    parser.add_argument("--out_dir", type=str, help="directory to load checkpoint from")
+    parser.add_argument("--init_from", type=str, default="resume", help="Either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')")
+    parser.add_argument("--start", type=str, default="\n", help="\\n or '<|endoftext|>' or etc. Can also specify a file, use as: 'FILE:prompt.txt'")
+    parser.add_argument("--num_samples", type=int, default=3, help="number of inference streams to draw")
+    parser.add_argument("--max_new_tokens", type=int, default=500, help="number of tokens generated in each sample")
+    parser.add_argument("--temperature", type=float, default=0.8, help="1.0 = no change, < 1.0 = less random, > 1.0 = more random, in predictions")
+    parser.add_argument("--top_k", type=int, default=200, help="retain only the top_k most likely tokens, clamp others to have 0 probability")
+    parser.add_argument("--seed", type=int, default=1337, help="seed for psuedorandom number generator")
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"], help="torch data type for inference, e.g. 'int8'")
+    parser.add_argument('--compile', default=False, action=argparse.BooleanOptionalAction)
+    parser.add_argument('--sample_file', type=str, default=None, help="output file for inference")
+    parser.add_argument('--interactive', default=False, action=argparse.BooleanOptionalAction)
+    parser.add_argument('--stop_regex', type=str, default=r'^~W', help="regex pattern to stop generation and allow user input")
 
-  return parser.parse_args()
+    return parser.parse_args()
+
+def interactive_generation(model, start_ids, device, max_new_tokens, temperature, top_k, stop_regex, decode, encode):
+    x = torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...]
+    while True:
+        x, generated_text = model.generate_with_stop(x, max_new_tokens, stop_regex, decode, temperature, top_k)
+        print("[bold green]" + generated_text)
+        
+        # Check if the stop_regex pattern is found and truncate the text after the pattern
+        match = re.search(stop_regex, generated_text)
+        if match:
+            generated_text = generated_text[:match.end()]
+
+        user_input = input("User input (or 'exit' to quit): ")
+        if user_input.lower() == 'exit':
+            break
+        
+        # Append the user input directly after the stop pattern
+        combined_text = generated_text + user_input
+        x = torch.cat((x, torch.tensor(encode(user_input), dtype=torch.long, device=device)[None, ...]), dim=1)
 
 args = parseargs()
 # -----------------------------------------------------------------------------
@@ -95,25 +114,30 @@ if args.start.startswith('FILE:'):
     with open(args.start[5:], 'r', encoding='utf-8') as f:
         args.start = f.read()
 start_ids = encode(args.start)
-x = (torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...])
 
-# run generation
-with torch.no_grad():
-    with ctx:
-        for k in range(args.num_samples):
-            y = model.generate(x, args.max_new_tokens,
-                               temperature=args.temperature, top_k=args.top_k)
+if args.interactive:
+    # Run interactive generation
+    interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_regex, decode, encode)
+else:
+    x = (torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...])
 
-            output_line = None
-            if separator_token == None:
-                output_line = decode(y[0].tolist())
-            else:
-                output_line = decode(y[0].tolist()).replace(separator_token, " ")
+    # run generation
+    with torch.no_grad():
+        with ctx:
+            for k in range(args.num_samples):
+                y = model.generate(x, args.max_new_tokens,
+                                   temperature=args.temperature, top_k=args.top_k)
 
-            print("[bold green]" + output_line)
-            print('---------------')
+                output_line = None
+                if separator_token == None:
+                    output_line = decode(y[0].tolist())
+                else:
+                    output_line = decode(y[0].tolist()).replace(separator_token, " ")
 
-            if args.sample_file != None:
-                with open(args.sample_file, "a") as file:
-                    file.write(output_line)
+                print("[bold green]" + output_line)
+                print('---------------')
+
+                if args.sample_file != None:
+                    with open(args.sample_file, "a") as file:
+                        file.write(output_line)
 
