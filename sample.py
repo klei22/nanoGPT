@@ -1,5 +1,4 @@
 import os
-import re
 import pickle
 from contextlib import nullcontext
 import torch
@@ -23,27 +22,21 @@ def parseargs():
     parser.add_argument('--compile', default=False, action=argparse.BooleanOptionalAction)
     parser.add_argument('--sample_file', type=str, default=None, help="output file for inference")
     parser.add_argument('--interactive', default=False, action=argparse.BooleanOptionalAction)
-    parser.add_argument('--stop_regex', type=str, default=r'^~W', help="regex pattern to stop generation and allow user input")
+    parser.add_argument('--stop_string', type=str, default='~W', help="fixed string to stop generation and allow user input")
 
     return parser.parse_args()
 
-def interactive_generation(model, start_ids, device, max_new_tokens, temperature, top_k, stop_regex, decode, encode):
+def interactive_generation(model, start_ids, device, max_new_tokens, temperature, top_k, stop_string, decode, encode):
     x = torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...]
     while True:
-        x, generated_text = model.generate_with_stop(x, max_new_tokens, stop_regex, decode, temperature, top_k)
+        x, generated_text = model.generate_with_stop(x, max_new_tokens, stop_string, decode, temperature, top_k)
         print("[bold green]" + generated_text)
-        
-        # Check if the stop_regex pattern is found and truncate the text after the pattern
-        match = re.search(stop_regex, generated_text)
-        if match:
-            generated_text = generated_text[:match.end()]
 
         user_input = input("User input (or 'exit' to quit): ")
         if user_input.lower() == 'exit':
             break
-        
-        # Append the user input directly after the stop pattern
-        combined_text = generated_text + user_input
+
+        # Append the user input directly after the stop string
         x = torch.cat((x, torch.tensor(encode(user_input), dtype=torch.long, device=device)[None, ...]), dim=1)
 
 args = parseargs()
@@ -91,16 +84,13 @@ if load_meta:
     print(f"Loading meta from {meta_path}...")
     with open(meta_path, 'rb') as f:
         meta = pickle.load(f)
-    # TODO want to make this more general to arbitrary encoder/decoder schemes
     if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
         enc = tiktoken.get_encoding(meta['tiktoken_encoding'])
         print(f"using tiktoken encoding {meta['tiktoken_encoding']}")
         encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
         decode = lambda l: enc.decode(l)
     elif 'tokenizer' in meta and meta['tokenizer'] == 'sentencepiece':
-
-        separator_token="▁"
-
+        separator_token = "▁"
         stoi, itos = meta['stoi'], meta['itos']
         encode = lambda s: [stoi[c] for c in s]
         decode = lambda l: ''.join([itos[i] for i in l])
@@ -117,27 +107,19 @@ start_ids = encode(args.start)
 
 if args.interactive:
     # Run interactive generation
-    interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_regex, decode, encode)
+    interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_string, decode, encode)
 else:
-    x = (torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...])
+    x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
 
     # run generation
     with torch.no_grad():
         with ctx:
             for k in range(args.num_samples):
-                y = model.generate(x, args.max_new_tokens,
-                                   temperature=args.temperature, top_k=args.top_k)
-
-                output_line = None
-                if separator_token == None:
-                    output_line = decode(y[0].tolist())
-                else:
-                    output_line = decode(y[0].tolist()).replace(separator_token, " ")
-
+                y = model.generate(x, args.max_new_tokens, temperature=args.temperature, top_k=args.top_k)
+                output_line = decode(y[0].tolist()).replace(separator_token, " ") if separator_token else decode(y[0].tolist())
                 print("[bold green]" + output_line)
                 print('---------------')
-
-                if args.sample_file != None:
+                if args.sample_file:
                     with open(args.sample_file, "a") as file:
                         file.write(output_line)
 

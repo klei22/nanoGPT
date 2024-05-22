@@ -547,12 +547,12 @@ class GPT(nn.Module):
         return idx
 
     @torch.no_grad()
-    def generate_with_stop(self, idx, max_new_tokens, stop_regex, decode, temperature=1.0, top_k=None):
+    def generate_with_stop(self, idx, max_new_tokens, stop_string, decode, temperature=1.0, top_k=None):
         """
-        Generate tokens and stop on regex match, return the state for further input.
+        Generate tokens and stop on fixed string match, return the state for further input.
         """
         generated_text = ""
-        last_token_text = None
+        buffer = ""
         for _ in range(max_new_tokens):
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             logits, _ = self(idx_cond)
@@ -566,13 +566,10 @@ class GPT(nn.Module):
 
             next_token_text = decode(idx_next[0].tolist())
             generated_text += next_token_text
-            if next_token_text == "W" and last_token_text=="~":
+            buffer += next_token_text
+
+            # Check if the buffer ends with the stop_string
+            if buffer.endswith(stop_string):
                 break
-            last_token_text = next_token_text
-
-
-            # if re.search(stop_regex, generated_text):
-            #     break
 
         return idx, generated_text
-
