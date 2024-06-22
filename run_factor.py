@@ -13,12 +13,10 @@ from rich.table import Table
 from rich.progress import Progress, BarColumn, TextColumn
 
 # Factorization function with configurable A and seed
-def factorize_matrix(A, output_dir, device, num_epochs, seed, progress, task_id):
+def factorize_matrix(A, original_matrix, device, num_epochs, seed, progress, task_id):
     A = int(A)  # Ensure A is an integer
     torch.manual_seed(seed)
-    n_rows = 50000
-    n_cols = 384
-    original_matrix = torch.randn(n_rows, n_cols).to(device)
+    n_rows, n_cols = original_matrix.shape
 
     W1 = torch.randn((n_rows, A), requires_grad=True, device=device)
     W2 = torch.randn((A, n_cols), requires_grad=True, device=device)
@@ -37,7 +35,7 @@ def factorize_matrix(A, output_dir, device, num_epochs, seed, progress, task_id)
         
     return loss.item()
 
-def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, A_start, A_end, num_epochs, num_seeds, device, output_csv):
+def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, A_start, A_end, num_epochs, num_seeds, original_matrix, device, output_csv):
     search_space = vz.SearchSpace()
     search_space.root.add_int_param(name="A", min_value=A_start, max_value=A_end)
 
@@ -70,7 +68,7 @@ def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, A_start, A_e
                     refresh_per_second=1,
                 ) as progress:
                     task_id = progress.add_task(f"Training (Seed {seed+1})", total=num_epochs)
-                    loss = factorize_matrix(A, f"output_{i}_A_{A}", device, num_epochs, seed, progress, task_id)
+                    loss = factorize_matrix(A, original_matrix, device, num_epochs, seed, progress, task_id)
                 seed_losses.append(loss)
             best_loss = min(seed_losses)
             results.append({
@@ -127,9 +125,15 @@ def main():
     parser.add_argument('--A_start', type=int, default=10, help="Minimum value of A for optimization.")
     parser.add_argument('--A_end', type=int, default=100, help="Maximum value of A for optimization.")
     parser.add_argument('--output_csv', type=str, default="results.csv", help="Path to the output CSV file.")
+    parser.add_argument('--matrix_path', type=str, default=None, help="Path to the matrix .npy file for factorization.")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if args.matrix_path:
+        original_matrix = torch.from_numpy(np.load(args.matrix_path)).to(device)
+    else:
+        original_matrix = torch.randn(50000, 384).to(device)
 
     run_experiment_with_vizier(
         args.vizier_algorithm,
@@ -138,6 +142,7 @@ def main():
         args.A_end,
         args.num_epochs,
         args.num_seeds,
+        original_matrix,
         device,
         args.output_csv
     )
