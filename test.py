@@ -8,9 +8,10 @@ from vizier.service import clients, pyvizier as vz
 from rich import print
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, BarColumn, TextColumn
 
 # Factorization function with configurable A
-def factorize_matrix(A, output_dir, device, num_epochs):
+def factorize_matrix(A, output_dir, device, num_epochs, progress, task_id):
     A = int(A)  # Ensure A is an integer
     n_rows = 50000
     n_cols = 384
@@ -30,8 +31,8 @@ def factorize_matrix(A, output_dir, device, num_epochs):
         loss = loss_fn(reconstructed_matrix, original_matrix)
         loss.backward()
         optimizer.step()
-        if (epoch + 1) % 100 == 0:
-            print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
+
+        progress.update(task_id, advance=1, description=f"Loss: {loss.item():.4f}")
 
     # Create the output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -41,8 +42,8 @@ def factorize_matrix(A, output_dir, device, num_epochs):
     np.save(f"{output_dir}/W2.npy", W2.detach().cpu().numpy())
 
     # Print the resulting matrices
-    print("W1:", W1)
-    print("W2:", W2)
+    # print("W1:", W1)
+    # print("W2:", W2)
 
     return loss.item()
 
@@ -62,6 +63,7 @@ def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, A_start, A_e
     )
 
     results = []
+    console = Console()
 
     for i in range(vizier_iterations):
         print("Vizier Iteration", i)
@@ -69,13 +71,19 @@ def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, A_start, A_e
         for suggestion in suggestions:
             params = suggestion.parameters
             A = params["A"]
-            loss = factorize_matrix(A, f"output_{i}_A_{A}", device, num_epochs)
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                "[progress.percentage]{task.percentage:>3.1f}%",
+                refresh_per_second=1,
+            ) as progress:
+                task_id = progress.add_task("Training", total=num_epochs)
+                loss = factorize_matrix(A, f"output_{i}_A_{A}", device, num_epochs, progress, task_id)
             suggestion.complete(vz.Measurement(metrics={"loss": loss}))
             results.append({"A": A, "loss": loss})
 
         # Print the results table at the end of each iteration
         results_sorted = sorted(results, key=lambda x: x["A"])
-        console = Console()
         table = Table(title=f"Results after Vizier Iteration {i + 1}")
         table.add_column("A", justify="right", style="cyan")
         table.add_column("Loss", justify="right", style="magenta")
@@ -83,11 +91,11 @@ def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, A_start, A_e
         for result in results_sorted:
             table.add_row(str(result["A"]), f"{result['loss']:.4f}")
 
+        console.clear()
         console.print(table)
 
     # Print the final sorted results
     results_sorted = sorted(results, key=lambda x: x["A"])
-    console = Console()
     table = Table(title="Final Results Sorted by A Values")
     table.add_column("A", justify="right", style="cyan")
     table.add_column("Loss", justify="right", style="magenta")
@@ -95,6 +103,7 @@ def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, A_start, A_e
     for result in results_sorted:
         table.add_row(str(result["A"]), f"{result['loss']:.4f}")
 
+    console.clear()
     console.print(table)
 
 def main():
