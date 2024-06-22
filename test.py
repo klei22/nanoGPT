@@ -3,10 +3,14 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import os
+import argparse
 from vizier.service import clients, pyvizier as vz
+from rich import print
+from rich.console import Console
+from rich.table import Table
 
 # Factorization function with configurable A
-def factorize_matrix(A, output_dir, device):
+def factorize_matrix(A, output_dir, device, num_epochs):
     A = int(A)  # Ensure A is an integer
     n_rows = 50000
     n_cols = 384
@@ -17,8 +21,6 @@ def factorize_matrix(A, output_dir, device):
 
     optimizer = optim.Adam([W1, W2], lr=1e-3)
     loss_fn = nn.MSELoss()
-
-    num_epochs = 1000
 
     print(f"Starting training with A = {A}")
 
@@ -44,9 +46,9 @@ def factorize_matrix(A, output_dir, device):
 
     return loss.item()
 
-def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, device):
+def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, A_start, A_end, num_epochs, device):
     search_space = vz.SearchSpace()
-    search_space.root.add_int_param(name="A", min_value=10, max_value=100)
+    search_space.root.add_int_param(name="A", min_value=A_start, max_value=A_end)
 
     study_config = vz.StudyConfig(
         search_space=search_space,
@@ -59,25 +61,65 @@ def run_experiment_with_vizier(vizier_algorithm, vizier_iterations, device):
         study_config, owner="owner", study_id="example_study_id"
     )
 
+    results = []
+
     for i in range(vizier_iterations):
         print("Vizier Iteration", i)
         suggestions = study_client.suggest(count=1)
         for suggestion in suggestions:
             params = suggestion.parameters
             A = params["A"]
-            loss = factorize_matrix(A, f"output_{i}_A_{A}", device)
+            loss = factorize_matrix(A, f"output_{i}_A_{A}", device, num_epochs)
             suggestion.complete(vz.Measurement(metrics={"loss": loss}))
+            results.append({"A": A, "loss": loss})
 
-    optimal_trials = study_client.optimal_trials()
-    for trial in optimal_trials:
-        best_trial = trial.materialize()
-        print(f"Best trial: {best_trial.parameters}, Loss: {best_trial.final_measurement.metrics['loss']}")
+        # Print the results table at the end of each iteration
+        results_sorted = sorted(results, key=lambda x: x["A"])
+        console = Console()
+        table = Table(title=f"Results after Vizier Iteration {i + 1}")
+        table.add_column("A", justify="right", style="cyan")
+        table.add_column("Loss", justify="right", style="magenta")
+
+        for result in results_sorted:
+            table.add_row(str(result["A"]), f"{result['loss']:.4f}")
+
+        console.print(table)
+
+    # Print the final sorted results
+    results_sorted = sorted(results, key=lambda x: x["A"])
+    console = Console()
+    table = Table(title="Final Results Sorted by A Values")
+    table.add_column("A", justify="right", style="cyan")
+    table.add_column("Loss", justify="right", style="magenta")
+
+    for result in results_sorted:
+        table.add_row(str(result["A"]), f"{result['loss']:.4f}")
+
+    console.print(table)
 
 def main():
+    parser = argparse.ArgumentParser(description="Run matrix factorization with Vizier optimization.")
+    parser.add_argument('--vizier_algorithm', type=str, choices=[
+        "GP_UCB_PE", "GAUSSIAN_PROCESS_BANDIT", "RANDOM_SEARCH", "QUASI_RANDOM_SEARCH",
+        "GRID_SEARCH", "SHUFFLED_GRID_SEARCH", "EAGLE_STRATEGY", "CMA_ES",
+        "EMUKIT_GP_EI", "NSGA2", "BOCS", "HARMONICA"
+    ], default="GAUSSIAN_PROCESS_BANDIT", help="Choose the Vizier algorithm to use.")
+    parser.add_argument('--vizier_iterations', type=int, default=20, help="Number of Vizier iterations.")
+    parser.add_argument('--num_epochs', type=int, default=1000, help="Number of training epochs.")
+    parser.add_argument('--A_start', type=int, default=10, help="Minimum value of A for optimization.")
+    parser.add_argument('--A_end', type=int, default=100, help="Maximum value of A for optimization.")
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    vizier_algorithm = "GAUSSIAN_PROCESS_BANDIT"
-    vizier_iterations = 20
-    run_experiment_with_vizier(vizier_algorithm, vizier_iterations, device)
+
+    run_experiment_with_vizier(
+        args.vizier_algorithm,
+        args.vizier_iterations,
+        args.A_start,
+        args.A_end,
+        args.num_epochs,
+        device
+    )
 
 if __name__ == "__main__":
     main()
