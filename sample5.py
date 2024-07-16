@@ -41,6 +41,7 @@ def parse_args():
     parser.add_argument('--token_boundary', type=str, default=None, help="optional separator between emitted tokens")
     parser.add_argument('--print_first_logit', action=argparse.BooleanOptionalAction, help="Print the logit values for the first created token")
     parser.add_argument('--logits_csv', type=str, default="logits.csv", help="Output CSV file for logits")
+    parser.add_argument('--save_raw_scores', action=argparse.BooleanOptionalAction, help="Save raw scores instead of applying softmax")
 
     return parser.parse_args()
 
@@ -92,14 +93,22 @@ def save_args(args, out_dir):
         json.dump(vars(args), f, indent=4)
 
 
-def save_logits_to_csv(logits, start_text, decode, csv_file):
-    top_k_probs, top_k_indices = torch.topk(logits, k=logits.size(-1))
-    top_k_tokens = [decode([top_k_indices[0, i].item()]) for i in range(top_k_indices.size(1))]
+def save_logits_to_csv(logits, start_text, decode, csv_file, apply_softmax=True):
+    if apply_softmax:
+        logits = F.softmax(logits, dim=-1)
 
-    with open(csv_file, 'w', newline='') as f:
+    top_k_probs, top_k_indices = torch.topk(logits, k=logits.size(-1))
+    top_k_tokens = [decode([top_k_indices[0, i].item()]).replace("\n", "\\n") for i in range(top_k_indices.size(1))]
+
+    start_text = start_text.replace("\n", "\\n")
+
+    file_exists = os.path.exists(csv_file)
+
+    with open(csv_file, 'a' if file_exists else 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(["start_text"] + top_k_tokens)
-        writer.writerow([start_text] + top_k_probs.cpu().numpy().flatten().tolist())
+        if not file_exists:
+            writer.writerow(["start_text"] + top_k_tokens)
+        writer.writerow([start_text] + top_k_probs.cpu().float().numpy().flatten().tolist())
 
 
 def main():
@@ -206,7 +215,7 @@ def main():
                         logits[logits < v[:, [-1]]] = -float('Inf')
                     print("Logits for the first token:")
                     print(logits)
-                    save_logits_to_csv(logits, args.start, decode, args.logits_csv)
+                    save_logits_to_csv(logits, args.start, decode, args.logits_csv, not args.save_raw_scores)
                 else:
                     for k in range(args.num_samples):
                         block_size = args.block_size if args.block_size else model.config.block_size
