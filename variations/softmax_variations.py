@@ -217,8 +217,8 @@ class Strongermax(nn.Module):
         if self.training and self.softmax_io_logging and self.iter_num % self.softmax_IO_interval == 0:
             self.inputs = x
             self.outputs = result
-
-        self.iter_num += 1
+        if self.training:
+            self.iter_num += 1
 
         return result
 
