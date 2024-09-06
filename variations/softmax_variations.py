@@ -170,7 +170,7 @@ class Strongermax(nn.Module):
         self.divisor = config.strongermax_divisor
         self.div_by_seq_len = config.div_by_seq_len
         self.overflow_recompute = config.strongermax_overflow_recompute
-        self.softmax_IO_interval = config.softmax_IO_interval
+        self.softmax_io_log_interval = config.softmax_io_log_interval
         self.iter_num = 0
 
         if self.overflow_recompute:
@@ -179,7 +179,7 @@ class Strongermax(nn.Module):
         # Input and Output Logging
         self.softmax_io_logging = config.softmax_io_logging
         print(self.softmax_io_logging)
-        if self.training and self.softmax_io_logging and self.iter_num % self.softmax_IO_interval == 0:
+        if self.training and self.softmax_io_logging and self.iter_num % self.softmax_io_log_interval == 0:
             self.inputs = []
             self.outputs = []
 
