@@ -214,7 +214,7 @@ class Strongermax(nn.Module):
 
         result = result / self.divisor
 
-        if self.training and self.softmax_io_logging and self.iter_num % self.softmax_IO_interval == 0:
+        if self.training and self.softmax_io_logging and self.iter_num % self.softmax_io_log_interval == 0:
             self.inputs = x
             self.outputs = result
         if self.training:
