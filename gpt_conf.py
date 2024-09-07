@@ -9,6 +9,35 @@ class GPTConfig:
     n_head: int = 12
     n_kv_group: int = 12
     n_embd: int = 768
+
+    # Steering Vectors
+    ## Where to intercept
+    apply_vector_at_layer_idx: int = None
+    obtain_vector_at_layer_idx: int = None
+
+    ## Files to insert or obtain vectors from
+    apply_vector_file: str = None
+    apply_vector_scaling_factor: float = 1.0
+    obtain_vector_file: str = None
+
+    # If Factorizing:
+    n_embd_wte: int = None
+
+    # weight tying
+    n_embd_wte_scale_tying: bool = True
+
+    # wte import/export
+    import_wte_freeze: bool = False
+    import_wte_npy: str = None
+    export_wte_npy: str = None
+    export_wte_each_eval: bool = False
+
+    # scaling matrices import/export
+    import_scale_matrices_freeze: bool = False
+    import_scale_matrices_npz: str = None
+    export_scale_matrices_npz: str = None
+    export_scale_matrices_each_eval: bool = False
+
     dropout: float = 0.0
     window_size: int = 128
     gate: bool = False
@@ -26,6 +55,7 @@ class GPTConfig:
     # Training options
     ## Gradient Checkpointing - More memory efficient (can do long contexts), but is slower
     use_gradient_checkpointing: bool = False
+    recompute_backward_pass: bool = False
 
     # MLP Options
     use_parallel_mlp: bool = False
