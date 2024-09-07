@@ -51,6 +51,7 @@ class GPTConfig:
     softmax_io_logging: bool = False
     consmax_beta_gamma_logging: bool = False
     plot_statistics: bool = False
+    softmax_io_log_interval: int = 1
 
     # Training options
     ## Gradient Checkpointing - More memory efficient (can do long contexts), but is slower

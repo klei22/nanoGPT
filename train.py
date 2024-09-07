@@ -400,6 +400,7 @@ def parse_args():
 
     # Module And Parameter Logging and Plots of Summary Statistics
     model_group.add_argument('--softmax_io_logging', default=False, action=argparse.BooleanOptionalAction, help="logs inputs and outputs of supported softmaxes")
+    model_group.add_argument('--softmax_io_log_interval', default=1, type=int)
     model_group.add_argument('--consmax_beta_gamma_logging', default=False, action=argparse.BooleanOptionalAction, help="logs beta and gamma")
     logging_group.add_argument('--create_statistics', default=False, action=argparse.BooleanOptionalAction)
     logging_group.add_argument('--plot_statistics', default=False, action=argparse.BooleanOptionalAction)
@@ -972,7 +973,7 @@ class Trainer:
                     self.log_metrics_non_validation(lossf, running_mfu, self.iter_num)
 
 
-                if self.args.create_statistics:
+                if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
                     create_statistics(self, graph_y_labels)
 
 
