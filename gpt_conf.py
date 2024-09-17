@@ -128,8 +128,11 @@ class GPTConfig:
     ## Softplus options
     softplus_divisor: float = 256.0
 
-    ## Softplus options
+    ## ReLUMax options
     relumax_divisor: float = 256.0
+
+    ## SigmoidMax options
+    sigmoidmax_divisor: float = 256.0
 
     ## Squareplus options
     squareplus_divisor: float = 256.0
