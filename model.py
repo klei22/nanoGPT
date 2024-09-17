@@ -890,6 +890,10 @@ class GPT(nn.Module):
                     if key == "lm_head.weight":
                         continue
 
+                if not config.use_abs_pos_embeddings:
+                    if key == "transformer.wpe.weight":
+                        continue
+
                 assert sd_hf[key].shape == sd[key].shape
                 with torch.no_grad():
                     print(key)
