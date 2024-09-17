@@ -777,10 +777,6 @@ class GPT(nn.Module):
             else:
                 x = block(x)
 
-            # if layer == 6:
-                # select nn.Linear of dimension 1x embedding dimension
-                #x += nn.Linear
-
             # Intercept for Steering Vectors
             if self.config.apply_vector_at_layer_idx is not None and layer == self.config.apply_vector_at_layer_idx:
                 x = self.apply_vector_to_layer_output(x)
