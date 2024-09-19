@@ -1,12 +1,19 @@
+import matplotlib
+matplotlib.use('Agg')  # Use a non-interactive backend to avoid GUI issues in threads
+
 import argparse
 import csv
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
-import imageio.v2 as imageio
 import io
+import imageio.v2 as imageio
 import matplotlib.image as mpimg
-from tqdm import tqdm  # Import tqdm for the progress bar
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+
+# Load the background image once and reuse it across all frames
+background_image = None
 
 def read_csv(file_path):
     data = []
@@ -39,9 +46,14 @@ def parse_ball_data(row):
     bz = float(row[-1][2:])
     return bx, by, bz
 
+def initialize_background():
+    global background_image
+    if background_image is None:
+        background_image = mpimg.imread('court.png')
+
 def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
-    # Load the background image
-    img = mpimg.imread('court.png')
+    # Reuse the global background image
+    initialize_background()
 
     fig, ax = plt.subplots(figsize=(9.39, 5.0))  # Set figure size according to the desired aspect ratio
     ax.set_xlim(0, 100)  # X-axis remains from 0 to 100
@@ -49,7 +61,7 @@ def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
     ax.set_aspect(1.878)  # Set aspect ratio to match the 939x500 ratio
 
     # Display the background image
-    ax.imshow(img, extent=[0, 100, 0, 53.24], aspect='auto')
+    ax.imshow(background_image, extent=[0, 100, 0, 53.24], aspect='auto')
 
     # Plot home players
     for number, x, y in players['home']:
@@ -84,31 +96,45 @@ def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
 
     return image
 
-def create_gif(data, output_file, player_size, ball_size, ball_scale_with_z, fps):
-    images = []
+def process_frame(i, row, player_size, ball_size, ball_scale_with_z):
+    players = parse_player_data(row)
+    ball = parse_ball_data(row)
+    image = create_frame(players, ball, player_size, ball_size, ball_scale_with_z)
+    return i, image  # Return index and image
 
-    # Use tqdm progress bar for processing frames
-    for i, row in enumerate(tqdm(data, desc="Processing frames")):
-        players = parse_player_data(row)
-        ball = parse_ball_data(row)
-        image = create_frame(players, ball, player_size, ball_size, ball_scale_with_z)
-        images.append(image)
+def create_gif(data, output_file, player_size, ball_size, ball_scale_with_z, fps, num_threads=4):
+    results = []
 
+    # Use multithreading to speed up frame generation
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [
+            executor.submit(process_frame, i, row, player_size, ball_size, ball_scale_with_z)
+            for i, row in enumerate(data)
+        ]
+
+        # Process frames and collect images using tqdm progress bar
+        for future in tqdm(futures, desc="Processing frames"):
+            results.append(future.result())
+
+    # Sort results by index to maintain order
+    results.sort(key=lambda x: x[0])
+    images = [image for i, image in results]
     imageio.mimsave(output_file, images, fps=fps)
     print(f"GIF saved as {output_file}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualize soccer player and ball positions and create a GIF.")
+    parser = argparse.ArgumentParser(description="Visualize basketball player and ball positions and create a GIF.")
     parser.add_argument("csv_file", help="Path to the CSV file containing position data.")
     parser.add_argument("--player_size", type=float, default=2.0, help="Size of player circles.")
     parser.add_argument("--ball_size", type=float, default=1.0, help="Base size of the ball circle.")
     parser.add_argument("--ball_scale", action="store_true", help="Scale ball size with z-coordinate.")
-    parser.add_argument("--output", default="soccer_animation.gif", help="Output GIF file name.")
+    parser.add_argument("--output", default="basketball_animation.gif", help="Output GIF file name.")
     parser.add_argument("--fps", type=int, default=10, help="Frames per second for the GIF.")
+    parser.add_argument("--threads", type=int, default=4, help="Number of threads to use.")
     args = parser.parse_args()
 
     data = read_csv(args.csv_file)
-    create_gif(data, args.output, args.player_size, args.ball_size, args.ball_scale, args.fps)
+    create_gif(data, args.output, args.player_size, args.ball_size, args.ball_scale, args.fps, args.threads)
 
 if __name__ == "__main__":
     main()
