@@ -23,6 +23,15 @@ def read_csv(file_path):
             data.append(row)
     return data
 
+def parse_time_data(row):
+    """Extracts the quarter, game clock, minutes, seconds, and shot clock from a row."""
+    quarter = int(row[0][1:])
+    game_clock = float(row[1][1:])
+    minutes = int(game_clock) % 3600 // 60
+    seconds = int(game_clock) % 60
+    shot_clock = float(row[4][1:])
+    return quarter, game_clock, minutes, seconds, shot_clock
+
 def parse_player_data(row):
     players = {'home': [], 'away': []}
     for item in row[5:]:
@@ -51,7 +60,7 @@ def initialize_background():
     if background_image is None:
         background_image = mpimg.imread('court.png')
 
-def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
+def create_frame(players, ball, player_size, ball_size, ball_scale_with_z, quarter, minutes, seconds, shot_clock):
     # Reuse the global background image
     initialize_background()
 
@@ -84,7 +93,11 @@ def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
     ball_circle = Circle((bx, by), ball_radius, facecolor='orange', edgecolor='black')
     ax.add_patch(ball_circle)
 
-    plt.title(f"Basketball Forecast Visualization (Ball Z: {bz:.2f})")
+    # Add time information (quarter, game clock, shot clock)
+    time_text = f"Basketball Forecast Visualization\nQuarter: {quarter}, Time: {minutes:02d}:{seconds:02d}, Shot Clock: {shot_clock:.1f}s"
+    ax.text(0.5, 1.05, time_text, transform=ax.transAxes, ha='center', fontsize=14, fontweight='bold')
+
+    # plt.title(f"Basketball Forecast Visualization")
 
     # Convert plot to image
     buf = io.BytesIO()
@@ -97,9 +110,11 @@ def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
     return image
 
 def process_frame(i, row, player_size, ball_size, ball_scale_with_z):
+    # Extract time information
+    quarter, game_clock, minutes, seconds, shot_clock = parse_time_data(row)
     players = parse_player_data(row)
     ball = parse_ball_data(row)
-    image = create_frame(players, ball, player_size, ball_size, ball_scale_with_z)
+    image = create_frame(players, ball, player_size, ball_size, ball_scale_with_z, quarter, minutes, seconds, shot_clock)
     return i, image  # Return index and image
 
 def create_gif(data, output_file, player_size, ball_size, ball_scale_with_z, fps, num_threads=4):
@@ -123,7 +138,7 @@ def create_gif(data, output_file, player_size, ball_size, ball_scale_with_z, fps
     print(f"GIF saved as {output_file}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualize basketball player and ball positions and create a GIF.")
+    parser = argparse.ArgumentParser(description="Visualize basketball player and ball positions with time information and create a GIF.")
     parser.add_argument("csv_file", help="Path to the CSV file containing position data.")
     parser.add_argument("--player_size", type=float, default=2.0, help="Size of player circles.")
     parser.add_argument("--ball_size", type=float, default=1.0, help="Base size of the ball circle.")
