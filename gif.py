@@ -2,6 +2,9 @@ import argparse
 import csv
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
+import numpy as np
+import imageio
+import io
 
 def read_csv(file_path):
     data = []
@@ -34,11 +37,19 @@ def parse_ball_data(row):
     bz = float(row[-1][2:])
     return bx, by, bz
 
-def visualize_frame(players, ball, player_size, ball_size, ball_scale_with_z):
-    fig, ax = plt.subplots(figsize=(10, 7))
-    ax.set_xlim(0, 100)
-    ax.set_ylim(0, 100)
-    ax.set_aspect('equal')
+import matplotlib.image as mpimg
+
+def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
+    # Load the background image
+    img = mpimg.imread('court.png')
+
+    fig, ax = plt.subplots(figsize=(9.39, 5.0))  # Set figure size according to the desired aspect ratio
+    ax.set_xlim(0, 100)  # X-axis remains from 0 to 100
+    ax.set_ylim(0, 53.24)  # Adjust Y-axis to fit the aspect ratio
+    ax.set_aspect(1.878)  # Set aspect ratio to match the 939x500 ratio
+
+    # Display the background image
+    ax.imshow(img, extent=[0, 100, 0, 53.24], aspect='auto')
 
     # Plot home players
     for number, x, y in players['home']:
@@ -61,28 +72,42 @@ def visualize_frame(players, ball, player_size, ball_size, ball_scale_with_z):
     ball_circle = Circle((bx, by), ball_radius, facecolor='orange', edgecolor='black')
     ax.add_patch(ball_circle)
 
-    plt.title(f"Soccer Field Visualization (Ball Z: {bz:.2f})")
-    plt.show()
+    plt.title(f"Basketball Forecast Visualization (Ball Z: {bz:.2f})")
+
+    # Convert plot to image
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    image = imageio.imread(buf)
+    buf.close()
+    plt.close(fig)
+
+    return image
+
+def create_gif(data, output_file, player_size, ball_size, ball_scale_with_z, fps):
+    images = []
+    for i, row in enumerate(data):
+        players = parse_player_data(row)
+        ball = parse_ball_data(row)
+        image = create_frame(players, ball, player_size, ball_size, ball_scale_with_z)
+        images.append(image)
+        print(f"Processed frame {i+1}/{len(data)}")
+
+    imageio.mimsave(output_file, images, fps=fps)
+    print(f"GIF saved as {output_file}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualize soccer player and ball positions.")
+    parser = argparse.ArgumentParser(description="Visualize soccer player and ball positions and create a GIF.")
     parser.add_argument("csv_file", help="Path to the CSV file containing position data.")
     parser.add_argument("--player_size", type=float, default=2.0, help="Size of player circles.")
     parser.add_argument("--ball_size", type=float, default=1.0, help="Base size of the ball circle.")
     parser.add_argument("--ball_scale", action="store_true", help="Scale ball size with z-coordinate.")
-    parser.add_argument("--frame", type=int, default=0, help="Frame number to visualize (0-indexed).")
+    parser.add_argument("--output", default="soccer_animation.gif", help="Output GIF file name.")
+    parser.add_argument("--fps", type=int, default=10, help="Frames per second for the GIF.")
     args = parser.parse_args()
 
     data = read_csv(args.csv_file)
-    if args.frame >= len(data):
-        print(f"Error: Frame {args.frame} does not exist. Max frame is {len(data) - 1}.")
-        return
-
-    row = data[args.frame]
-    players = parse_player_data(row)
-    ball = parse_ball_data(row)
-
-    visualize_frame(players, ball, args.player_size, args.ball_size, args.ball_scale)
+    create_gif(data, args.output, args.player_size, args.ball_size, args.ball_scale, args.fps)
 
 if __name__ == "__main__":
     main()
