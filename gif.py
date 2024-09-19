@@ -3,8 +3,10 @@ import csv
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
-import imageio
+import imageio.v2 as imageio
 import io
+import matplotlib.image as mpimg
+from tqdm import tqdm  # Import tqdm for the progress bar
 
 def read_csv(file_path):
     data = []
@@ -36,8 +38,6 @@ def parse_ball_data(row):
     by = float(row[-2][2:])
     bz = float(row[-1][2:])
     return bx, by, bz
-
-import matplotlib.image as mpimg
 
 def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
     # Load the background image
@@ -86,12 +86,13 @@ def create_frame(players, ball, player_size, ball_size, ball_scale_with_z):
 
 def create_gif(data, output_file, player_size, ball_size, ball_scale_with_z, fps):
     images = []
-    for i, row in enumerate(data):
+
+    # Use tqdm progress bar for processing frames
+    for i, row in enumerate(tqdm(data, desc="Processing frames")):
         players = parse_player_data(row)
         ball = parse_ball_data(row)
         image = create_frame(players, ball, player_size, ball_size, ball_scale_with_z)
         images.append(image)
-        print(f"Processed frame {i+1}/{len(data)}")
 
     imageio.mimsave(output_file, images, fps=fps)
     print(f"GIF saved as {output_file}")
@@ -111,3 +112,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
