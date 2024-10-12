@@ -1,4 +1,5 @@
 import argparse
+import os
 
 def create_digit_map(offset, num_digits):
     """
@@ -25,21 +26,27 @@ def represent_number(num, digit_map):
 
 def all_modular_additions(mod, offset, num_digits):
     """
-    Generates all modular additions for two numbers 0-(num_digits-1), 
+    Generates all modular additions for two numbers 0-(num_digits-1),
     and allows for different representations by changing the UTF-8 offset.
 
-    :param mod: The modulus for the addition.
-    :param offset: UTF offset to represent digits.
-    :param num_digits: Number of digits to consider in modular arithmetic.
+    Saves the result into a text file named based on the UTF-8 offset.
     """
     digit_map = create_digit_map(offset, num_digits)
-    for i in range(mod):
-        for j in range(mod):
-            result = modular_addition(i, j, mod)
-            i_rep = represent_number(i, digit_map)
-            j_rep = represent_number(j, digit_map)
-            result_rep = represent_number(result, digit_map)
-            print(f"{i_rep} + {j_rep} (mod {mod}) = {result_rep}")
+    file_name = f"input_{offset}.txt"
+
+    # Open the file for writing the output
+    with open(file_name, "w") as f:
+        for i in range(mod):
+            for j in range(mod):
+                result = modular_addition(i, j, mod)
+                i_rep = represent_number(i, digit_map)
+                j_rep = represent_number(j, digit_map)
+                result_rep = represent_number(result, digit_map)
+
+                # Format and write the result without spaces or (mod _) part
+                f.write(f"{i_rep}+{j_rep}={result_rep}\n")
+
+    print(f"Saved results for offset {offset} in {file_name}")
 
 def main():
     parser = argparse.ArgumentParser(description="Generate modular additions with customizable representations.")
@@ -53,15 +60,11 @@ def main():
     max_digits = args.max_digits
     start_offset = args.start_offset
 
-    # Calculate the total required size to ensure non-overlapping ranges
-    required_size = max_digits * unoverlapped_offsets
-
     # Ensure we can pack all representations within the available UTF-8 space
     print(f"Generating {unoverlapped_offsets} non-overlapping representations with modulus {max_digits}:")
 
     for rep in range(unoverlapped_offsets):
-        current_offset = start_offset + (rep * max_digits)
-        print(f"\nRepresentation {rep + 1} (offset {current_offset}):")
+        current_offset = start_offset + (rep * 10)
         all_modular_additions(max_digits, current_offset, max_digits)
 
 if __name__ == "__main__":
