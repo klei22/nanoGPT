@@ -320,6 +320,8 @@ def parse_args():
 
     ### Special Options for ConSmaxV2
     model_group.add_argument("--consmax_per_head", default=True, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--consmax_v2_clamping", default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--consmax_v2_clamp_value", type=float, default=80.0, help="maximum value to clamp inputs")
 
     ### Special Options for SaturatingConSmax
     model_group.add_argument("--consmax_saturation", type=float, default=11.0, help="point where we transition from consmax to linear saturatingconsmax, defaults to 11 to approximate e^x sat for fp16")
