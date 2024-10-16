@@ -11,7 +11,13 @@ jobs:
       - name: ls of directory
         run: |
           ls ${{ github.workspace }}
-             # Caching pip dependencies
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements_cpu.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Install CPU Dependencies
         run: |
           python3 -m venv venv
