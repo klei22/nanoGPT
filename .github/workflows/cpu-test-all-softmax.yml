@@ -28,6 +28,7 @@ jobs:
           python3 -m pip install -r requirements_cpu.txt
       - name: Test all softmax variations
         run: |
+          source venv/bin/activate
           python3 data/shakespeare_char/prepare.py
           cd tests
           source test_all_softmax_variations_cpu.sh
