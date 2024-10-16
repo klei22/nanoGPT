@@ -1,0 +1,28 @@
+[
+    {
+      "max_iters": ["5001"],
+      "eval_interval": ["500"],
+      "block_size":["1024"],
+      "device": ["cuda"],
+      "dataset": ["openwebtext"],
+      "gradient_accumulation_steps": ["1"],
+      "batch_size": ["32"],
+      "beta1": ["0.9"],
+      "beta2": ["0.95"],
+      "weight_decay": ["0.1"],
+      "dropout": ["0.1"],
+      "learning_rate": ["6e-4"],
+      "use_gradient_checkpointing": [true],
+      "init_from": ["gpt2*"],
+      "use_abs_pos_embeddings": [true],
+      "softmax_io_log_interval": ["1000"],
+      "softmax_variant_attn": ["strongermax", "consmax_v2"],
+      "strongermax_strength": ["2.71828"],
+      "strongermax_divisor": ["1"],
+      "strongermax_use_xmax": [true],
+      "consmax_initial_beta": ["5", "10", "20", "50"],
+      "consmax_initial_gamma": ["100"],
+      "dtype": ["bfloat16"],
+      "bias": [true]
+    }
+]
