@@ -1,6 +1,5 @@
 bitstring==4.2.3
 datasets==2.21.0
-matplotlib==3.3.4
 numpy==1.26.0
 pandas==2.2.3
 plotly==5.22.0
