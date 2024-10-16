@@ -1107,7 +1107,7 @@ class Trainer:
 
                 if self.iter_num % self.args.eval_interval == 0 and self.master_process:
                     losses = self.estimate_loss()
-                    vram_allocated = get_gpu_memory_info(info_type='used')
+                    vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
                     if self.args.dataset_list is not None:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
@@ -1236,7 +1236,7 @@ class Trainer:
                             torch.save(checkpoint, os.path.join(self.args.out_dir, 'ckpt.pt'))
                         sys.exit("Exiting training loss is NaN")
 
-                    vram_allocated = get_gpu_memory_info(info_type='used')
+                    vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
                     self.log_metrics_non_validation(lossf, running_mfu, vram_allocated, self.iter_num)
 
 
