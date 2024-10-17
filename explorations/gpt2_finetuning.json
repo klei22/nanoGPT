@@ -19,7 +19,7 @@
       "sample_start_tokens": ["Once upon a time, "],
       "max_sample_tokens": ["100"],
       "sample_each_eval": [true],
-      "init_from": ["gpt2*"],
+      "init_from": ["gpt2"],
       "use_abs_pos_embeddings": [true],
       "softmax_variant_attn": ["softmax"],
       "dtype": ["bfloat16"],
