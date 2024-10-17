@@ -13,7 +13,7 @@
       "dropout": ["0.1"],
       "learning_rate": ["6e-4"],
       "use_gradient_checkpointing": [true],
-      "init_from": ["gpt2*"],
+      "init_from": ["gpt2"],
       "use_abs_pos_embeddings": [true],
       "softmax_io_log_interval": ["1000"],
       "softmax_variant_attn": ["strongermax", "consmax_v2"],

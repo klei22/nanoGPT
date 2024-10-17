@@ -7,7 +7,7 @@ cd ../
 
 # ML factorization init
 python3 train.py \
---init_from "gpt2*" \
+--init_from "gpt2" \
 --out_dir out_gpt2_wte_customloss \
 --dataset openwebtext \
 --import_wte_npy  "100.0_best_wte.npy" \
@@ -20,7 +20,7 @@ python3 train.py \
 
 # Standard embedding random init (0.0 mean 0.02 stddev)
 python3 train.py \
---init_from "gpt2*" \
+--init_from "gpt2" \
 --out_dir out_gpt2_wte_random \
 --dataset openwebtext \
 --import_wte_npy  "./factorization_util/random_init/100_wte.npy" \

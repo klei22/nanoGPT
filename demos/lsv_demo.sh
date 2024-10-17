@@ -45,4 +45,4 @@ python3 train.py \
   --lsv_variant "one_hot_mlp" \
   --out_dir "out_one_hot_mlp" \
   --tensorboard_run_name "out_one_hot_mlp" \
-  --init_from "gpt2*"
+  --init_from "gpt2"
