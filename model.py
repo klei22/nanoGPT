@@ -33,10 +33,11 @@ from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
-from attn_gym.masks import generate_sliding_window
-try:
+import importlib
+if importlib.util.find_spec("attn_gym.masks") is not None and importlib.util.find_spec("torch.nn.attention.flex_attention") is not None:
+    from attn_gym.masks import generate_sliding_window
     from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-except ImportError:
+else:
     pass
 
 def create_shared_param_group(layer_type, config):
