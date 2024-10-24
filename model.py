@@ -581,8 +581,8 @@ class GPT(nn.Module):
         self.config = config
 
         # Flex Attention
-        self.use_flex_attention = config.use_flex_attention
-        if self.use_flex_attention:
+        self.use_flex_attn = config.use_flex_attn
+        if self.use_flex_attn:
             from attn_gym.masks import generate_sliding_window
             from torch.nn.attention.flex_attention import flex_attention, create_block_mask
   
