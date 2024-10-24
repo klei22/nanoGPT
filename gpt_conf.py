@@ -14,6 +14,11 @@ class GPTConfig:
     ## Where to intercept
     apply_vector_at_layer_idx: int = None
     obtain_vector_at_layer_idx: int = None
+    use_lsv: bool = False
+    lsv_index: int = None
+    lsv_dataset_num: int = None
+    lsv_variant: str = "one_hot"
+    apply_lsv_at_layer_idx: int = None
 
     ## Files to insert or obtain vectors from
     apply_vector_file: str = None
@@ -40,7 +45,8 @@ class GPTConfig:
 
     dropout: float = 0.0
     window_size: int = None
-    using_flex_attn: bool = False
+    use_flex_attn: bool = None
+
     gate: bool = False
     use_moe: bool = False
     moe_layer_freq: int = 2
@@ -58,6 +64,9 @@ class GPTConfig:
     ## Gradient Checkpointing - More memory efficient (can do long contexts), but is slower
     use_gradient_checkpointing: bool = False
     recompute_backward_pass: bool = False
+
+    ## Flash attention
+    disable_flash_attention: bool = False
 
     # MLP Options
     use_parallel_mlp: bool = False
@@ -92,6 +101,8 @@ class GPTConfig:
 
     ## ConSmaxV2 Special Options
     consmax_per_head: bool = True # different beta gamma per head
+    consmax_v2_clamping: bool = True
+    consmax_v2_clamp_value: float = 80.0
 
     ## SaturatingConSmax Special options (otherwise same as ConSmax)
     consmax_saturation: float = 11.0 # for SaturatingConSmax saturation point
@@ -132,6 +143,9 @@ class GPTConfig:
     ## ReLUMax options
     relumax_divisor: float = 256.0
 
+    ## ReLUMax options
+    relu2max_divisor: float = 256.0
+
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0
 
@@ -160,7 +174,7 @@ class GPTConfig:
     fire_outermost_sigma: bool = False
 
     # Structuring Options, remember to compile the model
-    use_post_ln: bool = True
+    use_post_ln: bool = False
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"

@@ -82,6 +82,10 @@ class ConSmaxV2(nn.Module):
         self.beta = self.beta_init * self.beta_factor
         self.gamma = self.beta_init * self.gamma_factor
 
+        # Set optional clamping (on by default)
+        self.clamp_inputs = config.consmax_v2_clamping
+        self.clamp_value = config.consmax_v2_clamp_value
+
         # Set the base of the exponent
         if config.consmax_use_euler_base:
             self.consmax_base = math.e
@@ -93,7 +97,11 @@ class ConSmaxV2(nn.Module):
         self.gamma = self.gamma_factor * self.gamma_init
 
         x_adj = x - self.beta
+        if self.clamp_inputs:
+            x_adj[x_adj > self.clamp_value] = self.clamp_value
+
         e_x = torch.pow(self.consmax_base, x_adj)
+
         result = e_x / self.gamma
 
         if self.training and self.softmax_io_logging and self.iter_num % self.softmax_io_log_interval == 0:
@@ -516,6 +524,24 @@ class ReLUMax(nn.Module):
 
         return result
 
+class ReLU2Max(nn.Module):
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.relu2max_divisor = config.relu2max_divisor
+        self.div_by_seq_len = config.div_by_seq_len
+
+    def forward(self, x):
+
+        result = torch.relu(x) ** 2 / self.relu2max_divisor
+
+        # divide by sequence length
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
 class Softplus(nn.Module):
     """ Softmax variant based on arxiv 1805.10829 with added handles for base """
     def __init__(self, config, dim=-1):
@@ -572,6 +598,7 @@ softmax_dictionary = {
     "strongermax": Strongermax,
     "sigsoftmax": SigSoftmax,
     "relumax": ReLUMax,
+    "relu2max": ReLU2Max,
     "sigmoidmax": SigmoidMax,
     "softplus": Softplus,
     "squareplus": Squareplus,

@@ -26,6 +26,7 @@ from gpt_conf import GPTConfig
 import torch.utils.checkpoint as checkpoint
 
 # Variations
+from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
@@ -33,13 +34,6 @@ from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
-import importlib
-try:
-    if importlib.util.find_spec("attn_gym.masks") is not None and importlib.util.find_spec("torch.nn.attention.flex_attention") is not None:
-        from attn_gym.masks import generate_sliding_window
-        from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-except ModuleNotFoundError:
-    pass
 
 def create_shared_param_group(layer_type, config):
 
@@ -164,10 +158,10 @@ class CausalSelfAttention(nn.Module):
         # Embedding
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        self.window_size = config.window_size
         self.n_embd = config.n_embd
         self.gate = config.gate
         self.use_fire_embeddings = None
+        self.disable_flash_attention = config.disable_flash_attention
         if config.use_fire_embeddings:
             self.use_fire_embeddings = config.use_fire_embeddings
             if fire_pos_enc is not None:
@@ -190,42 +184,9 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
-        # Softmax Variant Selection
-        self.softmax_variant_attn = config.softmax_variant_attn
-        if self.softmax_variant_attn == "softmax":
-            # Enable flash attention, which is compatible with 'softmax'
-            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        else:
-            # Remove flash attention (only compatible with 'softmax')
-            self.flash = False
-            # Set softmax_layer_attn to custom softmax alternative
-            self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
-
-        if self.window_size is not None:
-            # TODO: look into supporting sliding window attn for flash attn
-            self.flash = False
-
-        if self.n_kv_group != self.n_head:
-            self.flash = False
-
-        if self.use_fire_embeddings:
-            self.flash = False
-
-        # Can't use flash attention if we want to manually quantize most input/output activations in attn
-        for key, val in self.quantization_attn_dict.items():
-            if key.startswith("quantize_") and val == True:
-                self.flash = False
-                break
-
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
-
-
         # Sliding window size
         self.window_size = config.window_size
+        print(f"sliding window size: {self.window_size}")
 
         # Using flex attention
         self.using_flex_attn = config.using_flex_attn
@@ -262,8 +223,10 @@ class CausalSelfAttention(nn.Module):
         if self.softmax_variant_attn == "softmax":
             # Enable flash attention, which is compatible with 'softmax'
             self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            print("setting flash attn")
         else:
             # Remove flash attention (only compatible with 'softmax')
+            print("flash attention removed due to softmax alternative")
             self.flash = False
             # Set softmax_layer_attn to custom softmax alternative
             self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
@@ -271,18 +234,25 @@ class CausalSelfAttention(nn.Module):
         if self.window_size is not None:
             # TODO: look into supporting sliding window attn for flash attn
             self.flash = False
+            print("flash attention removed due to windowed attention")
 
         if self.n_kv_group != self.n_head:
             self.flash = False
+            print("flash attention removed due to GQA")
 
         if self.use_fire_embeddings:
             self.flash = False
+            print("flash attention removed due to FIRE")
 
         # Can't use flash attention if we want to manually quantize most input/output activations in attn
         for key, val in self.quantization_attn_dict.items():
             if key.startswith("quantize_") and val == True:
                 self.flash = False
+                print("flash attention removed due to Quantization")
                 break
+
+        if self.disable_flash_attention:
+            self.flash = False
 
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
@@ -355,15 +325,39 @@ class CausalSelfAttention(nn.Module):
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
                 k = fake_quantize_act(self, "attn_act_qk_mult_k_input", k, num_bits, quant_method)
-            if self.using_flex_attn:
-                if self.n_head != self.n_kv_group:
-                    k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-                    v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-                    y = torch.nn.attention.flex_attention.flex_attention(q, k_repeated, v_repeated, block_mask=block_mask)
-                else:
-                    y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
+
+            att = None
+            # manual implementation of attention
+            if self.n_head != self.n_kv_group:
+                k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
+                att = (q @ k_repeated.transpose(-2, -1)) / math.sqrt(k.size(-1))
             else:
-                att = None
+                att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+
+            # apply masks
+            if self.window_size is not None:
+                # add mask for sliding window attention
+                att = att.masked_fill(window_mask == 0, float('-inf'))
+            else:
+                # regular lower triangle attention
+                att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
+
+            # fire position embeddings
+            if self.use_fire_embeddings is not None:
+                # add learned fire bias
+                att = att + self.fire_pos_enc(x)
+
+            if self.quantization_attn_dict["quantize_attn_act_softmax_input"]:
+                num_bits = self.quantization_attn_dict["quantize_attn_act_softmax_input_bits"]
+                quant_method = self.quantization_attn_dict["activations_quant_method"]
+                att = fake_quantize_act(self, "attn_act_softmax_input", att, num_bits, quant_method, causal_mask=True)
+
+            # softmax variation
+            if self.softmax_variant_attn != 'softmax':
+                att = self.softmax_layer_attn(att)
+            else:
+                att = F.softmax(att, dim=-1)
+
                 # manual implementation of attention
                 if self.n_head != self.n_kv_group:
                     k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
@@ -394,8 +388,6 @@ class CausalSelfAttention(nn.Module):
                     att = self.softmax_layer_attn(att)
                 else:
                     att = F.softmax(att, dim=-1)
-
-                att = self.attn_dropout(att)
 
                 if self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input"]:
                     num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input_bits"]
@@ -588,6 +580,12 @@ class GPT(nn.Module):
 
         self.config = config
 
+        # Flex Attention
+        self.use_flex_attention = config.use_flex_attention
+        if self.use_flex_attention:
+            from attn_gym.masks import generate_sliding_window
+            from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+  
         # Shared Parameters MLP
         shared_mlp_array = create_shared_param_group("mlp", config)
         # Shared Parameters Attention
@@ -597,6 +595,18 @@ class GPT(nn.Module):
         self.n_embd_wte = config.n_embd_wte
         self.n_embd_wte_scale_tying = config.n_embd_wte_scale_tying
 
+        # Learned Steering Vectors
+        self.use_lsv = config.use_lsv
+        self.lsv_index = config.lsv_index
+        self.lsv_dataset_num = config.lsv_dataset_num
+
+        if config.lsv_dataset_num is not None and config.use_lsv:
+            self.num_datasets = config.lsv_dataset_num
+            print(config.lsv_variant)
+            self.lsv_variant = config.lsv_variant
+            self.lsv_matrix = lsv_dictionary[self.lsv_variant](config)
+
+        # Configure wte, with optional quantization and factoring
         if config.quantize_wte:
             if config.n_embd_wte:
                 # If factorization is set
@@ -791,6 +801,9 @@ class GPT(nn.Module):
 
         x.requires_grad_(True)  # Ensure requires_grad is True
 
+        if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
+            x = self.lsv_matrix(x)
+
         layer = 1
         for block in self.transformer.h:
             # Propagate tokens through layers
@@ -798,6 +811,11 @@ class GPT(nn.Module):
                 x = checkpoint.checkpoint(block, x, use_reentrant=self.config.recompute_backward_pass)
             else:
                 x = block(x)
+
+            # Intercept for Learned Steering Vectors
+            if self.use_lsv and layer == self.config.apply_lsv_at_layer_idx:
+                x = self.lsv_matrix(x)
+                # x = self.apply_learned_vector_to_layer_output(x)
 
             # Intercept for Steering Vectors
             if self.config.apply_vector_at_layer_idx is not None and layer == self.config.apply_vector_at_layer_idx:
@@ -823,6 +841,48 @@ class GPT(nn.Module):
             loss = None
 
         return logits, loss
+
+    def set_lsv_scaling_factor(self, factor):
+        self.lsv_matrix.update_lsv_scaling_factor(factor)
+
+    def set_lsv_mode(self, mode):
+        self.lsv_matrix.set_mode(mode)
+
+    def set_lsv_mixture(self, mixture):
+        """ Mixture is a list, allowing for mixing steering vectors """
+        self.lsv_matrix.set_mixture(mixture)
+
+    def get_lsv_scaling_factor(self):
+        return self.lsv_matrix.get_lsv_scaling_factor()
+
+    def set_lsv_index(self, index):
+        self.lsv_matrix.update_lsv_index(index)
+
+    def freeze_non_lsv_parameters(self):
+        """Freeze all parameters except for lsv_matrix if lsv_focused_training is enabled."""
+
+        print("Freezing all parameters except for lsv_matrix")
+
+        # Freeze all parameters by setting requires_grad to False
+        for name, param in self.named_parameters():
+            if name != "lsv_matrix":
+                param.requires_grad = False
+            else:
+                param.requires_grad = True  # Ensure lsv_matrix can still be trained
+
+    def apply_learned_vector_to_layer_output(self, x):
+        """Conditionally add a vector based on dataset index to the output of a specific layer."""
+
+        # Use one-hot vector for the dataset and multiply by the learned parameter matrix
+        one_hot_vector = torch.zeros(self.lsv_matrix.size(0), device=x.device)
+        one_hot_vector[self.lsv_index] = 1.0
+
+        # Multiply the one-hot vector by the learned parameter matrix
+        selected_vector = torch.matmul(one_hot_vector, self.lsv_matrix)
+
+        x = x + selected_vector
+
+        return x
 
     def apply_vector_to_layer_output(self, x):
         """Conditionally add a vector from a file to the output of a specific layer."""
