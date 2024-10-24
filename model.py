@@ -189,7 +189,7 @@ class CausalSelfAttention(nn.Module):
         print(f"sliding window size: {self.window_size}")
 
         # Using flex attention
-        self.using_flex_attn = config.using_flex_attn
+        self.use_flex_attn = config.use_flex_attn
 
         # Gating
         self.gate = config.gate
@@ -273,15 +273,15 @@ class CausalSelfAttention(nn.Module):
         k = self.c_attn_k(x)
         v = self.c_attn_v(x)
 
-        if self.using_flex_attn == False:
-            if self.window_size is not None:
-                window_mask = torch.ones((1, 1, T, T), device=x.device)
-                window_mask = torch.triu(window_mask, diagonal=-self.window_size)
-                window_mask = self.bias[:,:,:T,:T] * window_mask
+        if self.use_flex_attn is not None:
+            assert self.window_size is not None, f"Window Size is None, but must be set when using Flex Attention"
+            window_mask = torch.ones((1, 1, T, T), device=x.device)
+            window_mask = torch.triu(window_mask, diagonal=-self.window_size)
+            window_mask = self.bias[:,:,:T,:T] * window_mask
         else:
-                if self.window_size is not None:
-                    sliding_window_mask = generate_sliding_window(window_size=self.window_size)
-                    block_mask = torch.nn.attention.flex_attention.create_block_mask(sliding_window_mask, 1, 1 ,T, T, device="cuda")
+            if self.window_size is not None:
+                sliding_window_mask = generate_sliding_window(window_size=self.window_size)
+                block_mask = torch.nn.attention.flex_attention.create_block_mask(sliding_window_mask, 1, 1 ,T, T, device="cuda")
 
         if self.gate:
             if self.n_kv_group == self.n_head:
