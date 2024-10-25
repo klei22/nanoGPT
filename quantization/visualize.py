@@ -48,6 +48,7 @@ def main():
                 plt.ylabel('Rows')
                 image_path = os.path.join(args.image_folder, f'{key}_matrix_{timestamp}.png')
             elif args.graph == 'histogram':
+                plt.figure()
                 flatten = arr.flatten()
                 mean = np.mean(np.isnan(flatten))
                 std_dev = np.std(np.isnan(flatten))
