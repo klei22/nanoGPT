@@ -15,7 +15,7 @@ def ternary_quantize(tensor, bits, causal_mask=False):
     else:
         scale = tensor.abs().mean().clamp(min=1e-5)
     result = (tensor / scale).round().clamp(-1, 1).to(dtype=torch.int8)
-    return 0, scale, result
+    return torch.tensor([0], device=tensor.device), scale, result
 
     
 def symmetric_quantize(tensor, bits, causal_mask=False):
@@ -38,7 +38,7 @@ def symmetric_quantize(tensor, bits, causal_mask=False):
     scale = abs_max / bit_max
     xi_array = torch.round(tensor / scale)
     clamped_array = torch.clamp(xi_array, min=bit_min, max=bit_max).to(dtype=set_dtype(bits))
-    return 0, scale, clamped_array
+    return torch.tensor([0], device=tensor.device), scale, clamped_array
 
 def affine_quantize(tensor, bits):
     """
@@ -101,7 +101,7 @@ def stochastic_quantize(tensor, bits):
     sign_xi_array = (sign_array * xi_array).to(dtype=set_dtype(bits))
     norm = norm / s
 
-    return 0, norm, sign_xi_array
+    return torch.tensor([0], device=tensor.device), norm, sign_xi_array
 
 def dequantize(zero_point, scale, tensor, causal_mask=False):
     """
