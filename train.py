@@ -1098,7 +1098,6 @@ class Trainer:
             'config': vars(self.args),
         }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
-        print(f"Saved checkpoint to {os.path.join(self.args.out_dir, filename)}")
 
     def train(self):
         self.X, self.Y = self.get_batch('train')
@@ -1130,10 +1129,18 @@ class Trainer:
                         self.log_metrics(losses, lr, running_mfu, vram_allocated, self.iter_num)
 
                     if math.isnan(losses["val"]):
-                        # If training loss is nan, then exit.
+                        # If val loss is nan, then exit.
                         with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
                             print("Exiting with nan")
                             file.write(str(self.iter_num))
+
+                    if self.args.save_major_ckpt_interval is not None:
+                        if self.iter_num % self.args.save_major_ckpt_interval == 0:
+                            major_ckpt_name = str(self.iter_num) +'.pt'
+                            # Save major checkpoint
+                            self.save_checkpoint(major_ckpt_name)
+                            print(f"Saved major checkpoint to {self.args.out_dir}/{major_ckpt_name}")
+
                     if losses['val'] < self.best_val_loss or self.args.always_save_checkpoint:
                         if losses['val'] < self.best_val_loss:
                             self.iter_num_best_val_loss = self.iter_num
@@ -1235,8 +1242,8 @@ class Trainer:
                 if self.iter_num > self.args.max_iters:
                     if self.args.only_save_checkpoint_at_end:
 
-                        print(f"saving checkpoint to {self.args.out_dir}")
                         self.save_checkpoint('ckpt.pt')
+                        print(f"Saved checkpoint to {self.args.out_dir}")
 
                         # Sample if set
                         if self.args.max_sample_tokens:
