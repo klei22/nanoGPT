@@ -87,23 +87,27 @@ class PiecewiseFullyLearnableActivation(nn.Module):
 
 
 class LearnedSplineActivation(nn.Module):
-    def __init__(self, num_knots=10, init_x_range=(-2, 2)):
+
+    def __init__(self, num_knots=10, init_x_range=(-5, 5)):
         super().__init__()
         self.num_knots = num_knots
 
         # Initialize learnable x_vals and y_vals
         x_init = torch.linspace(init_x_range[0], init_x_range[1], num_knots)
-        y_init = gelu(x_init)
+
+        # Create an instance of GELU
+        gelu = nn.GELU()
+        y_init = gelu(x_init)  # Use the GELU instance here
 
         self.x_vals = nn.Parameter(x_init)
         self.y_vals = nn.Parameter(y_init)
 
     def forward(self, x):
         # Compute spline coefficients
-        coeffs = self._compute_spline_coefficients(x_vals, y_vals)
+        coeffs = self._compute_spline_coefficients(self.x_vals, self.y_vals)
 
         # Evaluate spline at input x
-        result = self._evaluate_spline(x, x_vals_unique, coeffs)
+        result = self._evaluate_spline(x, self.x_vals, coeffs)
         return result
 
     def _compute_spline_coefficients(self, x_vals, y_vals):
