@@ -9,6 +9,27 @@ class SquaredReLU(nn.Module):
     def forward(self, x):
         return torch.pow(torch.relu(x), 2)
 
+class GELUShifted(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.learnable_shift = True
+        self.initial_shift = 0.75
+
+        # Initialize shift parameter, either fixed or learnable
+        if self.learnable_shift:
+            self.shift = nn.Parameter(torch.tensor(self.initial_shift))
+        else:
+            self.register_buffer("shift", torch.tensor(self.initial_shift))
+
+        # GELU activation for smooth nonlinearity
+        self.gelu = nn.GELU()
+
+    def forward(self, x):
+        # Apply the shifted GELU activation
+        return self.gelu(x - self.shift)
+
+
 class PiecewiseLearnableActivation(nn.Module):
     def __init__(self):
         super().__init__()
@@ -82,6 +103,45 @@ class PiecewiseFullyLearnableActivation(nn.Module):
 
         # Rightmost segment (x >= right_bound)
         result = torch.where(x >= self.right_bound, x, result)  # x = y for x >= right_bound
+
+        return result
+
+
+
+class PiecewiseFullyLearnableActivationLearnedEnds(nn.Module):
+    def __init__(self, left_bound=-10, right_bound=10, num_of_points=30):
+        super().__init__()
+        self.num_of_points = num_of_points
+        self.left_bound = left_bound
+        self.right_bound = right_bound
+
+        # Initialize learnable parameters for x and y values of intermediate points
+        self.x_vals = nn.Parameter(
+            torch.linspace(self.left_bound, self.right_bound, self.num_of_points + 2)[1:-1]
+        )  # Exclude left_bound and right_bound
+
+        # Initialize y_vals using GELU output for corresponding x_vals
+        gelu = nn.GELU()
+        self.y_vals = nn.Parameter(gelu(self.x_vals))
+
+    def forward(self, x):
+        # Initialize result with the scalar y-value at the leftmost x
+        result = torch.full_like(x, self.y_vals[0].item())
+
+        # Intermediate segments (x_vals[i] <= x < x_vals[i+1])
+        for i in range(self.num_of_points - 1):
+            slope = (self.y_vals[i + 1] - self.y_vals[i]) / (self.x_vals[i + 1] - self.x_vals[i])
+            intercept = self.y_vals[i] - slope * self.x_vals[i]
+            segment = slope * x + intercept
+            result = torch.where(
+                (x >= self.x_vals[i]) & (x < self.x_vals[i + 1]), segment, result
+            )
+
+        # Extrapolate using the last segment's slope for x >= x_vals[-1]
+        slope = (self.y_vals[-1] - self.y_vals[-2]) / (self.x_vals[-1] - self.x_vals[-2])
+        intercept = self.y_vals[-1] - slope * self.x_vals[-1]
+        segment = slope * x + intercept
+        result = torch.where(x >= self.x_vals[-1], segment, result)
 
         return result
 
@@ -174,11 +234,13 @@ activation_dictionary = {
     "celu": nn.CELU(),
     "elu": nn.ELU(),
     "gelu": nn.GELU(),
+    "gelu_shifted": GELUShifted(),
     "glu": nn.GLU(),
     "leaky_relu": nn.LeakyReLU(),
     "mish": nn.Mish(),
     "piecewise": PiecewiseLearnableActivation(),
     "pfla": PiecewiseFullyLearnableActivation(),
+    "pfla_le": PiecewiseFullyLearnableActivationLearnedEnds(),
     "learned_spline": LearnedSplineActivation(),
     "prelu": nn.PReLU(),
     "relu": nn.ReLU(),
