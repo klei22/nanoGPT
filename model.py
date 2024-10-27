@@ -11,6 +11,8 @@ import math
 import inspect
 import sys
 import re
+from rich import print
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -23,6 +25,7 @@ from gpt_conf import GPTConfig
 import torch.utils.checkpoint as checkpoint
 
 # Variations
+from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
@@ -30,8 +33,6 @@ from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
-from attn_gym.masks import generate_sliding_window
 
 def create_shared_param_group(layer_type, config):
 
@@ -54,7 +55,7 @@ def create_shared_param_group(layer_type, config):
     # if attn layer check if using shared fire embeddings
     fire_pos_enc = None
     if layer_type == "attn" and config.shared_fire_embeddings:
-        fire_pos_enc = FIRE(num_heads=config.n_head)
+        fire_pos_enc = FIRE(config, num_heads=config.n_head)
 
     for i in range (config.n_layer):
 
@@ -111,7 +112,6 @@ class CausalSelfAttention(nn.Module):
             config.n_kv_group = config.n_head
         else:
             assert config.n_embd % config.n_kv_group == 0
-        
 
         self.quantization_attn_dict = {}
         self.quantization_attn_dict["activations_quant_method"] = config.activations_quant_method
@@ -128,7 +128,7 @@ class CausalSelfAttention(nn.Module):
                 self.quantization_attn_dict[arg] = set_variant(val, config.quantize_linear_bits)
             elif arg.startswith("quantize_") and "linear_attn" in arg and arg.endswith("_method"):
                 self.quantization_attn_dict[arg] = set_variant(val, config.quantize_linear_method)
-        
+
         self.linear_variant_q = linear_dictionary[set_variant(config.linear_variant_q, config.linear_variant_attn)]
         self.linear_variant_k = linear_dictionary[set_variant(config.linear_variant_k, config.linear_variant_attn)]
         self.linear_variant_v = linear_dictionary[set_variant(config.linear_variant_v, config.linear_variant_attn)]
@@ -149,14 +149,51 @@ class CausalSelfAttention(nn.Module):
         self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
         self.c_proj = self.linear_variant_attn_proj(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_proj_method"], self.quantization_attn_dict["quantize_linear_attn_proj_bits"], bias=config.bias)
 
-        # regularization
+        # Regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
+        self.dropout = config.dropout
+
+        # Embedding
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        self.window_size = config.window_size
         self.n_embd = config.n_embd
         self.gate = config.gate
+        self.use_fire_embeddings = None
+        self.disable_flash_attention = config.disable_flash_attention
+        if config.use_fire_embeddings:
+            self.use_fire_embeddings = config.use_fire_embeddings
+            if fire_pos_enc is not None:
+                self.fire_pos_enc = fire_pos_enc
+                print("shared fire")
+            else:
+                self.fire_pos_enc = FIRE(config, num_heads=config.n_head)
+                print("indiv fire")
+
+        # Rotary Positional Embeddings
+        self.rotary_emb_q = None
+        self.rotary_emb_k = None
+        if config.use_rotary_embeddings:
+            # Note: size is the size of the head dimension
+            if config.rope_variant == "soap":
+                self.sym_rot_num_angles = config.sym_rot_num_angles
+                self.rotary_emb_q = SymmetricalOverlapAngularPositions(config, size=config.n_embd // self.n_head, num_angles=self.sym_rot_num_angles)
+                self.rotary_emb_k = SymmetricalOverlapAngularPositions(config, size=config.n_embd // self.n_head, num_angles=self.sym_rot_num_angles)
+            elif config.rope_variant == "rope":
+                self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
+                self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
+
+        # Sliding window size
+        self.window_size = config.window_size
+        print(f"sliding window size: {self.window_size}")
+
+        # Using flex attention
+        self.use_flex_attn = config.use_flex_attn
+
+        # Gating
+        self.gate = config.gate
+
+        # Fire Embeddings
         self.use_fire_embeddings = None
         if config.use_fire_embeddings:
             self.use_fire_embeddings = config.use_fire_embeddings
@@ -164,7 +201,7 @@ class CausalSelfAttention(nn.Module):
                 self.fire_pos_enc = fire_pos_enc
                 print("shared fire")
             else:
-                self.fire_pos_enc = FIRE(num_heads=config.n_head)
+                self.fire_pos_enc = FIRE(config, num_heads=config.n_head)
                 print("indiv fire")
 
         # Rotary Positional Embeddings
@@ -185,8 +222,10 @@ class CausalSelfAttention(nn.Module):
         if self.softmax_variant_attn == "softmax":
             # Enable flash attention, which is compatible with 'softmax'
             self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            print("setting flash attn")
         else:
             # Remove flash attention (only compatible with 'softmax')
+            print("flash attention removed due to softmax alternative")
             self.flash = False
             # Set softmax_layer_attn to custom softmax alternative
             self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
@@ -194,18 +233,25 @@ class CausalSelfAttention(nn.Module):
         if self.window_size is not None:
             # TODO: look into supporting sliding window attn for flash attn
             self.flash = False
+            print("flash attention removed due to windowed attention")
 
         if self.n_kv_group != self.n_head:
             self.flash = False
+            print("flash attention removed due to GQA")
 
         if self.use_fire_embeddings:
             self.flash = False
+            print("flash attention removed due to FIRE")
 
         # Can't use flash attention if we want to manually quantize most input/output activations in attn
         for key, val in self.quantization_attn_dict.items():
             if key.startswith("quantize_") and val == True:
                 self.flash = False
+                print("flash attention removed due to Quantization")
                 break
+
+        if self.disable_flash_attention:
+            self.flash = False
 
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
@@ -225,6 +271,16 @@ class CausalSelfAttention(nn.Module):
         q = self.c_attn_q(x)
         k = self.c_attn_k(x)
         v = self.c_attn_v(x)
+
+        if self.use_flex_attn is None:
+            window_mask = torch.ones((1, 1, T, T), device=x.device)
+            window_mask = torch.triu(window_mask, diagonal=-self.window_size)
+            window_mask = self.bias[:,:,:T,:T] * window_mask
+        else:
+            assert self.window_size is not None, f"Window Size is None, but must be set when using Flex Attention"
+            from attn_gym.masks import generate_sliding_window
+            sliding_window_mask = generate_sliding_window(window_size=self.window_size)
+            block_mask = torch.nn.attention.flex_attention.create_block_mask(sliding_window_mask, 1, 1 ,T, T, device="cuda")
 
         if self.gate:
             if self.n_kv_group == self.n_head:
@@ -259,6 +315,8 @@ class CausalSelfAttention(nn.Module):
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+        elif self.use_flex_attn:
+            y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
         else:
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
@@ -272,14 +330,18 @@ class CausalSelfAttention(nn.Module):
             att = None
             # manual implementation of attention
             if self.n_head != self.n_kv_group:
-              k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-              att = (q @ k_repeated.transpose(-2, -1)) / math.sqrt(k.size(-1))
+                k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
+                att = (q @ k_repeated.transpose(-2, -1)) / math.sqrt(k.size(-1))
             else:
-              att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+                att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
 
-
-            # regular lower triangle attention
-            att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
+            # apply masks
+            if self.window_size is not None:
+                # add mask for sliding window attention
+                att = att.masked_fill(window_mask == 0, float('-inf'))
+            else:
+                # regular lower triangle attention
+                att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
 
             # fire position embeddings
             if self.use_fire_embeddings is not None:
@@ -289,7 +351,7 @@ class CausalSelfAttention(nn.Module):
             if self.quantization_attn_dict["quantize_attn_act_softmax_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_softmax_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
-                att = fake_quantize_act(self, "attn_act_softmax_input", att, num_bits, quant_method)
+                att = fake_quantize_act(self, "attn_act_softmax_input", att, num_bits, quant_method, causal_mask=True)
 
             # softmax variation
             if self.softmax_variant_attn != 'softmax':
@@ -297,33 +359,51 @@ class CausalSelfAttention(nn.Module):
             else:
                 att = F.softmax(att, dim=-1)
 
-            att = self.attn_dropout(att)
+                # manual implementation of attention
+                if self.n_head != self.n_kv_group:
+                    k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
+                    att = (q @ k_repeated.transpose(-2, -1)) / math.sqrt(k.size(-1))
+                else:
+                    att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
 
-            if self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input"]:
-                num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input_bits"]
-                quant_method = self.quantization_attn_dict["activations_quant_method"]
-                att = fake_quantize_act(self, "attn_act_pv_mult_p_input", att, num_bits, quant_method)
-            if self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input"]:
-                num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input_bits"]
-                quant_method = self.quantization_attn_dict["activations_quant_method"]
-                v = fake_quantize_act(self, "attn_act_pv_mult_v_input", v, num_bits, quant_method)
+                # apply masks
+                if self.window_size is not None:
+                    # add mask for sliding window attention
+                    att = att.masked_fill(window_mask == 0, float('-inf'))
+                else:
+                    # regular lower triangle attention
+                    att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
 
-            # sliding window mask
-            if self.window_size is not None:
-                sliding_window_mask = generate_sliding_window(window_size=self.window_size)
-                block_mask = torch.nn.attention.flex_attention.create_block_mask(sliding_window_mask, 1, 1 ,T, T, device="cuda")
+                # fire position embeddings
+                if self.use_fire_embeddings is not None:
+                    # add learned fire bias
+                    att = att + self.fire_pos_enc(x)
 
-            if self.n_head != self.n_kv_group:
-                v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-                if self.window_size is None:
+                if self.quantization_attn_dict["quantize_attn_act_softmax_input"]:
+                    num_bits = self.quantization_attn_dict["quantize_attn_act_softmax_input_bits"]
+                    quant_method = self.quantization_attn_dict["activations_quant_method"]
+                    att = fake_quantize_act(self, "attn_act_softmax_input", att, num_bits, quant_method)
+
+                # softmax variation
+                if self.softmax_variant_attn != 'softmax':
+                    att = self.softmax_layer_attn(att)
+                else:
+                    att = F.softmax(att, dim=-1)
+
+                if self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input"]:
+                    num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input_bits"]
+                    quant_method = self.quantization_attn_dict["activations_quant_method"]
+                    att = fake_quantize_act(self, "attn_act_pv_mult_p_input", att, num_bits, quant_method)
+                if self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input"]:
+                    num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input_bits"]
+                    quant_method = self.quantization_attn_dict["activations_quant_method"]
+                    v = fake_quantize_act(self, "attn_act_pv_mult_v_input", v, num_bits, quant_method)
+
+                if self.n_head != self.n_kv_group:
+                    v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
                     y = att @ v_repeated # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
                 else:
-                    y = torch.nn.attention.flex_attention.flex_attention(q, k, v_repeated, block_mask=block_mask)
-            else:
-                if self.window_size is None:
                     y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-                else:
-                    y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
 
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]
@@ -346,7 +426,7 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-       
+
         # Select "mlp variant"
         self.mlp_variant = config.mlp_variant
 
@@ -360,10 +440,10 @@ class MLP(nn.Module):
             # Sets the class of linear for MLP
             self.linear_variant_mlp_up = linear_dictionary[set_variant(config.linear_variant_mlp_up, config.linear_variant_mlp)]
             self.linear_variant_mlp_down = linear_dictionary[set_variant(config.linear_variant_mlp_down, config.linear_variant_mlp)]
-            
+
             self.quantization_mlp_dict = {}
             self.quantization_mlp_dict["activations_quant_method"] = config.activations_quant_method
-        
+
             # Set quantization parameters for MLP
             for arg, val in vars(config).items():
                 # Set MLP Activation precision and quantization method
@@ -378,15 +458,15 @@ class MLP(nn.Module):
                     self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_bits)
                 elif arg.startswith("quantize_") and "linear_mlp" in arg and arg.endswith("_method"):
                     self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_method)
-            
+
             # Instantiate Linear Layers
             if self.mlp_variant == "mlp":
-                self.c_fc = self.linear_variant_mlp_up(config.n_embd, 4 * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"], bias=config.bias)
-                self.c_proj = self.linear_variant_mlp_down(4 * config.n_embd, config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_down_method"], self.quantization_mlp_dict["quantize_linear_mlp_down_bits"], bias=config.bias)
+                self.c_fc = self.linear_variant_mlp_up(config.n_embd, config.mlp_expansion_factor * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"], bias=config.bias)
+                self.c_proj = self.linear_variant_mlp_down(config.mlp_expansion_factor * config.n_embd, config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_down_method"], self.quantization_mlp_dict["quantize_linear_mlp_down_bits"], bias=config.bias)
             elif self.mlp_variant == "swiglu":
-                self.c_fc_in1 = self.linear_variant_mlp_up(config.n_embd, 4 * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"])
-                self.c_fc_in2 = self.linear_variant_mlp_up(config.n_embd, 4 * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"])
-                self.c_fc_out = self.linear_variant_mlp_down(4 * config.n_embd, config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_down_method"], self.quantization_mlp_dict["quantize_linear_mlp_down_bits"])
+                self.c_fc_in1 = self.linear_variant_mlp_up(config.n_embd, config.mlp_expansion_factor * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"])
+                self.c_fc_in2 = self.linear_variant_mlp_up(config.n_embd, config.mlp_expansion_factor * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"])
+                self.c_fc_out = self.linear_variant_mlp_down(config.mlp_expansion_factor * config.n_embd, config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_down_method"], self.quantization_mlp_dict["quantize_linear_mlp_down_bits"])
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -398,7 +478,7 @@ class MLP(nn.Module):
 
         if self.mlp_variant == "kan":
             x = self.kan(x)
-        
+
         elif self.mlp_variant == "mlp":
             x = self.c_fc(x)
 
@@ -415,7 +495,7 @@ class MLP(nn.Module):
                 x = fake_quantize_act(self, "mlp_act_activation_output", x, num_bits, quant_method)
 
             x = self.c_proj(x)
-         
+
         elif self.mlp_variant == "swiglu":
             x_in1 = self.c_fc_in1(x)
 
@@ -436,7 +516,7 @@ class MLP(nn.Module):
             x = self.c_fc_out(x_out)
 
         x = self.dropout(x)
-        
+
         if self.quantization_mlp_dict["quantize_mlp_act_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
@@ -501,15 +581,46 @@ class GPT(nn.Module):
 
         self.config = config
 
+        # Flex Attention
+        self.use_flex_attn = config.use_flex_attn
+        if self.use_flex_attn:
+           from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+
         # Shared Parameters MLP
         shared_mlp_array = create_shared_param_group("mlp", config)
         # Shared Parameters Attention
         shared_attn_array = create_shared_param_group("attn", config)
 
+        # Factorization Parameters
+        self.n_embd_wte = config.n_embd_wte
+        self.n_embd_wte_scale_tying = config.n_embd_wte_scale_tying
+
+        # Learned Steering Vectors
+        self.use_lsv = config.use_lsv
+        self.lsv_index = config.lsv_index
+        self.lsv_dataset_num = config.lsv_dataset_num
+
+        if config.lsv_dataset_num is not None and config.use_lsv:
+            self.num_datasets = config.lsv_dataset_num
+            print(config.lsv_variant)
+            self.lsv_variant = config.lsv_variant
+            self.lsv_matrix = lsv_dictionary[self.lsv_variant](config)
+
+        # Configure wte, with optional quantization and factoring
         if config.quantize_wte:
-            word_embd = QuantizedEmbedding(config.vocab_size, config.n_embd, config.quantize_wte_method, config.quantize_wte_bits)
+            if config.n_embd_wte:
+                # If factorization is set
+                word_embd = QuantizedEmbedding(config.vocab_size, config.n_embd_wte, config.quantize_wte_method, config.quantize_wte_bits)
+            else:
+                # no factorization
+                word_embd = QuantizedEmbedding(config.vocab_size, config.n_embd, config.quantize_wte_method, config.quantize_wte_bits)
         else:
-            word_embd = nn.Embedding(config.vocab_size, config.n_embd)
+            if config.n_embd_wte:
+                # If factorization is set
+                word_embd = nn.Embedding(config.vocab_size, config.n_embd_wte)
+            else:
+                # no factorization
+                word_embd = nn.Embedding(config.vocab_size, config.n_embd)
 
         self.transformer = nn.ModuleDict(dict(
             wte = word_embd,
@@ -530,17 +641,44 @@ class GPT(nn.Module):
         if self.softmax_variant_output != "softmax":
             self.softmax_layer_output = softmax_dictionary[config.softmax_variant_output](config)
 
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        if config.n_embd_wte:
+            self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
+        else:
+            self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
+        # Initialize and possibly import scale_up and scale_down matrices, if factorization is set
+        if self.n_embd_wte:
+            # TODO: make this linear set from variant dictionary
+            # TODO: make this linear quantizable
+            self.transformer['scale_up'] = nn.Linear(config.n_embd_wte, config.n_embd, bias=False)
+            self.transformer['scale_down'] = nn.Linear(config.n_embd_wte, config.n_embd, bias=False)
+
+            if self.n_embd_wte_scale_tying:
+                self.transformer.scale_up.weight = self.transformer.scale_down.weight # Weight tying
+
+            if config.import_scale_matrices_freeze:
+                self.transformer.scale_up.weight.requires_grad = False
+                self.transformer.scale_down.weight.requires_grad = False
+
         # init all weights
         self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
+
+        # import wte
+        if self.config.import_wte_npy:
+            # Replace wte with values from numpy and retie weights
+            self.import_wte(self.config.import_wte_npy)
+
+        # import scale_matrices
+        if config.import_scale_matrices_npz:
+            self.import_scale_matrices(config.import_scale_matrices_npz, config.n_embd_wte_scale_tying)
+
         for pn, p in self.named_parameters():
+            # apply special scaled init to the residual projections, per GPT-2 paper
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
@@ -596,6 +734,52 @@ class GPT(nn.Module):
                 block.attn.rotary_emb_q.update_rope_length(rope_length)
                 block.attn.rotary_emb_k.update_rope_length(rope_length)
 
+    def import_wte(self, file_path):
+        """ Replace wte with values from numpy and retie weights """
+
+        #Load and format weights
+        initial_embeddings = np.load(self.config.import_wte_npy)
+        initial_embeddings_tensor = torch.from_numpy(initial_embeddings).float()
+
+        # Initialize imported wte
+        self.transformer.wte = nn.Embedding.from_pretrained(
+                initial_embeddings_tensor,
+                freeze=self.config.import_wte_freeze
+                )
+
+        # Redo the Weight tying
+        self.lm_head.weight = self.transformer.wte.weight
+
+    def export_wte(self, file_path):
+        # TODO: Determine strategy with this and other means of export, possibly
+        # replacing this with composition of existing means
+        embedding_table = self.transformer.wte.weight.detach().cpu().numpy()
+        np.save(file_path, embedding_table)
+        print(f"Embedding table saved to {file_path}")
+
+    def import_scale_matrices(self, file_path, weight_tying=False):
+        """Import scale_up and scale_down matrices from a numpy file."""
+        scale_matrices = np.load(file_path)
+        scale_up_tensor = torch.from_numpy(scale_matrices['scale_up']).float().T
+        scale_down_tensor = torch.from_numpy(scale_matrices['scale_down']).float().T
+
+        print(scale_up_tensor.size())
+        print(scale_down_tensor.size())
+        self.transformer.scale_up.weight.data.copy_(scale_up_tensor)
+        self.transformer.scale_down.weight.data.copy_(scale_down_tensor)
+
+        if weight_tying:
+            self.transformer.scale_up.weight = self.transformer.scale_down.weight
+
+        print(f"Scale matrices loaded from {file_path} with weight tying: {weight_tying}")
+
+    def export_scale_matrices(self, file_path):
+        """Export scale_up and scale_down matrices to a numpy file."""
+        scale_up_matrix = self.transformer.scale_up.weight.detach().cpu().numpy()
+        scale_down_matrix = self.transformer.scale_down.weight.detach().cpu().numpy()
+
+        np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
+        print(f"Scale matrices saved to {file_path}")
 
     def forward(self, idx, targets=None):
         device = idx.device
@@ -605,22 +789,47 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         x = None
+
+        if self.n_embd_wte:
+            tok_emb = self.transformer.scale_up(tok_emb)
         if self.config.use_abs_pos_embeddings:
-          pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
-          pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-          x = self.transformer.drop(tok_emb + pos_emb)
+            pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            x = self.transformer.drop(tok_emb + pos_emb)
         else:
-          x = self.transformer.drop(tok_emb)
+            x = self.transformer.drop(tok_emb)
 
         x.requires_grad_(True)  # Ensure requires_grad is True
 
+        if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
+            x = self.lsv_matrix(x)
+
+        layer = 1
         for block in self.transformer.h:
+            # Propagate tokens through layers
             if self.config.use_gradient_checkpointing:
-                x = checkpoint.checkpoint(block, x, use_reentrant=False)
+                x = checkpoint.checkpoint(block, x, use_reentrant=self.config.recompute_backward_pass)
             else:
                 x = block(x)
 
+            # Intercept for Learned Steering Vectors
+            if self.use_lsv and layer == self.config.apply_lsv_at_layer_idx:
+                x = self.lsv_matrix(x)
+                # x = self.apply_learned_vector_to_layer_output(x)
+
+            # Intercept for Steering Vectors
+            if self.config.apply_vector_at_layer_idx is not None and layer == self.config.apply_vector_at_layer_idx:
+                x = self.apply_vector_to_layer_output(x)
+            if self.config.obtain_vector_at_layer_idx is not None and layer == self.config.obtain_vector_at_layer_idx:
+                print(layer, self.config.obtain_vector_at_layer_idx)
+                x = self.obtain_vector_from_layer_output(x)
+
+            layer +=1
+
         x = self.transformer.ln_f(x)
+
+        if self.n_embd_wte:
+            x = F.linear(x, self.transformer.scale_down.weight.t())
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -632,6 +841,72 @@ class GPT(nn.Module):
             loss = None
 
         return logits, loss
+
+    def set_lsv_scaling_factor(self, factor):
+        self.lsv_matrix.update_lsv_scaling_factor(factor)
+
+    def set_lsv_mode(self, mode):
+        self.lsv_matrix.set_mode(mode)
+
+    def set_lsv_mixture(self, mixture):
+        """ Mixture is a list, allowing for mixing steering vectors """
+        self.lsv_matrix.set_mixture(mixture)
+
+    def get_lsv_scaling_factor(self):
+        return self.lsv_matrix.get_lsv_scaling_factor()
+
+    def set_lsv_index(self, index):
+        self.lsv_matrix.update_lsv_index(index)
+
+    def freeze_non_lsv_parameters(self):
+        """Freeze all parameters except for lsv_matrix if lsv_focused_training is enabled."""
+
+        print("Freezing all parameters except for lsv_matrix")
+
+        # Freeze all parameters by setting requires_grad to False
+        for name, param in self.named_parameters():
+            if name != "lsv_matrix":
+                param.requires_grad = False
+            else:
+                param.requires_grad = True  # Ensure lsv_matrix can still be trained
+
+    def apply_learned_vector_to_layer_output(self, x):
+        """Conditionally add a vector based on dataset index to the output of a specific layer."""
+
+        # Use one-hot vector for the dataset and multiply by the learned parameter matrix
+        one_hot_vector = torch.zeros(self.lsv_matrix.size(0), device=x.device)
+        one_hot_vector[self.lsv_index] = 1.0
+
+        # Multiply the one-hot vector by the learned parameter matrix
+        selected_vector = torch.matmul(one_hot_vector, self.lsv_matrix)
+
+        x = x + selected_vector
+
+        return x
+
+    def apply_vector_to_layer_output(self, x):
+        """Conditionally add a vector from a file to the output of a specific layer."""
+
+        # require this method has the vector file
+        assert self.config.apply_vector_file is not None
+
+        vector = np.load(self.config.apply_vector_file)
+        vector_tensor = torch.from_numpy(vector).float().to(x.device)
+        x = x + self.config.apply_vector_scaling_factor * vector_tensor
+
+        return x
+
+    def obtain_vector_from_layer_output(self, x):
+        """Append a vector to an existing .npy file."""
+
+        # Convert the tensor back to a numpy array
+        y = x
+        y = torch.mean(y, dim=1, keepdim=True)
+        result_vector = y.detach().cpu().numpy()
+
+        # Save the vector to file
+        np.save(self.config.obtain_vector_file, result_vector)
+        print(f"Updated avg vector saved to {self.config.obtain_vector_file}")
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
@@ -649,9 +924,9 @@ class GPT(nn.Module):
     def from_pretrained(cls, config, model_type):
         # assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         from transformers import GPT2LMHeadModel
-        
+
         print(f"loading weights from pretrained gpt: {model_type}")
-        
+
         # create a from-scratch initialized minGPT model
         model = GPT(config)
         model_hf = GPT2LMHeadModel.from_pretrained(model_type)
@@ -690,8 +965,20 @@ class GPT(nn.Module):
                 sd[v_key_str] = v
             else:
                 # vanilla copy over the other parameters
+                print(key)
+                if config.n_embd_wte:
+                    if key == "transformer.wte.weight":
+                        continue
+                    if key == "lm_head.weight":
+                        continue
+
+                if not config.use_abs_pos_embeddings:
+                    if key == "transformer.wpe.weight":
+                        continue
+
                 assert sd_hf[key].shape == sd[key].shape
                 with torch.no_grad():
+                    print(key)
                     sd[key].copy_(sd_hf[key])
 
         return model
@@ -845,3 +1132,4 @@ class MoELayer(nn.Module):
                 final_output[expert_mask] += weighted_output.squeeze(1)
         # print(f"final_output.shape = {final_output.shape}\n")
         return final_output
+

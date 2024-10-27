@@ -9,8 +9,44 @@ class GPTConfig:
     n_head: int = 12
     n_kv_group: int = 12
     n_embd: int = 768
+
+    # Steering Vectors
+    ## Where to intercept
+    apply_vector_at_layer_idx: int = None
+    obtain_vector_at_layer_idx: int = None
+    use_lsv: bool = False
+    lsv_index: int = None
+    lsv_dataset_num: int = None
+    lsv_variant: str = "one_hot"
+    apply_lsv_at_layer_idx: int = None
+
+    ## Files to insert or obtain vectors from
+    apply_vector_file: str = None
+    apply_vector_scaling_factor: float = 1.0
+    obtain_vector_file: str = None
+
+    # If Factorizing:
+    n_embd_wte: int = None
+
+    # weight tying
+    n_embd_wte_scale_tying: bool = True
+
+    # wte import/export
+    import_wte_freeze: bool = False
+    import_wte_npy: str = None
+    export_wte_npy: str = None
+    export_wte_each_eval: bool = False
+
+    # scaling matrices import/export
+    import_scale_matrices_freeze: bool = False
+    import_scale_matrices_npz: str = None
+    export_scale_matrices_npz: str = None
+    export_scale_matrices_each_eval: bool = False
+
     dropout: float = 0.0
-    window_size: int = 128
+    window_size: int = None
+    use_flex_attn: bool = None
+
     gate: bool = False
     use_moe: bool = False
     moe_layer_freq: int = 2
@@ -22,14 +58,20 @@ class GPTConfig:
     softmax_io_logging: bool = False
     consmax_beta_gamma_logging: bool = False
     plot_statistics: bool = False
+    softmax_io_log_interval: int = 1
 
     # Training options
     ## Gradient Checkpointing - More memory efficient (can do long contexts), but is slower
     use_gradient_checkpointing: bool = False
+    recompute_backward_pass: bool = False
+
+    ## Flash attention
+    disable_flash_attention: bool = False
 
     # MLP Options
     use_parallel_mlp: bool = False
     mlp_variant: str = "mlp"
+    mlp_expansion_factor: int = 4
 
     ## KAN Option
     kan_poly_order: int = 3
@@ -59,6 +101,8 @@ class GPTConfig:
 
     ## ConSmaxV2 Special Options
     consmax_per_head: bool = True # different beta gamma per head
+    consmax_v2_clamping: bool = True
+    consmax_v2_clamp_value: float = 80.0
 
     ## SaturatingConSmax Special options (otherwise same as ConSmax)
     consmax_saturation: float = 11.0 # for SaturatingConSmax saturation point
@@ -96,8 +140,14 @@ class GPTConfig:
     ## Softplus options
     softplus_divisor: float = 256.0
 
-    ## Softplus options
+    ## ReLUMax options
     relumax_divisor: float = 256.0
+
+    ## ReLUMax options
+    relu2max_divisor: float = 256.0
+
+    ## SigmoidMax options
+    sigmoidmax_divisor: float = 256.0
 
     ## Squareplus options
     squareplus_divisor: float = 256.0
@@ -115,8 +165,16 @@ class GPTConfig:
     embedding_mean_init: float= 0.0
     embedding_std_init: float= 0.02
 
+    ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
+    fire_log_bias: float = 1.0
+    fire_num_hidden_layers: int = 1
+    fire_mlp_width: int = 32
+    fire_init_c: float = 0.1
+    fire_init_L: float = 512.0
+    fire_outermost_sigma: bool = False
+
     # Structuring Options, remember to compile the model
-    use_post_ln: bool = True
+    use_post_ln: bool = False
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
