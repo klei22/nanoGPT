@@ -12,13 +12,6 @@
 # Add url with dataset here:
 url="https://huggingface.co/datasets/roneneldan/TinyStories/tree/refs%2Fconvert%2Fparquet/default/train"
 
-# uncomment and fill in if url has json datasets
-# Note: the $'\n' syntax allows for special characters like \n
-# python3 ./utils/get_json_dataset.py \
-#   --url "${url}" \
-#   --include_keys "instruction" "response" \
-#   --value_prefix $'#U:\n' $'#B:\n'
-
 # uncomment and fill in if url has parquet datasets
 python3 ./utils/get_parquet_dataset.py \
   --url "${url}" \
