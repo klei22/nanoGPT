@@ -25,6 +25,14 @@ def ternary_quantize(tensor, bits, causal_mask=False):
     result = (tensor / scale).round().clamp(-1, 1).to(dtype=torch.int8)
     return torch.tensor([0], device=tensor.device), scale, result
     
+def calculate_quant_level(obj, iter_num):
+    if not obj.training:
+        return 1
+    if obj.quant_level.isnumeric():
+        return float(obj.quant_level)
+    else:
+        return min(2 * iter_num / obj.max_iters, 1)
+    
 def symmetric_quantize(tensor, bits, causal_mask=False):
     """
     Symmetric quantization function
