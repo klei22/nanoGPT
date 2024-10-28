@@ -109,6 +109,10 @@ def create_activation_buffers(obj, arg):
 class CausalSelfAttention(nn.Module):
     def __init__(self, config, fire_pos_enc=None):
         super().__init__()
+
+        self.max_iters = config.max_iters
+        self.quant_level = config.quant_level
+
         if (config.n_kv_group == None):
             config.n_kv_group = config.n_head
         else:
@@ -258,13 +262,15 @@ class CausalSelfAttention(nn.Module):
                                         .view(1, 1, config.block_size, config.block_size))
 
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+
+        iter_num = kwargs.get('iter_num', None)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_input_bits"]
             quant_method = self.quantization_attn_dict["activations_quant_method"]
-            x = fake_quantize_act(self, "attn_act_input", x, num_bits, quant_method)
+            x = fake_quantize_act(self, "attn_act_input", x, num_bits, quant_method, iter_num)
 
         q = self.c_attn_q(x)
         k = self.c_attn_k(x)
@@ -312,11 +318,11 @@ class CausalSelfAttention(nn.Module):
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
-                q = fake_quantize_act(self, "attn_act_qk_mult_q_input", q, num_bits, quant_method)
+                q = fake_quantize_act(self, "attn_act_qk_mult_q_input", q, num_bits, quant_method, iter_num)
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
-                k = fake_quantize_act(self, "attn_act_qk_mult_k_input", k, num_bits, quant_method)
+                k = fake_quantize_act(self, "attn_act_qk_mult_k_input", k, num_bits, quant_method, iter_num)
 
             att = None
             # manual implementation of attention
@@ -342,7 +348,7 @@ class CausalSelfAttention(nn.Module):
             if self.quantization_attn_dict["quantize_attn_act_softmax_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_softmax_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
-                att = fake_quantize_act(self, "attn_act_softmax_input", att, num_bits, quant_method, causal_mask=True)
+                att = fake_quantize_act(self, "attn_act_softmax_input", att, num_bits, quant_method, iter_num, causal_mask=True)
 
             # softmax variation
             if self.softmax_variant_attn != 'softmax':
@@ -355,11 +361,11 @@ class CausalSelfAttention(nn.Module):
             if self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
-                att = fake_quantize_act(self, "attn_act_pv_mult_p_input", att, num_bits, quant_method)
+                att = fake_quantize_act(self, "attn_act_pv_mult_p_input", att, num_bits, quant_method, iter_num)
             if self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
-                v = fake_quantize_act(self, "attn_act_pv_mult_v_input", v, num_bits, quant_method)
+                v = fake_quantize_act(self, "attn_act_pv_mult_v_input", v, num_bits, quant_method, iter_num)
 
             if self.n_head != self.n_kv_group:
                 v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
@@ -370,7 +376,7 @@ class CausalSelfAttention(nn.Module):
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]
             quant_method = self.quantization_attn_dict["activations_quant_method"]
-            y = fake_quantize_act(self, "attn_act_pv_mult_output", y, num_bits, quant_method)
+            y = fake_quantize_act(self, "attn_act_pv_mult_output", y, num_bits, quant_method, iter_num)
 
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
@@ -380,7 +386,7 @@ class CausalSelfAttention(nn.Module):
         if self.quantization_attn_dict["quantize_attn_act_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_output_bits"]
             quant_method = self.quantization_attn_dict["activations_quant_method"]
-            y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method)
+            y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method, iter_num)
 
         return y
 
@@ -389,8 +395,12 @@ class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
 
+        self.max_iters = config.max_iters
+
         # Select "mlp variant"
         self.mlp_variant = config.mlp_variant
+
+        self.quant_level = config.quant_level
 
         # If "MLP Variant" is KAN, then we skip MLP specific items
         if self.mlp_variant == "kan":
@@ -432,11 +442,13 @@ class MLP(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
+        iter_num = kwargs.get('iter_num', None)
+
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
-            x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method)
+            x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method, iter_num)
 
         if self.mlp_variant == "kan":
             x = self.kan(x)
@@ -447,14 +459,14 @@ class MLP(nn.Module):
             if self.quantization_mlp_dict["quantize_mlp_act_activation_input"]:
                 num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_input_bits"]
                 quant_method = self.quantization_mlp_dict["activations_quant_method"]
-                x = fake_quantize_act(self, "mlp_act_activation_input", x, num_bits, quant_method)
+                x = fake_quantize_act(self, "mlp_act_activation_input", x, num_bits, quant_method, iter_num)
 
             x = self.activation_variant(x)
 
             if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
                 num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
                 quant_method = self.quantization_mlp_dict["activations_quant_method"]
-                x = fake_quantize_act(self, "mlp_act_activation_output", x, num_bits, quant_method)
+                x = fake_quantize_act(self, "mlp_act_activation_output", x, num_bits, quant_method, iter_num)
 
             x = self.c_proj(x)
 
@@ -464,14 +476,14 @@ class MLP(nn.Module):
             if self.quantization_mlp_dict["quantize_mlp_act_activation_input"]:
                 num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_input_bits"]
                 quant_method = self.quantization_mlp_dict["activations_quant_method"]
-                x_in1 = fake_quantize_act(self, "mlp_act_activation_input", x_in1, num_bits, quant_method)
+                x_in1 = fake_quantize_act(self, "mlp_act_activation_input", x_in1, num_bits, quant_method, iter_num)
 
             x_in1 = self.activation_variant(x_in1)
 
             if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
                 num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
                 quant_method = self.quantization_mlp_dict["activations_quant_method"]
-                x_in1 = fake_quantize_act(self, "mlp_act_activation_output", x_in1, num_bits, quant_method)
+                x_in1 = fake_quantize_act(self, "mlp_act_activation_output", x_in1, num_bits, quant_method, iter_num)
 
             x_in2 = self.c_fc_in2(x)
             x_out = x_in1 * x_in2
@@ -482,7 +494,7 @@ class MLP(nn.Module):
         if self.quantization_mlp_dict["quantize_mlp_act_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
-            x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method)
+            x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
         return x
 
 class Block(nn.Module):
@@ -511,22 +523,22 @@ class Block(nn.Module):
         else:
             self.mlp = mlp
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         def custom_forward(*inputs):
             x = inputs[0]
             if self.use_post_ln:
                 if self.use_parallel_mlp:
-                    x = self.ln_1(x + self.attn(x) + self.mlp(x))
+                    x = self.ln_1(x + self.attn(x, **kwargs) + self.mlp(x, **kwargs))
                 else:
-                    x = self.ln_1(x + self.attn(x))
-                    x = self.ln_2(x + self.mlp(x))
+                    x = self.ln_1(x + self.attn(x, **kwargs))
+                    x = self.ln_2(x + self.mlp(x, **kwargs))
             else:
                 if self.use_parallel_mlp:
                     ln_1 = self.ln_1(x)
-                    x = x + self.attn(ln_1) + self.mlp(ln_1)
+                    x = x + self.attn(ln_1, **kwargs) + self.mlp(ln_1, **kwargs)
                 else:
-                    x = x + self.attn(self.ln_1(x))
-                    x = x + self.mlp(self.ln_2(x))
+                    x = x + self.attn(self.ln_1(x), **kwargs)
+                    x = x + self.mlp(self.ln_2(x), **kwargs)
             return x
 
         if self.use_gradient_checkpointing and x.requires_grad:
@@ -738,7 +750,7 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, **kwargs):
         device = idx.device
         b, t = idx.size()
         # assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -765,9 +777,9 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             # Propagate tokens through layers
             if self.config.use_gradient_checkpointing:
-                x = checkpoint.checkpoint(block, x, use_reentrant=self.config.recompute_backward_pass)
+                x = checkpoint.checkpoint(block, x, use_reentrant=self.config.recompute_backward_pass, **kwargs)
             else:
-                x = block(x)
+                x = block(x, **kwargs)
 
             # Intercept for Learned Steering Vectors
             if self.use_lsv and layer == self.config.apply_lsv_at_layer_idx:

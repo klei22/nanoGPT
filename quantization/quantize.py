@@ -7,6 +7,14 @@ def set_dtype(bits):
         return torch.int16
     else:
         return torch.int8
+
+def calculate_quant_level(obj, iter_num):
+    if not obj.training:
+        return 1
+    if obj.quant_level.isnumeric():
+        return float(obj.quant_level)
+    else:
+        return min(2 * iter_num / obj.max_iters, 1)
     
 def ternary_quantize(tensor, bits, causal_mask=False):
     if causal_mask:
@@ -16,7 +24,6 @@ def ternary_quantize(tensor, bits, causal_mask=False):
         scale = tensor.abs().mean().clamp(min=1e-5)
     result = (tensor / scale).round().clamp(-1, 1).to(dtype=torch.int8)
     return torch.tensor([0], device=tensor.device), scale, result
-
     
 def symmetric_quantize(tensor, bits, causal_mask=False):
     """
@@ -120,12 +127,13 @@ def dequantize(zero_point, scale, tensor, causal_mask=False):
         dequantized[upper_tri_mask] = -float('inf')
     return dequantized
 
-def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, causal_mask=False):
+def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, iter_num, causal_mask=False):
     zero_point, scale, act = quantize_dictionary[quant_method](tensor, num_bits, causal_mask=causal_mask)
     setattr(obj, activation, act)
     setattr(obj, f"{activation}_scale", scale)
     setattr(obj, f"{activation}_zero_point", zero_point)
-    return dequantize(zero_point, scale, act, causal_mask=causal_mask)
+    dequantized = dequantize(zero_point, scale, act, causal_mask=causal_mask)
+    return tensor + calculate_quant_level(obj, iter_num) * (dequantized - tensor).detach()
 
 class FakeLinearQuantizationFunction(torch.autograd.Function):
     """Simulates error caused by quantization. Uses Straight-Through Estimator for Back prop
@@ -134,7 +142,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input, bits=7, quantization_method="affine_quant"):
+    def forward(ctx, obj, input, bits=7, quantization_method="affine_quant"):
         """
         Forward pass
         :param ctx: Context object to store information for the backward pass (not used in this case)
@@ -147,7 +155,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
         # Dequantize the quantized values using the dequantize function.
         # Return the dequantized tensor, which approximates the input tensor but includes the quantization error.
         zero_point, norm, quantized_weight = quantize_dictionary[quantization_method](input, bits)
-        return dequantize(zero_point, norm, quantized_weight)
+        return input + calculate_quant_level(obj, obj._step) * (dequantize(zero_point, norm, quantized_weight) - input).detach()
 
     @staticmethod
     def backward(ctx, grad_output):

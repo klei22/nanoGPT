@@ -3,6 +3,7 @@ from typing import List
 import json
 @dataclass
 class GPTConfig:
+    max_iters: int = 3500
     block_size: int = 1024
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
@@ -203,6 +204,7 @@ class GPTConfig:
     linear_std_init: float= 0.02
 
     # Quantizations
+    quant_level: str = 1
 
     ## Embedding Quantizations
     quantize_wte: bool = False

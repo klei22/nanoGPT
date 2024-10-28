@@ -210,7 +210,9 @@ def parse_args():
     model_group.add_argument( "--linear_mean_init", type=float, default=0.0)
     model_group.add_argument( "--linear_std_init", type=float, default=0.02)
 
-    # Quatization
+    # Quantization
+    model_group.add_argument("--quant_level", type=str, default="1", choices=["0", "0.25", "0.5", "0.75", "1", "dynamic"],
+                             help="When set to 0, there is no quantization occuring. When set to 1, full quantization is applied. When dynamic is set, the quantization will increase dynamically based on the training step")
 
     ## Quantization Method Options
     quant_methods = ["ternary_quant", "symmetric_quant", "affine_quant", "stochastic_quant"]
@@ -555,6 +557,7 @@ class Trainer:
         # TODO only add if they are defined from the argparse
         self.model_args = {action.dest: getattr(self.args, action.dest) for action in self.model_group._group_actions}
         self.model_args['vocab_size'] = None
+        self.model_args['max_iters'] = self.args.max_iters
 
         # Training settings
         self.training_args = {action.dest: getattr(self.args, action.dest) for action in self.training_group._group_actions}
@@ -718,7 +721,7 @@ class Trainer:
             with torch.no_grad():
                 for _ in range(max_sample_tokens):
                     x_cond = x if x.size(1) <= self.args.block_size else x[:, -self.args.block_size:]
-                    logits, _ = self.model(x_cond)
+                    logits, _ = self.model(x_cond, iter_num=self.iter_num)
                     logits = logits[:, -1, :]
                     probs = torch.softmax(logits, dim=-1)
                     next_id = torch.multinomial(probs, num_samples=1)
@@ -941,7 +944,7 @@ class Trainer:
                     for k in range(self.args.eval_iters):
                         X, Y = self.get_batch(split, target_dataset=dataset)
                         with self.ctx:
-                            logits, loss = self.model(X, Y)
+                            logits, loss = self.model(X, Y, iter_num=self.iter_num)
                         dataset_losses[split][k] = loss.item()
                 out['datasets'][dataset] = {
                     'train': dataset_losses['train'].mean(),
@@ -958,7 +961,7 @@ class Trainer:
                 for k in range(self.args.eval_iters):
                     X, Y = self.get_batch(split)
                     with self.ctx:
-                        logits, loss = self.model(X, Y)
+                        logits, loss = self.model(X, Y, iter_num=self.iter_num)
                     losses[k] = loss.item()
                 out[split] = losses.mean()
 
@@ -1193,7 +1196,7 @@ class Trainer:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
 
                     with self.ctx:
-                        logits, loss = self.model(self.X, self.Y)
+                        logits, loss = self.model(self.X, self.Y, iter_num=self.iter_num)
 
                         if self.args.focus_on_top1_loss:
                             loss = self.custom_loss_with_top1_focus(logits, self.Y)  # Use custom loss
