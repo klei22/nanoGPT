@@ -49,7 +49,7 @@ class QuantizedLinear(nn.Linear):
         assert self.training, "Should be called only during training"
 
         # Applies the fake quantization to the weights
-        self._fake_quantized_weight = _fake_quantize(self, self.weight, self.weight_bits, self.quant_method)
+        self._fake_quantized_weight = _fake_quantize(self.weight, self, self.weight_bits, self.quant_method)
         # Uses the quantized weights to compute the output using F.linear
         out = F.linear(input, self._fake_quantized_weight, self.bias)
 

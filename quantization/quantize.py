@@ -119,12 +119,6 @@ def dequantize(zero_point, scale, tensor, causal_mask=False):
     :return: Dequantized weights
     """
     dequantized = (tensor - zero_point) * scale
-    if causal_mask:
-        # Create a mask for the upper triangular part
-        upper_tri_mask = torch.triu(torch.ones_like(dequantized), diagonal=1).bool()
-
-        # Set the upper triangular part to -inf
-        dequantized[upper_tri_mask] = -float('inf')
     return dequantized
 
 def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, iter_num, causal_mask=False):
@@ -133,7 +127,16 @@ def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, iter_num,
     setattr(obj, f"{activation}_scale", scale)
     setattr(obj, f"{activation}_zero_point", zero_point)
     dequantized = dequantize(zero_point, scale, act, causal_mask=causal_mask)
-    return tensor + calculate_quant_level(obj, iter_num) * (dequantized - tensor).detach()
+    if causal_mask:
+        # Create a mask for the upper triangular part
+        upper_tri_mask = torch.triu(torch.ones_like(tensor), diagonal=1).bool()
+
+        # Set the upper triangular part to -inf
+        tensor[upper_tri_mask] = 0
+    result = tensor + calculate_quant_level(obj, iter_num) * (dequantized - tensor).detach()
+    if causal_mask:
+        result[upper_tri_mask] = -float('inf')
+    return result
 
 class FakeLinearQuantizationFunction(torch.autograd.Function):
     """Simulates error caused by quantization. Uses Straight-Through Estimator for Back prop
@@ -142,7 +145,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, obj, input, bits=7, quantization_method="affine_quant"):
+    def forward(ctx, input, obj, bits=7, quantization_method="affine_quant"):
         """
         Forward pass
         :param ctx: Context object to store information for the backward pass (not used in this case)
@@ -162,7 +165,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
         # Straight-Through Estimator (STE): passes grad_output through as the gradient with respect to the input
         # gradient is approximated by simply passing the gradient from the output directly to the input, 
         # ignoring the quantization operation
-        return grad_output, None, None
+        return grad_output, None, None, None
 
 quantize_dictionary = {
     "ternary_quant": ternary_quantize,
