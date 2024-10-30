@@ -134,7 +134,7 @@ def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, iter_num,
         # Set the upper triangular part to -inf
         tensor[upper_tri_mask] = 0
     quant_level = calculate_quant_level(obj, iter_num)
-    if iter_num % obj.eval_interval == 0:
+    if obj.training and iter_num % obj.eval_interval == 0:
         print("quant level: ", quant_level)
     result = tensor + quant_level * (dequantized - tensor).detach()
     if causal_mask:
@@ -162,7 +162,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
         # Return the dequantized tensor, which approximates the input tensor but includes the quantization error.
         zero_point, norm, quantized_weight = quantize_dictionary[quantization_method](input, bits)
         quant_level = calculate_quant_level(obj, obj._step)
-        if obj._step % obj.eval_interval == 0:
+        if obj.training and obj._step % obj.eval_interval == 0:
             print("quant level: ", quant_level)
         return input + quant_level * (dequantize(zero_point, norm, quantized_weight) - input).detach()
 
