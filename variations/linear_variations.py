@@ -24,6 +24,7 @@ class QuantizedLinear(nn.Linear):
         self.quant_method = method
         self.quant_level = config.quant_level
         self.max_iters = config.max_iters
+        self.eval_interval = config.eval_interval
 
         if self.weight_bits < 1:
             raise ValueError(f"weight_bits={self.weight_bits} must be higher than 0 ")

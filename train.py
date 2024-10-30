@@ -558,6 +558,7 @@ class Trainer:
         self.model_args = {action.dest: getattr(self.args, action.dest) for action in self.model_group._group_actions}
         self.model_args['vocab_size'] = None
         self.model_args['max_iters'] = self.args.max_iters
+        self.model_args['eval_interval'] = self.args.eval_interval
 
         # Training settings
         self.training_args = {action.dest: getattr(self.args, action.dest) for action in self.training_group._group_actions}

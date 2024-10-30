@@ -111,6 +111,7 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
 
         self.max_iters = config.max_iters
+        self.eval_interval = config.eval_interval
         self.quant_level = config.quant_level
 
         if (config.n_kv_group == None):
@@ -396,6 +397,7 @@ class MLP(nn.Module):
         super().__init__()
 
         self.max_iters = config.max_iters
+        self.eval_interval = config.eval_interval
 
         # Select "mlp variant"
         self.mlp_variant = config.mlp_variant
