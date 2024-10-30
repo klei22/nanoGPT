@@ -16,5 +16,5 @@ url="https://huggingface.co/datasets/roneneldan/TinyStories/tree/refs%2Fconvert%
 python3 ./utils/get_parquet_dataset.py \
   --url "${url}" \
   --include_keys "text" \
-  --value_prefix '' \
+  --value_prefix $'#T:\n' \
   --append
