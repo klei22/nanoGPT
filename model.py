@@ -220,19 +220,8 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
-        # Softmax Variant Selection
-        self.softmax_variant_attn = config.softmax_variant_attn
-        if self.softmax_variant_attn == "softmax":
-            # Enable flash attention, which is compatible with 'softmax'
-            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-            print("setting flash attn")
-        else:
-            # Remove flash attention (only compatible with 'softmax')
-            print("flash attention removed due to softmax alternative")
-            self.flash = False
-            # Set softmax_layer_attn to custom softmax alternative
-            self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
 
+        self.flash = True
         if self.window_size is not None:
             # TODO: look into supporting sliding window attn for flash attn
             self.flash = False
@@ -256,7 +245,23 @@ class CausalSelfAttention(nn.Module):
         if self.disable_flash_attention:
             self.flash = False
 
-        if not self.flash:
+        # Softmax Variant Selection
+        self.softmax_variant_attn = config.softmax_variant_attn
+        if self.softmax_variant_attn == "softmax":
+            # Enable flash attention, which is compatible with 'softmax'
+            if self.disable_flash_attention or self.flash == False:
+                print("setting non-flash softmax attn")
+            else:
+                self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+                print("setting flash attn")
+        else:
+            # Remove flash attention (only compatible with 'softmax')
+            print("flash attention removed due to softmax alternative")
+            self.flash = False
+            # Set softmax_layer_attn to custom softmax alternative
+            self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
+
+        if (not self.flash) and (not self.use_flex_attn):
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
