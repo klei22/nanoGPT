@@ -297,15 +297,12 @@ class CausalSelfAttention(nn.Module):
         v = self.c_attn_v(x)
 
         if self.window_size is not None:
-
-            def sliding_window_causal(b, h, q_idx, kv_idx):
-                causal_mask = q_idx >= kv_idx
-                window_mask = q_idx - kv_idx <= self.window_size
-                return causal_mask & window_mask
-
-            self.sliding_window_causal = sliding_window_causal
-            self.block_masks = {}
-
+            if self.use_flex_attn is not None:
+                self.block_masks = {}
+            else:
+                self.window_mask = torch.ones((1, 1, T, T), device=x.device)
+                self.window_mask = torch.triu(self.window_mask, diagonal=-self.window_size)
+                self.window_mask = self.bias[:,:,:T,:T] * self.window_mask
 
         if self.gate:
             if self.n_kv_group == self.n_head:
@@ -364,7 +361,7 @@ class CausalSelfAttention(nn.Module):
             # apply masks
             if self.window_size is not None:
                 # add mask for sliding window attention
-                att = att.masked_fill(window_mask == 0, float('-inf'))
+                att = att.masked_fill(self.window_mask == 0, float('-inf'))
             else:
                 # regular lower triangle attention
                 att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
