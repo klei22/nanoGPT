@@ -12,6 +12,7 @@ import inspect
 import sys
 import re
 from rich import print
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
 import numpy as np
 
@@ -261,6 +262,20 @@ class CausalSelfAttention(nn.Module):
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
 
+    # Flex Attention Related
+    def get_sliding_window_causal(self, b, h, q_idx, kv_idx):
+        causal_mask = q_idx >= kv_idx
+        window_mask = q_idx - kv_idx <= self.window_size
+        return causal_mask & window_mask
+
+    def get_block_mask(self, T):
+        if T not in self.block_masks:
+            block_mask = create_block_mask(self.sliding_window_causal, B=None, H=None, Q_LEN=T, KV_LEN=T, device=x.device)
+            self.block_masks[T] = block_mask
+        else:
+            block_mask = self.block_masks[T]
+        return block_mask
+    # End Flex Attention Related
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -274,15 +289,16 @@ class CausalSelfAttention(nn.Module):
         k = self.c_attn_k(x)
         v = self.c_attn_v(x)
 
-        if self.use_flex_attn is None and self.window_size is not None:
-            window_mask = torch.ones((1, 1, T, T), device=x.device)
-            window_mask = torch.triu(window_mask, diagonal=-self.window_size)
-            window_mask = self.bias[:,:,:T,:T] * window_mask
-        elif self.use_flex_attn is not None:
-            assert self.window_size is not None, f"Window Size is None, but must be set when using Flex Attention"
-            from attn_gym.masks import generate_sliding_window
-            sliding_window_mask = generate_sliding_window(window_size=self.window_size)
-            block_mask = torch.nn.attention.flex_attention.create_block_mask(sliding_window_mask, 1, 1 ,T, T, device="cuda")
+        if self.window_size is not None:
+
+            def sliding_window_causal(b, h, q_idx, kv_idx):
+                causal_mask = q_idx >= kv_idx
+                window_mask = q_idx - kv_idx <= self.window_size
+                return causal_mask & window_mask
+
+            self.sliding_window_causal = sliding_window_causal
+            self.block_masks = {}
+
 
         if self.gate:
             if self.n_kv_group == self.n_head:
@@ -317,10 +333,17 @@ class CausalSelfAttention(nn.Module):
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-
         elif self.use_flex_attn:
-            y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
+            def get_block_mask(T):
+                if T not in self.block_masks:
+                    block_mask = create_block_mask(self.sliding_window_causal, B=None, H=None, Q_LEN=T, KV_LEN=T, device=x.device)
+                    self.block_masks[T] = block_mask
+                else:
+                    block_mask = self.block_masks[T]
+                return block_mask
 
+            block_mask = get_block_mask(T)
+            y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
         else:
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
@@ -558,8 +581,6 @@ class GPT(nn.Module):
 
         # Flex Attention
         self.use_flex_attn = config.use_flex_attn
-        if self.use_flex_attn:
-           from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
         # Shared Parameters MLP
         shared_mlp_array = create_shared_param_group("mlp", config)
