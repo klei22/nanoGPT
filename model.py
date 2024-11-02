@@ -263,14 +263,21 @@ class CausalSelfAttention(nn.Module):
                                         .view(1, 1, config.block_size, config.block_size))
 
     # Flex Attention Related
-    def get_sliding_window_causal(self, b, h, q_idx, kv_idx):
+    def sliding_window_causal(self, b, h, q_idx, kv_idx):
         causal_mask = q_idx >= kv_idx
         window_mask = q_idx - kv_idx <= self.window_size
         return causal_mask & window_mask
 
-    def get_block_mask(self, T):
+    def get_block_mask(self, T, device):
         if T not in self.block_masks:
-            block_mask = create_block_mask(self.sliding_window_causal, B=None, H=None, Q_LEN=T, KV_LEN=T, device=x.device)
+            block_mask = create_block_mask(
+                    self.sliding_window_causal,
+                    B=None,
+                    H=None,
+                    Q_LEN=T,
+                    KV_LEN=T,
+                    device=device
+                    )
             self.block_masks[T] = block_mask
         else:
             block_mask = self.block_masks[T]
@@ -333,17 +340,9 @@ class CausalSelfAttention(nn.Module):
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-        elif self.use_flex_attn:
-            def get_block_mask(T):
-                if T not in self.block_masks:
-                    block_mask = create_block_mask(self.sliding_window_causal, B=None, H=None, Q_LEN=T, KV_LEN=T, device=x.device)
-                    self.block_masks[T] = block_mask
-                else:
-                    block_mask = self.block_masks[T]
-                return block_mask
-
-            block_mask = get_block_mask(T)
-            y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
+        elif self.use_flex_attn and self.window_size is not None:
+            block_mask = self.get_block_mask(T, x.device)
+            y = torch.nn.attention.flex_attention.flex_attention( q, k, v, block_mask=block_mask)
         else:
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
