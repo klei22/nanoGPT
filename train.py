@@ -645,7 +645,7 @@ class Trainer:
             print_model_tree(self.model, print_params=True)
 
         # Optimizer
-        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.args.dtype == 'float16'))
+        self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
         self.optimizer = self.model.configure_optimizers(self.args.weight_decay, self.args.learning_rate,
                                                          (self.args.beta1, self.args.beta2), self.device_type)
 
