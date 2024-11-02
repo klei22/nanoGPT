@@ -1249,7 +1249,7 @@ class Trainer:
                         if self.args.max_sample_tokens:
                             self.sample_and_print(self.args.max_sample_tokens, start_tokens=self.args.sample_start_tokens)
                     break
-                    
+
             if self.args.plot_statistics:
                 plot_statistics(self.args, self.stats, graph_y_labels)
 
