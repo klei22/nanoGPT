@@ -8,6 +8,16 @@ def set_dtype(bits):
     else:
         return torch.int8
     
+def ternary_quantize(tensor, bits, causal_mask=False):
+    if causal_mask:
+        lower_triangular = torch.tril(tensor)
+        scale = lower_triangular.abs().mean().clamp(min=1e-5)
+    else:
+        scale = tensor.abs().mean().clamp(min=1e-5)
+    result = (tensor / scale).round().clamp(-1, 1).to(dtype=torch.int8)
+    return torch.tensor([0], device=tensor.device), scale, result
+
+    
 def symmetric_quantize(tensor, bits, causal_mask=False):
     """
     Symmetric quantization function
@@ -28,7 +38,7 @@ def symmetric_quantize(tensor, bits, causal_mask=False):
     scale = abs_max / bit_max
     xi_array = torch.round(tensor / scale)
     clamped_array = torch.clamp(xi_array, min=bit_min, max=bit_max).to(dtype=set_dtype(bits))
-    return 0, scale, clamped_array
+    return torch.tensor([0], device=tensor.device), scale, clamped_array
 
 def affine_quantize(tensor, bits):
     """
@@ -91,7 +101,7 @@ def stochastic_quantize(tensor, bits):
     sign_xi_array = (sign_array * xi_array).to(dtype=set_dtype(bits))
     norm = norm / s
 
-    return 0, norm, sign_xi_array
+    return torch.tensor([0], device=tensor.device), norm, sign_xi_array
 
 def dequantize(zero_point, scale, tensor, causal_mask=False):
     """
@@ -147,6 +157,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
         return grad_output, None, None
 
 quantize_dictionary = {
+    "ternary_quant": ternary_quantize,
     "symmetric_quant": symmetric_quantize,
     "affine_quant": affine_quantize,
     "stochastic_quant": stochastic_quantize
