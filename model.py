@@ -190,7 +190,6 @@ class CausalSelfAttention(nn.Module):
         print(f"sliding window size: {self.window_size}")
 
         # Using flex attention
-
         self.use_flex_attn = config.use_flex_attn
 
         # Gating
@@ -579,9 +578,6 @@ class GPT(nn.Module):
         assert config.block_size is not None
 
         self.config = config
-
-        # Flex Attention
-        self.use_flex_attn = config.use_flex_attn
 
         # Shared Parameters MLP
         shared_mlp_array = create_shared_param_group("mlp", config)
