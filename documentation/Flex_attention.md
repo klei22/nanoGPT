@@ -11,10 +11,6 @@ Flex attention helps save  manual implementations of sliding windows, providing 
 
 ---
 
-### Installation Steps
-
-#### Large Step 1: Upgrade pip
-
 ```bash
 pip3 install --upgrade pip
 pip3 uninstall torch torchvision torchaudio
