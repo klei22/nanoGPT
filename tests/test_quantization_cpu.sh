@@ -55,7 +55,7 @@ python3 sample.py \
   --max_new_tokens 100 \
   --start "What great fortune this is"
 
-python3 save_weights.py \
+python3 quantization/save_weights.py \
   --out_dir "${output_dir}" \
   --file_name "quantized_data" \
   --file_type "pkl"

@@ -22,7 +22,7 @@ The quantization/save_weights.py file can be used to save the quantized weights 
 Below is an example command to save a model's quantized values to a .pkl file:
 
 ```bash
-python3 save_weights.py --out_dir="quantized_model" --file_name="quantized_data" --file_type="pkl"
+python3 quantization/save_weights.py --out_dir="quantized_model" --file_name="quantized_data" --file_type="pkl"
 ```
 
 ## Visualizing Quantized Values
