@@ -58,7 +58,8 @@ python3 sample.py \
 python3 quantization/save_weights.py \
   --out_dir "${output_dir}" \
   --file_name "quantized_data" \
-  --file_type "pkl"
+  --file_type "pkl" \
+  --device "cpu"
 
 python3 quantization/visualize.py \
 --file_name "quantized_data.pkl" \
