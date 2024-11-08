@@ -1,4 +1,4 @@
-## Overview
+## Quantization Capabilities
 
 Our repo provides custom quantization options for activations and weights quantization of attention and mlp in the transformer. 
 
@@ -7,7 +7,16 @@ Our repo provides custom quantization options for activations and weights quanti
 Below is an example training command to train a fully quantized model:
 
 ```bash
-python3 train.py --quantize_linear_method="symmetric_quant" --activations_quant_method="symmetric_quant" --dtype="bfloat16" --quantization_warmup_iters=0 --quantize_attn_act --quantize_mlp_act --linear_variant_attn="quantized_linear" --linear_variant_mlp="quantized_linear" --store_activations
+python3 train.py \
+--quantize_linear_method="symmetric_quant" \
+--activations_quant_method="symmetric_quant" \
+--dtype="bfloat16" \
+--quantization_warmup_iters=0 \
+--quantize_attn_act \
+--quantize_mlp_act \
+--linear_variant_attn="quantized_linear" \
+--linear_variant_mlp="quantized_linear" \
+--store_activations
 ```
 
 ## Saving Quantized Values
@@ -22,7 +31,10 @@ The quantization/save_weights.py file can be used to save the quantized weights 
 Below is an example command to save a model's quantized values to a .pkl file:
 
 ```bash
-python3 quantization/save_weights.py --out_dir="quantized_model" --file_name="quantized_data" --file_type="pkl"
+python3 quantization/save_weights.py \
+--out_dir="quantized_model" \
+--file_name="quantized_data" \
+--file_type="pkl"
 ```
 
 ## Visualizing Quantized Values
@@ -32,7 +44,11 @@ The quantization/visualize.py file can be used to visualize the weights and acti
 Below is an example command to create a histogram for every quantized weight and activation of a model:
 
 ```bash
-python3 quantization/visualize.py --file_name="quantized_data.pkl" --image_folder="quantized_images" --weight="all" --graph="histogram"
+python3 quantization/visualize.py \
+--file_name="quantized_data.pkl" \
+--image_folder="quantized_images" \
+--weight="all" \
+--graph="histogram"
 ```
 
 ## Quantization Methods
