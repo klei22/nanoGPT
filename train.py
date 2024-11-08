@@ -211,8 +211,10 @@ def parse_args():
     model_group.add_argument( "--linear_std_init", type=float, default=0.02)
 
     # Quantization
-    model_group.add_argument("--quant_level", type=str, default="1", choices=["0", "0.25", "0.5", "0.75", "1", "dynamic"],
-                             help="When set to 0, there is no quantization occuring. When set to 1, full quantization is applied. When dynamic is set, the quantization will increase dynamically based on the training step")
+    model_group.add_argument("--start_quant_level", type=float, default=0,
+                             help="Starting level of quantization. A quant level of 0 means that there is no quantization is occurring. A quant level of 1 is full quantization.")
+    model_group.add_argument("--quant_scheduler", type=str, default=None, choices=["static", "linear"],
+                             help="Scheduler for change in quant level. When linear is set, the quantization will increase dynamically based on the training step")
 
     ## Quantization Method Options
     quant_methods = ["ternary_quant", "symmetric_quant", "affine_quant", "stochastic_quant"]

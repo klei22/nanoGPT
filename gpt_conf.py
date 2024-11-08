@@ -205,7 +205,8 @@ class GPTConfig:
     linear_std_init: float= 0.02
 
     # Quantizations
-    quant_level: str = 1
+    start_quant_level: float = 0
+    quant_scheduler: str = None
 
     ## Embedding Quantizations
     quantize_wte: bool = False

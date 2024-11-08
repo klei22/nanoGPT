@@ -112,7 +112,8 @@ class CausalSelfAttention(nn.Module):
 
         self.max_iters = config.max_iters
         self.eval_interval = config.eval_interval
-        self.quant_level = config.quant_level
+        self.start_quant_level = config.start_quant_level
+        self.quant_scheduler = config.quant_scheduler
 
         if (config.n_kv_group == None):
             config.n_kv_group = config.n_head
@@ -263,10 +264,8 @@ class CausalSelfAttention(nn.Module):
                                         .view(1, 1, config.block_size, config.block_size))
 
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
-
-        iter_num = kwargs.get('iter_num', None)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_input_bits"]
@@ -402,7 +401,8 @@ class MLP(nn.Module):
         # Select "mlp variant"
         self.mlp_variant = config.mlp_variant
 
-        self.quant_level = config.quant_level
+        self.start_quant_level = config.start_quant_level
+        self.quant_scheduler = config.quant_scheduler
 
         # If "MLP Variant" is KAN, then we skip MLP specific items
         if self.mlp_variant == "kan":
@@ -444,8 +444,7 @@ class MLP(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x, **kwargs):
-        iter_num = kwargs.get('iter_num', None)
+    def forward(self, x, iter_num):
 
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
@@ -525,22 +524,22 @@ class Block(nn.Module):
         else:
             self.mlp = mlp
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, iter_num):
         def custom_forward(*inputs):
             x = inputs[0]
             if self.use_post_ln:
                 if self.use_parallel_mlp:
-                    x = self.ln_1(x + self.attn(x, **kwargs) + self.mlp(x, **kwargs))
+                    x = self.ln_1(x + self.attn(x, iter_num) + self.mlp(x, iter_num))
                 else:
-                    x = self.ln_1(x + self.attn(x, **kwargs))
-                    x = self.ln_2(x + self.mlp(x, **kwargs))
+                    x = self.ln_1(x + self.attn(x, iter_num))
+                    x = self.ln_2(x + self.mlp(x, iter_num))
             else:
                 if self.use_parallel_mlp:
                     ln_1 = self.ln_1(x)
-                    x = x + self.attn(ln_1, **kwargs) + self.mlp(ln_1, **kwargs)
+                    x = x + self.attn(ln_1, iter_num) + self.mlp(ln_1, iter_num)
                 else:
-                    x = x + self.attn(self.ln_1(x), **kwargs)
-                    x = x + self.mlp(self.ln_2(x), **kwargs)
+                    x = x + self.attn(self.ln_1(x), iter_num)
+                    x = x + self.mlp(self.ln_2(x), iter_num)
             return x
 
         if self.use_gradient_checkpointing and x.requires_grad:
@@ -752,7 +751,7 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None, **kwargs):
+    def forward(self, idx, targets=None, iter_num=None):
         device = idx.device
         b, t = idx.size()
         # assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -779,9 +778,9 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             # Propagate tokens through layers
             if self.config.use_gradient_checkpointing:
-                x = checkpoint.checkpoint(block, x, use_reentrant=self.config.recompute_backward_pass, **kwargs)
+                x = checkpoint.checkpoint(block, x, iter_num, use_reentrant=self.config.recompute_backward_pass)
             else:
-                x = block(x, **kwargs)
+                x = block(x, iter_num)
 
             # Intercept for Learned Steering Vectors
             if self.use_lsv and layer == self.config.apply_lsv_at_layer_idx:
