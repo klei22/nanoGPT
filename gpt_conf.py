@@ -45,6 +45,8 @@ class GPTConfig:
 
     dropout: float = 0.0
     window_size: int = None
+    use_flex_attn: bool = None
+
     gate: bool = False
     use_moe: bool = False
     moe_layer_freq: int = 2

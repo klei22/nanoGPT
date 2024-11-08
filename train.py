@@ -113,6 +113,7 @@ def parse_args():
     model_group.add_argument('--n_experts', default=8, type=int, help="set number of experts per MoE layer")
     model_group.add_argument('--moe_top_k', default=2, type=int)
     model_group.add_argument('--moe_router_scheme', default="softmax", type=str, help="option to set routing scheme for MoE layer, defaults to softmax")
+    model_group.add_argument('--use_flex_attn', default=None,  action=argparse.BooleanOptionalAction, help="option for using flex attention for sliding windows")
 
 
     ## Manual Steering Vector Options
@@ -644,7 +645,7 @@ class Trainer:
             print_model_tree(self.model, print_params=True)
 
         # Optimizer
-        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.args.dtype == 'float16'))
+        self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
         self.optimizer = self.model.configure_optimizers(self.args.weight_decay, self.args.learning_rate,
                                                          (self.args.beta1, self.args.beta2), self.device_type)
 
