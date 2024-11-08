@@ -4,6 +4,7 @@ import os
 import datetime
 import numpy as np
 import pickle
+import ml_dtypes
 from collections import OrderedDict
 
 def parse_args():
@@ -18,7 +19,10 @@ def save_quantized_data(state_dict, out_file, file_type):
     to_save = OrderedDict()
     for k, v in list(state_dict.items()):
         if "mlp_act" in k or "attn_act" in k or k.endswith("quantized_bias") or k.endswith("bias_norm") or k.endswith("zero_point") or k.endswith("quantized_weight") or k.endswith("weight_norm"):
-            to_save[k] = v.cpu().numpy()
+            if v.dtype == torch.bfloat16:
+                to_save[k] = v.cpu().float().numpy().astype(ml_dtypes.bfloat16)
+            else:
+                to_save[k] = v.cpu().numpy()
 
     if file_type == "pkl":
         with open(f"{out_file}.pkl", 'wb') as f:

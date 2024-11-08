@@ -62,6 +62,7 @@ def main():
             # Save the image
             plt.savefig(image_path)
             print(f'Saved image to {image_path}')
+            plt.close()
 
 if __name__ == "__main__":
     main()
