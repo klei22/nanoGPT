@@ -7,14 +7,6 @@ def set_dtype(bits):
         return torch.int16
     else:
         return torch.int8
-
-def calculate_quant_level(obj, iter_num):
-    if not obj.training:
-        return 1
-    if obj.quant_level.isnumeric():
-        return float(obj.quant_level)
-    else:
-        return min(2 * iter_num / obj.max_iters, 1)
     
 def ternary_quantize(tensor, bits, causal_mask=False):
     if causal_mask:
