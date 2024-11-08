@@ -1,6 +1,55 @@
-## Overview
+## Quantization Capabilities
 
 Our repo provides custom quantization options for activations and weights quantization of attention and mlp in the transformer. 
+
+## Example Usage
+
+Below is an example training command to train a fully quantized model:
+
+```bash
+python3 train.py \
+--quantize_linear_method="symmetric_quant" \
+--activations_quant_method="symmetric_quant" \
+--dtype="bfloat16" \
+--quantization_warmup_iters=0 \
+--quantize_attn_act \
+--quantize_mlp_act \
+--linear_variant_attn="quantized_linear" \
+--linear_variant_mlp="quantized_linear" \
+--store_activations
+```
+
+## Saving Quantized Values
+
+The quantization/save_weights.py file can be used to save the quantized weights and activations (default to a .pkl file). 
+
+--device: Device to load the checkpoint ('cpu', 'cuda'). Default: 'cuda'.
+--out_dir: Directory of the checkpoint. Default: 'out'.
+--file_name: Output file name. Default: 'quantized_weights'.
+--file_type: Output file type ('pkl'). Default: 'pkl'.
+
+Below is an example command to save a model's quantized values to a .pkl file:
+
+```bash
+python3 quantization/save_weights.py \
+--out_dir="quantized_model" \
+--file_name="quantized_data" \
+--file_type="pkl"
+```
+
+## Visualizing Quantized Values
+
+The quantization/visualize.py file can be used to visualize the weights and activations. This script loads the quantized weights and activations and generates histograms or matrix heatmaps for analysis.
+
+Below is an example command to create a histogram for every quantized weight and activation of a model:
+
+```bash
+python3 quantization/visualize.py \
+--file_name="quantized_data.pkl" \
+--image_folder="quantized_images" \
+--weight="all" \
+--graph="histogram"
+```
 
 ## Quantization Methods
 
@@ -132,18 +181,3 @@ Our repo provides custom quantization options for activations and weights quanti
     - **Purpose**: Allows the model to stabilize before introducing quantization, which can improve training convergence.
 
 ---
-
-## Example Usage
-
-Below is an example training command to train a fully quantized model:
-
-```bash
-python3 train.py --quantize_linear_method="symmetric_quant" --activations_quant_method="symmetric_quant" --dtype="bfloat16" --quantization_warmup_iters=0 --quantize_attn_act --quantize_mlp_act --linear_variant_attn="quantized_linear" --linear_variant_mlp="quantized_linear" --store_activations
-```
-
-## Example Usage with Ternary Weights and 8-bit Activations
-Below is an example training command to train a fully quantized model with ternary weights:
-
-```bash
-python3 train.py --quantize_linear_method="ternary_quant" --activations_quant_method="symmetric_quant" --dtype="bfloat16" --quantization_warmup_iters=0 --quantize_attn_act --quantize_mlp_act --linear_variant_attn="quantized_linear" --linear_variant_mlp="quantized_linear" --quantize_attn_act_bits=8 --quantize_mlp_act_bits=8 --store_activations
-```
