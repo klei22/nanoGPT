@@ -200,7 +200,28 @@ def parse_args():
 
     # ACTIVATION VARIATIONS
     model_group.add_argument( "--activation_variant", type=str, default="gelu", choices=activation_variations)
-    model_group.add_argument( "--num_of_points", type=int, default="8")
+
+    ## Shifted Gelu
+    model_group.add_argument("--shifted_gelu_learnable_shift",  type=bool, default=True, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--shifted_gelu_initial_shift", type=float, default=0.0)
+
+    ## PiecewiseLearnableActivation - pla
+    model_group.add_argument("--pla_num_points", type=int, default=7)
+    model_group.add_argument("--pla_left_bound", type=float, default=-2.0)
+    model_group.add_argument("--pla_right_bound", type=float, default=2.0)
+
+    ## PiecewiseFullyLearnableActivation - pfla
+    model_group.add_argument("--pfla_num_points", type=int, default=200)
+    model_group.add_argument("--pfla_left_bound", type=float, default=-100.0)
+    model_group.add_argument("--pfla_right_bound", type=float, default=100.0)
+
+    ## PiecewiseFullyLearnableActivationLearnedEnds - pflale
+    model_group.add_argument("--pfla_le_num_points",   type=int,  default=30)
+    model_group.add_argument("--pfla_le_left_bound",  type=float, default=-10.0)
+    model_group.add_argument("--pfla_le_right_bound", type=float, default=10.0)
+
+    ## LearnedSplineActivation - lsa
+    model_group.add_argument("--lsa_num_knots", type=int, default=30)
 
     # LINEAR VARIATIONS
     linear_variants = ["linear", "bitlinear", "bitlinear_1p58", "bitlinear_optimized", "kan","quantized_linear"]

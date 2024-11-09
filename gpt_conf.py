@@ -186,8 +186,31 @@ class GPTConfig:
     krmsnorm_recompute_percentage: float = 0.05
 
     # Activation Alternatives
+
     activation_variant: str = "gelu"
-    num_of_points: int = "8"
+
+    ## Shifted Gelu
+    shifted_gelu_learnable_shift: bool = True
+    shifted_gelu_initial_shift: float = 0.0
+
+    ## PiecewiseLearnableActivation - pla
+    pla_num_points: int = 7
+    pla_left_bound: float = -2.0
+    pla_right_bound: float = 2.0
+
+    ## PiecewiseFullyLearnableActivation - pfla
+    pfla_num_points: int = 200
+    pfla_left_bound: float = -100.0
+    pfla_right_bound: float = 100.0
+
+    ## PiecewiseFullyLearnableActivationLearnedEnds - pflale
+    pfla_le_num_points: int = 30
+    pfla_le_left_bound: float = -10.0
+    pfla_le_right_bound: float = 10.0
+
+    ## LearnedSplineActivation - lsa
+    lsa_num_knots: int = 30
+
 
     # Linear Alternatives
     linear_variant_attn: str = "linear"

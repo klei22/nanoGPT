@@ -3,18 +3,18 @@ import torch.nn as nn
 
 # Custom Activation Variations
 class SquaredReLU(nn.Module):
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
 
     def forward(self, x):
         return torch.pow(torch.relu(x), 2)
 
 class GELUShifted(nn.Module):
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
 
-        self.learnable_shift = True
-        self.initial_shift = 0.75
+        self.learnable_shift = config.shifted_gelu_learnable_shift
+        self.initial_shift = config.shifted_gelu_initial_shift
 
         # Initialize shift parameter, either fixed or learnable
         if self.learnable_shift:
@@ -22,7 +22,6 @@ class GELUShifted(nn.Module):
         else:
             self.register_buffer("shift", torch.tensor(self.initial_shift))
 
-        # GELU activation for smooth nonlinearity
         self.gelu = nn.GELU()
 
     def forward(self, x):
@@ -31,12 +30,14 @@ class GELUShifted(nn.Module):
 
 
 class PiecewiseLearnableActivation(nn.Module):
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
-        self.num_of_points = 7
+        self.num_of_points = config.pla_num_points
+        self.left_bound = config.pla_left_bound
+        self.right_bound = config.pla_right_bound
 
         # Initialize learnable parameters for x and y values of intermediate points
-        self.x_vals = nn.Parameter(torch.linspace(-2, 2, self.num_of_points + 2)[1:-1])  # Exclude -2 and 2
+        self.x_vals = nn.Parameter(torch.linspace(self.left_bound, self.right_bound, self.num_of_points + 2)[1:-1])  # Exclude -2 and 2
 
         # Initialize y_vals using GELU output for corresponding x_vals
         gelu = nn.GELU()
@@ -57,22 +58,22 @@ class PiecewiseLearnableActivation(nn.Module):
             result = torch.where((x >= self.x_vals[i]) & (x < self.x_vals[i + 1]), segment, result)
 
         # Segment before the last (x_vals[-1] <= x < 2)
-        slope = (2 - self.y_vals[-1]) / (2 - self.x_vals[-1])
+        slope = (self.right_bound - self.y_vals[-1]) / (self.right_bound - self.x_vals[-1])
         intercept = self.y_vals[-1] - slope * self.x_vals[-1]
         segment = slope * x + intercept
-        result = torch.where((x >= self.x_vals[-1]) & (x < 2), segment, result)
+        result = torch.where((x >= self.x_vals[-1]) & (x < self.right_bound), segment, result)
 
         # Rightmost segment (x >= 2)
-        result = torch.where(x >= 2, x, result)  # x = y for x >= 2
+        result = torch.where(x >= self.right_bound, x, result)  # x = y for x >= 2
 
         return result
 
 class PiecewiseFullyLearnableActivation(nn.Module):
-    def __init__(self, left_bound=-100, right_bound=100, num_of_points=200):
+    def __init__(self, config):
         super().__init__()
-        self.num_of_points = num_of_points
-        self.left_bound = left_bound
-        self.right_bound = right_bound
+        self.num_of_points = config.pfla_num_of_points
+        self.left_bound = config.pfla_left_bound
+        self.right_bound = config.pfla_right_bound
 
         # Initialize learnable parameters for x and y values of intermediate points
         self.x_vals = nn.Parameter(torch.linspace(self.left_bound, self.right_bound, self.num_of_points + 2)[1:-1])  # Exclude left_bound and right_bound
@@ -107,13 +108,12 @@ class PiecewiseFullyLearnableActivation(nn.Module):
         return result
 
 
-
 class PiecewiseFullyLearnableActivationLearnedEnds(nn.Module):
-    def __init__(self, left_bound=-10, right_bound=10, num_of_points=30):
+    def __init__(self, config, left_bound=-10, right_bound=10, num_of_points=30):
         super().__init__()
-        self.num_of_points = num_of_points
-        self.left_bound = left_bound
-        self.right_bound = right_bound
+        self.num_of_points = config.num_of_points
+        self.left_bound = config.left_bound
+        self.right_bound = config.right_bound
 
         # Initialize learnable parameters for x and y values of intermediate points
         self.x_vals = nn.Parameter(
@@ -148,9 +148,9 @@ class PiecewiseFullyLearnableActivationLearnedEnds(nn.Module):
 
 class LearnedSplineActivation(nn.Module):
 
-    def __init__(self, num_knots=10, init_x_range=(-5, 5)):
+    def __init__(self, config, num_knots=10, init_x_range=(-5, 5)):
         super().__init__()
-        self.num_knots = num_knots
+        self.num_knots = config.lsa_num_knots
 
         # Initialize learnable x_vals and y_vals
         x_init = torch.linspace(init_x_range[0], init_x_range[1], num_knots)
@@ -230,27 +230,102 @@ class LearnedSplineActivation(nn.Module):
         return result
 
 
+class ActivationWrapper(nn.Module):
+    """Base wrapper class for PyTorch activation functions"""
+    def __init__(self, activation_class, config=None):
+        super().__init__()
+        self.activation = activation_class()
+
+    def forward(self, x):
+        return self.activation(x)
+
+# _Config classes for native PyTorch activations
+class CELU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.CELU, config)
+
+class ELU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.ELU, config)
+
+class GELU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.GELU, config)
+
+class GLU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.GLU, config)
+
+class LeakyReLU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.LeakyReLU, config)
+
+class Mish_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.Mish, config)
+
+class PReLU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.PReLU, config)
+
+class ReLU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.ReLU, config)
+
+class ReLU6_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.ReLU6, config)
+
+class RReLU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.RReLU, config)
+
+class SELU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.SELU, config)
+
+class Sigmoid_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.Sigmoid, config)
+
+class SiLU_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.SiLU, config)
+
+class Softplus_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.Softplus, config)
+
+class Softsign_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.Softsign, config)
+
+class Tanh_Config(ActivationWrapper):
+    def __init__(self, config=None):
+        super().__init__(nn.Tanh, config)
+
 activation_dictionary = {
-    "celu": nn.CELU(),
-    "elu": nn.ELU(),
-    "gelu": nn.GELU(),
-    "gelu_shifted": GELUShifted(),
-    "glu": nn.GLU(),
-    "leaky_relu": nn.LeakyReLU(),
-    "mish": nn.Mish(),
-    "piecewise": PiecewiseLearnableActivation(),
-    "pfla": PiecewiseFullyLearnableActivation(),
-    "pfla_le": PiecewiseFullyLearnableActivationLearnedEnds(),
-    "learned_spline": LearnedSplineActivation(),
-    "prelu": nn.PReLU(),
-    "relu": nn.ReLU(),
-    "relu6": nn.ReLU6(),
-    "rrelu": nn.RReLU(),
-    "selu": nn.SELU(),
-    "sigmoid": nn.Sigmoid(),
-    "silu": nn.SiLU(),
-    "softplus": nn.Softplus(),
-    "softsign": nn.Softsign(),
-    "squared_relu": SquaredReLU(),
-    "tanh": nn.Tanh(),
+    "celu": CELU_Config,
+    "elu": ELU_Config,
+    "gelu": GELU_Config,
+    "gelu_shifted": GELUShifted,
+    "glu": GLU_Config,
+    "leaky_relu": LeakyReLU_Config,
+    "mish": Mish_Config,
+    "piecewise": PiecewiseLearnableActivation,
+    "pfla": PiecewiseFullyLearnableActivation,
+    "pfla_le": PiecewiseFullyLearnableActivationLearnedEnds,
+    "learned_spline": LearnedSplineActivation,
+    "prelu": PReLU_Config,
+    "relu": ReLU_Config,
+    "relu6": ReLU6_Config,
+    "rrelu": RReLU_Config,
+    "selu": SELU_Config,
+    "sigmoid": Sigmoid_Config,
+    "silu": SiLU_Config,
+    "softplus": Softplus_Config,
+    "softsign": Softsign_Config,
+    "squared_relu": SquaredReLU,
+    "tanh": Tanh_Config,
 }
+

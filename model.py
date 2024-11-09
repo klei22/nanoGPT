@@ -397,7 +397,7 @@ class MLP(nn.Module):
             self.kan = linear_dictionary["kan"](config.n_embd, config.n_embd, config=config)
         else:
             # Select activation variant
-            self.activation_variant = activation_dictionary[config.activation_variant]
+            self.activation_variant = activation_dictionary[config.activation_variant](config=config)
 
             # Sets the class of linear for MLP
             self.linear_variant_mlp_up = linear_dictionary[set_variant(config.linear_variant_mlp_up, config.linear_variant_mlp)]
