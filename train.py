@@ -1105,6 +1105,11 @@ class Trainer:
         local_iter_num = 0
         running_mfu = -1.0
         num_steps_with_worse_loss = 0
+        # TODO: Move statistics labels to statistics scripts
+        graph_y_labels = []
+        for layer in range(self.args.n_layer):
+            for head in range(self.args.n_head):
+                graph_y_labels.append(f"Layer {layer} Head {head}")
 
         # Create progress bar
         progress = Progress()
