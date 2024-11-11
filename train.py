@@ -73,6 +73,7 @@ def parse_args():
     training_group.add_argument('--sample_only', default=False, action=argparse.BooleanOptionalAction, help="Run only the sampling process and exit")
 
     # Checkpoint args
+    training_group.add_argument('--save_major_ckpt_interval', default=None, type=int, help="Interval for saving major checkpoints.")
     training_group.add_argument('--only_save_checkpoint_at_end', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--always_save_checkpoint', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--patience', default=None, type=int, help="if set, will stop training if the number of evaluations since val loss was seen to decrease exceeds 'patience' setting.")
@@ -470,7 +471,6 @@ def parse_args():
     logging_group.add_argument('--log_project', default='out-test', type=str)
     logging_group.add_argument('--log_run_name', default='logs-test', type=str)
     logging_group.add_argument('--timestamp', default='', type=str)
-    logging_group.add_argument('--save_nan_checkpoint', default=False, action=argparse.BooleanOptionalAction)
 
     # Module And Parameter Logging and Plots of Summary Statistics
     model_group.add_argument('--softmax_io_logging', default=False, action=argparse.BooleanOptionalAction, help="logs inputs and outputs of supported softmaxes")
@@ -977,6 +977,7 @@ class Trainer:
                 }
             print("test")
             out['val'] = out['datasets'][self.args.dataset]['val']
+            out['train'] = out['datasets'][self.args.dataset]['train']
             print(out['val'])
 
         else:
@@ -1115,12 +1116,24 @@ class Trainer:
                 "vram": vram_allocated,
             })
 
+    def save_checkpoint(self, filename):
+        checkpoint = {
+            'model': self.raw_model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'model_args': self.model_args,
+            'iter_num': self.iter_num,
+            'best_val_loss': self.best_val_loss,
+            'config': vars(self.args),
+        }
+        torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
+
     def train(self):
         self.X, self.Y = self.get_batch('train')
         t0 = time.time()
         local_iter_num = 0
         running_mfu = -1.0
         num_steps_with_worse_loss = 0
+        # TODO: Move statistics labels to statistics scripts
         graph_y_labels = []
         for layer in range(self.args.n_layer):
             for head in range(self.args.n_head):
@@ -1148,19 +1161,19 @@ class Trainer:
                         print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
                         self.log_metrics(losses, lr, running_mfu, vram_allocated, self.iter_num)
 
-                    # TODO: Support NaN checks for dataset_lists
                     if math.isnan(losses["val"]):
-                        checkpoint = {
-                            'model': self.raw_model.state_dict(),
-                            'optimizer': self.optimizer.state_dict(),
-                            'model_args': self.model_args,
-                            'iter_num': self.iter_num,
-                            'best_val_loss': self.best_val_loss,
-                            'nan_iter_num' : 0,
-                            'nan' : True,
-                            'config': vars(self.args),
-                        }
-                        torch.save(checkpoint, os.path.join(self.args.out_dir, 'ckpt.pt'))
+                        # If val loss is nan, then exit.
+                        with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
+                            print("Exiting with nan")
+                            file.write(str(self.iter_num))
+
+                    if self.args.save_major_ckpt_interval is not None:
+                        if self.iter_num % self.args.save_major_ckpt_interval == 0:
+                            major_ckpt_name = str(self.iter_num) +'.pt'
+                            # Save major checkpoint
+                            self.save_checkpoint(major_ckpt_name)
+                            print(f"Saved major checkpoint to {self.args.out_dir}/{major_ckpt_name}")
+
                     if losses['val'] < self.best_val_loss or self.args.always_save_checkpoint:
                         if losses['val'] < self.best_val_loss:
                             self.iter_num_best_val_loss = self.iter_num
@@ -1171,20 +1184,10 @@ class Trainer:
                             # Reset early exit counter
                             num_steps_with_worse_loss = 0
                         if self.iter_num > 0:
-                            checkpoint = {
-                                'model': self.raw_model.state_dict(),
-                                'optimizer': self.optimizer.state_dict(),
-                                'model_args': self.model_args,
-                                'iter_num': self.iter_num,
-                                'best_val_loss': self.best_val_loss,
-                                'nan_iter_num' : None,
-                                'nan' : None,
-                                'config': vars(self.args),
-                            }
                             print(f"saving checkpoint to {self.args.out_dir}")
                             # Save checkpoint
-                            torch.save(checkpoint, os.path.join(self.args.out_dir, 'ckpt.pt'))
-                        # Try new checkpoint if better val loss
+                            self.save_checkpoint('ckpt.pt')
+                        # Sample
                         if self.args.max_sample_tokens:
                             self.sample_and_print(self.args.max_sample_tokens, start_tokens=self.args.sample_start_tokens)
                         # export embedding table to npy file
@@ -1251,28 +1254,16 @@ class Trainer:
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
                     print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%")
                     if math.isnan(lossf):
-                        if self.args.save_nan_checkpoint:
-                            checkpoint = {
-                                'model': self.raw_model.state_dict(),
-                                'optimizer': self.optimizer.state_dict(),
-                                'model_args': self.model_args,
-                                'iter_num': self.iter_num_best_val_loss,
-                                'best_val_loss': self.best_val_loss,
-                                'nan_iter_num' : self.iter_num,
-                                'nan' : True,
-                                'config': vars(self.args),
-                            }
-                            print(f"saving checkpoint to {self.args.out_dir}")
-                            torch.save(checkpoint, os.path.join(self.args.out_dir, 'ckpt.pt'))
-                        sys.exit("Exiting training loss is NaN")
+                        # If training loss is nan, then exit.
+                        with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
+                            file.write(str(self.iter_num))
+                            sys.exit("Exiting training loss is NaN")
 
                     vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
                     self.log_metrics_non_validation(lossf, running_mfu, vram_allocated, self.iter_num)
 
-
                 if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
                     create_statistics(self, graph_y_labels)
-
 
                 self.iter_num += 1
                 local_iter_num += 1
@@ -1283,18 +1274,10 @@ class Trainer:
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
                     if self.args.only_save_checkpoint_at_end:
-                        checkpoint = {
-                            'model': self.raw_model.state_dict(),
-                            'optimizer': self.optimizer.state_dict(),
-                            'model_args': self.model_args,
-                            'iter_num': self.iter_num,
-                            'best_val_loss': self.best_val_loss,
-                            'nan_iter_num' : None,
-                            'nan' : None,
-                            'config': vars(self.args),
-                        }
-                        print(f"saving checkpoint to {self.args.out_dir}")
-                        torch.save(checkpoint, os.path.join(self.args.out_dir, 'ckpt.pt'))
+
+                        self.save_checkpoint('ckpt.pt')
+                        print(f"Saved checkpoint to {self.args.out_dir}")
+
                         # Sample if set
                         if self.args.max_sample_tokens:
                             self.sample_and_print(self.args.max_sample_tokens, start_tokens=self.args.sample_start_tokens)
