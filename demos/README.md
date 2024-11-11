@@ -16,5 +16,3 @@ Example for calling from repo root directory:
 python3 demos/check_ckpt_for_gelu_shift.py \
         --ckpt_path out/ckpt.pt
 ```
-
-##
