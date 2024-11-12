@@ -22,6 +22,10 @@ class QuantizedLinear(nn.Linear):
 
         self.weight_bits = bits
         self.quant_method = method
+        self.start_quant_level = config.start_quant_level
+        self.quant_scheduler = config.quant_scheduler
+        self.full_quant_iteration = config.full_quant_iteration
+        self.eval_interval = config.eval_interval
 
         if self.weight_bits < 1:
             raise ValueError(f"weight_bits={self.weight_bits} must be higher than 0 ")
@@ -47,7 +51,7 @@ class QuantizedLinear(nn.Linear):
         assert self.training, "Should be called only during training"
 
         # Applies the fake quantization to the weights
-        self._fake_quantized_weight = _fake_quantize(self.weight, self.weight_bits, self.quant_method)
+        self._fake_quantized_weight = _fake_quantize(self.weight, self.training, self.quant_scheduler, self.start_quant_level, self.full_quant_iteration, self.eval_interval, self._step.item(), self.weight_bits, self.quant_method)
         # Uses the quantized weights to compute the output using F.linear
         out = F.linear(input, self._fake_quantized_weight, self.bias)
 

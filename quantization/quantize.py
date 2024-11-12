@@ -16,7 +16,18 @@ def ternary_quantize(tensor, bits, causal_mask=False):
         scale = tensor.abs().mean().clamp(min=1e-5)
     result = (tensor / scale).round().clamp(-1, 1).to(dtype=torch.int8)
     return torch.tensor([0], device=tensor.device), scale, result
-
+    
+def calculate_quant_level(training, quant_scheduler, start_quant_level, full_quant_iter, iter_num):
+    if full_quant_iter == None:
+        raise ValueError("Full quant iteration was not specified.")
+    if iter_num == None:
+        raise ValueError("Iter_num was not passed to GPT model")
+    if not training:
+        return 1
+    if quant_scheduler == "static":
+        return start_quant_level
+    elif quant_scheduler == "linear":
+        return min(iter_num / full_quant_iter + (full_quant_iter * start_quant_level), 1)
     
 def symmetric_quantize(tensor, bits, causal_mask=False):
     """
@@ -112,20 +123,36 @@ def dequantize(zero_point, scale, tensor, causal_mask=False):
     :return: Dequantized weights
     """
     dequantized = (tensor - zero_point) * scale
-    if causal_mask:
-        # Create a mask for the upper triangular part
-        upper_tri_mask = torch.triu(torch.ones_like(dequantized), diagonal=1).bool()
-
-        # Set the upper triangular part to -inf
-        dequantized[upper_tri_mask] = -float('inf')
     return dequantized
 
-def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, causal_mask=False):
+def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, iter_num, causal_mask=False):
     zero_point, scale, act = quantize_dictionary[quant_method](tensor, num_bits, causal_mask=causal_mask)
     setattr(obj, activation, act)
     setattr(obj, f"{activation}_scale", scale)
     setattr(obj, f"{activation}_zero_point", zero_point)
-    return dequantize(zero_point, scale, act, causal_mask=causal_mask)
+    dequantized = dequantize(zero_point, scale, act, causal_mask=causal_mask)
+    if causal_mask:
+        # Create a mask for the upper triangular part
+        upper_tri_mask = torch.triu(torch.ones_like(tensor), diagonal=1).bool()
+
+        # Set the upper triangular part to -inf
+        tensor[upper_tri_mask] = 0
+
+    # If scheduler is set, then we need to calculate the current quantization level
+    if obj.quant_scheduler != None:
+        quant_level = calculate_quant_level(obj.training, obj.quant_scheduler, obj.start_quant_level, obj.full_quant_iteration, iter_num)
+        # print quantization level for every evaluation interval
+        if obj.training and iter_num % obj.eval_interval == 0:
+            print("quant level: ", quant_level)
+        # adds quantization error to the original tensor
+        result = tensor + quant_level * (dequantized - tensor).detach()
+    else:
+        result = dequantized
+
+    if causal_mask:
+        result[upper_tri_mask] = -float('inf')
+
+    return result
 
 class FakeLinearQuantizationFunction(torch.autograd.Function):
     """Simulates error caused by quantization. Uses Straight-Through Estimator for Back prop
@@ -134,7 +161,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input, bits=7, quantization_method="affine_quant"):
+    def forward(ctx, input, training, quant_scheduler, start_quant_level, full_quant_iter, eval_interval, steps, bits=7, quantization_method="affine_quant"):
         """
         Forward pass
         :param ctx: Context object to store information for the backward pass (not used in this case)
@@ -147,14 +174,22 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
         # Dequantize the quantized values using the dequantize function.
         # Return the dequantized tensor, which approximates the input tensor but includes the quantization error.
         zero_point, norm, quantized_weight = quantize_dictionary[quantization_method](input, bits)
-        return dequantize(zero_point, norm, quantized_weight)
+        # If scheduler is set, then we need to calculate the current quantization level
+        dequantized = dequantize(zero_point, norm, quantized_weight)
+        if quant_scheduler != None:
+            quant_level = calculate_quant_level(training, quant_scheduler, start_quant_level, full_quant_iter, steps)
+            if training and steps % eval_interval == 0:
+                print("quant level: ", quant_level)
+            
+            return input + quant_level * (dequantized - input).detach()
+        return dequantized
 
     @staticmethod
     def backward(ctx, grad_output):
         # Straight-Through Estimator (STE): passes grad_output through as the gradient with respect to the input
         # gradient is approximated by simply passing the gradient from the output directly to the input, 
         # ignoring the quantization operation
-        return grad_output, None, None
+        return grad_output, None, None, None, None, None, None, None, None
 
 quantize_dictionary = {
     "ternary_quant": ternary_quantize,
