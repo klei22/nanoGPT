@@ -17,7 +17,7 @@ def ternary_quantize(tensor, bits, causal_mask=False):
     result = (tensor / scale).round().clamp(-1, 1).to(dtype=torch.int8)
     return torch.tensor([0], device=tensor.device), scale, result
     
-def calculate_quant_level(training, quant_scheduler, start_quant_level, max_iters, iter_num):
+def calculate_quant_level(training, quant_scheduler, start_quant_level, full_quant_iter, iter_num):
     if iter_num == None:
         raise ValueError("Iter_num was not passed to GPT model")
     if not training:
@@ -25,7 +25,7 @@ def calculate_quant_level(training, quant_scheduler, start_quant_level, max_iter
     if quant_scheduler == "static":
         return start_quant_level
     elif quant_scheduler == "linear":
-        return min(2 * iter_num / max_iters + (max_iters * start_quant_level), 1)
+        return min(iter_num / full_quant_iter + (full_quant_iter * start_quant_level), 1)
     
 def symmetric_quantize(tensor, bits, causal_mask=False):
     """
@@ -138,7 +138,7 @@ def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, iter_num,
 
     # If scheduler is set, then we need to calculate the current quantization level
     if obj.quant_scheduler != None:
-        quant_level = calculate_quant_level(obj.training, obj.quant_scheduler, obj.start_quant_level, obj.max_iters, iter_num)
+        quant_level = calculate_quant_level(obj.training, obj.quant_scheduler, obj.start_quant_level, obj.full_quant_iteration, iter_num)
         # print quantization level for every evaluation interval
         if obj.training and iter_num % obj.eval_interval == 0:
             print("quant level: ", quant_level)
@@ -159,7 +159,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input, training, quant_scheduler, start_quant_level, max_iters, eval_interval, steps, bits=7, quantization_method="affine_quant"):
+    def forward(ctx, input, training, quant_scheduler, start_quant_level, full_quant_iter, eval_interval, steps, bits=7, quantization_method="affine_quant"):
         """
         Forward pass
         :param ctx: Context object to store information for the backward pass (not used in this case)
@@ -175,7 +175,7 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
         # If scheduler is set, then we need to calculate the current quantization level
         dequantized = dequantize(zero_point, norm, quantized_weight)
         if quant_scheduler != None:
-            quant_level = calculate_quant_level(training, quant_scheduler, start_quant_level, max_iters, steps)
+            quant_level = calculate_quant_level(training, quant_scheduler, start_quant_level, full_quant_iter, steps)
             if training and steps % eval_interval == 0:
                 print("quant level: ", quant_level)
             

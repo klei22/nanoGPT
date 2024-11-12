@@ -110,7 +110,7 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config, fire_pos_enc=None):
         super().__init__()
 
-        self.max_iters = config.max_iters
+        self.full_quant_iteration = config.full_quant_iteration
         self.eval_interval = config.eval_interval
         self.start_quant_level = config.start_quant_level
         self.quant_scheduler = config.quant_scheduler
@@ -395,7 +395,7 @@ class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.max_iters = config.max_iters
+        self.full_quant_iteration = config.full_quant_iteration
         self.eval_interval = config.eval_interval
 
         # Select "mlp variant"

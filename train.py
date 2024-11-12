@@ -211,6 +211,8 @@ def parse_args():
     model_group.add_argument( "--linear_std_init", type=float, default=0.02)
 
     # Quantization
+    model_group.add_argument("--full_quant_iteration", type=int, default=1750,
+                             help="The iteration where the model reaches full quantization. The increase from start_quant_level to full quantization is determined by the quant_scheduler.")
     model_group.add_argument("--start_quant_level", type=float, default=0.0,
                              help="Starting level of quantization. A quant level of 0 means that there is no quantization is occurring. A quant level of 1 is full quantization.")
     model_group.add_argument("--quant_scheduler", type=str, default=None, choices=["static", "linear"],
@@ -559,7 +561,6 @@ class Trainer:
         # TODO only add if they are defined from the argparse
         self.model_args = {action.dest: getattr(self.args, action.dest) for action in self.model_group._group_actions}
         self.model_args['vocab_size'] = None
-        self.model_args['max_iters'] = self.args.max_iters
         self.model_args['eval_interval'] = self.args.eval_interval
 
         # Training settings
