@@ -18,6 +18,8 @@ def ternary_quantize(tensor, bits, causal_mask=False):
     return torch.tensor([0], device=tensor.device), scale, result
     
 def calculate_quant_level(training, quant_scheduler, start_quant_level, full_quant_iter, iter_num):
+    if full_quant_iter == None:
+        raise ValueError("Full quant iteration was not specified.")
     if iter_num == None:
         raise ValueError("Iter_num was not passed to GPT model")
     if not training:

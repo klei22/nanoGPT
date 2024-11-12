@@ -205,7 +205,7 @@ class GPTConfig:
     # Quantizations
     start_quant_level: float = 0
     quant_scheduler: str = None
-    full_quant_iteration: int = 1750
+    full_quant_iteration: int = None
     # Needed for quant_level printing
     eval_interval: int = 250
 
