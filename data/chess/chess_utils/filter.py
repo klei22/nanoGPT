@@ -30,6 +30,7 @@ def main():
     parser.add_argument('-i', '--input_file', type=str, default='json/parsed_games.json', help="Path to the input JSON file containing the games.")
     parser.add_argument('-o', '--output_file', type=str, default='filtered_json/filtered_games.json', help="Path to the output JSON file to store filtered games.")
     parser.add_argument('--min_elo', type=int, default=1500, help="Minimum Elo rating for both players. Default is 1500.")
+    parser.add_argument('--max_elo', type=int, default=1600, help="Minimum Elo rating for both players. Default is 1500.")
 
     args = parser.parse_args()
 
