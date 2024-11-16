@@ -23,9 +23,9 @@ if [ ! -f "json/parsed_games.json" ]; then
 fi
 
 # Process into skill buckets
-for (( i = 15; i < 25; i++ )); do
+for (( i = 15; i < 2; i++ )); do
   label="${i}_$((i + 1))"
-  python3 chess_utils/filter.py -o "filtered_json/filtered_games_${label}.json"
+  python3 chess_utils/filter.py -o "filtered_json/filtered_games_${label}.json" --min_elo "${i}00" --max_elo "$((i + 1))00"
   python3 chess_utils/extract_moveset.py --json_file "filtered_json/filtered_games_${label}.json"
   python3 chess_utils/create_chessboard_input.py --output "input_${label}.txt"
 done
