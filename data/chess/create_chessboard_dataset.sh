@@ -12,9 +12,17 @@ fi
 set -x
 
 # Create files
-python3 chess_utils/get_dataset.py
-python3 chess_utils/process_games.py
-python3 chess_utils/moves_to_json.py
+if [ ! -f "datasets/lichess_games.zst" ]; then
+  python3 chess_utils/get_dataset.py
+fi
+if [ ! -f "datasets/lichess_games.txt" ]; then
+  python3 chess_utils/process_games.py
+fi
+if [ ! -f "json/parsed_games.json" ]; then
+  python3 chess_utils/moves_to_json.py
+fi
+
+# Use defaults
 python3 chess_utils/filter.py
 python3 chess_utils/extract_moveset.py
 python3 chess_utils/create_chessboard_input.py
