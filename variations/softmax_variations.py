@@ -192,7 +192,6 @@ class Strongermax(nn.Module):
         self.strength = config.strongermax_strength
         self.subtract_max = config.strongermax_use_xmax
         self.xmax_guess = config.strongermax_xmax_guess
-        self.sum_to_1 = config.strongermax_sum_to_1
         self.divisor = config.strongermax_divisor
         self.div_by_seq_len = config.div_by_seq_len
 

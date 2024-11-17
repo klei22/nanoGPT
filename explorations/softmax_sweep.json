@@ -49,7 +49,7 @@
           "conditions": [["softmax_variant_attn", "saturatingconsmax"]],
           "options": ["50.0", "100.0", "200.0"]
       },
-      "strongermax_sum_to_1": {
+      "strongermax_div_by_sum_of_terms": {
           "conditions": [["softmax_variant_attn", "strongermax"]],
           "options": [true, false]
       },
