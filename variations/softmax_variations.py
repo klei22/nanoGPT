@@ -183,7 +183,7 @@ class ConSmaxQuan(nn.Module):
 
 # Like softmax, but parameterized to permit exploration
 class Strongermax(nn.Module):
-    """ Softmax with ability to increase to 'stronger' bases """
+    """ Exploration of Elemental Modifications of Softmax Equation """
     def __init__(self, config, dim=-1):
         super().__init__()
         self.dim = dim
@@ -195,7 +195,25 @@ class Strongermax(nn.Module):
         self.sum_to_1 = config.strongermax_sum_to_1
         self.divisor = config.strongermax_divisor
         self.div_by_seq_len = config.div_by_seq_len
+
+        # Overflow Recompute
         self.overflow_recompute = config.strongermax_overflow_recompute
+        self.overflow_recompute_value = config.strongermax_overflow_recompute_value
+
+        # Set optional clamping (off by default)
+        self.clamp_inputs = config.strongermax_clamping
+        self.clamp_value = config.strongermax_clamp_value
+
+        # Use denominator
+        self.div_by_sum_of_terms = config.strongermax_div_by_sum_of_terms
+
+        # Set optional temperature (already divided by sqrt head dimension)
+
+        if self.use_learned_temperature_factor:
+            self.temperature_factor = nn.Parameter(torch.Tensor([config.strongermax_temperature_factor]))
+        else:
+            self.temperature_factor = config.strongermax_temperature_factor
+
         self.softmax_io_log_interval = config.softmax_io_log_interval
         self.iter_num = 0
 
@@ -208,31 +226,40 @@ class Strongermax(nn.Module):
             self.inputs = []
             self.outputs = []
 
+        # self.obo_offset default is 0.0, https://www.evanmiller.org/attention-is-off-by-one.html
+        if self.use_learned_obo:
+            self.obo_offset = nn.Parameter(torch.Tensor([config.strongermax_obo]))
+        else:
+            self.obo_offset = config.strongermax_obo
+
     def forward(self, x):
-        x_adj = None
+        x_adj = x
+
+        if self.clamp_inputs:
+            x_adj[x > self.clamp_value] = self.clamp_value
 
         if self.subtract_max:
             # Guessing correctly instead of subtracting real max can save a pass
             # else we use real xmax
-            max_x = x.max(dim=self.dim, keepdim=True).values
+            max_x = x_adj.max(dim=self.dim, keepdim=True).values
+
             if self.overflow_recompute:
-                if (torch.max(x - self.xmax_guess)) > 88:
-                    x_adj = x - max_x
+                if (torch.max(x_adj - self.xmax_guess)) > self.overflow_recompute_value:
+                    x_adj = x_adj - max_x
                 else:
-                    x_adj = x - self.xmax_guess
+                    x_adj = x_adj - self.xmax_guess
             else:
                 if self.xmax_guess:
-                    x_adj = x - self.xmax_guess
+                    x_adj = x_adj - self.xmax_guess
                 else:
-                    x_adj = x - max_x
-        else:
-            x_adj = x
+                    x_adj = x_adj - max_x
 
-        result = torch.pow(self.strength, x_adj)
+        result = torch.pow(self.strength, x_adj / self.temperature_factor)
 
-        if self.sum_to_1:
-            result = result / result.sum(dim=self.dim, keepdim=True)
+        if self.div_by_sum_of_terms:
+            result = result / (self.obo_offset + result.sum(dim=self.dim, keepdim=True))
 
+        # TODO: Fix to divide by position from first part of context
         if self.div_by_seq_len:
             seq_len = x.shape[self.dim]
             result = result / seq_len

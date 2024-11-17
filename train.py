@@ -420,12 +420,24 @@ def parse_args():
     model_group.add_argument("--sigsoftmax_base", type=float, default=2.0)
 
     ### Strongermax Options - Testing Incremental Adjustments to Regular Softmax
-    model_group.add_argument("--strongermax_strength", type=float, default=2.718)
-    model_group.add_argument('--strongermax_sum_to_1', default=True, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--strongermax_strength", type=float, default=math.e)
+    model_group.add_argument('--strongermax_div_by_sum_of_terms', default=True, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--strongermax_divisor", type=float, default=1.0)
     model_group.add_argument('--strongermax_use_xmax', default=True, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--strongermax_xmax_guess', type=float, default=None)
-    model_group.add_argument('--strongermax_overflow_recompute', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--strongermax_overflow_recompute', default=False)
+
+    ### Strongermax Clamping
+    model_group.add_argument('--strongermax_clamping', default=False)
+    model_group.add_argument('--strongermax_clamp_value', type=float, default=88.0)
+
+    ### From https://www.evanmiller.org/attention-is-off-by-one.html
+    model_group.add_argument('--strongermax_obo', type=float, default=0.0)
+    model_group.add_argument('--strongermax_use_learned_obo', default=False, action=argparse.BooleanOptionalAction)
+
+    ### Temperature adjustment factor
+    model_group.add_argument('--strongermax_temperature_factor', type=float, default=1.0)
+    model_group.add_argument('--strongermax_use_learned_temperature_factor', default=False, action=argparse.BooleanOptionalAction)
 
     ### ExpPolymax Options
     model_group.add_argument('--exppolymax_use_euler_base', default=True, action=argparse.BooleanOptionalAction)
