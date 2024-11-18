@@ -81,6 +81,7 @@ def parse_args():
     training_group.add_argument('--gpt2_type', default='gpt2', type=str)
     training_group.add_argument('--prev_run_ckpt', default='', type=str)
     training_group.add_argument('--csv_ckpt_dir', default='', type=str)
+    training_group.add_argument('--init_from_ckpt', default='ckpt.pt', type=str, help="if save_major_ckpt_interval was set, can use to init from specific ckpts")
 
     # Data args
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)
@@ -628,11 +629,11 @@ class Trainer:
             self.best_val_loss = 1e9 # really big number
         elif self.args.init_from == 'resume' or self.args.init_from == 'prev_run':
             if self.args.init_from == 'resume':
-                ckpt_path = os.path.join(self.args.out_dir, 'ckpt.pt')
+                ckpt_path = os.path.join(self.args.out_dir, self.args.init_from_ckpt)
                 checkpoint = torch.load(ckpt_path, map_location=self.device)
                 self.iter_num = checkpoint['iter_num']
             else:
-                ckpt_path = os.path.join(self.args.prev_run_ckpt, 'ckpt.pt')
+                ckpt_path = os.path.join(self.args.prev_run_ckpt, self.args.init_from_ckpt)
                 checkpoint = torch.load(ckpt_path, map_location=self.device)
                 self.iter_num = 0
 
