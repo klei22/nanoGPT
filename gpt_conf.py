@@ -133,6 +133,7 @@ class GPTConfig:
 
     strongermax_xmax_guess: float = 1.0
     strongermax_overflow_recompute: bool = False
+    strongermax_overflow_recompute_value: float = 88.0
 
     strongermax_clamping: bool = False
     strongermax_clamp_value: float = 88.0

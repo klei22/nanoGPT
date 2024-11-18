@@ -425,10 +425,11 @@ def parse_args():
     model_group.add_argument("--strongermax_divisor", type=float, default=1.0)
     model_group.add_argument('--strongermax_use_xmax', default=True, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--strongermax_xmax_guess', type=float, default=None)
-    model_group.add_argument('--strongermax_overflow_recompute', default=False)
+    model_group.add_argument('--strongermax_overflow_recompute', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--strongermax_overflow_recompute_value', type=float, default=88.0)
 
     ### Strongermax Clamping
-    model_group.add_argument('--strongermax_clamping', default=False)
+    model_group.add_argument('--strongermax_clamping', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--strongermax_clamp_value', type=float, default=88.0)
 
     ### From https://www.evanmiller.org/attention-is-off-by-one.html

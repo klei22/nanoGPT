@@ -207,6 +207,7 @@ class Strongermax(nn.Module):
         self.div_by_sum_of_terms = config.strongermax_div_by_sum_of_terms
 
         # Set optional temperature (already divided by sqrt head dimension)
+        self.use_learned_temperature_factor = config.strongermax_use_learned_temperature_factor
 
         if self.use_learned_temperature_factor:
             self.temperature_factor = nn.Parameter(torch.Tensor([config.strongermax_temperature_factor]))
@@ -226,6 +227,7 @@ class Strongermax(nn.Module):
             self.outputs = []
 
         # self.obo_offset default is 0.0, https://www.evanmiller.org/attention-is-off-by-one.html
+        self.use_learned_obo = config.strongermax_use_learned_obo
         if self.use_learned_obo:
             self.obo_offset = nn.Parameter(torch.Tensor([config.strongermax_obo]))
         else:

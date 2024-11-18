@@ -8,7 +8,7 @@
     "block_size": ["256"],
     "device": ["cuda"],
     "dtype": ["bfloat16"],
-    "dataset": ["openwebtext"],
+    "dataset": ["cosmopedia_100k"],
     "compile": [true],
     "softmax_variant_attn": ["strongermax"],
     "strongermax_strength": ["2.0", "2.5", "2.718", "3.0", "3.5", "4.0"],
