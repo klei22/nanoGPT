@@ -16,7 +16,7 @@ def filter_games(input_file_path, output_file_path, min_elo):
     for game in games:
         white_elo = is_valid_elo(game['WhiteElo'])
         black_elo = is_valid_elo(game['BlackElo'])
-        if game['Termination'] == 'Normal' and white_elo and black_elo and white_elo >= min_elo and black_elo >= min_elo:
+        if game['Termination'] == 'Normal' and white_elo and black_elo and white_elo >= min_elo and black_elo >= min_elo and white_elo < max_elo and black_elo < max_elo:
             filtered_games.append(game)
 
     # Ensure the output directory exists
