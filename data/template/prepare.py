@@ -1,3 +1,5 @@
+import json
+import os
 import argparse
 import numpy as np
 from tokenizers import (
@@ -9,8 +11,7 @@ from tokenizers import (
     LinesTokenizer,
     CharTokenizer,
 )
-from utils import save_args
-from tqdm import tqdm  # For progress bars
+from tqdm import tqdm
 import os
 
 
@@ -41,6 +42,11 @@ def parse_arguments():
     parser.add_argument("--max_token", type=int, default=65535, help="Maximum value for numeric tokens")
     return parser.parse_args()
 
+
+def save_args(args, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, 'args.json'), 'w') as f:
+        json.dump(vars(args), f, indent=4)
 
 def main():
     args = parse_arguments()
