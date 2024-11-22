@@ -1,0 +1,25 @@
+name: Test All Tokenizations
+on: [push, pull_request]
+jobs:
+  Install-And-Test-Softmax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - run: echo "${{ github.repository }} repository has been cloned to the runner."
+      - run: echo "Currently on ${{ github.ref }} branch"
+      - name: ls of directory
+        run: |
+          ls ${{ github.workspace }}
+      - name: Install CPU Dependencies
+        run: |
+          python3 -m venv venv
+          source venv/bin/activate
+          python3 -m pip install --upgrade pip
+          python3 -m pip install numpy tdqm sentencepiece tiktoken rich
+      - name: Test all tokenizers
+        run: |
+          source venv/bin/activate
+          cd data/template
+          python3 tests.py
+
