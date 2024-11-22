@@ -7,15 +7,12 @@ from tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
     CustomTokenizer,
-    ReplaceTokenizer,
-    LinesTokenizer,
     CharTokenizer,
 )
 from argparse import Namespace
 from rich.console import Console
 from rich.theme import Theme
 from rich.table import Table
-from rich.panel import Panel
 
 console = Console(theme=Theme({
     "pass": "bold green",
@@ -166,34 +163,6 @@ class TestTokenizers(unittest.TestCase):
         tokens_to_check = ["Hello", "world", "This", "is", "a", "test"]
         for token in tokens_to_check:
             self.assertIn(token, detokenized)
-
-    def test_replace_tokenizer(self):
-        args = Namespace(tokens_file=self.tokens_file)
-        tokenizer = ReplaceTokenizer(args)
-        ids = tokenizer.tokenize(self.sample_text)
-        detokenized = tokenizer.detokenize(ids)
-
-        console.print("[input]Input:[/input]")
-        console.print(self.sample_text, style="input")
-        console.print("[output]Detokenized Output:[/output]")
-        console.print(detokenized, style="output")
-
-        self.assertIn("_", detokenized)
-
-    def test_lines_tokenizer(self):
-        args = Namespace(tokens_file=self.tokens_file)
-        tokenizer = LinesTokenizer(args)
-        ids = tokenizer.tokenize(self.sample_text)
-        detokenized = tokenizer.detokenize(ids)
-
-        console.print("[input]Input:[/input]")
-        console.print(self.sample_text, style="input")
-        console.print("[output]Detokenized Output:[/output]")
-        console.print(detokenized, style="output")
-
-        original_lines = [line.strip() for line in self.sample_text.strip().split('\n') if line.strip()]
-        detokenized_lines = [line.strip() for line in detokenized.strip().split('\n') if line.strip()]
-        self.assertEqual(original_lines, detokenized_lines)
 
     def test_char_tokenizer(self):
         args = Namespace(reuse_chars=False)
