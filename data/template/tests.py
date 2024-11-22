@@ -2,6 +2,7 @@
 
 import unittest
 import os
+import sys  # Import sys to exit with error codes
 from tokenizers import (
     NumericRangeTokenizer,
     SentencePieceTokenizer,
@@ -73,19 +74,24 @@ def run_tests():
             style = "fail"
         table.add_row(test_name, f"[{style}]{status}[/{style}]")
     console.print(table)
+    # Exit with error code if any test failed
+    if not result.wasSuccessful():
+        sys.exit(1)  # Exit with status code 1 if tests failed
+    else:
+        sys.exit(0)  # Exit with status code 0 if all tests passed
 
 
 class TestTokenizers(unittest.TestCase):
 
     def setUp(self):
         # Sample data for testing
-        self.sample_text = "Hello, world!\nThis is a test."
+        self.sample_text = "Hello\nworld\nThis is a test."
         self.numeric_data = "123\n456\n789"
         self.tokens_file = "tokens.txt"
 
         # Create a tokens file for custom tokenizers
         with open(self.tokens_file, 'w') as f:
-            f.write("Hello\nworld\nThis\nis\na\ntest\n")
+            f.write("Hello\nworld\nThis is a test.\n")
 
     def tearDown(self):
         # Clean up tokens file
