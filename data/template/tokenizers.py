@@ -1,5 +1,3 @@
-# tokenizers.py
-
 import os
 import pickle
 import tempfile
@@ -207,38 +205,37 @@ class CustomTokenizer(Tokenizer):
 
     def detokenize(self, ids):
         return ''.join([self.itos[id] for id in ids])
-# tokenizers.py
 
-import os
-import pickle
-import tempfile
-import numpy as np
-import sentencepiece as spm
-import tiktoken
-from tqdm import tqdm  # For progress bars
-
-class Tokenizer:
-    def __init__(self, args):
-        self.args = args
+class CharTokenizer(Tokenizer):
+    def __init__(self, args, train_data, val_data):
+        super().__init__(args)
+        self.reuse_chars = args.reuse_chars
+        if self.reuse_chars:
+            self.chars = self.get_key_from_meta('chars')
+            if self.chars is None:
+                raise ValueError("No chars found in meta.pkl. Cannot reuse chars.")
+        else:
+            self.chars = sorted(list(set(train_data + (val_data if val_data else ""))))
+            print(f"All unique characters: {''.join(self.chars)}")
+            print(f"Vocab size: {len(self.chars)}")
+        self.stoi = {ch: i for i, ch in enumerate(self.chars)}
+        self.itos = {i: ch for i, ch in enumerate(self.chars)}
 
     def tokenize(self, data):
-        raise NotImplementedError("Tokenize method must be implemented by subclasses.")
+        data_len = len(data)
+        ids = []
+        pbar = tqdm(total=data_len, desc="Tokenizing Characters")
+        for ch in data:
+            ids.append(self.stoi[ch])
+            pbar.update(1)
+        pbar.close()
+        meta = {"vocab_size": len(self.chars), "itos": self.itos, "stoi": self.stoi, "chars": self.chars}
+        self.save_meta(meta)
+        return ids
 
     def detokenize(self, ids):
-        raise NotImplementedError("Detokenize method must be implemented by subclasses.")
+        return ''.join([self.itos[id] for id in ids])
 
-    def save_meta(self, meta):
-        with open("meta.pkl", "wb") as f:
-            pickle.dump(meta, f)
-
-    @staticmethod
-    def get_key_from_meta(keyname):
-        meta_path = 'meta.pkl'
-        if os.path.exists(meta_path):
-            with open(meta_path, 'rb') as f:
-                meta = pickle.load(f)
-                return meta.get(keyname)
-        return None
 
 class CustomCharTokenizerWithByteFallback(Tokenizer):
     def __init__(self, args):
@@ -315,35 +312,4 @@ class CustomCharTokenizerWithByteFallback(Tokenizer):
                     chars.append(byte_array.decode('utf-8', errors='replace'))
                     byte_buffer = []
         return ''.join(chars)
-
-
-class CharTokenizer(Tokenizer):
-    def __init__(self, args, train_data, val_data):
-        super().__init__(args)
-        self.reuse_chars = args.reuse_chars
-        if self.reuse_chars:
-            self.chars = self.get_key_from_meta('chars')
-            if self.chars is None:
-                raise ValueError("No chars found in meta.pkl. Cannot reuse chars.")
-        else:
-            self.chars = sorted(list(set(train_data + (val_data if val_data else ""))))
-            print(f"All unique characters: {''.join(self.chars)}")
-            print(f"Vocab size: {len(self.chars)}")
-        self.stoi = {ch: i for i, ch in enumerate(self.chars)}
-        self.itos = {i: ch for i, ch in enumerate(self.chars)}
-
-    def tokenize(self, data):
-        data_len = len(data)
-        ids = []
-        pbar = tqdm(total=data_len, desc="Tokenizing Characters")
-        for ch in data:
-            ids.append(self.stoi[ch])
-            pbar.update(1)
-        pbar.close()
-        meta = {"vocab_size": len(self.chars), "itos": self.itos, "stoi": self.stoi, "chars": self.chars}
-        self.save_meta(meta)
-        return ids
-
-    def detokenize(self, ids):
-        return ''.join([self.itos[id] for id in ids])
 
