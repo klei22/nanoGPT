@@ -168,8 +168,12 @@ def display_histogram(tensor, full_key):
         console.print(text)
     input("Press Enter to continue...")
 
-def display_stats(tensor):
+def display_stats(tensor, full_key):
     import numpy as np
+    from rich.console import Console
+    from rich.table import Table
+    from rich import box
+
     tensor = tensor.detach().cpu().numpy()
     flat_tensor = tensor.flatten()
     min_val = np.min(flat_tensor)
@@ -181,14 +185,23 @@ def display_stats(tensor):
     zeros = np.sum(flat_tensor == 0)
     total = flat_tensor.size
     percent_zeros = zeros / total * 100
-    print(f"\nSummary Statistics for tensor of shape {tensor.shape}:")
-    print(f"Min: {min_val}")
-    print(f"Max: {max_val}")
-    print(f"Q1 (25%): {q1}")
-    print(f"Median: {median}")
-    print(f"Q3 (75%): {q3}")
-    print(f"Mean: {mean}")
-    print(f"Percentage of Zeros: {percent_zeros}%")
+
+    # Updated table with borders and right-aligned value column
+    table = Table(title=f"Summary Statistics for {full_key}", box=box.SQUARE)
+    table.add_column("Statistic", style="bold magenta")
+    table.add_column("Value", style="bold cyan", justify="right")
+
+    table.add_row("Shape", str(tensor.shape))
+    table.add_row("Min", f"{min_val:.6f}")
+    table.add_row("Max", f"{max_val:.6f}")
+    table.add_row("Q1 (25%)", f"{q1:.6f}")
+    table.add_row("Median", f"{median:.6f}")
+    table.add_row("Q3 (75%)", f"{q3:.6f}")
+    table.add_row("Mean", f"{mean:.6f}")
+    table.add_row("Zeros (%)", f"{percent_zeros:.2f}%")
+
+    console = Console()
+    console.print(table)
     input("Press Enter to continue...")
 
 def explore_tree(tree, path=[]):
@@ -245,7 +258,7 @@ def explore_tree(tree, path=[]):
                     display_histogram(current_level, full_key)
                 elif choice == '4':
                     # Display stats
-                    display_stats(current_level)
+                    display_stats(current_level, full_key)
                 elif choice == 'b':
                     path.pop()
                     break
