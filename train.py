@@ -712,6 +712,7 @@ class Trainer:
             wandb.init(project=self.args.wandb_project, name=self.args.wandb_run_name, config=self.args)
         self.load_tokenizer()
 
+
     def load_tokenizer(self):
         meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
         if os.path.exists(meta_path):
@@ -727,12 +728,58 @@ class Trainer:
                 self.stoi, self.itos = meta['stoi'], meta['itos']
                 self.encode = lambda s: [self.stoi[c] for c in s]
                 self.decode = lambda l: ''.join([self.itos[i] for i in l])
+            elif 'tokenizer' in meta and meta['tokenizer'] == 'custom_char_with_byte_fallback':
+                self.stoi = meta['stoi']
+                self.itos = meta['itos']
+                self.custom_char_count = meta['custom_char_count']
+                self.encode = self.custom_char_with_byte_fallback_encode
+                self.decode = self.custom_char_with_byte_fallback_decode
+                print("Using CustomCharTokenizerWithByteFallback tokenizer")
             else:
                 self.stoi, self.itos = meta['stoi'], meta['itos']
                 self.encode = lambda s: [self.stoi[c] for c in s]
                 self.decode = lambda l: ''.join([self.itos[i] for i in l])
         else:
             raise FileNotFoundError(f"Meta file not found at {meta_path}")
+
+
+    def custom_char_with_byte_fallback_encode(self, text):
+        ids = []
+        for ch in text:
+            if ch in self.stoi:
+                ids.append(self.stoi[ch])
+            else:
+                # Byte fallback
+                byte_sequence = ch.encode('utf-8')
+                for byte in byte_sequence:
+                    ids.append(self.stoi[byte])
+
+        return ids
+
+
+    def custom_char_with_byte_fallback_decode(self, ids):
+        chars = []
+        idx = 0
+        while idx < len(ids):
+            id = ids[idx]
+            if id < self.custom_char_count:
+                # It's a custom character
+                chars.append(self.itos[id])
+                idx += 1
+            else:
+                # It's a byte
+                byte_buffer = []
+                while idx < len(ids) and ids[idx] >= self.custom_char_count:
+                    byte_value = self.itos[ids[idx]]
+                    byte_buffer.append(byte_value)
+                    idx += 1
+                # Convert byte buffer to character
+                byte_array = bytes(byte_buffer)
+                try:
+                    chars.append(byte_array.decode('utf-8'))
+                except UnicodeDecodeError:
+                    chars.append('�')  # Replacement character for invalid sequences
+        return ''.join(chars)
 
     @torch.no_grad()
     def sample_and_print(self, max_sample_tokens, start_tokens="\n"):
