@@ -152,6 +152,7 @@ def calculate_validation_loss(model, val_data, block_size, eval_iters, device, d
             losses.append(loss.item())
     print(f"Elapsed time: {total_time} seconds")
     return np.mean(losses)
+
 def custom_char_with_byte_fallback_encode(text, stoi):
     ids = []
     for ch in text:
