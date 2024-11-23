@@ -68,6 +68,8 @@ def display_heatmap(tensor, full_key):
     plt.figure(figsize=(10, 8))
     sns.heatmap(tensor, cmap='viridis')
     plt.title(f"Heatmap of {full_key}")
+    plt.xlabel("Columns")
+    plt.ylabel("Rows")
     plt.tight_layout()
     plt.savefig(image_path)
     plt.close()
@@ -88,7 +90,6 @@ def display_heatmap(tensor, full_key):
         img = img.resize((new_width, new_height))
 
         # Convert image to ASCII
-        import numpy as np
         img = img.convert('L')  # Convert to grayscale
         pixels = np.array(img)
         chars = np.asarray(list(' .:-=+*#%@'))
@@ -101,17 +102,70 @@ def display_heatmap(tensor, full_key):
         print(f"Error: {e}")
     input("Press Enter to continue...")
 
-def display_histogram(tensor):
+def display_histogram(tensor, full_key):
     import numpy as np
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from rich.console import Console
+    from rich.text import Text
+    from rich.style import Style
+
     tensor = tensor.detach().cpu().numpy().flatten()
-    hist, bin_edges = np.histogram(tensor, bins=20)
+
+    # Prompt for number of bins
+    while True:
+        bins_input = input("Enter the number of bins for the histogram (default 20): ")
+        if bins_input == '':
+            num_bins = 20
+            break
+        elif bins_input.isdigit() and int(bins_input) > 0:
+            num_bins = int(bins_input)
+            break
+        else:
+            print("Invalid input. Please enter a positive integer.")
+
+    # Create the images directory if it doesn't exist
+    images_dir = os.path.join('checkpoint_analysis', 'images')
+    os.makedirs(images_dir, exist_ok=True)
+
+    # Clean the full_key to create a valid filename
+    filename = full_key.replace('.', '_').replace('/', '_')
+    image_path = os.path.join(images_dir, f"{filename}_histogram.png")
+
+    # Generate the histogram using seaborn
+    plt.figure(figsize=(10, 8))
+    sns.histplot(tensor, bins=num_bins, kde=False)
+    plt.title(f"Histogram of {full_key}")
+    plt.xlabel("Value")
+    plt.ylabel("Frequency")
+    plt.tight_layout()
+    plt.savefig(image_path)
+    plt.close()
+
+    print(f"\nHistogram saved to {image_path}")
+
+    # Display histogram in terminal using rich
+    hist, bin_edges = np.histogram(tensor, bins=num_bins)
     max_height = 10
     max_count = hist.max()
+    console = Console()
+
+    # Prepare styles
+    bar_style = Style(color="cyan")
+    bin_label_style = Style(color="magenta")
+
     print("\nHistogram:")
     for i in range(len(hist)):
         bar_length = int((hist[i] / max_count) * max_height)
-        bar = '#' * bar_length
-        print(f"{bin_edges[i]:.4f} - {bin_edges[i+1]:.4f}: {bar}")
+        bar = "█" * bar_length
+        # Format bin edges with alignment
+        bin_label = f"{bin_edges[i]: .4f} -{bin_edges[i+1]: .4f}"
+        # Align bin labels
+        bin_label = bin_label.ljust(25)
+        # Display the bar with color
+        text = Text(bin_label, style=bin_label_style)
+        text.append(bar, style=bar_style)
+        console.print(text)
     input("Press Enter to continue...")
 
 def display_stats(tensor):
@@ -188,7 +242,7 @@ def explore_tree(tree, path=[]):
                     display_heatmap(current_level, full_key)
                 elif choice == '3':
                     # Display histogram
-                    display_histogram(current_level)
+                    display_histogram(current_level, full_key)
                 elif choice == '4':
                     # Display stats
                     display_stats(current_level)
