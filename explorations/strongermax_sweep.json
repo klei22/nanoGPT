@@ -1,89 +1,40 @@
 [
   {
     "max_iters": ["10000"],
-    "n_layer": ["6"],
-    "n_kv_group": ["6"],
-    "n_head": ["6"],
-    "n_embd": ["384"],
-    "block_size": ["256"],
     "device": ["cuda"],
     "dtype": ["bfloat16"],
     "dataset": ["cosmopedia_100k"],
     "compile": [true],
     "softmax_variant_attn": ["strongermax"],
-    "strongermax_strength": ["2.0", "2.5", "2.718", "3.0", "3.5", "4.0"],
-    "strongermax_divisor": ["1.0"],
-    "strongermax_div_by_sum_of_terms": [true],
-    "strongermax_obo": ["0.0"],
-    "strongermax_use_learned_obo": [false],
-    "strongermax_temperature_factor": ["1.0"],
-    "strongermax_use_learned_temperature_factor": [false]
-  },
-  {
-    "max_iters": ["10000"],
-    "n_layer": ["6"],
-    "n_kv_group": ["6"],
-    "n_head": ["6"],
-    "n_embd": ["384"],
-    "block_size": ["256"],
-    "device": ["cuda"],
-    "dtype": ["bfloat16"],
-    "dataset": ["openwebtext"],
-    "compile": [true],
-    "softmax_variant_attn": ["strongermax"],
-    "strongermax_strength": ["2.718"],
-    "strongermax_divisor": ["1.0"],
-    "strongermax_div_by_sum_of_terms": [true],
-    "strongermax_clamping": [true, false],
-    "strongermax_clamp_value": ["25.0", "50.0", "88.0"],
-    "strongermax_obo": ["0.0"],
-    "strongermax_use_learned_obo": [false],
-    "strongermax_temperature_factor": ["1.0"],
-    "strongermax_use_learned_temperature_factor": [false]
-  },
-  {
-    "max_iters": ["10000"],
-    "n_layer": ["6"],
-    "n_kv_group": ["6"],
-    "n_head": ["6"],
-    "n_embd": ["384"],
-    "block_size": ["256"],
-    "device": ["cuda"],
-    "dtype": ["bfloat16"],
-    "dataset": ["openwebtext"],
-    "compile": [true],
-    "softmax_variant_attn": ["strongermax"],
-    "strongermax_strength": ["2.718"],
-    "strongermax_divisor": ["1.0"],
-    "strongermax_div_by_sum_of_terms": [true],
-    "strongermax_clamping": [false],
-    "strongermax_clamp_value": ["88.0"],
-    "strongermax_obo": ["0.0", "1.0", "2.0"],
-    "strongermax_use_learned_obo": [false, true],
-    "strongermax_temperature_factor": ["1.0"],
-    "strongermax_use_learned_temperature_factor": [false]
-  },
-  {
-    "max_iters": ["10000"],
-    "n_layer": ["6"],
-    "n_kv_group": ["6"],
-    "n_head": ["6"],
-    "n_embd": ["384"],
-    "block_size": ["256"],
-    "device": ["cuda"],
-    "dtype": ["bfloat16"],
-    "dataset": ["openwebtext"],
-    "compile": [true],
-    "softmax_variant_attn": ["strongermax"],
-    "strongermax_strength": ["2.718"],
-    "strongermax_divisor": ["1.0"],
-    "strongermax_div_by_sum_of_terms": [true],
-    "strongermax_clamping": [false],
-    "strongermax_clamp_value": ["88.0"],
-    "strongermax_obo": ["0.0"],
-    "strongermax_use_learned_obo": [false],
-    "strongermax_temperature_factor": ["0.5", "1.0", "1.5", "2.0"],
-    "strongermax_use_learned_temperature_factor": [false, true]
+    "parameter_groups": [
+      {
+      "tensorboard_run_name": ["clamp_variations_no_xmax_sub"],
+      "strongermax_clamping": [true],
+      "strongermax_clamp_value": ["25.0", "50.0", "88.0"],
+      "strongermax_use_xmax": [false],
+      "tensorboard_run_name": ["clamp_variations_no_xmax_sub"]
+      },
+      {
+      "tensorboard_run_name": ["obo_variations_learned"],
+      "strongermax_obo": ["0.0", "1.0", "2.0"],
+      "strongermax_use_learned_obo": [false, true]
+      },
+      {
+      "tensorboard_run_name": ["temperature_factor_learned"],
+      "strongermax_temperature_factor": ["0.5", "1.0", "1.5", "2.0"],
+      "strongermax_use_learned_temperature_factor": [false, true]
+      },
+      {
+      "tensorboard_run_name": ["strength"],
+      "strongermax_temperature_factor": ["1.5", "3.0", "2.71828", "4.0"]
+      },
+      {
+      "tensorboard_run_name": ["optimal_test"],
+      "strongermax_temperature_factor": ["4.0"],
+      "strongermax_obo": ["1.0"],
+      "strongermax_use_learned_obo": [true]
+      }
+    ]
   }
 ]
 
