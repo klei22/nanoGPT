@@ -89,6 +89,12 @@ python3 prepare.py -t input.txt --method char
 python3 prepare.py -t input.txt --method custom --tokens_file phoneme_list.txt
 ```
 
+##### Custom with Byte Fallback
+
+```bash
+python3 prepare.py -t input.txt --method custom_char_byte_fallback --custom_chars_file tokens.txt
+```
+
 ### Additional details about the `prepare.py` script
 
 #### `prepare.py` Command Line Arguments

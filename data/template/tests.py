@@ -185,10 +185,7 @@ class TestTokenizers(unittest.TestCase):
         self.assertEqual(self.sample_text, detokenized)
 
     def test_custom_char_tokenizer_with_byte_fallback(self):
-        args = Namespace(
-            custom_chars_file="custom_chars.txt",
-            byte_fallback=True
-        )
+        args = Namespace(custom_chars_file="custom_chars.txt")
         # Create a custom characters file for testing
         with open(args.custom_chars_file, 'w', encoding='utf-8') as f:
             f.write('a\nb\nc\n')

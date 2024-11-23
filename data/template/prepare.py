@@ -29,7 +29,6 @@ def parse_arguments():
     parser.add_argument("--reuse_chars", action="store_true", help="Reuse character list")
     # Add argument for custom characters file
     parser.add_argument("--custom_chars_file", type=str, default=None, help="Path to the file containing custom characters for the tokenizer")
-    parser.add_argument("--byte_fallback", action="store_true", help="Enable byte fallback for characters not in the custom set")
     # Customize output names for bins
     parser.add_argument("--train_output", type=str, default="train.bin", help="Output file for tokenized training data")
     parser.add_argument("--val_output", type=str, default="val.bin", help="Output file for tokenized validation data")

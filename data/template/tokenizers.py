@@ -244,7 +244,6 @@ class CustomCharTokenizerWithByteFallback(Tokenizer):
             raise ValueError("Custom characters file must be provided for this tokenizer.")
         with open(args.custom_chars_file, "r", encoding="utf-8") as f:
             self.custom_chars = [line.strip() for line in f if line.strip()]
-        self.byte_fallback = args.byte_fallback
 
         # Build vocab
         self.build_vocab()
