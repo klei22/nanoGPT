@@ -45,25 +45,60 @@ def get_parameter_tree(state_dict):
         current_level[parts[-1]] = state_dict[full_key]
     return tree
 
-def display_heatmap(tensor):
+def display_heatmap(tensor, full_key):
     import numpy as np
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
     tensor = tensor.detach().cpu().numpy()
     if tensor.ndim != 2:
         print("Heatmap can only be displayed for 2D tensors.")
         input("Press Enter to continue...")
         return
-    min_val = np.min(tensor)
-    max_val = np.max(tensor)
-    # Normalize the tensor to 0-1
-    normalized = (tensor - min_val) / (max_val - min_val + 1e-8)
-    # Map to ASCII characters
-    chars = " .:-=+*#%@"
-    bins = np.linspace(0, 1, len(chars))
-    indices = np.digitize(normalized, bins) - 1
-    print("\n2D Heatmap:")
-    for row in indices:
-        line = ''.join(chars[i] for i in row)
-        print(line)
+
+    # Create the images directory if it doesn't exist
+    images_dir = os.path.join('checkpoint_analysis', 'images')
+    os.makedirs(images_dir, exist_ok=True)
+
+    # Clean the full_key to create a valid filename
+    filename = full_key.replace('.', '_').replace('/', '_')
+    image_path = os.path.join(images_dir, f"{filename}_heatmap.png")
+
+    # Generate the heatmap
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(tensor, cmap='viridis')
+    plt.title(f"Heatmap of {full_key}")
+    plt.tight_layout()
+    plt.savefig(image_path)
+    plt.close()
+
+    print(f"\nHeatmap saved to {image_path}")
+
+    # Attempt to display the image in the terminal
+    try:
+        from PIL import Image
+        import shutil
+
+        columns = shutil.get_terminal_size().columns
+        img = Image.open(image_path)
+        # Resize image to fit terminal width
+        aspect_ratio = img.height / img.width
+        new_width = columns // 2  # Adjust as necessary
+        new_height = int(aspect_ratio * new_width)
+        img = img.resize((new_width, new_height))
+
+        # Convert image to ASCII
+        import numpy as np
+        img = img.convert('L')  # Convert to grayscale
+        pixels = np.array(img)
+        chars = np.asarray(list(' .:-=+*#%@'))
+        normalized = (pixels - pixels.min()) / (pixels.max() - pixels.min())
+        indices = (normalized * (len(chars) - 1)).astype(int)
+        ascii_image = "\n".join("".join(chars[pixel] for pixel in row) for row in indices)
+        print(ascii_image)
+    except Exception as e:
+        print("Unable to display image in terminal.")
+        print(f"Error: {e}")
     input("Press Enter to continue...")
 
 def display_histogram(tensor):
@@ -150,7 +185,7 @@ def explore_tree(tree, path=[]):
                     input("Press Enter to continue...")
                 elif choice == '2':
                     # Display heatmap
-                    display_heatmap(current_level)
+                    display_heatmap(current_level, full_key)
                 elif choice == '3':
                     # Display histogram
                     display_histogram(current_level)
