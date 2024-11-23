@@ -7,9 +7,8 @@ from tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
     CustomTokenizer,
-    ReplaceTokenizer,
-    LinesTokenizer,
     CharTokenizer,
+    CustomCharTokenizerWithByteFallback,
 )
 from tqdm import tqdm
 import os
@@ -18,7 +17,7 @@ import os
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Tokenize text data using different methods.")
     parser.add_argument("--tokens_file", type=str, default=None, help="Path to the file containing newline-separated tokens for tokenization")
-    parser.add_argument("--method", type=str, choices=["sentencepiece", "tiktoken", "char", "custom", "replace", "lines", "numeric_range"], default="tiktoken", help="Tokenization method")
+    parser.add_argument("--method", type=str, choices=["sentencepiece", "tiktoken", "char", "custom", "custom_char_byte_fallback", "numeric_range"], default="tiktoken", help="Tokenization method")
     # SentencePiece only arguments
     parser.add_argument("--vocab_size", type=int, default=500, help="Vocabulary size for SentencePiece model")
     parser.add_argument("--spm_model_file", type=str, default=None, help="Path to the pre-trained SentencePiece model file")
@@ -31,7 +30,6 @@ def parse_arguments():
     # Add argument for custom characters file
     parser.add_argument("--custom_chars_file", type=str, default=None, help="Path to the file containing custom characters for the tokenizer")
     parser.add_argument("--byte_fallback", action="store_true", help="Enable byte fallback for characters not in the custom set")
-    return parser.parse_args()
     # Customize output names for bins
     parser.add_argument("--train_output", type=str, default="train.bin", help="Output file for tokenized training data")
     parser.add_argument("--val_output", type=str, default="val.bin", help="Output file for tokenized validation data")
