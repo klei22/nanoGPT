@@ -28,6 +28,10 @@ def parse_arguments():
     parser.add_argument("-e", "--tiktoken_encoding", choices=["gpt2", "r50k_base", "p50k_base", "cl100k_base"], default="gpt2", help="Version of tiktoken encoding to utilize")
     # Char only arguments
     parser.add_argument("--reuse_chars", action="store_true", help="Reuse character list")
+    # Add argument for custom characters file
+    parser.add_argument("--custom_chars_file", type=str, default=None, help="Path to the file containing custom characters for the tokenizer")
+    parser.add_argument("--byte_fallback", action="store_true", help="Enable byte fallback for characters not in the custom set")
+    return parser.parse_args()
     # Customize output names for bins
     parser.add_argument("--train_output", type=str, default="train.bin", help="Output file for tokenized training data")
     parser.add_argument("--val_output", type=str, default="val.bin", help="Output file for tokenized validation data")
@@ -91,6 +95,8 @@ def main():
         tokenizer = LinesTokenizer(args)
     elif args.method == "char":
         tokenizer = CharTokenizer(args, train_data, val_data)
+    elif args.method == "custom_char_byte_fallback":
+        tokenizer = CustomCharTokenizerWithByteFallback(args)
     else:
         raise ValueError(f"Unknown tokenization method: {args.method}")
 

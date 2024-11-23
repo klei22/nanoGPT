@@ -207,6 +207,115 @@ class CustomTokenizer(Tokenizer):
 
     def detokenize(self, ids):
         return ''.join([self.itos[id] for id in ids])
+# tokenizers.py
+
+import os
+import pickle
+import tempfile
+import numpy as np
+import sentencepiece as spm
+import tiktoken
+from tqdm import tqdm  # For progress bars
+
+class Tokenizer:
+    def __init__(self, args):
+        self.args = args
+
+    def tokenize(self, data):
+        raise NotImplementedError("Tokenize method must be implemented by subclasses.")
+
+    def detokenize(self, ids):
+        raise NotImplementedError("Detokenize method must be implemented by subclasses.")
+
+    def save_meta(self, meta):
+        with open("meta.pkl", "wb") as f:
+            pickle.dump(meta, f)
+
+    @staticmethod
+    def get_key_from_meta(keyname):
+        meta_path = 'meta.pkl'
+        if os.path.exists(meta_path):
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+                return meta.get(keyname)
+        return None
+
+class CustomCharTokenizerWithByteFallback(Tokenizer):
+    def __init__(self, args):
+        super().__init__(args)
+        if args.custom_chars_file is None:
+            raise ValueError("Custom characters file must be provided for this tokenizer.")
+        with open(args.custom_chars_file, "r", encoding="utf-8") as f:
+            self.custom_chars = [line.strip() for line in f if line.strip()]
+        self.byte_fallback = args.byte_fallback
+
+        # Build vocab
+        self.build_vocab()
+
+    def build_vocab(self):
+        # Assign IDs to custom characters
+        self.stoi = {ch: i for i, ch in enumerate(self.custom_chars)}
+        self.itos = {i: ch for i, ch in enumerate(self.custom_chars)}
+        self.custom_char_count = len(self.custom_chars)
+
+        # Assign IDs to bytes (0-255)
+        self.byte_stoi = {byte: i + self.custom_char_count for i, byte in enumerate(range(256))}
+        self.byte_itos = {i + self.custom_char_count: byte for i, byte in enumerate(range(256))}
+
+        # Update total vocab size
+        self.vocab_size = self.custom_char_count + 256  # 256 bytes
+
+        # Merge the dictionaries for easy lookup
+        self.stoi.update(self.byte_stoi)
+        self.itos.update(self.byte_itos)
+
+        # Save meta information
+        meta = {
+            "vocab_size": self.vocab_size,
+            "tokenizer": "custom_char_with_byte_fallback",
+            "custom_chars": self.custom_chars,
+            "stoi": self.stoi,
+            "itos": self.itos,
+            "custom_char_count": self.custom_char_count,
+        }
+        self.save_meta(meta)
+
+    def tokenize(self, data):
+        ids = []
+        data_len = len(data)
+        pbar = tqdm(total=data_len, desc="Tokenizing with Byte Fallback")
+        for ch in data:
+            if ch in self.stoi:
+                ids.append(self.stoi[ch])
+            else:
+                # Byte fallback
+                byte_sequence = ch.encode('utf-8')
+                for byte in byte_sequence:
+                    ids.append(self.stoi[byte])
+            pbar.update(1)
+        pbar.close()
+        return ids
+
+    def detokenize(self, ids):
+        chars = []
+        byte_buffer = []
+        for id in ids:
+            if id < self.custom_char_count:
+                # It's a custom character
+                chars.append(self.itos[id])
+            else:
+                # It's a byte
+                byte_buffer.append(self.itos[id])
+                # Check if the next token is not a byte or if it's the last token
+                if (len(byte_buffer) > 0 and
+                    (len(chars) + len(byte_buffer) == len(ids) or
+                     ids[ids.index(id) + 1] < self.custom_char_count)):
+                    # Convert byte buffer to character
+                    byte_array = bytes(byte_buffer)
+                    chars.append(byte_array.decode('utf-8', errors='replace'))
+                    byte_buffer = []
+        return ''.join(chars)
+
 
 class CharTokenizer(Tokenizer):
     def __init__(self, args, train_data, val_data):

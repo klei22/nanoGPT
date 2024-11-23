@@ -9,6 +9,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     CharTokenizer,
+    CustomCharTokenizerWithByteFallback,
 )
 from argparse import Namespace
 from rich.console import Console
@@ -183,6 +184,32 @@ class TestTokenizers(unittest.TestCase):
 
         self.assertEqual(self.sample_text, detokenized)
 
+    def test_custom_char_tokenizer_with_byte_fallback(self):
+        args = Namespace(
+            custom_chars_file="custom_chars.txt",
+            byte_fallback=True
+        )
+        # Create a custom characters file for testing
+        with open(args.custom_chars_file, 'w', encoding='utf-8') as f:
+            f.write('a\nb\nc\n')
+
+        tokenizer = CustomCharTokenizerWithByteFallback(args)
+        test_string = 'abc😊'
+
+        ids = tokenizer.tokenize(test_string)
+        detokenized = tokenizer.detokenize(ids)
+
+        console.print("[input]Input:[/input]")
+        console.print(test_string, style="input")
+        console.print("[output]Detokenized Output:[/output]")
+        console.print(detokenized, style="output")
+
+        self.assertEqual(test_string, detokenized)
+        print("CustomCharTokenizerWithByteFallback test passed.")
+
+        # Clean up
+        if os.path.exists(args.custom_chars_file):
+            os.remove(args.custom_chars_file)
 
 if __name__ == '__main__':
     run_tests()
