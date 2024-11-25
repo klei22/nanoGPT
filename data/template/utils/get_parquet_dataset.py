@@ -20,7 +20,8 @@ def download_file(url, filename):
         for data in response.iter_content(block_size):
             progress_bar.update(len(data))
             f.write(data)
-    progress_bar.close()
+        else:
+            progress_bar.close()
     if total_size != 0 and progress_bar.n != total_size:
         print("Error: Failed to download the file completely.")
     else:
@@ -47,48 +48,103 @@ def emit_json_contents(
     required_key,
     skip_empty,
     exclude,
+    list_key=None,
+    role_prefixes=None,
 ):
     """
-    Emit the contents of the JSON file
+    Emit the contents of the JSON file.
     Optionally, write the output to a text file.
     """
     with open(json_path, "r") as f:
         data = json.load(f)
 
-    skip_item = False
     excluded_pairs = {}
     if exclude:
-        for pair in args.exclude:
+        for pair in exclude:
             for i in range(0, len(pair), 2):
                 key = pair[i]
-                value = pair[i+1]
+                value = pair[i + 1]
                 excluded_pairs[key] = value
+
+    # Build role_prefixes dict if provided
+    role_prefix_dict = {}
+    if role_prefixes:
+        if len(role_prefixes) % 2 != 0:
+            raise ValueError(
+                "role_prefixes must contain pairs of ROLE and PREFIX. Please check your input."
+            )
+        for i in range(0, len(role_prefixes), 2):
+            role = role_prefixes[i]
+            prefix = role_prefixes[i + 1]
+            role_prefix_dict[role] = prefix
 
     with open(output_text_file, "a") as f:
         prev_item_written = False
         for item in data:
-            if required_key and item[required_key] == "":
+            if required_key and item.get(required_key, "") == "":
                 continue  # Skip entire item if required key is empty
 
-            for key, prefix in zip(include_keys, value_prefixes):
-                if key in item:
-                    if skip_empty and item[key] == "":
-                        continue  # skip empty items if activated
-                    for i_key, i_value in item.items():
-                        if (i_key in excluded_pairs) and (i_value == excluded_pairs[i_key]):
-                            # print(key, item[key], "not included")
-                            skip_item=True
-                        if skip_item:
-                            break
+            skip_item = False
+            # Apply excludes
+            for ex_key, ex_value in excluded_pairs.items():
+                if item.get(ex_key) == ex_value:
+                    skip_item = True
+                    break
+            if skip_item:
+                continue
 
-                    if skip_item:
+            if list_key and list_key in item and isinstance(item[list_key], list):
+                # Process sub_items in the order they appear
+                sub_items = item[list_key]
+                for sub_item in sub_items:
+                    role = sub_item.get('role')
+                    if role_prefix_dict and role not in role_prefix_dict:
+                        continue  # Skip roles not in role_prefixes
+                    skip_sub_item = False
+
+                    # Apply excludes to sub_item
+                    for ex_key, ex_value in excluded_pairs.items():
+                        if sub_item.get(ex_key) == ex_value:
+                            skip_sub_item = True
+                            break
+                    if skip_sub_item:
                         continue
 
-                    if prev_item_written:
-                        f.write("\n")  # Single newline between items
-                    content_line = f"{prefix}{item[key]}"
-                    f.write(content_line.strip())
-                    prev_item_written = True
+                    if required_key and sub_item.get(required_key, "") == "":
+                        continue  # Skip if required key is empty in sub_item
+
+                    # Get prefix
+                    prefix = role_prefix_dict.get(role, "") if role_prefix_dict else ""
+
+                    # Build content line
+                    content_pieces = []
+                    for key in include_keys:
+                        if key in sub_item:
+                            value = sub_item[key]
+                            if skip_empty and value == "":
+                                continue
+                            content_pieces.append(value)
+
+                    if content_pieces:
+                        content_line = prefix + ' '.join(content_pieces)
+                        if prev_item_written:
+                            f.write("\n")  # Single newline between items
+                        f.write(content_line.strip())
+                        prev_item_written = True
+            else:
+                # Process item directly
+                content_written = False
+                for key, prefix in zip(include_keys, value_prefixes):
+                    if key in item:
+                        value = item[key]
+                        if skip_empty and value == "":
+                            continue
+                        if prev_item_written or content_written:
+                            f.write("\n")  # Single newline between items
+                        content_line = prefix + value
+                        f.write(content_line.strip())
+                        prev_item_written = True
+                        content_written = True
 
 
 def find_parquet_links(url):
@@ -114,6 +170,8 @@ def main(
     skip_empty,
     exclude,
     append,
+    list_key,
+    role_prefixes,
 ):
     parquet_links = find_parquet_links(url)
     download_dir = "./downloaded_parquets"
@@ -145,6 +203,8 @@ def main(
             required_key,
             skip_empty,
             exclude,
+            list_key=list_key,
+            role_prefixes=role_prefixes,
         )
 
 
@@ -156,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--url",
         type=str,
-        default="https://huggingface.co/datasets/CohereForAI/aya_collection_language_split/tree/main/english",
+        default="https://huggingface.co/datasets/HuggingFaceTB/cosmopedia-100k/tree/main/data",
         help="URL to scrape for Parquet files.",
     )
     parser.add_argument(
@@ -201,15 +261,28 @@ if __name__ == "__main__":
         "-s",
         "--skip_empty",
         default=False,
-        action=argparse.BooleanOptionalAction,
+        action="store_true",
         help="Skip any item which is the empty string",
     )
     parser.add_argument(
         "-a",
         "--append",
         default=False,
-        action=argparse.BooleanOptionalAction,
-        help="append to the current input.txt file",
+        action="store_true",
+        help="Append to the current input.txt file",
+    )
+    parser.add_argument(
+        "--list_key",
+        type=str,
+        default=None,
+        help="If provided, specifies a key whose value is a list to process",
+    )
+    parser.add_argument(
+        "--role_prefixes",
+        type=str,
+        nargs="+",
+        metavar=("ROLE", "PREFIX"),
+        help="Specify prefixes for roles. Use the format: --role_prefixes ROLE PREFIX [ROLE PREFIX ...]",
     )
     args = parser.parse_args()
     main(
@@ -221,4 +294,7 @@ if __name__ == "__main__":
         args.skip_empty,
         args.exclude,
         args.append,
+        args.list_key,
+        args.role_prefixes,
     )
+
