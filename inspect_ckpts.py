@@ -41,7 +41,7 @@ def get_best_val_loss_and_iter_num(target_file, args, max_retries=5, retry_inter
         while attempts < max_retries:
             try:
                 # Load the checkpoint on CPU
-                checkpoint = torch.load(target_file, map_location=torch.device('cpu'))
+                checkpoint = torch.load(target_file, map_location=torch.device('cpu'), weights_only=False)
                 best_val_loss = checkpoint['best_val_loss']
                 iter_num = checkpoint['iter_num']
 

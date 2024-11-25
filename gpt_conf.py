@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field, asdict, fields
 from typing import List
 import json
+import math
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -123,16 +125,28 @@ class GPTConfig:
     sigsoftmax_base: float = 2.0 # denominator to utilize for Constantmax
 
     ## Strongermax options
-    strongermax_strength: float = 2.0 # Softermax with option of 'stronger' (larger integer) bases
-    strongermax_sum_to_1: bool = False
+    strongermax_strength: float = math.e
+    strongermax_div_by_sum_of_terms: bool = True
     strongermax_divisor: float = 1.0
+
     strongermax_use_xmax: bool = True
+
     strongermax_xmax_guess: float = 1.0
     strongermax_overflow_recompute: bool = False
+    strongermax_overflow_recompute_value: float = 88.0
+
+    strongermax_clamping: bool = False
+    strongermax_clamp_value: float = 88.0
+
+    strongermax_obo: float = 0.0
+    strongermax_use_learned_obo: bool = False
+
+    strongermax_temperature_factor: float = 1.0
+    strongermax_use_learned_temperature_factor: bool = False
 
     ## ExpPolymax options
     exppolymax_use_euler_base: bool = True
-    exppolymax_base: float = 2.719
+    exppolymax_base: float = math.e
     exppolymax_y_intercept: float = 1.0
     exppolymax_power: float = 2.0
     exppolymax_divisor: float = 1.0
