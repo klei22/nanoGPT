@@ -10,7 +10,7 @@ pip install -U "huggingface_hub[cli]"
 # Replace with your hugging face tokens
 ##### You can find and create your own tokens here: https://huggingface.co/settings/tokens ######
 ##### "Token Type" of "Read" is recommended. ########
-HF_TOKEN="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"
+HF_TOKEN=""
 
 # Authenticate with hugging face
 echo "Authenticating with Hugging Face..."
