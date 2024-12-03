@@ -153,6 +153,42 @@ def calculate_validation_loss(model, val_data, block_size, eval_iters, device, d
     print(f"Elapsed time: {total_time} seconds")
     return np.mean(losses)
 
+def custom_char_with_byte_fallback_encode(text, stoi):
+    ids = []
+    for ch in text:
+        if ch in stoi:
+            ids.append(stoi[ch])
+        else:
+            # Byte fallback
+            byte_sequence = ch.encode('utf-8')
+            for byte in byte_sequence:
+                ids.append(stoi[byte])
+    return ids
+
+def custom_char_with_byte_fallback_decode(ids, itos, custom_char_count):
+    chars = []
+    idx = 0
+    while idx < len(ids):
+        id = ids[idx]
+        if id < custom_char_count:
+            # It's a custom character
+            chars.append(itos[id])
+            idx += 1
+        else:
+            # It's a byte
+            byte_buffer = []
+            while idx < len(ids) and ids[idx] >= custom_char_count:
+                byte_value = itos[ids[idx]]
+                byte_buffer.append(byte_value)
+                idx += 1
+            # Convert byte buffer to character
+            byte_array = bytes(byte_buffer)
+            try:
+                chars.append(byte_array.decode('utf-8'))
+            except UnicodeDecodeError:
+                chars.append('�')  # Replacement character for invalid sequences
+    return ''.join(chars)
+
 def main():
     args = parse_args()
 
@@ -168,7 +204,6 @@ def main():
     out_dir = os.path.join(args.out_dir, timestamp)
     os.makedirs(out_dir, exist_ok=True)
     save_args(args, out_dir)
-
 
     if args.init_from == 'resume':
         ckpt_path = os.path.join(args.out_dir, 'ckpt.pt')
@@ -242,6 +277,13 @@ def main():
             stoi, itos = meta['stoi'], meta['itos']
             encode = lambda s: [stoi[c] for c in s]
             decode = lambda l: ''.join([itos[i] for i in l])
+        elif 'tokenizer' in meta and meta['tokenizer'] == 'custom_char_with_byte_fallback':
+            stoi = meta['stoi']
+            itos = meta['itos']
+            custom_char_count = meta['custom_char_count']
+            encode = lambda s: custom_char_with_byte_fallback_encode(s, stoi)
+            decode = lambda l: custom_char_with_byte_fallback_decode(l, itos, custom_char_count)
+            print("Using CustomCharTokenizerWithByteFallback tokenizer")
         elif args.token_boundary:
             stoi, itos = meta['stoi'], meta['itos']
             encode = lambda s: [stoi[c] for c in s]
@@ -250,6 +292,7 @@ def main():
             stoi, itos = meta['stoi'], meta['itos']
             encode = lambda s: [stoi[c] for c in s]
             decode = lambda l: ''.join([itos[i] for i in l])
+
 
     if args.start.startswith('FILE:'):
         with open(args.start[5:], 'r', encoding='utf-8') as f:

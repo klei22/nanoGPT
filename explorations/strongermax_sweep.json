@@ -1,27 +1,40 @@
 [
   {
-    "max_iters": ["3500"],
-    "n_layer": ["6"],
-    "n_kv_group": ["6"],
-    "n_head": ["6"],
-    "n_embd": ["384"],
-    "block_size":["256"],
+    "max_iters": ["10000"],
     "device": ["cuda"],
     "dtype": ["bfloat16"],
-    "dataset": ["shakespeare_char"],
-    "use_rotary_embeddings": [false],
-    "use_abs_pos_embeddings": [true],
-    "compile": [false],
+    "dataset": ["cosmopedia_100k"],
+    "compile": [true],
     "softmax_variant_attn": ["strongermax"],
-    "strongermax_strength": ["2.719"],
-    "strongermax_divisor": ["256"],
-    "strongermax_use_xmax" : [true],
-    "strongermax_xmax_guess" : ["-50"],
-    "strongermax_overflow_recompute" : [true],
-    "softmax_io_logging" : [false],
-    "create_statistics" : [false],
-    "plot_statistics" : [false],
-    "statistic" : ["input_max"],
-    "strongermax_sum_to_1": [false]
+    "parameter_groups": [
+      {
+      "tensorboard_run_name": ["clamp_variations_no_xmax_sub"],
+      "strongermax_clamping": [true],
+      "strongermax_clamp_value": ["25.0", "50.0", "88.0"],
+      "strongermax_use_xmax": [false],
+      "tensorboard_run_name": ["clamp_variations_no_xmax_sub"]
+      },
+      {
+      "tensorboard_run_name": ["obo_variations_learned"],
+      "strongermax_obo": ["0.0", "1.0", "2.0"],
+      "strongermax_use_learned_obo": [false, true]
+      },
+      {
+      "tensorboard_run_name": ["temperature_factor_learned"],
+      "strongermax_temperature_factor": ["0.5", "1.0", "1.5", "2.0"],
+      "strongermax_use_learned_temperature_factor": [false, true]
+      },
+      {
+      "tensorboard_run_name": ["strength"],
+      "strongermax_temperature_factor": ["1.5", "3.0", "2.71828", "4.0"]
+      },
+      {
+      "tensorboard_run_name": ["optimal_test"],
+      "strongermax_temperature_factor": ["4.0"],
+      "strongermax_obo": ["1.0"],
+      "strongermax_use_learned_obo": [true]
+      }
+    ]
   }
 ]
+
