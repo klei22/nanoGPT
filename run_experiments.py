@@ -94,9 +94,9 @@ def generate_combinations(config):
 
 def format_config_name(config, config_basename, prefix, add_names):
     if add_names:
-        config_items = [f"{k}_{v}" for k, v in config.items()]
+        config_items = [f"{k}_{v}" for k, v in config.items() if k != 'prev_run_ckpt']
     else:
-        config_items = [f"{v}" for _, v in config.items()]
+        config_items = [f"{v}" for k, v in config.items() if k != 'prev_run_ckpt']
 
     return f"{prefix}{config_basename}-{'-'.join(config_items)}"
 
