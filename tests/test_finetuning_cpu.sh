@@ -34,7 +34,7 @@ python3 train.py \
   --log_interval 10 \
   --device cpu \
   --dataset "$dataset" \
-  --softmax_variant_attn softmax \
+  --softmax_variant_attn strongermax \
   --tensorboard_run_name "$run_name" \
   --block_size "$block_size" \
   --bias \
