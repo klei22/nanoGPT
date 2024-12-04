@@ -37,6 +37,7 @@ python3 train.py \
   --softmax_variant_attn softmax \
   --tensorboard_run_name "$run_name" \
   --block_size "$block_size" \
+  --bias true \
   --out_dir "${output_dir}"
 
 python3 train.py \
@@ -55,6 +56,7 @@ python3 train.py \
   --softmax_variant_attn relumax \
   --tensorboard_run_name "$run_name" \
   --block_size "$block_size" \
+  --bias true \
   --out_dir "${output_dir2}"
 
 sleep 3
