@@ -177,7 +177,7 @@ Example usage:
 python3 checkpoint_analysis/inspect_ckpts.py --directory ./out --sort loss
 ```
 
-![image](./images/inspect_ckpts.png)
+![image](./documentation/images/inspect_ckpts.png)
 
 This can be wrapped with color via the watch command for a realtime dashboard.
 
