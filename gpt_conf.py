@@ -200,6 +200,9 @@ class GPTConfig:
     krmsnorm_enable_gain: bool = True
     krmsnorm_selection_type: str = 'last'
     krmsnorm_recompute_percentage: float = 0.05
+    hsnorm_gain: bool = False
+    hsnorm_radius: float = None
+    hsnorm_radius_learning: float = None
 
     # Activation Alternatives
 
