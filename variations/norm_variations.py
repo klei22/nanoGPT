@@ -28,6 +28,35 @@ class RMSNorm(nn.Module):
         rms = x.norm(2, dim=-1, keepdim=True) / math.sqrt(x.size(-1))
         return x / rms * self.gain
 
+class HyperSphereNorm(nn.Module):
+    """Normalization to the surface of Hypersphere"""
+
+    def __init__(self, config):
+        super().__init__()
+
+        ndim = config.n_embd
+        if config.hsnorm_gain:
+            self.gain = nn.Parameter(torch.ones(ndim))
+        else:
+            self.gain = 1.0
+
+        # Determine radius initialization value
+        radius_init = None
+        if config.hsnorm_radius is not None:
+            radius_init = config.hsnorm_radius
+        else:
+            radius_init = math.sqrt(ndim)
+
+        # Set as constant or learned param
+        if config.hsnorm_radius_learning:
+            self.radius = nn.Parameter(torch.tensor([radius_init]))
+        else:
+            self.radius = radius_init
+ 
+    def forward(self, x):
+        hypersphere_norm = x.norm(2, dim=-1, keepdim=True)
+        return  x / hypersphere_norm * self.radius
+
 class pRMSNorm(nn.Module):
     """Partial RMS Normalization"""
 
@@ -136,4 +165,5 @@ norm_dictionary = {
     "rmsnorm": RMSNorm,
     "prmsnorm": pRMSNorm,
     "krmsnorm": kRMSNorm,
+    "hyperspherenorm": HyperSphereNorm,
 }
