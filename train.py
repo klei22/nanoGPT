@@ -26,11 +26,12 @@ from utils.statistic_plots import (
 from rich.progress import Progress
 
 # GNS Related
-import gns_utils
-from hook import (add_hooks_to_model, add_sogns_hooks,
+import utils.gns_monitoring.gns_utils as gns_utils
+from utils.gns_monitoring.hook import (add_hooks_to_model, add_sogns_hooks,
                    add_exact_hooks,  gather_hook_results)
 # gns_type="exact"
-gns_type=None
+# gns_type="exact"
+gns_type="sogns"
 
 import numpy as np
 import torch
