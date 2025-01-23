@@ -29,9 +29,6 @@ from rich.progress import Progress
 import utils.gns_monitoring.gns_utils as gns_utils
 from utils.gns_monitoring.hook import (add_hooks_to_model, add_sogns_hooks,
                    add_exact_hooks,  gather_hook_results)
-# gns_type="exact"
-# gns_type="exact"
-gns_type="sogns"
 
 import numpy as np
 import torch
@@ -188,10 +185,11 @@ class Trainer:
             self.model_args['block_size'] = self.args.block_size
 
         # Add gradient monitoring
-        if gns_type is not None:
+        if self.args.gns_type is not None:
             get_gns_fn = {'sogns': add_sogns_hooks, 'exact': add_exact_hooks}
-            add_hooks_to_model(self.model, get_gns_fn[gns_type])
-            self.gns_ema = gns_utils.EMA(beta=0.9)
+            add_hooks_to_model(self.model, get_gns_fn[self.args.gns_type])
+            ema_beta = self.args.gns_ema_beta
+            self.gns_ema = gns_utils.EMA(beta=ema_beta)
 
             # Initialize GNS for later
             self.gns = None
@@ -506,6 +504,14 @@ class Trainer:
             dataset = self.args.dataset
             data = self.train_data if split == 'train' else self.val_data
 
+        # Adaptive GNS settings
+        if (self.gns is not None) and (self.args.gns_target is not None):
+            if self.gns < self.args.gns_target:
+                if self.args.batch_size < self.args.gns_max_batch:
+                    self.args.batch_size = math.ceil(self.args.batch_size * (1.0 + self.args.gns_batch_pct))
+            if self.gns > self.args.gns_target:
+                self.args.batch_size = math.ceil(self.args.batch_size * (1.0 - self.args.gns_batch_pct))
+
         # Generate random indices for the batch
         ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
 
@@ -709,6 +715,7 @@ class Trainer:
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
     def train(self):
+        self.gns = None
         self.X, self.Y = self.get_batch('train')
         t0 = time.time()
         local_iter_num = 0
@@ -731,14 +738,14 @@ class Trainer:
 
                 if self.iter_num % self.args.eval_interval == 0 and self.master_process:
                     losses = self.estimate_loss()
-                    if gns_type is not None:
+                    if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
 
                     vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
                     if self.args.dataset_list is not None:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
-                            print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f, gns {self.gns:.2f}}")
+                            print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}}")
                             self.log_metrics(dataset_losses, lr, running_mfu, vram_allocated, self.iter_num, target_dataset=dataset)
                     else:
                         # Default behavior for a single dataset
@@ -819,7 +826,7 @@ class Trainer:
 
                     self.scaler.scale(loss).backward()
 
-                    if gns_type is not None:
+                    if self.args.gns_type is not None:
                         approx_gns_results = gather_hook_results(self.model)
                         self.gns_ema.update(*gns_utils.gnsify(approx_gns_results, self.args.batch_size, ddp=self.ddp))
 
@@ -841,9 +848,9 @@ class Trainer:
                     if local_iter_num >= 5:
                         mfu = self.raw_model.estimate_mfu(self.args.batch_size * self.args.gradient_accumulation_steps, dt)
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-                    if gns_type is not None:
+                    if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
-                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}")
+                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}")
                     else:
                         print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%")
 
