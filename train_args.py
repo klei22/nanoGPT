@@ -67,7 +67,7 @@ def parse_args():
     # Add GNS settings
     training_group.add_argument('--gns_type', type=str, default=None, choices=['sogns', 'exact'], help='Type of gradient norm scaling to use (default: None)')
     training_group.add_argument('--gns_ema_beta', type=float, default=0.9, choices=['sogns', 'exact'], help='Type of gradient norm scaling to use (default: None)')
-    training_group.add_argument('--gns_target', type=float, default=15.0)
+    training_group.add_argument('--gns_target', type=float, default=None)
     training_group.add_argument('--gns_max_batch', type=int, default=100)
     training_group.add_argument('--gns_batch_pct', type=float, default=0.2)
 
