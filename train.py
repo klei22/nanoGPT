@@ -57,7 +57,9 @@ class Trainer:
         self.gns = None
         self.tokens_trained = 0
 
-        # typically make the decay iters equal to max_iters
+        # Learning Rate Settings
+        self.lr = self.args.learning_rate
+        ## Make the decay iters equal to max_iters if not specified
         if self.args.lr_decay_match_max_iters:
             self.args.lr_decay_iters = self.args.max_iters
 
@@ -595,7 +597,7 @@ class Trainer:
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return self.args.min_lr + coeff * (self.args.learning_rate - self.args.min_lr)
 
-    def log_metrics(self, losses, lr, running_mfu, vram_allocated, target_dataset=None):
+    def log_metrics(self, losses, running_mfu, vram_allocated, target_dataset=None):
 
         if self.args.tensorboard_log:
             # Log metrics for each dataset separately
@@ -611,14 +613,14 @@ class Trainer:
                 )
 
             self.writer.add_scalar("mfu_pct", running_mfu * 100, self.iter_num)
-            self.writer.add_scalar("lr", lr, self.iter_num)
+            self.writer.add_scalar("lr", self.lr, self.iter_num)
             self.writer.add_scalar("vram", vram_allocated, self.iter_num)
 
         if self.args.wandb_log and self.master_process:
             import wandb
             log_data = {
                 "iter": self.iter_num,
-                "lr": lr,
+                "lr": self.lr,
                 "mfu": running_mfu * 100,
                 "vram": vram_allocated,
             }
@@ -638,7 +640,7 @@ class Trainer:
                 self.write_to_csv(losses['train'].item(), losses['val'].item())
 
             # Other metrics
-            self.write_to_csv(iter_num, lr, running_mfu, vram_allocated, prefix="misc_")
+            self.write_to_csv(iter_num, running_mfu, vram_allocated, prefix="misc_")
 
 
 
@@ -677,7 +679,7 @@ class Trainer:
                 "iter": self.iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
-                "lr": lr,
+                "lr": self.lr,
                 "mfu": running_mfu*100,
             })
 
@@ -731,9 +733,10 @@ class Trainer:
         with progress:
             task_id = progress.add_task("[green]Training...", total=(self.args.max_iters - self.iter_num))
             while True:
-                lr = self.get_lr(self.iter_num) if self.args.decay_lr else self.args.learning_rate
+                if self.args.decay_lr:
+                    self.lr = self.get_lr(self.iter_num)
                 for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = lr
+                    param_group['lr'] = self.lr
 
                 if self.iter_num % self.args.eval_interval == 0 and self.master_process:
                     losses = self.estimate_loss()
@@ -744,12 +747,12 @@ class Trainer:
                     if self.args.dataset_list is not None:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
-                            print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}, tokens_trained {self.tokens_trained:e}")
-                            self.log_metrics(dataset_losses, lr, running_mfu, vram_allocated, target_dataset=dataset)
+                            print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr}, tokens_trained {self.tokens_trained:e}")
+                            self.log_metrics(dataset_losses, running_mfu, vram_allocated, target_dataset=dataset)
                     else:
                         # Default behavior for a single dataset
                         print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                        self.log_metrics(losses, lr, running_mfu, vram_allocated)
+                        self.log_metrics(losses, running_mfu, vram_allocated)
 
                     if math.isnan(losses["val"]):
                         # If val loss is nan, then exit.
@@ -853,7 +856,7 @@ class Trainer:
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
-                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}, tokens_trained {self.tokens_trained:e}")
+                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr}, tokens_trained {self.tokens_trained:e}")
                     else:
                         print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%")
 
