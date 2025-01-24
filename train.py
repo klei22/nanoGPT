@@ -617,7 +617,7 @@ class Trainer:
             self.writer.add_scalar("vram", self.vram_allocated, self.iter_num)
             self.writer.add_scalar("batch_size", self.args.batch_size, self.iter_num)
             self.writer.add_scalar("tokens_trained", self.tokens_trained, self.iter_num)
-            if self.gns_type is not None:
+            if self.args.gns_type is not None:
                 self.writer.add_scalar("gns", self.gns, self.iter_num)
 
         if self.args.wandb_log and self.master_process:
@@ -652,6 +652,7 @@ class Trainer:
 
 
     def write_to_csv(self, *args, prefix=""):
+        args = list(args)
         csv_full_dir = self.args.csv_dir
         if self.args.csv_ckpt_dir:
             csv_full_dir = f"{self.args.csv_dir}/{self.args.csv_ckpt_dir}"
@@ -665,9 +666,9 @@ class Trainer:
             # Write arguments as a new row in the CSV
             args.insert(0, self.iter_num)
             args.append(self.lr)
-            args.append(self.batch_size)
+            args.append(self.args.batch_size)
             args.append(self.tokens_trained)
-            if self.gns_type is not None:
+            if self.args.gns_type is not None:
                 args.append(self.gns)
             writer.writerow(args)
 
@@ -710,7 +711,7 @@ class Trainer:
             self.writer.add_scalar("vram", self.vram_allocated, self.iter_num)
             self.writer.add_scalar("batch_size", self.args.batch_size, self.iter_num)
             self.writer.add_scalar("tokens_trained", self.tokens_trained, self.iter_num)
-            if self.gns_type is not None:
+            if self.args.gns_type is not None:
                 self.writer.add_scalar("gns", self.gns, self.iter_num)
         if self.args.wandb_log and self.master_process:
             import wandb
