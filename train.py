@@ -595,29 +595,29 @@ class Trainer:
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return self.args.min_lr + coeff * (self.args.learning_rate - self.args.min_lr)
 
-    def log_metrics(self, losses, lr, running_mfu, vram_allocated, iter_num, target_dataset=None):
+    def log_metrics(self, losses, lr, running_mfu, vram_allocated, target_dataset=None):
 
         if self.args.tensorboard_log:
             # Log metrics for each dataset separately
             if target_dataset:
                 self.writer.add_scalars(
                     "loss", {f"{target_dataset}/train": losses['train'].item(),
-                             f"{target_dataset}/val": losses['val'].item()}, iter_num
+                             f"{target_dataset}/val": losses['val'].item()}, self.iter_num
                 )
             else:
                 self.writer.add_scalars(
                     "loss", {"train": losses['train'].item(), "val":
-                             losses['val'].item()}, iter_num
+                             losses['val'].item()}, self.iter_num
                 )
 
-            self.writer.add_scalar("mfu_pct", running_mfu * 100, iter_num)
-            self.writer.add_scalar("lr", lr, iter_num)
-            self.writer.add_scalar("vram", vram_allocated, iter_num)
+            self.writer.add_scalar("mfu_pct", running_mfu * 100, self.iter_num)
+            self.writer.add_scalar("lr", lr, self.iter_num)
+            self.writer.add_scalar("vram", vram_allocated, self.iter_num)
 
         if self.args.wandb_log and self.master_process:
             import wandb
             log_data = {
-                "iter": iter_num,
+                "iter": self.iter_num,
                 "lr": lr,
                 "mfu": running_mfu * 100,
                 "vram": vram_allocated,
@@ -658,50 +658,46 @@ class Trainer:
             writer.writerow(args)
 
 
-    def log_gamma_beta(self, gamma, beta, iter_num, layer_num, head_num=None):
+    def log_gamma_beta(self, gamma, beta, layer_num, head_num=None):
         if self.args.tensorboard_log:
             if head_num:
                 self.writer.add_scalars(
                         "gammas",
-                        {"gamma_L" + str(layer_num) + "_H" + head_num: gamma},
-                        iter_num
-                        )
+                        {"gamma_L" + str(layer_num) + "_H" + head_num: gamma}, self.iter_num)
                 self.writer.add_scalars(
                         "betas",
-                        {"beta_L" + str(layer_num) + "_H" + head_num: beta},
-                        iter_num
-                        )
+                        {"beta_L" + str(layer_num) + "_H" + head_num: beta}, self.iter_num)
             else:
-                self.writer.add_scalar( "gamma_L" + str(layer_num), gamma, iter_num)
-                self.writer.add_scalar( "beta_L" + str(layer_num), beta, iter_num)
+                self.writer.add_scalar( "gamma_L" + str(layer_num), gamma, self.iter_num)
+                self.writer.add_scalar( "beta_L" + str(layer_num), beta, self.iter_num)
 
         if self.args.wandb_log and self.master_process:
             import wandb
             wandb.log({
-                "iter": iter_num,
+                "iter": self.iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
                 "lr": lr,
                 "mfu": running_mfu*100,
             })
 
-    def log_metrics_non_validation(self, loss_training, running_mfu, vram_allocated, iter_num, target_dataset=None):
+    def log_metrics_non_validation(self, loss_training, running_mfu, vram_allocated, target_dataset=None):
         if self.args.tensorboard_log:
             if target_dataset:
                 self.writer.add_scalars(
-                    "loss", {f"{target_dataset}/train": loss_training}, iter_num
+                    "loss", {f"{target_dataset}/train": loss_training}, self.iter_num
                 )
             else:
                 self.writer.add_scalars(
-                    "loss", { "train": loss_training }, iter_num
+                    "loss", { "train": loss_training }, self.iter_num
                 )
-            self.writer.add_scalar("mfu_pct", running_mfu * 100, iter_num)
-            self.writer.add_scalar("vram", vram_allocated, iter_num)
+            self.writer.add_scalar("mfu_pct", running_mfu * 100, self.iter_num)
+            self.writer.add_scalar("vram", vram_allocated, self.iter_num)
 
         if self.args.wandb_log and self.master_process:
             import wandb
             wandb.log({
-                "iter": iter_num,
+                "iter": self.iter_num,
                 "train/loss": loss_training,
                 "mfu": running_mfu*100,
                 "vram": vram_allocated,
@@ -749,11 +745,11 @@ class Trainer:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
                             print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}, tokens_trained {self.tokens_trained:e}")
-                            self.log_metrics(dataset_losses, lr, running_mfu, vram_allocated, self.iter_num, target_dataset=dataset)
+                            self.log_metrics(dataset_losses, lr, running_mfu, vram_allocated, target_dataset=dataset)
                     else:
                         # Default behavior for a single dataset
                         print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                        self.log_metrics(losses, lr, running_mfu, vram_allocated, self.iter_num)
+                        self.log_metrics(losses, lr, running_mfu, vram_allocated)
 
                     if math.isnan(losses["val"]):
                         # If val loss is nan, then exit.
@@ -868,7 +864,7 @@ class Trainer:
                             sys.exit("Exiting training loss is NaN")
 
                     vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
-                    self.log_metrics_non_validation(lossf, running_mfu, vram_allocated, self.iter_num)
+                    self.log_metrics_non_validation(lossf, running_mfu, vram_allocated)
 
                 if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
                     create_statistics(self, graph_y_labels)
