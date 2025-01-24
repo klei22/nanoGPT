@@ -597,7 +597,7 @@ class Trainer:
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return self.args.min_lr + coeff * (self.args.learning_rate - self.args.min_lr)
 
-    def log_metrics(self, losses, running_mfu, vram_allocated, target_dataset=None):
+    def log_metrics(self, losses, running_mfu, target_dataset=None):
 
         if self.args.tensorboard_log:
             # Log metrics for each dataset separately
@@ -614,7 +614,11 @@ class Trainer:
 
             self.writer.add_scalar("mfu_pct", running_mfu * 100, self.iter_num)
             self.writer.add_scalar("lr", self.lr, self.iter_num)
-            self.writer.add_scalar("vram", vram_allocated, self.iter_num)
+            self.writer.add_scalar("vram", self.vram_allocated, self.iter_num)
+            self.writer.add_scalar("batch_size", self.args.batch_size, self.iter_num)
+            self.writer.add_scalar("tokens_trained", self.tokens_trained, self.iter_num)
+            if self.gns_type is not None:
+                self.writer.add_scalar("gns", self.gns, self.iter_num)
 
         if self.args.wandb_log and self.master_process:
             import wandb
@@ -622,7 +626,7 @@ class Trainer:
                 "iter": self.iter_num,
                 "lr": self.lr,
                 "mfu": running_mfu * 100,
-                "vram": vram_allocated,
+                "vram": self.vram_allocated,
             }
             if target_dataset:
                 log_data[f"{dataset}/train/loss"] = losses['train']
@@ -634,15 +638,17 @@ class Trainer:
             wandb.log(log_data)
 
         if self.args.csv_log:
+            # concise training metrics
             if target_dataset:
                 self.write_to_csv(losses['train'].item(), losses['val'].item(), prefix=f"{target_dataset}_")
             else:
                 self.write_to_csv(losses['train'].item(), losses['val'].item())
 
-            # Other metrics
-            self.write_to_csv(iter_num, running_mfu, vram_allocated, prefix="misc_")
-
-
+            # bulk metrics
+            if target_dataset:
+                self.write_to_csv(target_datset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
+            else:
+                self.write_to_csv(self.args.dataset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
 
 
     def write_to_csv(self, *args, prefix=""):
@@ -657,6 +663,12 @@ class Trainer:
         with open(csv_path, 'a', newline='') as file:
             writer = csv.writer(file)
             # Write arguments as a new row in the CSV
+            args.insert(0, self.iter_num)
+            args.append(self.lr)
+            args.append(self.batch_size)
+            args.append(self.tokens_trained)
+            if self.gns_type is not None:
+                args.append(self.gns)
             writer.writerow(args)
 
 
@@ -683,7 +695,7 @@ class Trainer:
                 "mfu": running_mfu*100,
             })
 
-    def log_metrics_non_validation(self, loss_training, running_mfu, vram_allocated, target_dataset=None):
+    def log_metrics_non_validation(self, loss_training, running_mfu, target_dataset=None):
         if self.args.tensorboard_log:
             if target_dataset:
                 self.writer.add_scalars(
@@ -694,15 +706,19 @@ class Trainer:
                     "loss", { "train": loss_training }, self.iter_num
                 )
             self.writer.add_scalar("mfu_pct", running_mfu * 100, self.iter_num)
-            self.writer.add_scalar("vram", vram_allocated, self.iter_num)
-
+            self.writer.add_scalar("lr", self.lr, self.iter_num)
+            self.writer.add_scalar("vram", self.vram_allocated, self.iter_num)
+            self.writer.add_scalar("batch_size", self.args.batch_size, self.iter_num)
+            self.writer.add_scalar("tokens_trained", self.tokens_trained, self.iter_num)
+            if self.gns_type is not None:
+                self.writer.add_scalar("gns", self.gns, self.iter_num)
         if self.args.wandb_log and self.master_process:
             import wandb
             wandb.log({
                 "iter": self.iter_num,
                 "train/loss": loss_training,
                 "mfu": running_mfu*100,
-                "vram": vram_allocated,
+                "vram": self.vram_allocated,
             })
 
     def save_checkpoint(self, filename):
@@ -743,16 +759,16 @@ class Trainer:
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
 
-                    vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
+                    self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
                     if self.args.dataset_list is not None:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
                             print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr}, tokens_trained {self.tokens_trained:e}")
-                            self.log_metrics(dataset_losses, running_mfu, vram_allocated, target_dataset=dataset)
+                            self.log_metrics(dataset_losses, running_mfu, target_dataset=dataset)
                     else:
                         # Default behavior for a single dataset
                         print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                        self.log_metrics(losses, running_mfu, vram_allocated)
+                        self.log_metrics(losses, running_mfu)
 
                     if math.isnan(losses["val"]):
                         # If val loss is nan, then exit.
@@ -866,8 +882,8 @@ class Trainer:
                             file.write(str(self.iter_num))
                             sys.exit("Exiting training loss is NaN")
 
-                    vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
-                    self.log_metrics_non_validation(lossf, running_mfu, vram_allocated)
+                    self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
+                    self.log_metrics_non_validation(lossf, running_mfu)
 
                 if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
                     create_statistics(self, graph_y_labels)
