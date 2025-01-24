@@ -53,6 +53,10 @@ class Trainer:
         self.training_group = training_group
         self.logging_group = logging_group
 
+        # GNS and batch schedule
+        self.gns = None
+        self.tokens_trained = 0
+
         # typically make the decay iters equal to max_iters
         if self.args.lr_decay_match_max_iters:
             self.args.lr_decay_iters = self.args.max_iters
@@ -715,7 +719,6 @@ class Trainer:
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
     def train(self):
-        self.gns = None
         self.X, self.Y = self.get_batch('train')
         t0 = time.time()
         local_iter_num = 0
@@ -745,7 +748,7 @@ class Trainer:
                     if self.args.dataset_list is not None:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
-                            print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}}")
+                            print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}, tokens_trained {self.tokens_trained:e}")
                             self.log_metrics(dataset_losses, lr, running_mfu, vram_allocated, self.iter_num, target_dataset=dataset)
                     else:
                         # Default behavior for a single dataset
@@ -843,6 +846,10 @@ class Trainer:
                 t1 = time.time()
                 dt = t1 - t0
                 t0 = t1
+
+                # Udpate tokens trained
+                self.tokens_trained += self.args.batch_size * self.args.block_size
+
                 if self.iter_num % self.args.log_interval == 0 and self.master_process:
                     lossf = loss.item() * self.args.gradient_accumulation_steps
                     if local_iter_num >= 5:
@@ -850,7 +857,7 @@ class Trainer:
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
-                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}")
+                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.args.learning_rate}, tokens_trained {self.tokens_trained:e}")
                     else:
                         print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%")
 
