@@ -1,5 +1,3 @@
-### `README.md`
-
 # Open Source CJK Analysis Tool
 
 This repository contains the **Open Source CJK Analysis Tool**, a Python script (`open_source_cjk_analysis.py`) that provides detailed analysis of tokenizers with respect to Chinese (C), Japanese (J), and Korean (K) characters. The tool can analyze token coverage, symbol representation, and overlaps among these languages in tokenizer vocabularies.
