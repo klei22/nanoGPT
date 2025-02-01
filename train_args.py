@@ -64,6 +64,13 @@ def parse_args():
     training_group.add_argument('--dataset_sampling_probs_final', default=None, nargs='+', type=float, help="If, set final sampling probabilities for each dataset in dataset_list.")
     training_group.add_argument('--dataset_sampling_probs_transition_method', default=None, type=str, choices=["linear", "cosine", "exponential"])
 
+    # Add GNS settings
+    training_group.add_argument('--gns_type', type=str, default=None, choices=['sogns', 'exact'], help='Type of gradient norm scaling to use (default: None)')
+    training_group.add_argument('--gns_ema_beta', type=float, default=0.9, choices=['sogns', 'exact'], help='Type of gradient norm scaling to use (default: None)')
+    training_group.add_argument('--gns_target', type=float, default=None)
+    training_group.add_argument('--gns_max_batch', type=int, default=100)
+    training_group.add_argument('--gns_batch_pct', type=float, default=0.2)
+
 
     # Model args
     model_group.add_argument('--block_size', default=256, type=int)
@@ -133,15 +140,34 @@ def parse_args():
     model_group.add_argument('--shared_attn_sym', default=False, action=argparse.BooleanOptionalAction, help="symmetrical attention sharing")
 
     # NORM VARIATIONS
-    model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=["krmsnorm", "prmsnorm", "rmsnorm", "layernorm"])
-    model_group.add_argument("--norm_variant_output", type=str, default="rmsnorm", choices=["krmsnorm", "prmsnorm", "rmsnorm", "layernorm"])
+    norm_variations = [
+            "krmsnorm",
+            "prmsnorm",
+            "rmsnorm",
+            "layernorm",
+            "hyperspherenorm",
+            ]
+
+    model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)
+    model_group.add_argument("--norm_variant_output", type=str, default="rmsnorm", choices=norm_variations)
+
+    ## Layernorm
     model_group.add_argument('--bias', default=False, action=argparse.BooleanOptionalAction, help="only used for layernorm variation option")
+
+    ## PRMSNorm
     model_group.add_argument("--prmsnorm_pct", default=0.0625, type=float, help="percentage (1 being 100 percent) of first entries used for partial rms" )
+
+    ## KRMSNorm
     model_group.add_argument("--krmsnorm_num", default=10, type=int, help="max number of first entries for partial rms" )
     model_group.add_argument("--krmsnorm_quantize_type", type=str, default="none", choices=["int8", "int16", "none"])
     model_group.add_argument('--krmsnorm_enable_gain', default=True, action=argparse.BooleanOptionalAction, help="include gain in kRMSNorm")
     model_group.add_argument("--krmsnorm_selection_type", type=str, default="last", choices=["first", "last", "random"])
     model_group.add_argument("--krmsnorm_recompute_percentage", type=float, default=None, help="percentage needed within the total RMS to not trigger recompute")
+
+    ## HyperSphereNorm
+    model_group.add_argument("--hsnorm_gain", default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--hsnorm_radius", type=float, default=None)
+    model_group.add_argument("--hsnorm_radius_learning", default=False, action=argparse.BooleanOptionalAction)
 
     activation_variations = [
             "celu",
