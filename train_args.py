@@ -1,3 +1,4 @@
+# train_args.py
 import argparse
 import math
 
@@ -55,13 +56,20 @@ def parse_args():
     training_group.add_argument('--batch_size', default=64, type=int)
     training_group.add_argument("--seed", default=1337, type=int)
 
+    # New: total tokens in dataset (for computing epochs) and sampling method
+    training_group.add_argument('--dataset_size_tokens', default=None, type=int,
+        help="Total number of tokens in the dataset (used for reporting epoch progress)")
+    training_group.add_argument('--sampling_method', default="random",
+        choices=["random", "sequential", "without_replacement"],
+        help="Sampling method for get_batch: 'random' (with replacement), 'sequential' (without shuffling), or 'without_replacement' (shuffled without replacement)")
+
     # Add a new argument for specifying multiple datasets
     training_group.add_argument('--dataset_list', default=None, nargs='+', type=str, help="If not None, training will be done from a list of datasets to train on, e.g. --dataset_list shakespeare wikitext103 openwebtext")
     training_group.add_argument('--dataset_interleaving', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--dataset_interleaving_shuffle', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--dataset_sampling_learning_rate', default=None, nargs='+', type=float, help="Sampling learning rates for each dataset in dataset_list.")
-    training_group.add_argument('--dataset_sampling_probs', default=None, nargs='+', type=float, help="Sampling proportions for each dataset in dataset_list. Probabilities normally but proportions in dataset_interleaving")
-    training_group.add_argument('--dataset_sampling_probs_final', default=None, nargs='+', type=float, help="If, set final sampling probabilities for each dataset in dataset_list.")
+    training_group.add_argument('--dataset_sampling_probs', action=FlattenListAction, default=None, nargs='+', help="Sampling proportions for each dataset in dataset_list. Probabilities normally but proportions in dataset_interleaving")
+    training_group.add_argument('--dataset_sampling_probs_final', action=FlattenListAction,default=None, nargs='+', help="If, set final sampling probabilities for each dataset in dataset_list.")
     training_group.add_argument('--dataset_sampling_probs_transition_method', default=None, type=str, choices=["linear", "cosine", "exponential"])
 
     # Add GNS settings
@@ -70,6 +78,48 @@ def parse_args():
     training_group.add_argument('--gns_target', type=float, default=None)
     training_group.add_argument('--gns_max_batch', type=int, default=100)
     training_group.add_argument('--gns_batch_pct', type=float, default=0.2)
+
+
+    # Optimizer-specific arguments
+    optimizer_variations = ["adamw",
+                            "sgd",
+                            "adagrad",
+                            "rmsprop",
+                            "nadam",
+                            ]
+    training_group.add_argument("--optimizer", type=str, default="adamw",
+                                 choices=optimizer_variations,
+                                 help="Optimizer to use for training.")
+
+    training_group.add_argument("--sgd_momentum", type=float, default=0.9, help="Momentum for SGD optimizer.")
+    training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
+    training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
+    training_group.add_argument("--adamw_weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer.")
+    training_group.add_argument("--adagrad_lr_decay", type=float, default=0, help="Learning rate decay for Adagrad optimizer.")
+    training_group.add_argument("--rmsprop_alpha", type=float, default=0.99, help="Smoothing constant for RMSprop.")
+    training_group.add_argument("--nadam_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for Nadam optimizer.")
+    training_group.add_argument("--nadam_eps", type=float, default=1e-8, help="Epsilon for Nadam optimizer.")
+
+
+    # Learning rate scheduler-specific arguments
+    scheduler_variations = ["none",
+                            "cosine",
+                            "exponential",
+                            "step",
+                            "plateau",
+                            ]
+    training_group.add_argument("--lr_scheduler", type=str, default="none",
+                                choices= scheduler_variations,
+                                help="Learning rate scheduler to use.")
+
+    training_group.add_argument("--cosine_t_max", type=int, default=1000, help="T_max parameter for CosineAnnealingLR.")
+    training_group.add_argument("--cosine_eta_min", type=float, default=0, help="Minimum learning rate for CosineAnnealingLR.")
+    training_group.add_argument("--exponential_gamma", type=float, default=0.9, help="Gamma value for ExponentialLR.")
+    training_group.add_argument("--step_lr_size", type=int, default=1000, help="Step size for StepLR.")
+    training_group.add_argument("--step_lr_gamma", type=float, default=0.1, help="Gamma value for StepLR.")
+    training_group.add_argument("--plateau_mode", type=str, default="min", choices=["min", "max"], help="Mode for ReduceLROnPlateau.")
+    training_group.add_argument("--plateau_factor", type=float, default=0.1, help="Factor by which learning rate is reduced for ReduceLROnPlateau.")
+    training_group.add_argument("--plateau_patience", type=int, default=10, help="Number of epochs with no improvement for ReduceLROnPlateau.")
 
 
     # Model args
@@ -536,3 +586,13 @@ def parse_args():
             json.dump(vars(args), json_file)
 
     return args, model_group, training_group, logging_group
+
+class FlattenListAction(argparse.Action):
+     def __call__(self, parser, namespace, values, option_string=None):
+        # For each value passed, split it by whitespace (if any) and convert each token to float.
+        result = []
+        for v in values:
+            # If the value contains spaces, split it, otherwise just use the value.
+            tokens = v.split() if " " in v else [v]
+            result.extend([float(x) for x in tokens])
+        setattr(namespace, self.dest, result)

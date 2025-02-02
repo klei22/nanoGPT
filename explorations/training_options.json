@@ -1,0 +1,29 @@
+[
+    {
+        "max_iters": ["2000"],
+        "log_interval": ["1"],
+        "gns_type": ["exact"],
+        "batch_size": ["8", "128"],
+        "device": ["cuda"],
+        "dataset": ["commonvoice_ko"],
+        "dataset_list": ["commonvoice_ko commonvoice_zh","commonvoice_zh"],
+        "dataset_sampling_probs": ["3.0 3.0", "1"],
+        "dataset_interleaving": [true],
+        "compile": [true],
+        "tensorboard_run_name": ["train_optim_sched"],
+        "optimizer": [
+          "adamw",
+          "sgd",
+          "adagrad",
+          "rmsprop",
+          "nadam"
+        ],
+        "lr_scheduler": [
+          "none",
+          "cosine",
+          "exponential",
+          "step",
+          "plateau"
+        ]
+    }
+]
