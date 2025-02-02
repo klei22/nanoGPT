@@ -72,6 +72,56 @@ def parse_args():
     training_group.add_argument('--gns_batch_pct', type=float, default=0.2)
 
 
+    # Optimizer-specific arguments
+    optimizer_variations = ["adamw",
+                            "sgd",
+                            "adagrad",
+                            "rmsprop",
+                            "nadam",
+                            ]
+    training_group.add_argument("--optimizer", type=str, default="adamw",
+                                 choices=optimizer_variations,
+                                 help="Optimizer to use for training.")
+
+    training_group.add_argument("--sgd_momentum", type=float, default=0.9, help="Momentum for SGD optimizer.")
+    training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
+    training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
+    training_group.add_argument("--adamw_weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer.")
+    training_group.add_argument("--adagrad_lr_decay", type=float, default=0, help="Learning rate decay for Adagrad optimizer.")
+    training_group.add_argument("--rmsprop_alpha", type=float, default=0.99, help="Smoothing constant for RMSprop.")
+    training_group.add_argument("--nadam_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for Nadam optimizer.")
+    training_group.add_argument("--nadam_eps", type=float, default=1e-8, help="Epsilon for Nadam optimizer.")
+
+
+    # Learning rate scheduler-specific arguments
+    scheduler_variations = ["none",
+                            "cosine",
+                            "exponential",
+                            "step",
+                            "plateau",
+                            ]
+    training_group.add_argument("--lr_scheduler", type=str, default="none",
+                                choices= scheduler_variations,
+                                help="Learning rate scheduler to use.")
+
+    training_group.add_argument("--cosine_t_max", type=int, default=1000, help="T_max parameter for CosineAnnealingLR.")
+    training_group.add_argument("--cosine_eta_min", type=float, default=0, help="Minimum learning rate for CosineAnnealingLR.")
+    training_group.add_argument("--exponential_gamma", type=float, default=0.9, help="Gamma value for ExponentialLR.")
+    training_group.add_argument("--step_size", type=int, default=1000, help="Step size for StepLR.")
+    training_group.add_argument("--step_gamma", type=float, default=0.1, help="Gamma value for StepLR.")
+    training_group.add_argument("--plateau_mode", type=str, default="min", choices=["min", "max"], help="Mode for ReduceLROnPlateau.")
+    training_group.add_argument("--plateau_factor", type=float, default=0.1, help="Factor by which learning rate is reduced for ReduceLROnPlateau.")
+    training_group.add_argument("--plateau_patience", type=int, default=10, help="Number of epochs with no improvement for ReduceLROnPlateau.")
+
+    # Stochastic Weight Averaging (SWA) Options
+    training_group.add_argument("--use_swa", default=False, action=argparse.BooleanOptionalAction, help="Enable Stochastic Weight Averaging (SWA).")
+    training_group.add_argument("--swa_start", type=int, default=1000, help="Iteration to start applying SWA.")
+    training_group.add_argument("--swa_lr", type=float, default=0.05, help="Learning rate for SWA.")
+    training_group.add_argument("--swa_anneal_strategy", type=str, default="linear", choices=["linear", "cos"], help="SWA learning rate annealing strategy.")
+    training_group.add_argument("--swa_anneal_epochs", type=int, default=5, help="Number of epochs for SWA annealing.")
+    training_group.add_argument("--swa_update_bn", default=False, action=argparse.BooleanOptionalAction, help="Update batch normalization statistics after SWA training.")
+
+
     # Model args
     model_group.add_argument('--block_size', default=256, type=int)
     model_group.add_argument('--n_layer', default=6, type=int)
