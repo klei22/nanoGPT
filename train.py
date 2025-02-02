@@ -1,3 +1,4 @@
+# train.py
 import argparse
 from contextlib import nullcontext
 import csv
@@ -56,6 +57,20 @@ class Trainer:
         # GNS and batch schedule
         self.gns = None
         self.tokens_trained = 0
+        # If using multiple datasets, track tokens trained per dataset.
+        if self.args.dataset_list is not None:
+            # Flatten each element (which may contain multiple dataset names) into a single list of tokens
+            flattened_list = []
+            for entry in self.args.dataset_list:
+                flattened_list.extend(entry.split())
+            self.args.dataset_list = flattened_list
+            # Track tokens and epochs trained per dataset
+            self.tokens_trained_dict = {dataset: 0 for dataset in self.args.dataset_list}
+            self.epochs_trained_dict = {dataset: 0 for dataset in self.args.dataset_list}
+
+            # Also, set self.args.dataset to the first dataset in the list
+            self.args.dataset = self.args.dataset_list[0]
+            print(self.args.dataset)
 
         # Learning Rate Settings
         self.lr = self.args.learning_rate
@@ -129,12 +144,40 @@ class Trainer:
             with open(self.args.out_dir + "/best_val_loss_and_iter.txt", 'w') as file:
                 print("resetting best val loss file")
 
+
             self.load_data()
+            # Initialize sampling state if using sequential or without_replacement
+            if self.args.sampling_method in ["sequential", "without_replacement"]:
+                if self.args.dataset_list is None:
+                    available = len(self.train_data) - self.args.block_size
+                    if self.args.sampling_method == "without_replacement":
+                        self.indices_perm = np.random.permutation(available)
+                    else:  # sequential: simply use a range
+                        self.indices_perm = np.arange(available)
+                    self.current_ptr = 0
+                else:
+                    # For each dataset in dataset_list, store a permutation and pointer.
+                    self.dataset_perm = {}
+                    self.dataset_ptr = {}
+                    for d in self.args.dataset_list:
+                        available = len(self.train_data_dict[d]) - self.args.block_size
+                        if self.args.sampling_method == "without_replacement":
+                            self.dataset_perm[d] = np.random.permutation(available)
+                        else:
+                            self.dataset_perm[d] = np.arange(available)
+                        self.dataset_ptr[d] = 0
+
             gptconf = GPTConfig(**self.model_args)
             self.model = GPT(gptconf)
             self.iter_num = 0 # for starting from scratch
             self.best_val_loss = 1e9 # really big number
-        elif self.args.init_from == 'resume' or self.args.init_from == 'prev_run':
+
+            # Set optimizer and scheduler
+            self.optimizer = self.create_optimizer()
+            self.scheduler = self.create_scheduler()
+
+        elif self.args.init_from in ['resume', "prev_run"] :
+
             if self.args.init_from == 'resume':
                 ckpt_path = os.path.join(self.args.out_dir, self.args.init_from_ckpt)
                 checkpoint = torch.load(ckpt_path, map_location=self.device)
@@ -143,6 +186,11 @@ class Trainer:
                 ckpt_path = os.path.join(self.args.prev_run_ckpt, self.args.init_from_ckpt)
                 checkpoint = torch.load(ckpt_path, map_location=self.device)
                 self.iter_num = 0
+
+            # Load optimizer and scheduler
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+            if "scheduler" in checkpoint and self.scheduler:
+                self.scheduler.load_state_dict(checkpoint["scheduler"])
 
             # we should enforce that during resume training, the identical model args are used
             checkpoint_model_args = checkpoint['model_args']
@@ -211,8 +259,6 @@ class Trainer:
 
         # Optimizer
         self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
-        self.optimizer = self.model.configure_optimizers(self.args.weight_decay, self.args.learning_rate,
-                                                         (self.args.beta1, self.args.beta2), self.device_type)
 
         if self.args.compile:
             print("compiling the model... (takes a ~minute)")
@@ -242,6 +288,43 @@ class Trainer:
             self.args.csv_name = wandb_run_name
             wandb.init(project=self.args.wandb_project, name=self.args.wandb_run_name, config=self.args)
         self.load_tokenizer()
+
+    def create_optimizer(self):
+        param_groups = [
+            {"params": self.model.parameters(), "lr": self.args.learning_rate}
+        ]
+
+        if self.args.optimizer == "adamw":
+            self.args.adamw_betas = tuple(self.args.adamw_betas)
+            optimizer = torch.optim.AdamW(param_groups, lr=self.args.learning_rate, betas=tuple(self.args.adamw_betas),
+                                          eps=self.args.adamw_eps, weight_decay=self.args.adamw_weight_decay)
+        elif self.args.optimizer == "sgd":
+            optimizer = torch.optim.SGD(param_groups, lr=self.args.learning_rate, momentum=self.args.sgd_momentum, weight_decay=self.args.weight_decay)
+        elif self.args.optimizer == "adagrad":
+            optimizer = torch.optim.Adagrad(param_groups, lr=self.args.learning_rate, lr_decay=self.args.adagrad_lr_decay, weight_decay=self.args.weight_decay)
+        elif self.args.optimizer == "rmsprop":
+            optimizer = torch.optim.RMSprop(param_groups, lr=self.args.learning_rate, alpha=self.args.rmsprop_alpha, weight_decay=self.args.weight_decay)
+        elif self.args.optimizer == "nadam":
+            self.args.nadam_betas = tuple(self.args.nadam_betas)
+            optimizer = torch.optim.NAdam(param_groups, lr=self.args.learning_rate, betas=tuple(self.args.nadam_betas), eps=self.args.nadam_eps, weight_decay=self.args.weight_decay)
+        else:
+            raise ValueError(f"Unknown optimizer: {self.args.optimizer}")
+
+        return optimizer
+
+    def create_scheduler(self):
+        if self.args.lr_scheduler == "none":
+            return None
+        elif self.args.lr_scheduler == "cosine":
+            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.args.cosine_t_max, eta_min=self.args.cosine_eta_min)
+        elif self.args.lr_scheduler == "exponential":
+            return torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=self.args.exponential_gamma)
+        elif self.args.lr_scheduler == "step":
+            return torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=self.args.step_lr_size, gamma=self.args.step_lr_gamma)
+        elif self.args.lr_scheduler == "plateau":
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode=self.args.plateau_mode, factor=self.args.plateau_factor, patience=self.args.plateau_patience)
+        else:
+            raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
 
 
     def load_tokenizer(self):
@@ -382,6 +465,8 @@ class Trainer:
                 # all other tokenations so far require only np.uint16
                 self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint16, mode='r')
                 self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
+            # Store total token count for the single dataset.
+            self.dataset_size_tokens = len(self.train_data)
         else:
             self.train_data_dict = {}
             self.val_data_dict = {}
@@ -414,6 +499,8 @@ class Trainer:
                 # Store in dictionaries
                 self.train_data_dict[dataset] = train_data
                 self.val_data_dict[dataset] = val_data
+            # For multi-dataset case, store the token count for each dataset in a dictionary.
+            self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.dataset_list}
 
 
     def get_batch(self, split, target_dataset=None):
@@ -441,6 +528,7 @@ class Trainer:
             # If multi-dataset sampling is enabled, pick a dataset using sampling probabilities
             if target_dataset:
                 dataset = target_dataset
+                data = self.train_data_dict[dataset] if split == 'train' else self.val_data_dict[dataset]
             elif self.args.dataset_interleaving:
                 # print("using interleaving")
                 if self.args.dataset_sampling_probs is not None:
@@ -484,7 +572,6 @@ class Trainer:
                     dataset = self.args.dataset_list[dataset_index]
 
                 data = self.train_data_dict[dataset] if split == 'train' else self.val_data_dict[dataset]
-                # print(dataset)
             else:
                 # print("using probabilities")
                 if self.args.dataset_sampling_probs:
@@ -494,11 +581,11 @@ class Trainer:
                     # Default to uniform sampling if probabilities are not provided
                     dataset = np.random.choice(self.args.dataset_list)
                 # print(dataset)
+                data = self.train_data_dict[dataset] if split == 'train' else self.val_data_dict[dataset]
 
             if self.args.use_lsv:
                 self.model.set_lsv_index(self.args.dataset_list.index(dataset))
 
-            data = self.train_data_dict[dataset] if split == 'train' else self.val_data_dict[dataset]
 
             # set learning rate
             if self.args.dataset_sampling_learning_rate:
@@ -520,6 +607,43 @@ class Trainer:
 
         # Generate random indices for the batch
         ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
+        available = len(data) - self.args.block_size
+        if self.args.sampling_method == "random":
+            ix = torch.randint(available, (self.args.batch_size,))
+        elif self.args.sampling_method == "sequential":
+            # Use the sequential indices from self.indices_perm (or per dataset)
+            if self.args.dataset_list is None:
+                if self.current_ptr + self.args.batch_size > available:
+                    self.current_ptr = 0
+                selected_indices = self.indices_perm[self.current_ptr: self.current_ptr + self.args.batch_size]
+                self.current_ptr += self.args.batch_size
+            else:
+                d = target_dataset if target_dataset is not None else self.args.dataset
+                if self.dataset_ptr[d] + self.args.batch_size > available:
+                    self.dataset_ptr[d] = 0
+                selected_indices = self.dataset_perm[d][self.dataset_ptr[d]: self.dataset_ptr[d] + self.args.batch_size]
+                self.dataset_ptr[d] += self.args.batch_size
+            ix = torch.tensor(selected_indices)
+        elif self.args.sampling_method == "without_replacement":
+            # Similar to sequential but with a shuffled permutation that is reshuffled when exhausted.
+            if self.args.dataset_list is None:
+                if self.current_ptr + self.args.batch_size > available:
+                    self.indices_perm = np.random.permutation(available)
+                    self.current_ptr = 0
+                selected_indices = self.indices_perm[self.current_ptr: self.current_ptr + self.args.batch_size]
+                self.current_ptr += self.args.batch_size
+            else:
+                d = target_dataset if target_dataset is not None else self.args.dataset
+                if self.dataset_ptr[d] + self.args.batch_size > available:
+                    self.dataset_perm[d] = np.random.permutation(available)
+                    self.dataset_ptr[d] = 0
+                selected_indices = self.dataset_perm[d][self.dataset_ptr[d]: self.dataset_ptr[d] + self.args.batch_size]
+                self.dataset_ptr[d] += self.args.batch_size
+            ix = torch.tensor(selected_indices)
+        else:
+            # Default to random sampling if unknown method
+            ix = torch.randint(available, (self.args.batch_size,))
+
 
         # Get training and targets
         x = torch.stack([torch.from_numpy((data[i:i+self.args.block_size]).astype(np.int64)) for i in ix])
@@ -530,7 +654,7 @@ class Trainer:
             x, y = x.pin_memory().to(self.device, non_blocking=True), y.pin_memory().to(self.device, non_blocking=True)
         else:
             x, y = x.to(self.device), y.to(self.device)
-        return x, y
+        return x, y, dataset
 
     @torch.no_grad()
     def custom_loss_with_top1_focus(self, logits, targets):
@@ -560,25 +684,26 @@ class Trainer:
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
-                        X, Y = self.get_batch(split, target_dataset=dataset)
+                        X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
                         with self.ctx:
                             logits, loss = self.model(X, Y, iter_num=self.iter_num)
                         dataset_losses[split][k] = loss.item()
                 out['datasets'][dataset] = {
                     'train': dataset_losses['train'].mean(),
-                    'val': dataset_losses['val'].mean()
+                    'train_std': dataset_losses['train'].std(),
+                    'val': dataset_losses['val'].mean(),
+                    'val_std': dataset_losses['val'].std(),
                 }
-            print("test")
             out['val'] = out['datasets'][self.args.dataset]['val']
+            out['val_std'] = out['datasets'][self.args.dataset]['val_std']
             out['train'] = out['datasets'][self.args.dataset]['train']
-            print(out['val'])
-
+            out['train_std'] = out['datasets'][self.args.dataset]['train_std']
         else:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
                 for k in range(self.args.eval_iters):
-                    X, Y = self.get_batch(split)
+                    X, Y, _ = self.get_batch(split)
                     with self.ctx:
                         logits, loss = self.model(X, Y, iter_num=self.iter_num)
                     losses[k] = loss.item()
@@ -587,7 +712,10 @@ class Trainer:
         self.model.train()
         return out
 
+
     def get_lr(self, it):
+        if self.scheduler:
+            return self.scheduler.get_last_lr()[0]
         if it < self.args.warmup_iters:
             return self.args.learning_rate * it / self.args.warmup_iters
         if it > self.args.lr_decay_iters:
@@ -597,59 +725,69 @@ class Trainer:
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return self.args.min_lr + coeff * (self.args.learning_rate - self.args.min_lr)
 
-    def log_metrics(self, losses, running_mfu, target_dataset=None):
+    def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset):
 
         if self.args.tensorboard_log:
             # Log metrics for each dataset separately
-            if target_dataset:
-                self.writer.add_scalars(
-                    "loss", {f"{target_dataset}/train": losses['train'].item(),
-                             f"{target_dataset}/val": losses['val'].item()}, self.iter_num
-                )
-            else:
-                self.writer.add_scalars(
-                    "loss", {"train": losses['train'].item(), "val":
-                             losses['val'].item()}, self.iter_num
-                )
+            self.writer.add_scalars(
+                    f"{target_dataset}/loss_iters", {
+                        f"train": losses['train'].item(),
+                        f"train_std": losses['train_std'].item(),
+                        f"val": losses['val'].item(),
+                        f"val_std": losses['val_std'].item(),
+                        },
+                    self.iter_num
+                    )
+            self.writer.add_scalars(
+                    f"{target_dataset}/loss_tokens", {
+                        f"train": losses['train'].item(),
+                        f"train_std": losses['train_std'].item(),
+                        f"val": losses['val'].item(),
+                        f"val_std": losses['val_std'].item(),
+                        },
+                    tokens_trained
+                    )
 
-            self.writer.add_scalar("mfu_pct", running_mfu * 100, self.iter_num)
-            self.writer.add_scalar("lr", self.lr, self.iter_num)
-            self.writer.add_scalar("vram", self.vram_allocated, self.iter_num)
-            self.writer.add_scalar("batch_size", self.args.batch_size, self.iter_num)
-            self.writer.add_scalar("tokens_trained", self.tokens_trained, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/lr", self.lr, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/epoch", epoch, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/tokens_trained", tokens_trained, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/batch_size", self.args.batch_size, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/vram", self.vram_allocated, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/mfu_pct", running_mfu * 100, self.iter_num)
             if self.args.gns_type is not None:
-                self.writer.add_scalar("gns", self.gns, self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/gns", self.gns, self.iter_num)
 
-        if self.args.wandb_log and self.master_process:
-            import wandb
-            log_data = {
-                "iter": self.iter_num,
-                "lr": self.lr,
-                "mfu": running_mfu * 100,
-                "vram": self.vram_allocated,
-            }
-            if target_dataset:
-                log_data[f"{dataset}/train/loss"] = losses['train']
-                log_data[f"{dataset}/val/loss"] = losses['val']
-            else:
-                log_data["train/loss"] = losses['train']
-                log_data["val/loss"] = losses['val']
-
-            wandb.log(log_data)
 
         if self.args.csv_log:
             # concise training metrics
-            if target_dataset:
-                self.write_to_csv(losses['train'].item(), losses['val'].item(), prefix=f"{target_dataset}_")
-            else:
-                self.write_to_csv(losses['train'].item(), losses['val'].item())
+            self.write_to_csv(target_dataset, losses['train'].item(), losses['val'].item(), prefix=f"{target_dataset}_")
 
             # bulk metrics
-            if target_dataset:
-                self.write_to_csv(target_datset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
-            else:
-                self.write_to_csv(self.args.dataset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
+            self.write_to_csv(target_dataset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
 
+    def log_metrics_non_validation(self, loss_training, running_mfu, epoch, tokens_trained, target_dataset):
+        if self.args.tensorboard_log:
+            self.writer.add_scalars(
+                    f"{target_dataset}/loss_iters",
+                    {f"train": loss_training},
+                    self.iter_num
+                    )
+            self.writer.add_scalars(
+                    f"{target_dataset}/loss_tokens",
+                    {f"train": loss_training},
+                    tokens_trained
+                    )
+
+            self.writer.add_scalar(f"{target_dataset}/mfu_pct", running_mfu * 100, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/vram", self.vram_allocated, self.iter_num)
+
+            self.writer.add_scalar(f"{target_dataset}/lr", self.lr, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/epoch", epoch, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/tokens_trained", tokens_trained, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/batch_size", self.args.batch_size, self.iter_num)
+
+            if self.args.gns_type is not None:
+                self.writer.add_scalar(f"{target_dataset}/gns", self.gns, self.iter_num)
 
     def write_to_csv(self, *args, prefix=""):
         args = list(args)
@@ -696,36 +834,37 @@ class Trainer:
                 "mfu": running_mfu*100,
             })
 
-    def log_metrics_non_validation(self, loss_training, running_mfu, target_dataset=None):
-        if self.args.tensorboard_log:
-            if target_dataset:
-                self.writer.add_scalars(
-                    "loss", {f"{target_dataset}/train": loss_training}, self.iter_num
-                )
-            else:
-                self.writer.add_scalars(
-                    "loss", { "train": loss_training }, self.iter_num
-                )
-            self.writer.add_scalar("mfu_pct", running_mfu * 100, self.iter_num)
-            self.writer.add_scalar("lr", self.lr, self.iter_num)
-            self.writer.add_scalar("vram", self.vram_allocated, self.iter_num)
-            self.writer.add_scalar("batch_size", self.args.batch_size, self.iter_num)
-            self.writer.add_scalar("tokens_trained", self.tokens_trained, self.iter_num)
-            if self.args.gns_type is not None:
-                self.writer.add_scalar("gns", self.gns, self.iter_num)
-        if self.args.wandb_log and self.master_process:
-            import wandb
-            wandb.log({
-                "iter": self.iter_num,
-                "train/loss": loss_training,
-                "mfu": running_mfu*100,
-                "vram": self.vram_allocated,
-            })
+    # def log_metrics_non_validation(self, loss_training, running_mfu, target_dataset=None):
+    #     if self.args.tensorboard_log:
+    #         if target_dataset:
+    #             self.writer.add_scalars(
+    #                 "loss", {f"{target_dataset}/train": loss_training}, self.iter_num
+    #             )
+    #         else:
+    #             self.writer.add_scalars(
+    #                 "loss", { "train": loss_training }, self.iter_num
+    #             )
+    #         self.writer.add_scalar("mfu_pct", running_mfu * 100, self.iter_num)
+    #         self.writer.add_scalar("lr", self.lr, self.iter_num)
+    #         self.writer.add_scalar("vram", self.vram_allocated, self.iter_num)
+    #         self.writer.add_scalar("batch_size", self.args.batch_size, self.iter_num)
+    #         self.writer.add_scalar("tokens_trained", self.tokens_trained, self.iter_num)
+    #         if self.args.gns_type is not None:
+    #             self.writer.add_scalar("gns", self.gns, self.iter_num)
+    #     if self.args.wandb_log and self.master_process:
+    #         import wandb
+    #         wandb.log({
+    #             "iter": self.iter_num,
+    #             "train/loss": loss_training,
+    #             "mfu": running_mfu*100,
+    #             "vram": self.vram_allocated,
+    #         })
 
     def save_checkpoint(self, filename):
         checkpoint = {
             'model': self.raw_model.state_dict(),
             'optimizer': self.optimizer.state_dict(),
+            'scheduler': self.scheduler.state_dict() if self.scheduler else None,
             'model_args': self.model_args,
             'iter_num': self.iter_num,
             'best_val_loss': self.best_val_loss,
@@ -734,10 +873,11 @@ class Trainer:
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
     def train(self):
-        self.X, self.Y = self.get_batch('train')
+        self.X, self.Y, current_dataset = self.get_batch('train')
         t0 = time.time()
         local_iter_num = 0
         running_mfu = -1.0
+        current_epoch = 0.0
         num_steps_with_worse_loss = 0
         # TODO: Move statistics labels to statistics scripts
         graph_y_labels = []
@@ -750,13 +890,21 @@ class Trainer:
         with progress:
             task_id = progress.add_task("[green]Training...", total=(self.args.max_iters - self.iter_num))
             while True:
-                if self.args.decay_lr:
+                if self.scheduler is not None:
                     self.lr = self.get_lr(self.iter_num)
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.lr
 
                 if self.iter_num % self.args.eval_interval == 0 and self.master_process:
+
+                    # Save current RNG states
+                    torch_rng_state = torch.get_rng_state()
+                    np_rng_state = np.random.get_state()
                     losses = self.estimate_loss()
+                    # Restore RNG states so training sampling isn’t affected
+                    torch.set_rng_state(torch_rng_state)
+                    np.random.set_state(np_rng_state)
+
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
 
@@ -764,12 +912,12 @@ class Trainer:
                     if self.args.dataset_list is not None:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
-                            print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr}, tokens_trained {self.tokens_trained:e}")
-                            self.log_metrics(dataset_losses, running_mfu, target_dataset=dataset)
+                            print(f"step {self.iter_num}: {dataset:<20s} train loss {dataset_losses['train']:.4f}, train_std {dataset_losses['train_std']:.4f}, val loss {dataset_losses['val']:.4f}, val_std {dataset_losses['val_std']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained tokens {self.tokens_trained_dict[dataset]:.2e}")
+                            self.log_metrics(dataset_losses, running_mfu, self.epochs_trained_dict[dataset], self.tokens_trained_dict[dataset], dataset)
                     else:
                         # Default behavior for a single dataset
-                        print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                        self.log_metrics(losses, running_mfu)
+                        print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {self.lr:.4f}")
+                        self.log_metrics(losses, current_epoch, running_mfu, self.tokens_trained, current_dataset)
 
                     if math.isnan(losses["val"]):
                         # If val loss is nan, then exit.
@@ -829,6 +977,7 @@ class Trainer:
                 if self.args.eval_only:
                     break
 
+
                 for micro_step in range(self.args.gradient_accumulation_steps):
                     if self.ddp:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
@@ -841,13 +990,30 @@ class Trainer:
 
                         loss = loss / self.args.gradient_accumulation_steps
 
-                    self.X, self.Y = self.get_batch('train')
+                    prior_dataset = current_dataset
+                    tokens_trained_this_batch = self.args.batch_size * self.args.block_size
+                    if self.args.dataset_list:
+                        # Update per–dataset count
+                        self.tokens_trained_dict[current_dataset] += tokens_trained_this_batch
+                        self.tokens_trained = self.tokens_trained_dict[current_dataset]
+                    else:
+                        self.tokens_trained += tokens_trained_this_batch
+
+                    # Compute epoch for logging:
+                    if self.args.dataset_list:
+                        current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                        self.epochs_trained_dict[current_dataset] = current_epoch
+                    else:
+                        current_epoch = self.tokens_trained / self.dataset_size_tokens
 
                     self.scaler.scale(loss).backward()
+
+                    self.X, self.Y, current_dataset = self.get_batch('train')
 
                     if self.args.gns_type is not None:
                         approx_gns_results = gather_hook_results(self.model)
                         self.gns_ema.update(*gns_utils.gnsify(approx_gns_results, self.args.batch_size, ddp=self.ddp))
+
 
 
                 if self.args.grad_clip != 0.0:
@@ -856,6 +1022,11 @@ class Trainer:
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                if self.scheduler:
+                    if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                        self.scheduler.step(losses["val"])
+                    else:
+                        self.scheduler.step()
 
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -863,8 +1034,9 @@ class Trainer:
                 dt = t1 - t0
                 t0 = t1
 
-                # Udpate tokens trained
-                self.tokens_trained += self.args.batch_size * self.args.block_size
+
+                self.iter_num += 1
+                local_iter_num += 1
 
                 if self.iter_num % self.args.log_interval == 0 and self.master_process:
                     lossf = loss.item() * self.args.gradient_accumulation_steps
@@ -873,9 +1045,14 @@ class Trainer:
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
-                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr}, tokens_trained {self.tokens_trained:e}")
+                        if self.args.dataset_list:
+                            print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {self.epochs_trained_dict[prior_dataset]:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained_dict[prior_dataset]:e}")
+                        else:
+                            print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {current_epoch:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained:e}")
+                        # print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {current_epoch:6.2f}, prior_dataset: {prior_dataset}, current_dataset: {current_dataset:<20s}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained:e}")
                     else:
-                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, mfu {running_mfu*100:.2f}%")
+                        # print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, lr {self.lr}, epoch {current_epoch:6.2f}, tokens_trained {self.tokens_trained:e},prior_dataset: {prior_dataset}, current_dataset: {current_dataset:<20s}, mfu {running_mfu*100:.2f}%")
+                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, lr {self.lr}, epoch {current_epoch:6.2f}, tokens_trained {self.tokens_trained:e}, prior_dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%")
 
                     if math.isnan(lossf):
                         # If training loss is nan, then exit.
@@ -884,17 +1061,17 @@ class Trainer:
                             sys.exit("Exiting training loss is NaN")
 
                     self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
-                    self.log_metrics_non_validation(lossf, running_mfu)
+                    if self.args.dataset_list:
+                        self.log_metrics_non_validation(lossf, running_mfu, self.epochs_trained_dict[prior_dataset], self.tokens_trained_dict[prior_dataset], prior_dataset)
+                    else:
+                        self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset)
 
                 if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
                     create_statistics(self, graph_y_labels)
 
-                self.iter_num += 1
-                local_iter_num += 1
 
                 # Update progress bar
                 progress.update(task_id, advance=1)
-
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
                     if self.args.only_save_checkpoint_at_end:
