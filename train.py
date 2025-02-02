@@ -64,8 +64,10 @@ class Trainer:
             for entry in self.args.dataset_list:
                 flattened_list.extend(entry.split())
             self.args.dataset_list = flattened_list
-            # Track tokens trained per dataset
+            # Track tokens and epochs trained per dataset
             self.tokens_trained_dict = {dataset: 0 for dataset in self.args.dataset_list}
+            self.epochs_trained_dict = {dataset: 0 for dataset in self.args.dataset_list}
+
             # Also, set self.args.dataset to the first dataset in the list
             self.args.dataset = self.args.dataset_list[0]
             print(self.args.dataset)
@@ -911,7 +913,7 @@ class Trainer:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
                             print(f"step {self.iter_num}: {dataset:<20s} train loss {dataset_losses['train']:.4f}, train_std {dataset_losses['train_std']:.4f}, val loss {dataset_losses['val']:.4f}, val_std {dataset_losses['val_std']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained tokens {self.tokens_trained_dict[dataset]:.2e}")
-                            self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained_dict[dataset], dataset)
+                            self.log_metrics(dataset_losses, running_mfu, self.epochs_trained_dict[dataset], self.tokens_trained_dict[dataset], dataset)
                     else:
                         # Default behavior for a single dataset
                         print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {self.lr:.4f}")
@@ -1000,6 +1002,7 @@ class Trainer:
                     # Compute epoch for logging:
                     if self.args.dataset_list:
                         current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                        self.epochs_trained_dict[current_dataset] = current_epoch
                     else:
                         current_epoch = self.tokens_trained / self.dataset_size_tokens
 
@@ -1042,7 +1045,10 @@ class Trainer:
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
-                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {current_epoch:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained:e}")
+                        if self.args.dataset_list:
+                            print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {self.epochs_trained_dict[prior_dataset]:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained_dict[prior_dataset]:e}")
+                        else:
+                            print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {current_epoch:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained:e}")
                         # print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {current_epoch:6.2f}, prior_dataset: {prior_dataset}, current_dataset: {current_dataset:<20s}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained:e}")
                     else:
                         # print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, lr {self.lr}, epoch {current_epoch:6.2f}, tokens_trained {self.tokens_trained:e},prior_dataset: {prior_dataset}, current_dataset: {current_dataset:<20s}, mfu {running_mfu*100:.2f}%")
@@ -1055,7 +1061,10 @@ class Trainer:
                             sys.exit("Exiting training loss is NaN")
 
                     self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
-                    self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset)
+                    if self.args.dataset_list:
+                        self.log_metrics_non_validation(lossf, running_mfu, self.epochs_trained_dict[prior_dataset], self.tokens_trained_dict[prior_dataset], prior_dataset)
+                    else:
+                        self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset)
 
                 if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
                     create_statistics(self, graph_y_labels)
