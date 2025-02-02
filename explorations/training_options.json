@@ -1,0 +1,17 @@
+[
+    {
+        "max_iters": ["3000"],
+        "n_layer": ["6"],
+        "n_head": ["6"],
+        "n_embd": ["384"],
+        "block_size": ["256"],
+        "eval_iters": ["200"],
+        "eval_interval": ["250"],
+        "log_interval": ["10"],
+        "gns_type": ["exact"],
+        "device": ["cuda"],
+        "compile": [true],
+        "tensorboard_run_name": ["train_optim_sched_swa"]
+    }
+]
+
