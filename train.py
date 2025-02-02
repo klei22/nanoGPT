@@ -1,3 +1,4 @@
+# train.py
 import argparse
 from contextlib import nullcontext
 import csv
@@ -131,16 +132,27 @@ class Trainer:
             with open(self.args.out_dir + "/best_val_loss_and_iter.txt", 'w') as file:
                 print("resetting best val loss file")
 
-            # Initialize SWA if enabled
-            if self.args.use_swa:
-                self.swa_model = AveragedModel(self.model)
-                self.swa_scheduler = SWALR(self.optimizer, swa_lr=0.05)
 
             self.load_data()
             gptconf = GPTConfig(**self.model_args)
             self.model = GPT(gptconf)
             self.iter_num = 0 # for starting from scratch
             self.best_val_loss = 1e9 # really big number
+
+            # Set optimizer and scheduler
+            self.optimizer = self.create_optimizer()
+            self.scheduler = self.create_scheduler()
+
+            # Initialize SWA after model creation
+            if self.args.use_swa:
+                self.swa_model = AveragedModel(self.model)
+                self.swa_scheduler = SWALR(
+                        self.optimizer,
+                        swa_lr=self.args.swa_lr,
+                        anneal_strategy=self.args.swa_anneal_strategy,
+                        anneal_epochs=self.args.swa_anneal_epochs
+                        )
+
         elif self.args.init_from in ['resume', "prev_run"] :
 
             if self.args.init_from == 'resume':
@@ -152,17 +164,25 @@ class Trainer:
                 checkpoint = torch.load(ckpt_path, map_location=self.device)
                 self.iter_num = 0
 
-            # load optimizer and scheduler
+            # Load optimizer and scheduler
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             if "scheduler" in checkpoint and self.scheduler:
                 self.scheduler.load_state_dict(checkpoint["scheduler"])
 
-            # Load SWA model and scheduler if they exist
-            if self.args.use_swa and "swa_model" in checkpoint:
-                self.swa_model.load_state_dict(checkpoint["swa_model"])
-            if self.args.use_swa and "swa_scheduler" in checkpoint:
-                self.swa_scheduler.load_state_dict(checkpoint["swa_scheduler"])
+            if self.args.use_swa:
+                self.swa_model = AveragedModel(self.model)
+                self.swa_scheduler = SWALR(
+                    self.optimizer,
+                    swa_lr=self.args.swa_lr,
+                    anneal_strategy=self.args.swa_anneal_strategy,
+                    anneal_epochs=self.args.swa_anneal_epochs
+                )
 
+                # then load states from checkpoint
+                if "swa_model" in checkpoint:
+                    self.swa_model.load_state_dict(checkpoint["swa_model"])
+                if "swa_scheduler" in checkpoint:
+                    self.swa_scheduler.load_state_dict(checkpoint["swa_scheduler"])
 
 
             # we should enforce that during resume training, the identical model args are used
@@ -232,8 +252,6 @@ class Trainer:
 
         # Optimizer
         self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
-        self.optimizer = self.create_optimizer()
-        self.scheduler = self.create_scheduler()
 
         if self.args.compile:
             print("compiling the model... (takes a ~minute)")
@@ -270,15 +288,18 @@ class Trainer:
         ]
 
         if self.args.optimizer == "adamw":
-            optimizer = torch.optim.AdamW(param_groups, lr=self.args.learning_rate, betas=(self.args.beta1, self.args.beta2), weight_decay=self.args.weight_decay)
+            self.args.adamw_betas = tuple(self.args.adamw_betas)
+            optimizer = torch.optim.AdamW(param_groups, lr=self.args.learning_rate, betas=tuple(self.args.adamw_betas),
+                                          eps=self.args.adamw_eps, weight_decay=self.args.adamw_weight_decay)
         elif self.args.optimizer == "sgd":
-            optimizer = torch.optim.SGD(param_groups, lr=self.args.learning_rate, momentum=0.9, weight_decay=self.args.weight_decay)
+            optimizer = torch.optim.SGD(param_groups, lr=self.args.learning_rate, momentum=self.args.sgd_momentum, weight_decay=self.args.weight_decay)
         elif self.args.optimizer == "adagrad":
-            optimizer = torch.optim.Adagrad(param_groups, lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+            optimizer = torch.optim.Adagrad(param_groups, lr=self.args.learning_rate, lr_decay=self.args.adagrad_lr_decay, weight_decay=self.args.weight_decay)
         elif self.args.optimizer == "rmsprop":
-            optimizer = torch.optim.RMSprop(param_groups, lr=self.args.learning_rate, alpha=0.99, weight_decay=self.args.weight_decay)
+            optimizer = torch.optim.RMSprop(param_groups, lr=self.args.learning_rate, alpha=self.args.rmsprop_alpha, weight_decay=self.args.weight_decay)
         elif self.args.optimizer == "nadam":
-            optimizer = torch.optim.NAdam(param_groups, lr=self.args.learning_rate, betas=(self.args.beta1, self.args.beta2), weight_decay=self.args.weight_decay)
+            self.args.nadam_betas = tuple(self.args.nadam_betas)
+            optimizer = torch.optim.NAdam(param_groups, lr=self.args.learning_rate, betas=tuple(self.args.nadam_betas), eps=self.args.nadam_eps, weight_decay=self.args.weight_decay)
         else:
             raise ValueError(f"Unknown optimizer: {self.args.optimizer}")
 
@@ -288,25 +309,16 @@ class Trainer:
         if self.args.lr_scheduler == "none":
             return None
         elif self.args.lr_scheduler == "cosine":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.args.lr_decay_iters)
+            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.args.cosine_t_max, eta_min=self.args.cosine_eta_min)
         elif self.args.lr_scheduler == "exponential":
-            return torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
+            return torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=self.args.exponential_gamma)
         elif self.args.lr_scheduler == "step":
-            return torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1000, gamma=0.1)
+            return torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=self.args.step_lr_size, gamma=self.args.step_lr_gamma)
         elif self.args.lr_scheduler == "plateau":
-            return torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode="min", factor=0.1, patience=5)
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode=self.args.plateau_mode, factor=self.args.plateau_factor, patience=self.args.plateau_patience)
         else:
             raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
 
-
-    # SWA Related
-    def update_swa_bn(self):
-        """ Manually updates SWA batch normalization statistics using a few training batches. """
-        self.swa_model.train()
-        with torch.no_grad():
-            for _ in range(100):  # Run 100 iterations for good BN statistics
-                X, _ = self.get_batch('train')  # Fetch training batch
-                self.swa_model(X)  # Forward pass to update BN
 
     def load_tokenizer(self):
         meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
@@ -820,7 +832,7 @@ class Trainer:
         with progress:
             task_id = progress.add_task("[green]Training...", total=(self.args.max_iters - self.iter_num))
             while True:
-                if self.args.decay_lr:
+                if self.scheduler is not None:
                     self.lr = self.get_lr(self.iter_num)
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.lr
@@ -838,7 +850,7 @@ class Trainer:
                             self.log_metrics(dataset_losses, running_mfu, target_dataset=dataset)
                     else:
                         # Default behavior for a single dataset
-                        print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {losses['val']:.4f}")
+                        print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {self.lr:.4f}")
                         self.log_metrics(losses, running_mfu)
 
                     if math.isnan(losses["val"]):
@@ -978,10 +990,6 @@ class Trainer:
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
                     if self.args.only_save_checkpoint_at_end:
-
-                        # Update batch norm statistics for SWA model before saving
-                        if self.args.use_swa:
-                            self.update_swa_bn()
 
                         self.save_checkpoint('ckpt.pt')
                         print(f"Saved checkpoint to {self.args.out_dir}")

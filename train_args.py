@@ -1,3 +1,4 @@
+# train_args.py
 import argparse
 import math
 
@@ -107,8 +108,8 @@ def parse_args():
     training_group.add_argument("--cosine_t_max", type=int, default=1000, help="T_max parameter for CosineAnnealingLR.")
     training_group.add_argument("--cosine_eta_min", type=float, default=0, help="Minimum learning rate for CosineAnnealingLR.")
     training_group.add_argument("--exponential_gamma", type=float, default=0.9, help="Gamma value for ExponentialLR.")
-    training_group.add_argument("--step_size", type=int, default=1000, help="Step size for StepLR.")
-    training_group.add_argument("--step_gamma", type=float, default=0.1, help="Gamma value for StepLR.")
+    training_group.add_argument("--step_lr_size", type=int, default=1000, help="Step size for StepLR.")
+    training_group.add_argument("--step_lr_gamma", type=float, default=0.1, help="Gamma value for StepLR.")
     training_group.add_argument("--plateau_mode", type=str, default="min", choices=["min", "max"], help="Mode for ReduceLROnPlateau.")
     training_group.add_argument("--plateau_factor", type=float, default=0.1, help="Factor by which learning rate is reduced for ReduceLROnPlateau.")
     training_group.add_argument("--plateau_patience", type=int, default=10, help="Number of epochs with no improvement for ReduceLROnPlateau.")
@@ -119,7 +120,6 @@ def parse_args():
     training_group.add_argument("--swa_lr", type=float, default=0.05, help="Learning rate for SWA.")
     training_group.add_argument("--swa_anneal_strategy", type=str, default="linear", choices=["linear", "cos"], help="SWA learning rate annealing strategy.")
     training_group.add_argument("--swa_anneal_epochs", type=int, default=5, help="Number of epochs for SWA annealing.")
-    training_group.add_argument("--swa_update_bn", default=False, action=argparse.BooleanOptionalAction, help="Update batch normalization statistics after SWA training.")
 
 
     # Model args

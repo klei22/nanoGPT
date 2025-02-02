@@ -1,6 +1,6 @@
 [
     {
-        "max_iters": ["3000"],
+        "max_iters": ["2000"],
         "n_layer": ["6"],
         "n_head": ["6"],
         "n_embd": ["384"],
@@ -11,7 +11,40 @@
         "gns_type": ["exact"],
         "device": ["cuda"],
         "compile": [true],
-        "tensorboard_run_name": ["train_optim_sched_swa"]
+        "tensorboard_run_name": ["train_optim_sched_swa"],
+        "optimizer": [
+          "adamw",
+          "sgd",
+          "adagrad",
+          "rmsprop",
+          "nadam"
+        ],
+        "lr_scheduler": [
+          "none",
+          "cosine",
+          "exponential",
+          "step",
+          "plateau"
+        ],
+        "use_swa": [
+          true,
+          false
+        ],
+        "swa_start": [
+          "1000",
+          "2000"
+        ],
+        "swa_lr": [
+          "0.01",
+          "0.05"
+        ],
+        "swa_anneal_strategy": [
+          "linear",
+          "cos"
+        ],
+        "swa_anneal_epochs": [
+          "5",
+          "10"
+        ]
     }
 ]
-
