@@ -1,17 +1,16 @@
 [
     {
         "max_iters": ["2000"],
-        "n_layer": ["6"],
-        "n_head": ["6"],
-        "n_embd": ["384"],
-        "block_size": ["256"],
-        "eval_iters": ["200"],
-        "eval_interval": ["250"],
-        "log_interval": ["10"],
+        "log_interval": ["1"],
         "gns_type": ["exact"],
+        "batch_size": ["8", "128"],
         "device": ["cuda"],
+        "dataset": ["commonvoice_ko"],
+        "dataset_list": ["commonvoice_ko commonvoice_zh","commonvoice_zh"],
+        "dataset_sampling_probs": ["3.0 3.0", "1"],
+        "dataset_interleaving": [true],
         "compile": [true],
-        "tensorboard_run_name": ["train_optim_sched_swa"],
+        "tensorboard_run_name": ["train_optim_sched"],
         "optimizer": [
           "adamw",
           "sgd",
@@ -25,26 +24,6 @@
           "exponential",
           "step",
           "plateau"
-        ],
-        "use_swa": [
-          true,
-          false
-        ],
-        "swa_start": [
-          "1000",
-          "2000"
-        ],
-        "swa_lr": [
-          "0.01",
-          "0.05"
-        ],
-        "swa_anneal_strategy": [
-          "linear",
-          "cos"
-        ],
-        "swa_anneal_epochs": [
-          "5",
-          "10"
         ]
     }
 ]

@@ -56,13 +56,20 @@ def parse_args():
     training_group.add_argument('--batch_size', default=64, type=int)
     training_group.add_argument("--seed", default=1337, type=int)
 
+    # New: total tokens in dataset (for computing epochs) and sampling method
+    training_group.add_argument('--dataset_size_tokens', default=None, type=int,
+        help="Total number of tokens in the dataset (used for reporting epoch progress)")
+    training_group.add_argument('--sampling_method', default="random",
+        choices=["random", "sequential", "without_replacement"],
+        help="Sampling method for get_batch: 'random' (with replacement), 'sequential' (without shuffling), or 'without_replacement' (shuffled without replacement)")
+
     # Add a new argument for specifying multiple datasets
     training_group.add_argument('--dataset_list', default=None, nargs='+', type=str, help="If not None, training will be done from a list of datasets to train on, e.g. --dataset_list shakespeare wikitext103 openwebtext")
     training_group.add_argument('--dataset_interleaving', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--dataset_interleaving_shuffle', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--dataset_sampling_learning_rate', default=None, nargs='+', type=float, help="Sampling learning rates for each dataset in dataset_list.")
-    training_group.add_argument('--dataset_sampling_probs', default=None, nargs='+', type=float, help="Sampling proportions for each dataset in dataset_list. Probabilities normally but proportions in dataset_interleaving")
-    training_group.add_argument('--dataset_sampling_probs_final', default=None, nargs='+', type=float, help="If, set final sampling probabilities for each dataset in dataset_list.")
+    training_group.add_argument('--dataset_sampling_probs', action=FlattenListAction, default=None, nargs='+', help="Sampling proportions for each dataset in dataset_list. Probabilities normally but proportions in dataset_interleaving")
+    training_group.add_argument('--dataset_sampling_probs_final', action=FlattenListAction,default=None, nargs='+', help="If, set final sampling probabilities for each dataset in dataset_list.")
     training_group.add_argument('--dataset_sampling_probs_transition_method', default=None, type=str, choices=["linear", "cosine", "exponential"])
 
     # Add GNS settings
@@ -113,13 +120,6 @@ def parse_args():
     training_group.add_argument("--plateau_mode", type=str, default="min", choices=["min", "max"], help="Mode for ReduceLROnPlateau.")
     training_group.add_argument("--plateau_factor", type=float, default=0.1, help="Factor by which learning rate is reduced for ReduceLROnPlateau.")
     training_group.add_argument("--plateau_patience", type=int, default=10, help="Number of epochs with no improvement for ReduceLROnPlateau.")
-
-    # Stochastic Weight Averaging (SWA) Options
-    training_group.add_argument("--use_swa", default=False, action=argparse.BooleanOptionalAction, help="Enable Stochastic Weight Averaging (SWA).")
-    training_group.add_argument("--swa_start", type=int, default=1000, help="Iteration to start applying SWA.")
-    training_group.add_argument("--swa_lr", type=float, default=0.05, help="Learning rate for SWA.")
-    training_group.add_argument("--swa_anneal_strategy", type=str, default="linear", choices=["linear", "cos"], help="SWA learning rate annealing strategy.")
-    training_group.add_argument("--swa_anneal_epochs", type=int, default=5, help="Number of epochs for SWA annealing.")
 
 
     # Model args
@@ -586,3 +586,13 @@ def parse_args():
             json.dump(vars(args), json_file)
 
     return args, model_group, training_group, logging_group
+
+class FlattenListAction(argparse.Action):
+     def __call__(self, parser, namespace, values, option_string=None):
+        # For each value passed, split it by whitespace (if any) and convert each token to float.
+        result = []
+        for v in values:
+            # If the value contains spaces, split it, otherwise just use the value.
+            tokens = v.split() if " " in v else [v]
+            result.extend([float(x) for x in tokens])
+        setattr(namespace, self.dest, result)
