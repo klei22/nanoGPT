@@ -1,5 +1,4 @@
 # train.py
-import argparse
 from contextlib import nullcontext
 import csv
 import json
@@ -1026,11 +1025,30 @@ class Trainer:
                     if self.args.dataset_list is not None:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
-                            print(f"step {self.iter_num}: {dataset:<20s}, train loss {dataset_losses['train']:.4f}, train_stdev {dataset_losses['train_std']:.4f}, val loss {dataset_losses['val']:.4f}, val_stdev {dataset_losses['val_std']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained_dict[dataset]:.2e}")
+                            log_message=f"step {self.iter_num}: "
+                            log_message+=f"{dataset:<20s}"
+                            log_message+=f", train loss {dataset_losses['train']:.4f}"
+                            log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
+                            log_message+=f", val loss {dataset_losses['val']:.4f}"
+                            log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
+                            if self.args.gns_type is not None:
+                                log_message+=f", gns {self.gns:.2f}"
+                            log_message+=f", lr {self.lr:.4f}"
+                            log_message+=f", tokens_trained {self.tokens_trained_dict[dataset]:.2e}"
+                            print(log_message)
                             self.log_metrics(dataset_losses, running_mfu, self.epochs_trained_dict[dataset], self.tokens_trained_dict[dataset], dataset)
                     else:
                         # Default behavior for a single dataset
-                        print(f"step {self.iter_num}: train loss {losses['train']:.4f}, train_stdev {losses['train_std']:.4f}, val loss {losses['val']:.4f}, val_stdev {losses['val_std']:.4f}, lr {self.lr:.4f}")
+                        log_message=f"step {self.iter_num}:"
+                        log_message+=f", train loss {losses['train']:.4f}"
+                        log_message+=f", train_stdev {losses['train_std']:.4f}"
+                        log_message+=f", val loss {losses['val']:.4f}"
+                        log_message+=f", val_stdev {losses['val_std']:.4f}"
+                        if self.args.gns_type is not None:
+                            log_message+=f", gns {self.gns:.2f}"
+                        log_message+=f", batch_size {self.args.batch_size}"
+                        log_message+=f", lr {self.lr:.4f}"
+                        print(log_message)
                         self.log_metrics(losses, current_epoch, running_mfu, self.tokens_trained, current_dataset)
 
                     if math.isnan(losses["val"]):
@@ -1166,15 +1184,29 @@ class Trainer:
                     if local_iter_num >= 5:
                         mfu = self.raw_model.estimate_mfu(self.args.batch_size * self.args.gradient_accumulation_steps, dt)
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
+
+                    # training _loss section
+                    log_message= f"iter {self.iter_num}: loss {lossf:.4f}"
+                    log_message+= f", time {dt*1000:.2f} ms"
+                    if self.args.dataset_list:
+                        log_message+= f", epoch {self.epochs_trained_dict[prior_dataset]:6.2f}"
+                        log_message+= f", tokens_trained {self.tokens_trained_dict[prior_dataset]:.2e}"
+                    else:
+                        log_message+= f", epoch {current_epoch:6.2f}"
+                        log_message+= f", tokens_trained {self.tokens_trained:.2e}"
+                    log_message+= f", dataset: {prior_dataset}"
+                    log_message+= f", mfu {running_mfu*100:.2f}%"
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
-                        if self.args.dataset_list:
-                            print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {self.epochs_trained_dict[prior_dataset]:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, grad_norm {self.grad_norm:2f}, grad_std {self.grad_std:.2f}, tokens_trained {self.tokens_trained_dict[prior_dataset]:e}")
-                        else:
-                            print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {current_epoch:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, grad_norm {self.grad_norm:.2f}, grad_std {self.grad_std:.2f}, tokens_trained {self.tokens_trained:e}")
-                    else:
-                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, lr {self.lr}, epoch {current_epoch:6.2f}, tokens_trained {self.tokens_trained:e}, dataset: {prior_dataset}, {self.grad_norm}, grad_std {self.grad_std}, mfu {running_mfu*100:.2f}%")
+                        log_message+= f", gns {self.gns:.2f}"
+                    log_message+= f", batch_size {self.args.batch_size}"
+                    log_message+= f", lr {self.lr:.4f}"
+                    log_message+= f", grad_norm {self.grad_norm:2f}"
+                    log_message+= f", grad_std {self.grad_std:.2f}"
 
+                    print(log_message)
+
+                    # training _loss section
                     if math.isnan(lossf):
                         # If training loss is nan, then exit.
                         with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
