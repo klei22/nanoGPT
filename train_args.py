@@ -1,6 +1,11 @@
 # train_args.py
 import argparse
 import math
+import re
+
+def clean_dataset_path(dataset_name):
+    """Removes leading './data/' or 'data/' from dataset paths."""
+    return re.sub(r'^(?:\./)?data/', '', dataset_name)
 
 def parse_args():
 
@@ -611,6 +616,17 @@ def parse_args():
     if args.save_config_json is not None:
         with open(args.save_config_json, 'w') as json_file:
             json.dump(vars(args), json_file)
+
+    # Apply cleaning to dataset arguments
+    if args.dataset:
+        args.dataset = clean_dataset_path(args.dataset)
+    print(args.dataset)
+    if args.dataset_list:
+        args.dataset_list = [clean_dataset_path(ds) for ds in args.dataset_list]
+    if args.multicontext_datasets:
+        print(args.multicontext_datasets)
+        args.multicontext_datasets = [clean_dataset_path(ds) for ds in args.multicontext_datasets]
+        print(args.multicontext_datasets)
 
     return args, model_group, training_group, logging_group
 
