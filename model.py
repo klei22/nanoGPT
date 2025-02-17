@@ -463,17 +463,12 @@ class GPT(nn.Module):
                                 ignore_index=-1
                                 )
                             )
-                # TODO: have selectable weights per loss, and possibly scheduled weights, or dynamic (depending on accuracy) weights
-                loss = sum(losses) / len(losses)
 
             else:
-                # TODO: refactor to be equiv
-                # Possibly just compute the last position in inference mode
-                logits_a = logits_a[:, [-1], :]
-                logits_b = logits_b[:, [-1], :]
-                loss_a = None
-                loss_b = None
-                loss = None
+                # only forward lm head on very last position in inference mode
+                for i in range(len(token_list)):
+                    logits.append(self.transformer[f'lm_head_{i}'](x[:, [-1], :]))
+                losses = None
 
             return logits, losses
 
