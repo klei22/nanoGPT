@@ -756,14 +756,17 @@ class Trainer:
             out['train'] = out['datasets'][self.args.dataset]['train']
             out['train_std'] = out['datasets'][self.args.dataset]['train_std']
         elif self.args.training_mode == "multicontext":
+            for i, dataset in enumerate(self.args.multicontext_datasets):
+                out['datasets'][dataset] = {}
             # multicontext training
             for split in ['train', 'val']:
                 losses = {}
                 means = {}
+                std_devs = {}
                 mean_avg = 0.0
                 loss_std = 0.0
                 dataset_list = None
-                for i in range(len(self.args.multicontext_datasets)):
+                for i, dataset in enumerate(self.args.multicontext_datasets):
                     losses[f"{i}"] = torch.zeros(self.args.eval_iters)
                     means[f"{i}"] = 0.0
 
@@ -775,16 +778,19 @@ class Trainer:
                     for i in range(len(self.args.multicontext_datasets)):
                         losses[f"{i}"][k] = loss_list[i]
 
-                for i in range(len(self.args.multicontext_datasets)):
-                    means[f"{i}"] = losses[f"{i}"].mean().item()
-                    mean_avg += means[f"{i}"]
-                    loss_std += losses[f"{i}"].std()
-
-
-                out[split] = np.array(mean_avg / len(self.args.multicontext_datasets))
                 for i, dataset in enumerate(self.args.multicontext_datasets):
-                    out[f"{split}_loss_{dataset}"] = means[f"{i}"]
+                    means[f"{i}"] = losses[f"{i}"].mean()
+                    std_devs[f"{i}"]  = losses[f"{i}"].std()
 
+                    mean_avg += means[f"{i}"]
+                    loss_std += std_devs[f"{i}"]
+
+                for i, dataset in enumerate(self.args.multicontext_datasets):
+                    out['datasets'][dataset][split] = means[f"{i}"]
+                    out['datasets'][dataset][f"{split}_std"] = std_devs[f"{i}"]
+
+                # general train and val losses, as well as std dev
+                out[split] = np.array(mean_avg / len(self.args.multicontext_datasets))
                 out[split + "_std"] = np.array(loss_std / len(self.args.multicontext_datasets))
         else:
             # Default behavior for a single dataset
@@ -1039,6 +1045,24 @@ class Trainer:
                             log_message+=f", tokens_trained {self.tokens_trained_dict[dataset]:.2e}"
                             print(log_message)
                             self.log_metrics(dataset_losses, running_mfu, self.epochs_trained_dict[dataset], self.tokens_trained_dict[dataset], dataset)
+                    elif self.args.multicontext_datasets is not None:
+                        # Print loss for each dataset if multiple datasets are used
+                        # print(losses['datasets'])
+                        # for dataset, dataset_losses in losses['datasets'].items():
+                        #     print(dataset, dataset_losses)
+                        for dataset, dataset_losses in losses['datasets'].items():
+                            log_message=f"step {self.iter_num}: "
+                            log_message+=f"{dataset:<20s}"
+                            log_message+=f", train loss {dataset_losses['train']:.4f}"
+                            log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
+                            log_message+=f", val loss {dataset_losses['val']:.4f}"
+                            log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
+                            if self.args.gns_type is not None:
+                                log_message+=f", gns {self.gns:.2f}"
+                            log_message+=f", lr {self.lr:.4f}"
+                            log_message+=f", tokens_trained {self.tokens_trained:.2e}"
+                            print(log_message)
+                            self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained, dataset)
                     else:
                         # Default behavior for a single dataset
                         log_message=f"step {self.iter_num}:"
@@ -1051,7 +1075,7 @@ class Trainer:
                         log_message+=f", batch_size {self.args.batch_size}"
                         log_message+=f", lr {self.lr:.4f}"
                         print(log_message)
-                        self.log_metrics(losses, current_epoch, running_mfu, self.tokens_trained, current_dataset)
+                        self.log_metrics(losses, running_mfu, current_epoch, self.tokens_trained, current_dataset)
 
                     if math.isnan(losses["val"]):
                         # If val loss is nan, then exit.
