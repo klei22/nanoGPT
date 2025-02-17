@@ -526,7 +526,9 @@ class Trainer:
                 self.train_data_dict[dataset] = train_data
                 self.val_data_dict[dataset] = val_data
                 # For multi-dataset case, store the token count for each dataset in a dictionary.
-                self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.dataset_list}
+            print(self.train_data_dict, self.args.dataset_list)
+            print({d: len(self.train_data_dict[d]) for d in self.args.dataset_list})
+            self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.dataset_list}
         else:
             if self.model_args['vocab_size'] is None:
                 sys.exit("Error: no vocab size specified")
@@ -557,7 +559,7 @@ class Trainer:
 
         def get_transitioned_probs():
             initial_probs = np.array(self.args.dataset_sampling_probs)
-            if self.args.final_dataset_sampling_probs:
+            if self.args.dataset_sampling_probs_final:
                 step_ratio = self.iter_num / self.args.max_iters
                 final_probs = np.array(self.args.dataset_sampling_probs_final)
                 return interpolate_probs(initial_probs, final_probs, self.args.transition_method, step_ratio)
