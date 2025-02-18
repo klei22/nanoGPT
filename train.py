@@ -976,6 +976,16 @@ class Trainer:
                 "mfu": running_mfu*100,
                 })
 
+    def underscore_abbr(self, dataset_name):
+        """ Transforms long dataset name to abbreviation
+        e.g.
+        shakespeare_char -> sc
+        commonvoice_ko -> ck
+        """
+        parts = dataset_name.split('_')
+        abbr = ''.join([part[0] for part in parts])
+        return abbr
+
     def save_checkpoint(self, filename):
         checkpoint = {
                 'model': self.raw_model.state_dict(),
@@ -1136,6 +1146,8 @@ class Trainer:
                     break
 
 
+                # TODO: this is for specifically multicontext maybe we should make a field for this
+                training_losses = []
                 for micro_step in range(self.args.gradient_accumulation_steps):
                     if self.ddp:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
@@ -1143,8 +1155,10 @@ class Trainer:
                     with self.ctx:
                         if self.args.training_mode == 'multicontext':
                             total_loss = 0
-                            logits, losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
-                            loss = sum(losses)/len(losses)
+                            logits, training_losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
+
+                            # For multicontext training let loss = first dataset loss
+                            loss = training_losses[0]
                         else:
                             logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num)
 
@@ -1212,15 +1226,22 @@ class Trainer:
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
 
                     # training _loss section
-                    log_message= f"iter {self.iter_num}: loss {lossf:.4f}"
-                    log_message+= f", time {dt*1000:.2f} ms"
+                    log_message= f"iter {self.iter_num}"
+                    log_message+= f", {dt*1000:.2f} ms: "
+                    if self.args.multicontext_datasets:
+                        for i, mc_dataset in enumerate(self.args.multicontext_datasets):
+                            log_message+= f", {self.underscore_abbr(mc_dataset)}"
+                            log_message+= f" loss {training_losses[i].item():.4f}"
+                    else:
+                        log_message+= f", dataset: {prior_dataset}"
+                        log_message+= f" loss {lossf:.4f}"
+
                     if self.args.dataset_list:
                         log_message+= f", epoch {self.epochs_trained_dict[prior_dataset]:6.2f}"
                         log_message+= f", tokens_trained {self.tokens_trained_dict[prior_dataset]:.2e}"
                     else:
                         log_message+= f", epoch {current_epoch:6.2f}"
                         log_message+= f", tokens_trained {self.tokens_trained:.2e}"
-                    log_message+= f", dataset: {prior_dataset}"
                     log_message+= f", mfu {running_mfu*100:.2f}%"
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
@@ -1242,6 +1263,9 @@ class Trainer:
                     self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
                     if self.args.dataset_list:
                         self.log_metrics_non_validation(lossf, running_mfu, self.epochs_trained_dict[prior_dataset], self.tokens_trained_dict[prior_dataset], prior_dataset)
+                    if self.args.multicontext_datasets:
+                        for i, mc_dataset in enumerate(self.args.multicontext_datasets):
+                            self.log_metrics_non_validation(training_losses[i].item(), running_mfu, current_epoch, self.tokens_trained, mc_dataset)
                     else:
                         self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset)
 
