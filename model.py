@@ -396,10 +396,15 @@ class GPT(nn.Module):
         if token_dict is not None:
 
             token_list = list(token_dict.values())
-            target_list = list(target_dict.values())
+            # If target_dict is None (typical for inference), set target_list = None
+            if target_dict is not None:
+                target_list = list(target_dict.values())
+            else:
+                target_list = None
             device = token_list[0].device
             b, t = token_list[0].size()
 
+            x = None
             # Add all of the input tokens
             for i, tokens in enumerate(token_list):
                 if i == 0:
@@ -453,16 +458,17 @@ class GPT(nn.Module):
 
             # 6. Compute losses if targets are provided
             # If we only want the last token, adapt the slices as you prefer
-            losses = []
+            losses = None
             if target_list is not None:
+                # If we do want to compute losses for each context
+                losses = []
                 for i in range(len(token_list)):
-                    losses.append(
-                            F.cross_entropy(
-                                logits[i].view(-1, logits[i].size(-1)),
-                                target_list[i].view(-1),
-                                ignore_index=-1
-                                )
-                            )
+                    loss_i = F.cross_entropy(
+                        logits[i].view(-1, logits[i].size(-1)),
+                        target_list[i].view(-1),
+                        ignore_index=-1
+                    )
+                    losses.append(loss_i)
 
             else:
                 # only forward lm head on very last position in inference mode

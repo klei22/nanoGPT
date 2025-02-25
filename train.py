@@ -1158,7 +1158,8 @@ class Trainer:
                             logits, training_losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
 
                             # For multicontext training let loss = first dataset loss
-                            loss = training_losses[0]
+                            # loss = training_losses[0]
+                            loss = sum(training_losses) / len(training_losses)
                         else:
                             logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num)
 
