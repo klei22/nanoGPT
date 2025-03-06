@@ -278,7 +278,7 @@ class Trainer:
             print_model_tree(self.model, print_params=True)
 
         # Optimizer
-        self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+        self.scaler = torch.cuda.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
 
         if self.args.compile:
             print("compiling the model... (takes a ~minute)")

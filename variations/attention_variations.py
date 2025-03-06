@@ -10,8 +10,9 @@ from quantization.quant_utils import set_variant, create_activation_buffers
 from variations.softmax_variations import softmax_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
 
-# Mamba related imports
+# cuda related imports
 if torch.cuda.is_available():
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 

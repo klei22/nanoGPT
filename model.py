@@ -12,7 +12,6 @@ import inspect
 import sys
 import re
 from rich import print
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
 
 import numpy as np
 
