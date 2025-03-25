@@ -110,24 +110,30 @@ class TestTokenizers(unittest.TestCase):
     # --------------------------------------------------------------------------
     # Helper Method to Print Token Count Histogram
     # --------------------------------------------------------------------------
-    def _print_token_count_histogram(self, token_counts, top_n=10):
+    def _print_token_count_histogram(self, token_counts, itos):
         """
-        Prints a small histogram (top `top_n` tokens by count) using Rich.
+        Prints a histogram of all tokens in `token_counts`, sorted by descending frequency.
+        Columns: Token ID, Actual Token, Count, Bar
         """
+
         if not token_counts:
             console.print("[info]No token counts to display.[/info]")
             return
 
-        console.print(f"[info]Token Count Histogram (Top {top_n}):[/info]")
-        table = Table("Token ID", "Count", "Bar", title="Histogram")
-        # Sort descending by count
+        console.print("[info]Token Count Histogram (All Tokens):[/info]")
+        table = Table("Token ID", "Token", "Count", "Bar", title="Histogram")
+
+        # Sort all tokens in descending order by count
         sorted_counts = sorted(token_counts.items(), key=lambda x: x[1], reverse=True)
         max_count = max(token_counts.values())
-        for token_id, count in sorted_counts[:top_n]:
-            bar_len = 20  # width in characters
+
+        for token_id, count in sorted_counts:
+            token_str = itos.get(token_id, f"<UNK:{token_id}>")
+            bar_len = 20  # max width in characters
             filled = int((count / max_count) * bar_len)
             bar_str = "█" * filled
-            table.add_row(str(token_id), str(count), bar_str)
+            table.add_row(str(token_id), repr(token_str), str(count), bar_str)
+
         console.print(table)
         console.print()  # extra newline
 
@@ -216,7 +222,7 @@ class TestTokenizers(unittest.TestCase):
             f.write('a\nb\nc\n\\n')
 
         tokenizer = CustomCharTokenizerWithByteFallback(args)
-        test_string = 'abc😊d\nefg'
+        test_string = "abc😊😊dd\nefg"
 
         ids = tokenizer.tokenize(test_string)
         detokenized = tokenizer.detokenize(ids)
@@ -255,8 +261,11 @@ class TestTokenizers(unittest.TestCase):
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
 
+        # Retrieve the itos mapping so we can display actual tokens in the histogram
+        itos = meta.get("itos", {})
+
         # Print histogram
-        self._print_token_count_histogram(token_counts)
+        self._print_token_count_histogram(token_counts, itos)
 
         self.assertEqual(
             sum(token_counts.values()), 
@@ -285,8 +294,10 @@ class TestTokenizers(unittest.TestCase):
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
 
+        itos = meta.get("itos", {})
+
         # Print histogram
-        self._print_token_count_histogram(token_counts)
+        self._print_token_count_histogram(token_counts, itos)
 
         self.assertEqual(
             sum(token_counts.values()), 
@@ -304,9 +315,10 @@ class TestTokenizers(unittest.TestCase):
         with open("meta.pkl", "rb") as f:
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
 
         # Print histogram
-        self._print_token_count_histogram(token_counts)
+        self._print_token_count_histogram(token_counts, itos)
 
         self.assertEqual(
             sum(token_counts.values()), 
@@ -324,9 +336,10 @@ class TestTokenizers(unittest.TestCase):
         with open("meta.pkl", "rb") as f:
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
 
         # Print histogram
-        self._print_token_count_histogram(token_counts)
+        self._print_token_count_histogram(token_counts, itos)
 
         self.assertEqual(
             sum(token_counts.values()), 
@@ -344,9 +357,10 @@ class TestTokenizers(unittest.TestCase):
         with open("meta.pkl", "rb") as f:
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
 
         # Print histogram
-        self._print_token_count_histogram(token_counts)
+        self._print_token_count_histogram(token_counts, itos)
 
         self.assertEqual(
             sum(token_counts.values()), 
@@ -358,7 +372,7 @@ class TestTokenizers(unittest.TestCase):
 
     def test_custom_char_tokenizer_with_byte_fallback_counts(self):
         args = Namespace(custom_chars_file="custom_chars.txt", track_token_counts=True)
-        test_string = "abc😊d\nefg"
+        test_string = "abc😊😊dd\nefg"
         with open(args.custom_chars_file, 'w', encoding='utf-8') as f:
             f.write('a\nb\nc\n\\n')
 
@@ -368,9 +382,10 @@ class TestTokenizers(unittest.TestCase):
         with open("meta.pkl", "rb") as f:
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
 
         # Print histogram
-        self._print_token_count_histogram(token_counts)
+        self._print_token_count_histogram(token_counts, itos)
 
         self.assertEqual(
             sum(token_counts.values()), 
