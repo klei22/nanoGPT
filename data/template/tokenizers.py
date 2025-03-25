@@ -4,7 +4,7 @@ import pickle
 import tempfile
 import sentencepiece as spm
 import tiktoken
-from tqdm import tqdm 
+from tqdm import tqdm
 from collections import defaultdict
 
 
@@ -263,85 +263,132 @@ class CharTokenizer(Tokenizer):
         return ''.join([self.itos[id] for id in ids])
 
 class CustomCharTokenizerWithByteFallback(Tokenizer):
+    """
+    In this version, we assign IDs 0..255 to raw bytes,
+    then custom tokens get IDs from 256 upwards.
+
+    During tokenization:
+      1) Convert text to UTF-8 bytes.
+      2) For each position in the byte sequence, attempt to match
+         a custom token's UTF-8 pattern. If we match, produce that token ID.
+         Otherwise, produce the ID for the single byte.
+
+    Detokenization:
+      - If ID < 256, it's a single raw byte.
+      - If ID >= 256, it's the custom token string.
+    """
+
     def __init__(self, args):
         super().__init__(args)
         if args.custom_chars_file is None:
             raise ValueError("Custom characters file must be provided for this tokenizer.")
+
+        # Load custom tokens from file
         with open(args.custom_chars_file, "r", encoding="utf-8") as f:
-            self.custom_chars = [line.strip() for line in f if line.strip()]
+            self.custom_tokens = [line.strip() for line in f if line.strip()]
 
-        self.stoi = {}
-        self.itos = {}
-        self.custom_char_count = 0
-        self.vocab_size = 0
-
-        # Build vocab dictionaries, but don't overwrite meta yet
+        # Build vocab dictionaries (bytes first, then custom tokens)
         self.build_vocab()
 
     def build_vocab(self):
-        # Assign IDs to custom characters
-        self.stoi = {ch: i for i, ch in enumerate(self.custom_chars)}
-        self.itos = {i: ch for i, ch in enumerate(self.custom_chars)}
-        self.custom_char_count = len(self.custom_chars)
+        # Assign IDs 0..255 to individual bytes
+        self.stoi = {}
+        self.itos = {}
 
-        # Assign IDs to bytes (0-255)
-        self.byte_stoi = {byte: i + self.custom_char_count for i, byte in enumerate(range(256))}
-        self.byte_itos = {i + self.custom_char_count: byte for i, byte in enumerate(range(256))}
+        for b in range(256):
+            # Store key as the actual single byte
+            key = bytes([b])
+            self.stoi[key] = b  # ID = b
+            self.itos[b] = key
 
-        # Update total vocab size
-        self.vocab_size = self.custom_char_count + 256
+        # Now assign IDs to the custom tokens from 256 onwards
+        offset = 256
+        self.custom_token_bytes = {}
+        for i, token_str in enumerate(self.custom_tokens):
+            token_id = offset + i
+            self.stoi[token_str] = token_id
+            self.itos[token_id] = token_str
+            self.custom_token_bytes[token_str] = token_str.encode('utf-8')
 
-        # Merge the dictionaries
-        self.stoi.update(self.byte_stoi)
-        self.itos.update(self.byte_itos)
+        self.custom_char_count = len(self.custom_tokens)
+        self.vocab_size = 256 + self.custom_char_count
 
     def tokenize(self, data):
+        # Convert entire string to UTF-8 bytes
+        data_bytes = data.encode('utf-8')
+        i = 0
+        n = len(data_bytes)
         ids = []
-        data_len = len(data)
-        for ch in data:
-            if ch in self.stoi:
-                token_id = self.stoi[ch]
-                ids.append(token_id)
-                self.record_token(token_id)
-            else:
-                byte_sequence = ch.encode('utf-8')
-                for byte in byte_sequence:
-                    token_id = self.stoi[byte]
-                    ids.append(token_id)
-                    self.record_token(token_id)
 
-        # Finalize metadata (including token_counts) after tokenization
+        # We'll try to match any custom token at the current position; otherwise single byte
+        pbar = tqdm(total=n, desc="Tokenizing Bytes First + Custom")
+        while i < n:
+            matched = False
+            # Check each custom token
+            for token_str, token_bytes in self.custom_token_bytes.items():
+                length = len(token_bytes)
+                # If next 'length' bytes match this custom token
+                if data_bytes[i:i+length] == token_bytes:
+                    token_id = self.stoi[token_str]  # e.g., 256+
+                    self.record_token(token_id)
+                    ids.append(token_id)
+                    i += length
+                    pbar.update(length)
+                    matched = True
+                    break
+
+            if not matched:
+                # No custom token matched, so we treat this as a single byte
+                single_byte = data_bytes[i:i+1]
+                token_id = self.stoi[single_byte]  # 0..255
+                self.record_token(token_id)
+                ids.append(token_id)
+                i += 1
+                pbar.update(1)
+
+        pbar.close()
+
+        # Finalize metadata with token_counts
         meta = {
             "vocab_size": self.vocab_size,
             "tokenizer": "custom_char_with_byte_fallback",
-            "custom_chars": self.custom_chars,
+            "custom_chars": self.custom_tokens,  # i.e., custom tokens
             "stoi": self.stoi,
             "itos": self.itos,
             "custom_char_count": self.custom_char_count,
         }
         self.finalize_meta(meta)
-
         return ids
 
     def detokenize(self, ids):
-        chars = []
+        """
+        If ID < 256 => single byte
+        If ID >= 256 => custom token string
+        We'll accumulate bytes in a buffer, and whenever we see a custom token,
+        we flush the buffer as text, then append the custom token as is.
+        """
+        out_pieces = []
         byte_buffer = []
+
         for idx, token_id in enumerate(ids):
-            if token_id < self.custom_char_count:
-                # It's a custom character
-                if byte_buffer:
-                    byte_array = bytes(byte_buffer)
-                    chars.append(byte_array.decode('utf-8', errors='replace'))
-                    byte_buffer = []
-                chars.append(self.itos[token_id])
+            if token_id < 256:
+                # Single raw byte
+                byte_buffer.append(self.itos[token_id])  # e.g. b'\x61'
             else:
-                # It's a byte
-                byte_buffer.append(self.itos[token_id])
-                # Look ahead: if next is custom char or we're at end, flush
-                next_index = idx + 1
-                if next_index == len(ids) or (next_index < len(ids) and ids[next_index] < self.custom_char_count):
-                    byte_array = bytes(byte_buffer)
-                    chars.append(byte_array.decode('utf-8', errors='replace'))
+                # It's a custom token
+                # First flush any accumulated bytes
+                if byte_buffer:
+                    all_bytes = b''.join(byte_buffer)
+                    out_pieces.append(all_bytes.decode('utf-8', errors='replace'))
                     byte_buffer = []
-        return ''.join(chars)
+                # Append the custom token string
+                custom_str = self.itos[token_id]
+                out_pieces.append(custom_str)
+
+        # Flush remaining bytes
+        if byte_buffer:
+            all_bytes = b''.join(byte_buffer)
+            out_pieces.append(all_bytes.decode('utf-8', errors='replace'))
+
+        return ''.join(out_pieces)
 

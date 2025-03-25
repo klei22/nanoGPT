@@ -227,9 +227,10 @@ class TestTokenizers(unittest.TestCase):
         console.print(detokenized, style="output")
 
         console.print("[info]Characters that used byte fallback:[/info]")
-        bft = [] # Byte Fallback Tokens
+        bft = []
         for char in detokenized:
-            if char not in tokenizer.custom_chars:
+            # If it's not in the custom tokens, we consider it fallback
+            if char not in tokenizer.custom_tokens:
                 bft.append(repr(char))
 
         console.print(", ".join(bft), style="info")
@@ -240,6 +241,7 @@ class TestTokenizers(unittest.TestCase):
         # Clean up
         if os.path.exists(args.custom_chars_file):
             os.remove(args.custom_chars_file)
+
 
     # --------------------------------------------------------------------------
     # Tests for Token Counts (with histogram printing)
