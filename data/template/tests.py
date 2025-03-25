@@ -107,10 +107,33 @@ class TestTokenizers(unittest.TestCase):
         if os.path.exists("remaining.txt"):
             os.remove("remaining.txt")
 
-    # ----------------------------------------------------------------------------
-    # Tokenization Tests
-    # ----------------------------------------------------------------------------
+    # --------------------------------------------------------------------------
+    # Helper Method to Print Token Count Histogram
+    # --------------------------------------------------------------------------
+    def _print_token_count_histogram(self, token_counts, top_n=10):
+        """
+        Prints a small histogram (top `top_n` tokens by count) using Rich.
+        """
+        if not token_counts:
+            console.print("[info]No token counts to display.[/info]")
+            return
 
+        console.print(f"[info]Token Count Histogram (Top {top_n}):[/info]")
+        table = Table("Token ID", "Count", "Bar", title="Histogram")
+        # Sort descending by count
+        sorted_counts = sorted(token_counts.items(), key=lambda x: x[1], reverse=True)
+        max_count = max(token_counts.values())
+        for token_id, count in sorted_counts[:top_n]:
+            bar_len = 20  # width in characters
+            filled = int((count / max_count) * bar_len)
+            bar_str = "█" * filled
+            table.add_row(str(token_id), str(count), bar_str)
+        console.print(table)
+        console.print()  # extra newline
+
+    # --------------------------------------------------------------------------
+    # Tokenizer Tests
+    # --------------------------------------------------------------------------
     def test_numeric_range_tokenizer(self):
         args = Namespace(min_token=100, max_token=1000)
         tokenizer = NumericRangeTokenizer(args)
@@ -218,27 +241,31 @@ class TestTokenizers(unittest.TestCase):
         if os.path.exists(args.custom_chars_file):
             os.remove(args.custom_chars_file)
 
-    # ----------------------------------------------------------------------------
-    # Tests for Token Counts
-    # ----------------------------------------------------------------------------
-
+    # --------------------------------------------------------------------------
+    # Tests for Token Counts (with histogram printing)
+    # --------------------------------------------------------------------------
     def test_numeric_range_tokenizer_counts(self):
         args = Namespace(min_token=100, max_token=1000, track_token_counts=True)
         tokenizer = NumericRangeTokenizer(args)
         ids = tokenizer.tokenize(self.numeric_data)
-        # Load meta and check token_counts
+
         with open("meta.pkl", "rb") as f:
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
-        # Check sum of counts matches total tokens
-        self.assertEqual(sum(token_counts.values()), len(ids),
-                         "Total token counts should match number of tokens.")
-        # Ensure each token ID is present
+
+        # Print histogram
+        self._print_token_count_histogram(token_counts)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match number of tokens."
+        )
         for token_id in ids:
-            self.assertIn(token_id, token_counts, "Each token id should appear in token_counts.")
+            self.assertIn(token_id, token_counts, 
+                          "Each token id should appear in token_counts.")
 
     def test_sentencepiece_tokenizer_counts(self):
-        # Prepare SPM data
         with open("spm_input.txt", "w") as f:
             f.write(self.sample_text)
 
@@ -256,8 +283,14 @@ class TestTokenizers(unittest.TestCase):
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
 
-        self.assertEqual(sum(token_counts.values()), len(ids),
-                         "Total token counts should match number of tokens for SentencePiece.")
+        # Print histogram
+        self._print_token_count_histogram(token_counts)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match number of tokens for SentencePiece."
+        )
         for token_id in ids:
             self.assertIn(token_id, token_counts)
 
@@ -270,8 +303,14 @@ class TestTokenizers(unittest.TestCase):
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
 
-        self.assertEqual(sum(token_counts.values()), len(ids),
-                         "Total token counts should match for Tiktoken.")
+        # Print histogram
+        self._print_token_count_histogram(token_counts)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match for Tiktoken."
+        )
         for token_id in ids:
             self.assertIn(token_id, token_counts)
 
@@ -284,8 +323,14 @@ class TestTokenizers(unittest.TestCase):
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
 
-        self.assertEqual(sum(token_counts.values()), len(ids),
-                         "Total token counts should match for CustomTokenizer.")
+        # Print histogram
+        self._print_token_count_histogram(token_counts)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match for CustomTokenizer."
+        )
         for token_id in ids:
             self.assertIn(token_id, token_counts)
 
@@ -298,8 +343,14 @@ class TestTokenizers(unittest.TestCase):
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
 
-        self.assertEqual(sum(token_counts.values()), len(ids),
-                         "Total token counts should match for CharTokenizer.")
+        # Print histogram
+        self._print_token_count_histogram(token_counts)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match for CharTokenizer."
+        )
         for token_id in ids:
             self.assertIn(token_id, token_counts)
 
@@ -316,8 +367,14 @@ class TestTokenizers(unittest.TestCase):
             meta = pickle.load(f)
         token_counts = meta.get("token_counts", {})
 
-        self.assertEqual(sum(token_counts.values()), len(ids),
-                         "Total token counts should match for CustomCharTokenizerWithByteFallback.")
+        # Print histogram
+        self._print_token_count_histogram(token_counts)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match for CustomCharTokenizerWithByteFallback."
+        )
         for token_id in ids:
             self.assertIn(token_id, token_counts)
 
