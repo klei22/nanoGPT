@@ -600,7 +600,6 @@ class InfiniteHeadAttention(nn.Module):
         self.c_attn_q = self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_head * self.n_v_head_dim, config, bias=config.bias)
-        self.c_proj = self.linear_variant_attn_proj(self.n_v_head_dim, self.n_embd, config, bias=config.bias)
 
         # Regularization
         self.attn_dropout = nn.Dropout(config.dropout)
@@ -615,7 +614,7 @@ class InfiniteHeadAttention(nn.Module):
         self.rotary_emb_q = None
         self.rotary_emb_k = None
 
-        if self.concat_heads:
+        if self.use_concat_heads:
             self.c_proj = self.linear_variant_attn_proj(self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias)
         else:
             self.c_proj_list = nn.ModuleList([
