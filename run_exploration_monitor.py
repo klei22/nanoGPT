@@ -345,7 +345,7 @@ class MonitorApp(App):
                     # reset mode before plotting so errors don’t trap us
                     self._bar_mode, self._bar_digits = False, []
                     try:
-                        needed = 1 + n_bars + n_labels
+                        needed = n_bars + n_labels
                         if len(self.columns) < needed:
                             raise ValueError(
                                 f"Need at least {needed} visible columns "
