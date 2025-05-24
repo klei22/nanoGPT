@@ -17,7 +17,7 @@ Interactive keybindings:
   L     - graph & connect points sharing the 3rd column value
   1–9   - graph & connect points sharing merged columns 3..(2+N)
   q # # - multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels.
-  w–y   - barcharts with labels merged (w=1, y =5)
+  r–y   - barcharts with labels merged (r=1, y=3)
   c     - toggle colour-map on first column (green → red)
   u     - unsort / remove current column from the sort stack
   U     - clear *all* sorting
@@ -28,6 +28,7 @@ Use `--hotkeys` to print this help and exit.
 import plot_view
 import argparse
 import csv
+import os
 import json
 import sys
 import time
@@ -72,7 +73,7 @@ HOTKEYS_TEXT = (
     "L: graph & connect points sharing the 3rd column value\n"
     "1–9: graph & connect points sharing merged columns 3..(2+N)\n"
     "q # #: multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels\n"
-    "w–y: barcharts with labels merged (w=1, y =5)\n"
+    "r–y: barcharts with labels merged (r=1, y=3)\n"
     "c: toggle colour-map on first column (green → red)\n"
     "u: unsort / remove current column from the sort stack\n"
     "U: clear *all* sorting\n"
@@ -91,7 +92,7 @@ class MonitorApp(App):
     }
     """
 
-    def __init__(self, log_file: Path, interval: float) -> None:
+    def __init__(self, log_file: Path, interval: float, csv_dir: str) -> None:
         super().__init__()
         self.log_file = log_file
         self.interval = interval
@@ -109,6 +110,7 @@ class MonitorApp(App):
         self.colour_first: bool = False        # toggled with “c”
         self._bar_mode: bool = False           # are we collecting digits?
         self._bar_digits: List[int] = []       # collected numeric keys
+        self.csv_dir: str = csv_dir
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -381,7 +383,7 @@ class MonitorApp(App):
 
         if key == "e":
             # Export CSV
-            fname = f"{self.log_file.stem}_export_{int(time.time())}.csv"
+            fname = f"{self.csv_dir}/{self.log_file.stem}_export_{int(time.time())}.csv"
             with open(fname, "w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(self.columns)
@@ -563,11 +565,9 @@ class MonitorApp(App):
                 self._msg(f"Graph error: {exc}", timeout=4)
 
         shift_map = {
-            "w": 1,
-            "e": 2,
-            "r": 3,
-            "t": 4,
-            "y": 5,
+            "r": 1,
+            "t": 2,
+            "y": 3,
         }
         if key in shift_map:
             n = shift_map[key]
@@ -604,13 +604,17 @@ def main() -> None:
     parser.add_argument(
         "--hotkeys", action="store_true", help="Print available hotkeys and exit"
     )
+    parser.add_argument(
+        "--csv_dir", type=str, default="rem_csv_exports", help="directory for csv outputs"
+    )
     args = parser.parse_args()
 
     if args.hotkeys:
         print(HOTKEYS_TEXT)
         sys.exit(0)
 
-    app = MonitorApp(args.log_file, args.interval)
+    os.makedirs(args.csv_dir, exist_ok=True)
+    app = MonitorApp(args.log_file, args.interval, args.csv_dir)
     app.run()
 
 

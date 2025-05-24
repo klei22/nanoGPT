@@ -44,8 +44,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Set, DefaultDict
 
 import itertools
+import os
 import matplotlib.pyplot as plt
 
+# ──────────────────────────── file-saving helper ───────────────────────────
+PLOT_DIR = "rem_plots" #  all plots will be saved here by default
+os.makedirs(PLOT_DIR, exist_ok=True)
+
+def _safe_path(title: str, ext: str = ".png") -> str:
+    """Sanitise *title* into a filename inside *PLOT_DIR*."""
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in title)
+    return os.path.join(PLOT_DIR, safe + ext)
 
 # ───────────────────────────── helpers ──────────────────────────────
 
@@ -155,10 +164,7 @@ def plot_rows(
     plt.legend(loc="best", fontsize=8)
     plt.tight_layout()
     plt.show()
-    safe_title = "".join(
-        ch if ch.isalnum() or ch in "-_." else "_" for ch in title
-    )
-    fig.savefig(f"{safe_title}.png", dpi=300)
+    fig.savefig(_safe_path(title), dpi=300)
     plt.show()
 
 
@@ -215,25 +221,23 @@ def plot_bars(
     )
     fig.update_traces(textposition="outside")
     fig.update_layout(
-    title=dict(
-        text=title_text,
-        x=0.5,             # halfway across the plot *area*
-        xref="container",  # ← key line: ignore the margins
-        xanchor="center",
-        yanchor="top",
-    ),
-        # merged column names become the Y-axis title
-    yaxis=dict(
-        title=" / ".join(label_cols),   # e.g. "optimizer / sgd_nesterov"
-        autorange="reversed",           # keep smallest bar on top
-    ),
-    xaxis=dict(title=y),
-    margin=dict(l=120, r=40, t=80, b=40),  # t a bit larger for the centred title
-)
+            title=dict(
+                text=title_text,
+                x=0.5,             # halfway across the plot *area*
+                xref="container",  # ← key line: ignore the margins
+                xanchor="center",
+                yanchor="top",
+                ),
+            # merged column names become the Y-axis title
+            yaxis=dict(
+                title=" / ".join(label_cols),   # e.g. "optimizer / sgd_nesterov"
+                autorange="reversed",           # keep smallest bar on top
+                ),
+            xaxis=dict(title=y),
+            margin=dict(l=120, r=40, t=80, b=40),  # t a bit larger for the centred title
+    )
 
-
-    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in title_text)
-    fig.write_image(f"{safe}.png", scale=2)  # requires kaleido
+    fig.write_image(_safe_path(title_text), scale=2)  # requires kaleido
     fig.show()
 
 # ───────────────────────────── plot multi bars ──────────────────────────────
@@ -318,8 +322,7 @@ def plot_multi_bars(
         legend_title_text="Metric",
     )
 
-    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in fig.layout.title.text)
-    fig.write_image(f"{safe}.png", scale=2)  # kaleido needed
+    fig.write_image(_safe_path(fig.layout.title.text), scale=2)  # kaleido
     fig.show()
 
 # ───────────────────────────── CLI wrapper ──────────────────────────
