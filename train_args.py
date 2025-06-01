@@ -526,6 +526,10 @@ def parse_args():
         help="d_r: rotary-branch dimensionality used by MLA."
     )
 
+    ### MLA LoBo ------------------------------------------------------------------
+    model_group.add_argument("--use_mla_lobo",        action=argparse.BooleanOptionalAction, default=False)
+    model_group.add_argument("--mla_lobo_per_head",   action=argparse.BooleanOptionalAction, default=False)
+    model_group.add_argument("--mla_lobo_init",       type=float, default=0.0)
 
     ## Infinite Attention variation
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)

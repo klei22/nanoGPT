@@ -936,6 +936,16 @@ class MultiHeadLatentAttention(nn.Module):
         self.attn_dropout = nn.Dropout(self.dropout_p)
         self.resid_dropout = nn.Dropout(self.dropout_p)
 
+
+        # ───────────  Quiet-Attention style “+C” denominator  ────────────
+        # Learned *per-head* constant C = exp(lobo_log)  (log-space param)
+        self.use_lobo = getattr(config, "use_mla_lobo", False)
+        if self.use_lobo:
+            init = getattr(config, "mla_lobo_init", 0.0)
+            self.lobo_log = nn.Parameter(torch.full((self.n_head,), init))
+        else:
+            self.register_parameter("lobo_log", None)
+
         # Pre-build causal mask for the worst-case block_size
         self.register_buffer(
             "causal_mask",
@@ -982,9 +992,22 @@ class MultiHeadLatentAttention(nn.Module):
 
         # ── scaled dot-product attention (no Flash for clarity) ────────────
         scores = (q @ k.transpose(-2, -1)) / math.sqrt(q.size(-1))           # (B,H,T,T)
-        causal = self.causal_mask[..., :T, :T]                               # trim
+        causal = self.causal_mask[..., :T, :T]
         scores = scores.masked_fill(causal == 0, float("-inf"))
-        attn   = self.attn_dropout(torch.softmax(scores, dim=-1))
+
+        if self.use_lobo:
+            # ---- Quiet-Attention softmax with learned “+C” ------------------------
+            scores_max  = scores.detach().max(dim=-1, keepdim=True).values       # stability
+            exp_scores  = torch.exp(scores - scores_max)                          # (B,H,T,T)
+
+            denom = exp_scores.sum(-1, keepdim=True)                              # (B,H,T,1)
+
+            C = torch.exp(self.lobo_log).view(1, -1, 1, 1)                   # (1,H,1,1)
+            attn = exp_scores / (denom + C)
+        else:
+            attn = torch.softmax(scores, dim=-1)
+
+        attn = self.attn_dropout(attn)
 
         y = attn @ v                                                        # (B,H,T,d_h)
         y = y.transpose(1, 2).contiguous().view(B, T, -1)                   # (B,T,E)
