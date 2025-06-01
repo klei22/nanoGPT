@@ -885,6 +885,111 @@ class InfiniteHeadAttention(nn.Module):
 
         return y
 
+##############################################################################
+#  Multi-head Latent Attention (MLA) – DeepSeek-V2 implementation
+#  - low-rank joint compression of K & V (latent_kv_dim)
+#  - optional low-rank compression of Q (we keep full Q for simplicity)
+#  - decoupled RoPE branch (latent_rope_dim) shared across heads
+#  - dramatic KV-cache reduction while retaining MHA quality
+##############################################################################
+
+
+class MultiHeadLatentAttention(nn.Module):
+    """
+    Multi-head Latent Attention (MLA) – see §2.1 of the DeepSeek-V2 paper.
+    Only the architectural pieces needed for training/inference are included;
+    fast-KV-cache tricks (parameter re-folding at deployment) can be added
+    later without changing the forward pass.
+    """
+
+    def __init__(self, config, fire_pos_enc: nn.Module | None = None):
+        super().__init__()
+
+        # ── dimensions ──────────────────────────────────────────────────────
+        self.n_head         = config.n_head
+        self.d_head         = config.n_embd // config.n_head
+        self.d_latent_kv    = getattr(config, "latent_kv_dim", 4 * self.d_head)
+        self.d_rope         = getattr(config, "latent_rope_dim", self.d_head // 2)
+        self.dropout_p      = config.dropout
+
+        # ── projections ─────────────────────────────────────────────────────
+        # Q : normal per-head projection  (B,T,E) → (B,T,H·d_h)
+        self.q_proj  = nn.Linear(config.n_embd, self.n_head * self.d_head, bias=config.bias)
+
+        # RoPE query/key branches – a *small* extra dimension that carries
+        # positional signal (decoupled strategy in the paper)
+        self.q_rope_proj = nn.Linear(config.n_embd, self.n_head * self.d_rope, bias=config.bias)
+        self.k_rope_proj = nn.Linear(config.n_embd, self.d_rope,              bias=config.bias)
+
+        # Low-rank joint compression:  down-project to latent and up-project
+        self.kv_down_proj = nn.Linear(config.n_embd, self.d_latent_kv, bias=False)
+        self.k_up_proj    = nn.Linear(self.d_latent_kv, self.n_head * self.d_head, bias=False)
+        self.v_up_proj    = nn.Linear(self.d_latent_kv, self.n_head * self.d_head, bias=False)
+
+        # Output
+        self.out_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+
+        # Rotary embeddings only on the RoPE branches (tiny, shared)
+        self.rope_q = RotaryEmbedding(config, size=self.d_rope)
+        self.rope_k = RotaryEmbedding(config, size=self.d_rope)
+
+        self.attn_dropout = nn.Dropout(self.dropout_p)
+        self.resid_dropout = nn.Dropout(self.dropout_p)
+
+        # Pre-build causal mask for the worst-case block_size
+        self.register_buffer(
+            "causal_mask",
+            torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size),
+            persistent=False,
+        )
+
+    # --------------------------------------------------------------------- #
+    def _shape(self, x: torch.Tensor, heads: int, head_dim: int):
+        """(B,T,E) → (B,H,T,D)"""
+        B, T, _ = x.shape
+        return x.view(B, T, heads, head_dim).transpose(1, 2)
+
+    # --------------------------------------------------------------------- #
+    def forward(self, x: torch.Tensor, iter_num: int | None = None):
+        """
+        Args:
+            x: (B, T, E)
+        Returns:
+            y: (B, T, E)
+        """
+        B, T, _ = x.shape
+
+        # ── fast projections ───────────────────────────────────────────────
+        q_c = self._shape(self.q_proj(x), self.n_head, self.d_head)          # (B,H,T,d_h)
+        q_r = self._shape(self.q_rope_proj(x), self.n_head, self.d_rope)     # (B,H,T,d_r)
+
+        # latent-KV path
+        latent = self.kv_down_proj(x)                                        # (B,T,d_latent)
+        k_c = self._shape(self.k_up_proj(latent), self.n_head, self.d_head)  # (B,H,T,d_h)
+        v   = self._shape(self.v_up_proj(latent), self.n_head, self.d_head)  # (B,H,T,d_h)
+
+        # shared RoPE key (broadcast to every head)
+        k_r_shared = self.k_rope_proj(x)                                     # (B,T,d_r)
+        k_r_shared = self.rope_k(k_r_shared)                                 # apply RoPE
+        k_r = k_r_shared.unsqueeze(1).expand(-1, self.n_head, -1, -1)        # (B,H,T,d_r)
+
+        # RoPE for queries
+        q_r = self.rope_q(q_r)
+
+        # concat latent and RoPE parts
+        q = torch.cat([q_c, q_r], dim=-1)                                    # (B,H,T,d_h+d_r)
+        k = torch.cat([k_c, k_r], dim=-1)
+
+        # ── scaled dot-product attention (no Flash for clarity) ────────────
+        scores = (q @ k.transpose(-2, -1)) / math.sqrt(q.size(-1))           # (B,H,T,T)
+        causal = self.causal_mask[..., :T, :T]                               # trim
+        scores = scores.masked_fill(causal == 0, float("-inf"))
+        attn   = self.attn_dropout(torch.softmax(scores, dim=-1))
+
+        y = attn @ v                                                        # (B,H,T,d_h)
+        y = y.transpose(1, 2).contiguous().view(B, T, -1)                   # (B,T,E)
+        y = self.resid_dropout(self.out_proj(y))
+        return y
 
 attention_dictionary = {
     "causal": CausalSelfAttention,
@@ -892,4 +997,5 @@ attention_dictionary = {
     # "ssm": MambaBlock,
     "identity": AttnIdentity,
     "infinite": InfiniteHeadAttention,
+    "mla": MultiHeadLatentAttention,
 }

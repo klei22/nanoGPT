@@ -492,7 +492,7 @@ def parse_args():
                           "ssm",
                           "identity",
                           "infinite",
-                          "iqa",
+                          "mla",
                           ]
 
     model_group.add_argument(
@@ -510,6 +510,22 @@ def parse_args():
         choices=attention_variants,
         help="Which attention variant to use for the Transformer blocks."
     )
+
+    ## MLA Variations
+    # ── inside   model_group = parser.add_argument_group('model_group')  … ──
+    model_group.add_argument(
+        '--mla_latent_dim',
+        type=int,
+        default=None,
+        help="d_c: projected latent size for MLA (defaults to n_embd//4)."
+    )
+    model_group.add_argument(
+        '--mla_rotary_dim',
+        type=int,
+        default=32,
+        help="d_r: rotary-branch dimensionality used by MLA."
+    )
+
 
     ## Infinite Attention variation
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
