@@ -399,7 +399,7 @@ class Trainer:
             raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
 
     def load_tokenizer(self):
-        meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
+        meta_path = os.path.join(self.args.data_root, self.args.dataset, 'meta.pkl')
         if os.path.exists(meta_path):
             with open(meta_path, 'rb') as f:
                 meta = pickle.load(f)
@@ -485,7 +485,7 @@ class Trainer:
 
     def get_vocab_size_from_meta(self):
         # Data loader
-        meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
+        meta_path = os.path.join(self.args.data_root, self.args.dataset, 'meta.pkl')
         # Save a copy of meta.pkl tokenization into the output folder
         self.copy_file_to_directory(meta_path, self.args.out_dir)
         if os.path.exists(meta_path):
@@ -519,7 +519,7 @@ class Trainer:
             self.train_data_dict = {}
             self.val_data_dict = {}
             for dataset in self.args.multicontext_datasets:
-                meta_path = os.path.join('data', dataset, 'meta.pkl')
+                meta_path = os.path.join(self.args.data_root, dataset, 'meta.pkl')
                 if not os.path.exists(meta_path):
                     sys.exit(f"Error: Meta file not found at {meta_path}")
                 with open(meta_path, 'rb') as f:
@@ -528,8 +528,8 @@ class Trainer:
                     print(vocab_size, dataset)
                     self.vocab_sizes[dataset] = meta['vocab_size']
                 # Here we use np.uint16 for most datasets:
-                self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                self.val_data_dict[dataset]   = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+                self.train_data_dict[dataset] = np.memmap(os.path.join(self.args.data_root, dataset, 'train.bin'), dtype=np.uint16, mode='r')
+                self.val_data_dict[dataset]   = np.memmap(os.path.join(self.args.data_root, dataset, 'val.bin'), dtype=np.uint16, mode='r')
 
             # Also store total token counts per dataset.
             self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.multicontext_datasets}
@@ -549,7 +549,7 @@ class Trainer:
             for dataset in self.args.dataset_list:
                 train_data = None
                 val_data = None
-                meta_path = os.path.join('data', dataset, 'meta.pkl')
+                meta_path = os.path.join(self.args.data_root, dataset, 'meta.pkl')
                 if not os.path.exists(meta_path):
                     sys.exit(f"Error: Meta file not found at {meta_path}")
 
@@ -564,12 +564,12 @@ class Trainer:
                     sys.exit("Error: no vocab size specified")
                 elif self.model_args['vocab_size'] == 100277:
                     # cl100k_base, vocab size 100277, requires np.uint32
-                    train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint32, mode='r')
-                    val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint32, mode='r')
+                    train_data = np.memmap(os.path.join(self.args.data_root, dataset, 'train.bin'), dtype=np.uint32, mode='r')
+                    val_data = np.memmap(os.path.join(self.args.data_root, dataset, 'val.bin'), dtype=np.uint32, mode='r')
                 else:
                     # all other tokenations so far require only np.uint16
-                    train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                    val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+                    train_data = np.memmap(os.path.join(self.args.data_root, dataset, 'train.bin'), dtype=np.uint16, mode='r')
+                    val_data = np.memmap(os.path.join(self.args.data_root, dataset, 'val.bin'), dtype=np.uint16, mode='r')
 
                 # Store in dictionaries
                 self.train_data_dict[dataset] = train_data
@@ -584,12 +584,12 @@ class Trainer:
                 sys.exit("Error: no vocab size specified")
             elif self.model_args['vocab_size'] == 100277:
                 # cl100k_base, vocab size 100277, requires np.uint32
-                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
-                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint32, mode='r')
+                self.train_data = np.memmap(os.path.join(self.args.data_root, self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
+                self.val_data = np.memmap(os.path.join(self.args.data_root, self.args.dataset, 'val.bin'), dtype=np.uint32, mode='r')
             else:
                 # all other tokenations so far require only np.uint16
-                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
+                self.train_data = np.memmap(os.path.join(self.args.data_root, self.args.dataset, 'train.bin'), dtype=np.uint16, mode='r')
+                self.val_data = np.memmap(os.path.join(self.args.data_root, self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
             # Store total token count for the single dataset.
             self.dataset_size_tokens = len(self.train_data)
 

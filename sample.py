@@ -34,6 +34,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
     parser.add_argument("--device", type=str, default="cuda", help="Device to run inference (e.g., 'cpu', 'cuda', 'cuda:0', 'cuda:1')")
     parser.add_argument("--out_dir", type=str, default="out", help="Directory to load checkpoint from")
+    parser.add_argument(
+        "--data_root",
+        type=str,
+        default=os.environ.get('NANOGPT_DATA_ROOT', 'data'),
+        help="Root directory containing dataset folders",
+    )
     parser.add_argument("--quantization_data_file", type=str, default=None, help="File name to export the quantized weights/activations, scale factor, and zero point")
     parser.add_argument("--init_from", type=str, default="resume", help="Either 'resume' (from an out_dir) or a GPT-2 variant (e.g., 'gpt2-xl')")
     parser.add_argument("--start", type=str, default="\n", help="Start text for generation. Can specify a file using 'FILE:prompt.txt'")
@@ -718,9 +724,9 @@ def save_quantized_data(state_dict, out_file):
     with open(f"{out_file}.pkl", 'wb') as f:
         pickle.dump(to_save, f)
 
-def load_validation_data(block_size, eval_dataset):
+def load_validation_data(block_size, eval_dataset, data_root):
     # Load validation data similar to how train data is handled
-    val_path = os.path.join('data', eval_dataset, 'val.bin')
+    val_path = os.path.join(data_root, eval_dataset, 'val.bin')
     assert os.path.exists(val_path), f"Validation data file {val_path} not found."
     # Assuming validation data is similar in format to train data
     val_data = np.memmap(val_path, dtype=np.uint16, mode='r')
@@ -861,7 +867,7 @@ def main():
     if args.init_from == 'resume' and 'config' in checkpoint and 'dataset' in checkpoint['config']:
         meta_paths = [
             os.path.join(args.out_dir, 'meta.pkl'),
-            os.path.join('data', checkpoint['config']['dataset'], 'meta.pkl')
+            os.path.join(args.data_root, checkpoint['config']['dataset'], 'meta.pkl')
         ]
 
         for meta_path in meta_paths:
@@ -952,8 +958,11 @@ def main():
         print("Running in eval_only mode...")
         # Load the validation dataset
         print(model.config.block_size)
-        val_data = load_validation_data(model.config.block_size,
-                                        args.eval_dataset)
+        val_data = load_validation_data(
+            model.config.block_size,
+            args.eval_dataset,
+            args.data_root,
+        )
         # Calculate validation loss
         val_loss = calculate_validation_loss(model, val_data,
                                              model.config.block_size,
@@ -993,7 +1002,7 @@ def main():
 
         for i, dataset_name in enumerate(args.multicontext_datasets):
             # 1) Find meta.pkl for this dataset, e.g. data/<dataset_name>/meta.pkl
-            meta_path = os.path.join("data", dataset_name, "meta.pkl")
+            meta_path = os.path.join(args.data_root, dataset_name, "meta.pkl")
             assert os.path.exists(meta_path), f"meta.pkl not found at {meta_path}"
             with open(meta_path, "rb") as f:
                 meta = pickle.load(f)
@@ -1071,7 +1080,7 @@ def main():
                 output_dict = {}
                 # Re-load the meta & decode for each context to show final text
                 for i, dataset_name in enumerate(args.multicontext_datasets):
-                    meta_path = os.path.join("data", dataset_name, "meta.pkl")
+                    meta_path = os.path.join(args.data_root, dataset_name, "meta.pkl")
                     with open(meta_path, "rb") as f:
                         meta = pickle.load(f)
                     if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
