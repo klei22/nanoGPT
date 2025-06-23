@@ -5,6 +5,7 @@ import os
 import sys
 import pickle
 import json
+import numpy as np
 from tokenizers import (
     NumericRangeTokenizer,
     SentencePieceTokenizer,
@@ -437,6 +438,30 @@ class TestTokenizers(unittest.TestCase):
         # Clean up
         if os.path.exists(args.custom_chars_file):
             os.remove(args.custom_chars_file)
+
+    def test_float_csv_prepare(self):
+        # Generate a simple sine wave CSV
+        x = np.linspace(0, 2 * np.pi, 100)
+        data1 = np.sin(x)
+        data2 = np.cos(x)
+        arr = np.vstack([data1, data2]).T
+        csv_path = "tmp.csv"
+        np.savetxt(csv_path, arr, delimiter=",")
+
+        os.system(f"python3 data/template/prepare.py --method float_csv --csv_file {csv_path} --csv_prefix tempds --csv_percentage_train 0.8")
+
+        for i in range(2):
+            d = f"tempds_{i}"
+            self.assertTrue(os.path.exists(os.path.join(d, "train.bin")))
+            self.assertTrue(os.path.exists(os.path.join(d, "val.bin")))
+            self.assertTrue(os.path.exists(os.path.join(d, "meta.pkl")))
+
+        os.remove(csv_path)
+        for i in range(2):
+            d = f"tempds_{i}"
+            for fname in ["train.bin", "val.bin", "meta.pkl"]:
+                os.remove(os.path.join(d, fname))
+            os.rmdir(d)
 
 
 if __name__ == '__main__':

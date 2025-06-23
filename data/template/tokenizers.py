@@ -525,3 +525,19 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
 
         return ''.join(out_pieces)
 
+
+# Adding FloatTokenizer
+class FloatTokenizer(Tokenizer):
+    """Tokenizer for sequences of floating point numbers."""
+    def __init__(self, args):
+        super().__init__(args)
+
+    def tokenize(self, data):
+        # data is expected to be a list or array of floats
+        tokens = [float(x) for x in data]
+        meta = {"vocab_size": None, "tokenizer": "float", "dtype": "float16"}
+        self.finalize_meta(meta)
+        return tokens
+
+    def detokenize(self, ids):
+        return [float(x) for x in ids]
