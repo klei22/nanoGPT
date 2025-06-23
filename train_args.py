@@ -60,6 +60,18 @@ def parse_args():
     training_group.add_argument('--sample_start_tokens', default='\n', type=str)
     training_group.add_argument('--sample_only', default=False, action=argparse.BooleanOptionalAction, help="Run only the sampling process and exit")
 
+    # LM evaluation args
+    training_group.add_argument('--lm_eval_tasks', type=str, default=None,
+                                help="Comma-separated list of lm-eval tasks (e.g. 'boolq,hellaswag') to run at each eval interval")
+    training_group.add_argument('--lm_eval_each_eval', default=False, action=argparse.BooleanOptionalAction,
+                                help="Run lm-eval tasks at every eval interval even if validation loss did not improve")
+    training_group.add_argument(
+        '--lm_eval_results_output',
+        type=str,
+        default=None,
+        help="Where to save lm-eval results JSON. Defaults to out_dir/<timestamp>_lm_eval_results.json"
+    )
+
     # Checkpoint args
     training_group.add_argument('--save_major_ckpt_interval', default=None, type=int, help="Interval for saving major checkpoints.")
     training_group.add_argument('--only_save_checkpoint_at_end', default=False, action=argparse.BooleanOptionalAction)
