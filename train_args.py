@@ -88,6 +88,8 @@ def parse_args():
     # Multicontext Training Dataset args
     model_group.add_argument('--multicontext', default=False, action=argparse.BooleanOptionalAction,
                                     help="Enable multi-context training on multiple simultaneous datasets")
+    model_group.add_argument('--mc_use_index_mlp', default=False, action=argparse.BooleanOptionalAction,
+                                    help="Use MLP instead of embedding lookup for multicontext datasets")
     training_group.add_argument('--multicontext_datasets', default=None, nargs='+', type=str,
                                     help="List of datasets to train on in multi-context mode (e.g., --multicontext_datasets shakespeare wikitext103 openwebtext)")
     model_group.add_argument('--vocab_sizes', default=None, nargs='+', type=int,

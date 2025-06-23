@@ -2,6 +2,7 @@
 import json
 import os
 import argparse
+import pickle
 import numpy as np
 from tokenizers import (
     NumericRangeTokenizer,
@@ -11,13 +12,14 @@ from tokenizers import (
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
+    FloatTokenizer,
 )
 from tqdm import tqdm
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Tokenize text data using different methods.")
     parser.add_argument("--tokens_file", type=str, default=None, help="Path to the file containing newline-separated tokens for tokenization")
-    parser.add_argument("--method", type=str, choices=["sentencepiece", "tiktoken", "char", "custom", "custom_char_byte_fallback", "numeric_range", "json_byte_fallback"], default="tiktoken", help="Tokenization method")
+    parser.add_argument("--method", type=str, choices=["sentencepiece", "tiktoken", "char", "custom", "custom_char_byte_fallback", "numeric_range", "json_byte_fallback", "float_csv"], default="tiktoken", help="Tokenization method")
     # SentencePiece only arguments
     parser.add_argument("--vocab_size", type=int, default=500, help="Vocabulary size for SentencePiece model")
     parser.add_argument("--spm_model_file", type=str, default=None, help="Path to the pre-trained SentencePiece model file")
@@ -44,6 +46,10 @@ def parse_arguments():
     # tokenizer counts
     parser.add_argument("--json_tokens_file", type=str, default=None, help="Path to the JSON file containing an array of tokens for json_byte_fallback mode")
     parser.add_argument("-T", "--track_token_counts", action="store_true", help="Track how often each token appears and store in meta.pkl")
+    # Floating point CSV dataset arguments
+    parser.add_argument("--csv_file", type=str, default=None, help="CSV file containing floating point numbers")
+    parser.add_argument("--csv_prefix", type=str, default="dataset", help="Prefix for split dataset folders")
+    parser.add_argument("--csv_percentage_train", type=float, default=0.9, help="Train split percentage for csv mode")
     return parser.parse_args()
 
 
@@ -57,7 +63,27 @@ def main():
     os.makedirs('out', exist_ok=True)
     save_args(args, "out")
 
-    # Read data
+    # CSV float mode
+    if args.method == "float_csv" and args.csv_file:
+        data = np.loadtxt(args.csv_file, delimiter=",")
+        if data.ndim == 1:
+            data = data.reshape(-1, 1)
+        num_cols = data.shape[1]
+        for i in range(num_cols):
+            col = data[:, i]
+            split_idx = int(len(col) * args.csv_percentage_train)
+            train = col[:split_idx]
+            val = col[split_idx:]
+            out_dir = f"{args.csv_prefix}_{i}"
+            os.makedirs(out_dir, exist_ok=True)
+            np.array(train, dtype=np.float16).tofile(os.path.join(out_dir, "train.bin"))
+            np.array(val, dtype=np.float16).tofile(os.path.join(out_dir, "val.bin"))
+            meta = {"vocab_size": None, "dtype": "float16"}
+            with open(os.path.join(out_dir, "meta.pkl"), "wb") as f:
+                pickle.dump(meta, f)
+        return
+
+    # Read data for text tokenization
     if args.use_separate_files:
         if not args.train_input or not args.val_input:
             raise ValueError(
@@ -95,6 +121,8 @@ def main():
         tokenizer = CustomCharTokenizerWithByteFallback(args)
     elif args.method == "json_byte_fallback":
         tokenizer = JsonByteTokenizerWithByteFallback(args)
+    elif args.method == "float_csv":
+        tokenizer = FloatTokenizer(args)
     else:
         raise ValueError(f"Unknown tokenization method: {args.method}")
 

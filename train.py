@@ -526,10 +526,14 @@ class Trainer:
                     meta = pickle.load(f)
                     vocab_size = meta.get('vocab_size', None)
                     print(vocab_size, dataset)
-                    self.vocab_sizes[dataset] = meta['vocab_size']
-                # Here we use np.uint16 for most datasets:
-                self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                self.val_data_dict[dataset]   = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+                    if vocab_size is None:
+                        vocab_size = 1
+                    self.vocab_sizes[dataset] = vocab_size
+                dtype = np.uint16
+                if meta.get('dtype') == 'float16':
+                    dtype = np.float16
+                self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=dtype, mode='r')
+                self.val_data_dict[dataset]   = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=dtype, mode='r')
 
             # Also store total token counts per dataset.
             self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.multicontext_datasets}
@@ -539,6 +543,7 @@ class Trainer:
             self.model_args['vocab_sizes'] = [
                 self.vocab_sizes[d] for d in self.args.multicontext_datasets
             ]
+            self.model_args['mc_use_index_mlp'] = self.args.mc_use_index_mlp
 
             # Let the first of the vocab sizes be used for calculation of btc
             self.model_args['vocab_size'] = self.model_args['vocab_sizes'][0]
@@ -626,14 +631,24 @@ class Trainer:
                 if ix is None:
                     ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
                 # pick random offset
-                x = torch.stack([
-                    torch.from_numpy(data[i : i+self.args.block_size].astype(np.int64)) 
-                    for i in ix
-                ])
-                y = torch.stack([
-                    torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.int64)) 
-                    for i in ix
-                ])
+                if data.dtype == np.float16:
+                    x = torch.stack([
+                        torch.from_numpy(data[i : i+self.args.block_size].astype(np.float32))
+                        for i in ix
+                    ])
+                    y = torch.stack([
+                        torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.float32))
+                        for i in ix
+                    ])
+                else:
+                    x = torch.stack([
+                        torch.from_numpy(data[i : i+self.args.block_size].astype(np.int64))
+                        for i in ix
+                    ])
+                    y = torch.stack([
+                        torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.int64))
+                        for i in ix
+                    ])
                 # Move to device
                 if self.device_type == 'cuda':
                     x = x.pin_memory().to(self.device, non_blocking=True)

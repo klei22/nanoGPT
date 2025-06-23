@@ -44,6 +44,28 @@ from initializations.initialization_variations import init_dictionary
 
 from shared_param_utils import SharedParamGroupCreator
 
+
+class IndexMLP(nn.Module):
+    """Simple MLP expanding scalar indices to a vector."""
+    def __init__(self, config, out_dim):
+        super().__init__()
+        layers = []
+        if config.fire_num_hidden_layers >= 1:
+            layers.append(nn.Linear(1, config.fire_mlp_width))
+            for _ in range(config.fire_num_hidden_layers - 1):
+                layers.append(nn.ReLU())
+                layers.append(nn.Linear(config.fire_mlp_width, config.fire_mlp_width))
+            layers.append(nn.ReLU())
+            layers.append(nn.Linear(config.fire_mlp_width, out_dim))
+        else:
+            layers.append(nn.Linear(1, out_dim))
+        if config.fire_outermost_sigma:
+            layers.append(nn.ReLU())
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.mlp(x.unsqueeze(-1))
+
 class Block(nn.Module):
     def __init__(self, config, mlp=None, attn=None):
         super().__init__()
@@ -202,9 +224,13 @@ class GPT(nn.Module):
                 #TODO: currently multicontext is in own category, add support later for WTE factorization
                 if config.multicontext:
                     for i, vocab_size in enumerate(self.config.vocab_sizes):
-                        embedding_layer = nn.Embedding(vocab_size, config.n_embd)
-                        self.transformer[f'wte_{i}'] = embedding_layer
-                        self.transformer[f'lm_head_{i}'] = nn.Linear(config.n_embd, vocab_size, bias=False)
+                        if config.mc_use_index_mlp:
+                            self.transformer[f'wte_mlp_{i}'] = IndexMLP(config, config.n_embd)
+                            self.transformer[f'value_head_{i}'] = IndexMLP(config, 1)
+                        else:
+                            embedding_layer = nn.Embedding(vocab_size, config.n_embd)
+                            self.transformer[f'wte_{i}'] = embedding_layer
+                            self.transformer[f'lm_head_{i}'] = nn.Linear(config.n_embd, vocab_size, bias=False)
                 else:
                     # no factorization
                     word_embd = nn.Embedding(config.vocab_size, config.n_embd)
@@ -231,7 +257,7 @@ class GPT(nn.Module):
             self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
         else:
             #TODO: currently multicontext is in own category, add support later for WTE factorization
-            if config.multicontext:
+            if config.multicontext and not config.mc_use_index_mlp:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
@@ -259,7 +285,7 @@ class GPT(nn.Module):
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         if self.wte_weight_tying:
-            if config.multicontext:
+            if config.multicontext and not config.mc_use_index_mlp:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
@@ -423,10 +449,14 @@ class GPT(nn.Module):
 
             # Add all of the input tokens
             for i, tokens in enumerate(token_list):
-                if i == 0:
-                    x = self.transformer[f'wte_{i}'](tokens)
+                if self.config.mc_use_index_mlp:
+                    emb = self.transformer[f'wte_mlp_{i}'](tokens.float())
                 else:
-                    x += self.transformer[f'wte_{i}'](tokens)
+                    emb = self.transformer[f'wte_{i}'](tokens)
+                if i == 0:
+                    x = emb
+                else:
+                    x += emb
 
             if self.config.use_embedding_scale:
                 x = x * self.embedding_scale
@@ -502,7 +532,10 @@ class GPT(nn.Module):
             # 5. Compute separate logits
             logits = []
             for i in range(len(token_list)):
-                logits.append(self.transformer[f'lm_head_{i}'](x))
+                if self.config.mc_use_index_mlp:
+                    logits.append(self.transformer[f'value_head_{i}'](x).squeeze(-1))
+                else:
+                    logits.append(self.transformer[f'lm_head_{i}'](x))
 
             if self.config.final_logit_softcapping is not None:
                 logits = logits / self.config.final_logit_softcapping
@@ -516,17 +549,23 @@ class GPT(nn.Module):
                 # If we do want to compute losses for each context
                 losses = []
                 for i in range(len(token_list)):
-                    loss_i = F.cross_entropy(
-                        logits[i].view(-1, logits[i].size(-1)),
-                        target_list[i].view(-1),
-                        ignore_index=-1
-                    )
+                    if self.config.mc_use_index_mlp:
+                        loss_i = F.huber_loss(logits[i], target_list[i].float())
+                    else:
+                        loss_i = F.cross_entropy(
+                            logits[i].view(-1, logits[i].size(-1)),
+                            target_list[i].view(-1),
+                            ignore_index=-1
+                        )
                     losses.append(loss_i)
 
             else:
                 # only forward lm head on very last position in inference mode
                 for i in range(len(token_list)):
-                    logits.append(self.transformer[f'lm_head_{i}'](x[:, [-1], :]))
+                    if self.config.mc_use_index_mlp:
+                        logits.append(self.transformer[f'value_head_{i}'](x[:, [-1], :]).squeeze(-1))
+                    else:
+                        logits.append(self.transformer[f'lm_head_{i}'](x[:, [-1], :]))
                 losses = None
 
             return logits, losses
