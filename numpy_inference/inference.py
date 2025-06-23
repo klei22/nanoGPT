@@ -16,6 +16,10 @@ def main():
     parser.add_argument('--tokens', type=int, default=20, help='Number of tokens to generate')
     parser.add_argument('--quant_bits', type=int, default=None,
                         help='If set, quantize weights to this many bits')
+    parser.add_argument('--top_k', type=int, default=40,
+                        help='Top-k sampling parameter')
+    parser.add_argument('--top_p', type=float, default=0.95,
+                        help='Top-p nucleus sampling parameter')
     args = parser.parse_args()
 
     weights = load_weights(args.weights)
@@ -24,7 +28,7 @@ def main():
                         weights, args.quant_bits)
 
     idx = np.zeros((1, 1), dtype=np.int32)
-    out = model.generate(idx, args.tokens)
+    out = model.generate(idx, args.tokens, top_k=args.top_k, top_p=args.top_p)
     print(out)
 
 

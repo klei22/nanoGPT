@@ -40,12 +40,38 @@ class Transformer:
         x = self.ln_f(x)
         return x, new_cache
 
-    def generate(self, idx: np.ndarray, max_new_tokens: int):
+    def generate(self, idx: np.ndarray, max_new_tokens: int,
+                 top_k: int = 40, top_p: float = 0.95) -> np.ndarray:
+        """Generate tokens using top-k and top-p sampling."""
         cache = None
         for _ in range(max_new_tokens):
             idx_cond = idx if idx.shape[1] <= self.block_size else idx[:, -self.block_size:]
             logits, cache = self.forward(idx_cond, cache)
-            next_token = np.argmax(logits[:, -1, :], axis=-1)
+            logits = logits[:, -1, :].astype(np.float64)
+
+            if top_k is not None and top_k > 0:
+                kth = np.partition(logits, -top_k, axis=-1)[:, -top_k]
+                mask = logits < kth[:, None]
+                logits = np.where(mask, -np.inf, logits)
+
+            if top_p is not None and top_p < 1.0:
+                sorted_indices = np.argsort(-logits, axis=-1)
+                sorted_logits = np.take_along_axis(logits, sorted_indices, axis=-1)
+                probs = np.exp(sorted_logits - np.max(sorted_logits, axis=-1, keepdims=True))
+                probs /= probs.sum(axis=-1, keepdims=True)
+                cumprobs = np.cumsum(probs, axis=-1)
+                mask = cumprobs > top_p
+                if np.any(mask):
+                    first = mask.argmax(axis=-1)
+                    for b, f in enumerate(first):
+                        if f < logits.shape[1] - 1:
+                            remove_idx = sorted_indices[b, f + 1:]
+                            logits[b, remove_idx] = -np.inf
+
+            probs = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+            probs /= probs.sum(axis=-1, keepdims=True)
+            next_token = np.array([np.random.choice(logits.shape[-1], p=probs[b])
+                                   for b in range(logits.shape[0])])
             idx = np.concatenate((idx, next_token[:, None]), axis=1)
         return idx
 

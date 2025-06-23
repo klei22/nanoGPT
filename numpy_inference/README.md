@@ -44,3 +44,10 @@ You can experiment with quantization by specifying `--quant_bits`, e.g.:
 ```bash
 python3 numpy_inference/inference.py --weights gpt_weights.pkl --quant_bits 8 --tokens 20
 ```
+
+By default generation uses `--top_k 40` and `--top_p 0.95`. To change these values:
+
+```bash
+python3 numpy_inference/inference.py --weights gpt_weights.pkl \
+    --tokens 20 --top_k 50 --top_p 0.9
+```
