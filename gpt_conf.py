@@ -348,6 +348,9 @@ class GPTConfig:
     init_variant: str = "gaussian"
     init_scale: float = 0.01
     init_wte_npy: str = "wte.npy"
+    init_radius: float = 1.0
+    gaussian_min_norm: float = 0.0
+    gaussian_max_norm: float = float('inf')
 
     # Quantizations
     start_quant_level: float = 0

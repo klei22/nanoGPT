@@ -36,3 +36,10 @@ python3 gradient_optimization.py \
 [!image](./images/min_angle_dim8.png)
 
 The npy files are saved before and after.
+
+## Additional Variations
+
+- `rand_hypercube`: random ±1 corners, normalized and scaled by `--init_scale`.
+- `angle_hypersphere`: random angle vectors projected on a hypersphere with radius `--init_radius`.
+- `unique_hypercube`: like `rand_hypercube` but ensures no two vectors are opposites.
+- `gaussian_norm_range`: gaussian sampling repeated until each vector norm falls within `[--gaussian_min_norm, --gaussian_max_norm]`.
