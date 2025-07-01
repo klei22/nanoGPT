@@ -606,11 +606,18 @@ def parse_args():
             "onehot",
             "hypercube",
             "numpy_import",
+            "rand_hypercube",
+            "angle_hypersphere",
+            "unique_hypercube",
+            "gaussian_norm_range",
             ]
 
     model_group.add_argument( "--init_variant", choices=embedding_init_variations, default="gaussian", help="options for embedding initializations")
     model_group.add_argument( "--init_scale", type=float, default=0.01, help="initialization scaling factor with non-gaussian variations")
     model_group.add_argument( "--init_wte_npy", type=str, default="wte.npy", help="npy file for initialization of wte files")
+    model_group.add_argument( "--init_radius", type=float, default=1.0, help="radius for angle_hypersphere initialization")
+    model_group.add_argument( "--gaussian_min_norm", type=float, default=0.0, help="minimum norm for gaussian_norm_range initialization")
+    model_group.add_argument( "--gaussian_max_norm", type=float, default=float('inf'), help="maximum norm for gaussian_norm_range initialization")
 
     # Quantization
     model_group.add_argument("--full_quant_iteration", type=int, default=None,
