@@ -96,7 +96,13 @@ class Block(nn.Module):
                     return x, mlp_res
 
         if self.use_gradient_checkpointing and x.requires_grad:
-            return checkpoint.checkpoint(custom_forward, x, use_reentrant=False)
+            return checkpoint.checkpoint(
+                custom_forward,
+                x,
+                iter_num,
+                mlp_res,
+                use_reentrant=False,
+            )
         else:
             return custom_forward(x, iter_num, mlp_res)
 
@@ -464,7 +470,13 @@ class GPT(nn.Module):
             for block in self.transformer.h:
                 if self.config.use_gradient_checkpointing:
                     # TODO: see if this still works with and without mlp res
-                    x = checkpoint.checkpoint(block, x, iter_num, use_reentrant=self.config.recompute_backward_pass)
+                    x, mlp_res = checkpoint.checkpoint(
+                        block,
+                        x,
+                        iter_num,
+                        mlp_res,
+                        use_reentrant=self.config.recompute_backward_pass,
+                    )
                 else:
                     x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
 
@@ -578,7 +590,13 @@ class GPT(nn.Module):
             for block in self.transformer.h:
                 # Propagate tokens through layers
                 if self.config.use_gradient_checkpointing:
-                    x = checkpoint.checkpoint(block, x, iter_num, use_reentrant=self.config.recompute_backward_pass)
+                    x, mlp_res = checkpoint.checkpoint(
+                        block,
+                        x,
+                        iter_num,
+                        mlp_res,
+                        use_reentrant=self.config.recompute_backward_pass,
+                    )
                 else:
                     x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
 
