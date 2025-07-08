@@ -120,6 +120,7 @@ def parse_args():
             "sgd",
             "adam",
             "adamw",
+            "adamw_act_reg",
             "adamax",
             "radam",
             "nadam",
@@ -172,6 +173,13 @@ def parse_args():
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
     training_group.add_argument("--adamw_weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer.")
+    # --------  ADAMW_ACT_REG --------------------------------------------------
+    training_group.add_argument(
+        "--activation_decay",
+        type=float,
+        default=0.0,
+        help="L2 regularization coefficient for activations used by adamw_act_reg optimiser.",
+    )
     # --------  ADAGRAD --------------------------------------------------
     training_group.add_argument("--adagrad_lr_decay", type=float, default=0, help="Learning rate decay for Adagrad optimizer.")
     # --------  RMSProp --------------------------------------------------
@@ -422,6 +430,7 @@ def parse_args():
             "layernorm",
             "hyperspherenorm",
             "dact",
+            "identity",
             ]
 
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)

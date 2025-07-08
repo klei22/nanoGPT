@@ -12,7 +12,10 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 
-from train_variations.optimizer_variants import optimizer_dictionary
+from train_variations.optimizer_variants import (
+    optimizer_dictionary,
+    ActRegularizedAdamW,
+)
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 
 from utils.gpu_monitoring import get_gpu_memory_info
@@ -29,6 +32,8 @@ from utils.statistic_plots import (
     plot_statistics,
     create_statistics,
 )
+
+from utils.model_stats import compute_weight_stats, compute_activation_stats
 
 from sample import (
     sample_with_existing_model,
@@ -90,6 +95,10 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+
+        # store overall statistics for weights and activations
+        self.latest_overall_weight_stats = {'stdev': 0.0, 'kurtosis': 0.0, 'max': 0.0, 'min': 0.0}
+        self.latest_overall_activation_stats = {'stdev': 0.0, 'kurtosis': 0.0, 'max': 0.0, 'min': 0.0}
 
         # calculation on end time via eval cycle
         self.eval_cycle_window = deque(maxlen=self.args.eval_cycle_window)
@@ -851,6 +860,20 @@ class Trainer:
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
 
+        # compute statistics from a single validation batch
+        X_stat, Y_stat, _ = self.get_batch('val')
+        act_stats, overall_act = compute_activation_stats(self.model, X_stat, Y_stat, self.iter_num)
+        weight_stats, overall_wt = compute_weight_stats(self.model)
+        self.latest_overall_weight_stats = overall_wt
+        self.latest_overall_activation_stats = overall_act
+
+        print("Weight Statistics per tensor:")
+        for name, s in weight_stats.items():
+            print(f"{name}: stdev {s['stdev']:.6f}, kurtosis {s['kurtosis']:.6f}, max {s['max']:.6f}, min {s['min']:.6f}")
+        print("Activation Statistics per tensor:")
+        for name, s in act_stats.items():
+            print(f"{name}: stdev {s['stdev']:.6f}, kurtosis {s['kurtosis']:.6f}, max {s['max']:.6f}, min {s['min']:.6f}")
+
         self.model.train()
         return out
 
@@ -1280,7 +1303,15 @@ class Trainer:
                                     f" {chance_ratio:.3e},"
                                     f" {chance_ratio/self.model.num_param:.3e},"
                                     f" {peak_mb:.1f},"
-                                    f" {self.iter_latency_avg:.1f}"
+                                    f" {self.iter_latency_avg:.1f},"
+                                    f" {self.latest_overall_weight_stats['stdev']:.6f},"
+                                    f" {self.latest_overall_weight_stats['kurtosis']:.6f},"
+                                    f" {self.latest_overall_weight_stats['max']:.6f},"
+                                    f" {self.latest_overall_weight_stats['min']:.6f},"
+                                    f" {self.latest_overall_activation_stats['stdev']:.6f},"
+                                    f" {self.latest_overall_activation_stats['kurtosis']:.6f},"
+                                    f" {self.latest_overall_activation_stats['max']:.6f}"
+                                    f" {self.latest_overall_activation_stats['min']:.6f}"
                                 )
                             # Reset early exit counter
                             num_steps_with_worse_loss = 0
@@ -1375,6 +1406,11 @@ class Trainer:
                 if self.args.grad_clip != 0.0:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
+
+                if isinstance(self.optimizer, ActRegularizedAdamW):
+                    self.optimizer.set_activation_stat(
+                        self.latest_overall_activation_stats["stdev"]
+                    )
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()

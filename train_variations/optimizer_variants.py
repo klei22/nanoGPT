@@ -1002,6 +1002,49 @@ def _adamw(param_groups, args):
         weight_decay=args.adamw_weight_decay,
     )
 
+class ActRegularizedAdamW(AdamW):
+    """AdamW with activation-aware weight decay.
+
+    Instead of relying on gradients of the activations, this variant scales the
+    weight-decay term by a statistic of the forward activations (e.g. overall
+    standard deviation).  The statistic must be provided externally via
+    :func:`set_activation_stat` prior to each :func:`step` call.
+    """
+
+    def __init__(self, params, *, activation_decay=0.0, **kwargs):
+        super().__init__(params, **kwargs)
+        self.activation_decay = activation_decay
+        self._activation_stat: float = 0.0
+
+    def set_activation_stat(self, stat: float) -> None:
+        """Supply the activation statistic for regularisation."""
+        self._activation_stat = float(stat)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if self.activation_decay != 0.0 and self._activation_stat != 0.0:
+            coeff = self.activation_decay * self._activation_stat
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if p.grad is None:
+                        continue
+                    p.grad = p.grad.add(p, alpha=coeff)
+
+        loss = super().step(closure)
+        self._activation_stat = 0.0
+        return loss
+
+
+def _adamw_act_reg(param_groups, args):
+    return ActRegularizedAdamW(
+        param_groups,
+        lr=args.learning_rate,
+        betas=(args.beta1, args.beta2),
+        eps=args.adamw_eps,
+        weight_decay=args.adamw_weight_decay,
+        activation_decay=getattr(args, "activation_decay", 0.0),
+    )
+
 
 def _radam(param_groups, args):
     return RAdam(
@@ -1547,6 +1590,7 @@ optimizer_dictionary: dict[str, callable] = {
     "sgd": _sgd,
     "adam": _adam,
     "adamw": _adamw,
+    "adamw_act_reg": _adamw_act_reg,
     "adamax": _adamax,
     "radam": _radam,
     "nadam": _nadam,
