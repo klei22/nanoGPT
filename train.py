@@ -35,6 +35,7 @@ from sample import (
     custom_char_with_byte_fallback_encode as ccwb_encode,
     custom_char_with_byte_fallback_decode as ccwb_decode,
 )
+from utils.mezo import mezo_step, DummyOptimizer
 
 from rich.progress import (
         Progress,
@@ -118,6 +119,7 @@ class Trainer:
 
         # Learning Rate Settings
         self.lr = self.args.learning_rate
+        self.mezo_epsilon = self.args.mezo_epsilon
         ## Make the decay iters equal to max_iters if not specified
         if self.args.lr_decay_match_max_iters:
             self.args.lr_decay_iters = self.args.max_iters
@@ -372,6 +374,9 @@ class Trainer:
 
         optimizer_key = self.args.optimizer
 
+        if optimizer_key == "mezo":
+            return DummyOptimizer()
+
         # obtain builder, and ensure optimizer is in list
         try:
             optimizer_builder = optimizer_dictionary[optimizer_key]
@@ -385,6 +390,8 @@ class Trainer:
         return optimizer
 
     def create_scheduler(self):
+        if self.args.optimizer == "mezo":
+            return None
         if self.args.lr_scheduler == "none":
             return None
         elif self.args.lr_scheduler == "cosine":
@@ -1373,10 +1380,13 @@ class Trainer:
                     else:
                         current_epoch = self.tokens_trained / self.dataset_size_tokens
 
-                    self.scaler.scale(loss).backward()
+                    if self.args.optimizer == 'mezo':
+                        mezo_step(self.model, self.X, self.Y, lr=self.lr, epsilon=self.mezo_epsilon)
+                    else:
+                        self.scaler.scale(loss).backward()
 
-                    # measure grad norms
-                    self.get_gradient_stats()
+                        # measure grad norms
+                        self.get_gradient_stats()
 
                     if self.args.training_mode == 'multicontext':
                         self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
@@ -1390,19 +1400,20 @@ class Trainer:
 
 
 
-                if self.args.grad_clip != 0.0:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
+                if self.args.optimizer != 'mezo':
+                    if self.args.grad_clip != 0.0:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
 
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                if self.scheduler:
-                    if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                        self.scheduler.step(losses["val"])
-                    else:
-                        self.scheduler.step()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    if self.scheduler:
+                        if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                            self.scheduler.step(losses["val"])
+                        else:
+                            self.scheduler.step()
 
-                self.optimizer.zero_grad(set_to_none=True)
+                    self.optimizer.zero_grad(set_to_none=True)
 
                 t1 = time.time()
                 dt = t1 - t0

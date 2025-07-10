@@ -1,4 +1,8 @@
-from jamo import h2j, j2hcj, j2h, is_jamo
+import pytest
+try:
+    from jamo import h2j, j2hcj, j2h, is_jamo
+except Exception:
+    pytest.skip("jamo not available", allow_module_level=True)
 
 def korean_to_phonetic(text):
     """Converts Korean text to its phonetic representation."""
