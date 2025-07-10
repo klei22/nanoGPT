@@ -1,5 +1,6 @@
 import argparse
 import os
+import pickle
 import torch
 import tiktoken
 from gpt_conf import GPTConfig
@@ -14,9 +15,9 @@ def load_checkpoint(path, device="cpu"):
     prefix = "_orig_mod."
     for k in list(sd.keys()):
         if k.startswith(prefix):
-            sd[k[len(prefix):]] = sd.pop(k)
+            sd[k[len(prefix) :]] = sd.pop(k)
     model.load_state_dict(sd)
-    return model
+    return model, ckpt
 
 
 def main():
@@ -27,13 +28,42 @@ def main():
     p.add_argument("--max_new_tokens", type=int, default=50)
     args = p.parse_args()
 
-    model = load_checkpoint(args.ckpt, device=args.device).to(args.device)
+    model, ckpt = load_checkpoint(args.ckpt, device=args.device)
+    model.to(args.device)
     model.eval()
-    enc = tiktoken.get_encoding("gpt2")
-    idx = torch.tensor(enc.encode(args.prompt), dtype=torch.long, device=args.device)[None, :]
+
+    enc = None
+    encode = None
+    decode = None
+
+    if "config" in ckpt and "dataset" in ckpt["config"]:
+        meta_paths = [
+            os.path.join(os.path.dirname(args.ckpt), "meta.pkl"),
+            os.path.join("data", ckpt["config"]["dataset"], "meta.pkl"),
+        ]
+        for mp in meta_paths:
+            if os.path.exists(mp):
+                with open(mp, "rb") as f:
+                    meta = pickle.load(f)
+                if meta.get("tokenizer") == "tiktoken":
+                    enc = tiktoken.get_encoding(meta["tiktoken_encoding"])
+                    encode = lambda s: enc.encode(s, allowed_special={""})
+                    decode = lambda l: enc.decode(l)
+                elif meta.get("tokenizer") == "sentencepiece":
+                    stoi, itos = meta["stoi"], meta["itos"]
+                    encode = lambda s: [stoi[c] for c in s]
+                    decode = lambda l: "".join([itos[i] for i in l])
+                break
+
+    if enc is None:
+        enc = tiktoken.get_encoding("gpt2")
+        encode = lambda s: enc.encode(s, allowed_special={""})
+        decode = lambda l: enc.decode(l)
+
+    idx = torch.tensor(encode(args.prompt), dtype=torch.long, device=args.device)[None, :]
     with torch.no_grad():
         out = model.generate(idx, max_new_tokens=args.max_new_tokens)
-    print(enc.decode(out[0].tolist()))
+    print(decode(out[0].tolist()))
 
 
 if __name__ == "__main__":

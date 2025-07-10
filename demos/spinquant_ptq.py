@@ -15,17 +15,18 @@ def load_checkpoint(ckpt_path, device="cpu"):
     prefix = "_orig_mod."
     for k in list(sd.keys()):
         if k.startswith(prefix):
-            sd[k[len(prefix):]] = sd.pop(k)
+            sd[k[len(prefix) :]] = sd.pop(k)
     model.load_state_dict(sd)
-    return model
+    return model, ckpt
 
 
-def save_checkpoint(model, out_path):
+def save_checkpoint(model, original_ckpt, out_path):
     from dataclasses import asdict
 
     ckpt = {
         "model_args": asdict(model.config),
         "model": model.state_dict(),
+        "config": original_ckpt.get("config"),
     }
     torch.save(ckpt, out_path)
 
@@ -42,7 +43,8 @@ def main():
     args = p.parse_args()
 
     ckpt_path = os.path.join(args.in_dir, "ckpt.pt")
-    model = load_checkpoint(ckpt_path, device=args.device).to(args.device)
+    model, orig_ckpt = load_checkpoint(ckpt_path, device=args.device)
+    model.to(args.device)
 
     sq = SpinQuant(model, bits=args.bits)
     vocab = model.config.vocab_size
@@ -52,7 +54,7 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
     out_ckpt = os.path.join(args.out_dir, "ckpt_spinquant.pt")
-    save_checkpoint(model, out_ckpt)
+    save_checkpoint(model, orig_ckpt, out_ckpt)
     print(f"Saved quantized checkpoint to {out_ckpt}")
 
 

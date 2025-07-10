@@ -23,7 +23,7 @@ python3 demos/check_ckpt_for_gelu_shift.py \
 rotations on a small calibration set and writes a new quantized checkpoint.
 
 ```bash
-python3 demos/spinquant_ptq.py --in_dir out --out_dir out_spinquant
+python3 demos/spinquant_ptq.py --in_dir out --out_dir spinquant_out
 ```
 
 After running the PTQ demo you can perform inference from the produced checkpoint:
