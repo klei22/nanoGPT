@@ -573,6 +573,12 @@ def parse_args():
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
     model_group.add_argument("--use_qk_norm_scale",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies norm scale, preloads scale for flash attn, post qk multiplication in manual attn")
 
+    ## nGPT ablation options
+    model_group.add_argument('--ngpt_norm', default=False, action=argparse.BooleanOptionalAction,
+                             help='Enable hyperspherical normalization steps from nGPT')
+    model_group.add_argument('--ngpt_slerp', default=False, action=argparse.BooleanOptionalAction,
+                             help='Use SLERP interpolation for residual updates')
+
     ## Flash Lobo
     model_group.add_argument("--use_flash_lobo",   type=bool, default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--use_flash_lobo_per_head",   type=bool, default=False, action=argparse.BooleanOptionalAction)

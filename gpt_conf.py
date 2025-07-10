@@ -155,6 +155,10 @@ class GPTConfig:
     use_qk_norm: bool = False
     use_qk_norm_scale: bool = False
 
+    # nGPT ablation options
+    ngpt_norm: bool = False
+    ngpt_slerp: bool = False
+
     ## SSM - Attention Varient (same as Hymba)
     ssm_mamba_expand: int = 2
     ssm_conv_kernel_size: int = 3
