@@ -211,3 +211,8 @@ checkpoint produced by `train.py` is loaded, optimized with `SpinQuant` and then
 saved back to disk for inference. For QAT, call `SpinQuant.optimize` on a few
 training batches periodically and invoke `SpinQuant.apply()` after training to
 bake the rotation into the weights.
+You can then run inference using the checkpoint produced by `spinquant_ptq.py` via:
+
+```bash
+python3 demos/spinquant_sample.py --ckpt spinquant_out/ckpt_spinquant.pt --prompt "Test" --max_new_tokens 20
+```

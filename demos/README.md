@@ -25,3 +25,9 @@ rotations on a small calibration set and writes a new quantized checkpoint.
 ```bash
 python3 demos/spinquant_ptq.py --in_dir out --out_dir out_spinquant
 ```
+
+After running the PTQ demo you can perform inference from the produced checkpoint:
+
+```bash
+python3 demos/spinquant_sample.py --ckpt spinquant_out/ckpt_spinquant.pt --prompt "Hello" --max_new_tokens 40
+```
