@@ -159,6 +159,7 @@ def parse_args():
             "soap",
             "var_adaptive_lr",
             "lookahead",
+            "mezo",
             ]
 
     training_group.add_argument("--optimizer", type=str, default="adamw",
@@ -868,6 +869,8 @@ def parse_args():
     training_group.add_argument('--beta1', default=0.9, type=float)
     training_group.add_argument('--beta2', default=0.99, type=float)
     training_group.add_argument('--grad_clip', default=1.0, type=float)
+    training_group.add_argument('--mezo_epsilon', default=1e-3, type=float,
+                                help='Perturbation scale for MeZO updates')
 
     # LR schedule args
     training_group.add_argument('--learning_rate', default=1e-3, type=float)
