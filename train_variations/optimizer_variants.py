@@ -237,6 +237,62 @@ def _var_adaptive_lr(param_groups, args):
     )
 
 # -------------------------------------------------------------------------
+#  MeZO: memory-efficient zeroth-order optimizer
+# -------------------------------------------------------------------------
+
+class MeZO(Optimizer):
+    """Zeroth-order SGD using two forward passes (SPSA)."""
+
+    def __init__(self, params, lr=1e-3, eps=1e-3):
+        defaults = dict(lr=lr, eps=eps)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        if closure is None:
+            raise RuntimeError("MeZO requires a closure returning the loss")
+
+        noises = []
+        losses = []
+
+        # positive perturbation
+        for group in self.param_groups:
+            eps = group["eps"]
+            group_noises = []
+            for p in group["params"]:
+                z = torch.randn_like(p)
+                p.add_(eps * z)
+                group_noises.append(z)
+            noises.append(group_noises)
+        loss_plus = closure()
+
+        # negative perturbation
+        for group, group_noises in zip(self.param_groups, noises):
+            eps = group["eps"]
+            for p, z in zip(group["params"], group_noises):
+                p.add_(-2 * eps * z)
+        loss_minus = closure()
+
+        # reset parameters
+        for group, group_noises in zip(self.param_groups, noises):
+            eps = group["eps"]
+            for p, z in zip(group["params"], group_noises):
+                p.add_(eps * z)
+
+        # gradient estimate and parameter update
+        for group, group_noises in zip(self.param_groups, noises):
+            lr = group["lr"]
+            eps = group["eps"]
+            g_est = (loss_plus - loss_minus) / (2 * eps)
+            for p, z in zip(group["params"], group_noises):
+                p.add_( -lr * g_est * z )
+
+        return (loss_plus + loss_minus) / 2
+
+def _mezo(param_groups, args):
+    return MeZO(param_groups, lr=args.learning_rate, eps=getattr(args, "mezo_eps", 1e-3))
+
+# -------------------------------------------------------------------------
 #  Lamb-DiffGrad  — layer-wise trust-ratio  ×  element-wise diff-friction
 # -------------------------------------------------------------------------
 class LambDiffGrad(Optimizer):
@@ -1592,5 +1648,6 @@ optimizer_dictionary: dict[str, callable] = {
     "sophiag": _sophiag,
     "soap": _soap,
     "var_adaptive_lr": _var_adaptive_lr,
+    "mezo": _mezo,
     "lookahead": _lookahead,
 }
