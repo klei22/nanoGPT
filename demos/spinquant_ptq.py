@@ -1,6 +1,13 @@
 import argparse
 import os
+import shutil
+import sys
+from pathlib import Path
+
 import torch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(REPO_ROOT))
 
 from gpt_conf import GPTConfig
 from model import GPT
@@ -20,7 +27,7 @@ def load_checkpoint(ckpt_path, device="cpu"):
     return model, ckpt
 
 
-def save_checkpoint(model, original_ckpt, out_path):
+def save_checkpoint(model, original_ckpt, out_path, meta_src=None):
     from dataclasses import asdict
 
     ckpt = {
@@ -29,6 +36,17 @@ def save_checkpoint(model, original_ckpt, out_path):
         "config": original_ckpt.get("config"),
     }
     torch.save(ckpt, out_path)
+
+    # copy tokenizer metadata if available so inference can discover it
+    src_meta = meta_src
+    if src_meta is None:
+        dataset = None
+        if "config" in ckpt and ckpt["config"]:
+            dataset = ckpt["config"].get("dataset")
+        if dataset:
+            src_meta = os.path.join(REPO_ROOT, "data", dataset, "meta.pkl")
+    if src_meta and os.path.exists(src_meta):
+        shutil.copy(src_meta, os.path.join(os.path.dirname(out_path), "meta.pkl"))
 
 
 def main():
@@ -54,7 +72,8 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
     out_ckpt = os.path.join(args.out_dir, "ckpt_spinquant.pt")
-    save_checkpoint(model, orig_ckpt, out_ckpt)
+    meta_path = os.path.join(args.in_dir, "meta.pkl")
+    save_checkpoint(model, orig_ckpt, out_ckpt, meta_src=meta_path)
     print(f"Saved quantized checkpoint to {out_ckpt}")
 
 

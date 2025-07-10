@@ -1,8 +1,15 @@
 import argparse
 import os
 import pickle
+import sys
+from pathlib import Path
+
 import torch
 import tiktoken
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(REPO_ROOT))
+
 from gpt_conf import GPTConfig
 from model import GPT
 
@@ -40,6 +47,7 @@ def main():
         meta_paths = [
             os.path.join(os.path.dirname(args.ckpt), "meta.pkl"),
             os.path.join("data", ckpt["config"]["dataset"], "meta.pkl"),
+            str(REPO_ROOT / "data" / ckpt["config"]["dataset"] / "meta.pkl"),
         ]
         for mp in meta_paths:
             if os.path.exists(mp):
@@ -61,6 +69,13 @@ def main():
         decode = lambda l: enc.decode(l)
 
     idx = torch.tensor(encode(args.prompt), dtype=torch.long, device=args.device)[None, :]
+    vocab = model.config.vocab_size
+    if idx.max().item() >= vocab:
+        raise ValueError(
+            "Encoded token id exceeds vocabulary size; make sure meta.pkl was copied "
+            "alongside the checkpoint or specify the correct tokenizer."
+        )
+
     with torch.no_grad():
         out = model.generate(idx, max_new_tokens=args.max_new_tokens)
     print(decode(out[0].tolist()))

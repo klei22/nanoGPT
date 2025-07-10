@@ -216,3 +216,5 @@ You can then run inference using the checkpoint produced by `spinquant_ptq.py` v
 ```bash
 python3 demos/spinquant_sample.py --ckpt spinquant_out/ckpt_spinquant.pt --prompt "Test" --max_new_tokens 20
 ```
+Ensure that `meta.pkl` from the training run resides in `spinquant_out` so the
+inference script can tokenize inputs correctly.
