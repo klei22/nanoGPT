@@ -181,3 +181,33 @@ python3 quantization/visualize.py \
     - **Purpose**: Allows the model to stabilize before introducing quantization, which can improve training convergence.
 
 ---
+
+## SpinQuant Rotations
+
+The `spin_quant.py` module implements the core ideas from the *SpinQuant* paper.
+It learns a small rotation matrix that reduces the quantization error prior to
+post training quantization. A typical usage looks like:
+
+```python
+import torch
+from model import GPT
+from quantization.spin_quant import SpinQuant
+
+model = GPT.from_pretrained('gpt2')  # load your model
+sq = SpinQuant(model, bits=4)
+calib_data = [torch.randint(0, model.config.vocab_size, (1, 16)) for _ in range(8)]
+# optimise rotation on calibration data
+sq.optimize(calib_data, steps=100)
+# apply rotation and quantize weights in-place
+sq.apply()
+```
+
+The resulting model has its weights rotated and quantized. The `SpinQuant`
+class can also be incorporated into training loops by calling `optimize` during
+finetuning before applying the rotation.
+
+The `demos/spinquant_ptq.py` script demonstrates an end-to-end workflow where a
+checkpoint produced by `train.py` is loaded, optimized with `SpinQuant` and then
+saved back to disk for inference. For QAT, call `SpinQuant.optimize` on a few
+training batches periodically and invoke `SpinQuant.apply()` after training to
+bake the rotation into the weights.

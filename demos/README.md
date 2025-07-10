@@ -16,3 +16,12 @@ Example for calling from repo root directory:
 python3 demos/check_ckpt_for_gelu_shift.py \
         --ckpt_path out/ckpt.pt
 ```
+
+## SpinQuant PTQ
+
+`spinquant_ptq.py` loads a checkpoint produced by `train.py`, learns SpinQuant
+rotations on a small calibration set and writes a new quantized checkpoint.
+
+```bash
+python3 demos/spinquant_ptq.py --in_dir out --out_dir out_spinquant
+```
