@@ -68,22 +68,40 @@ class SpinQuant:
         self.R = nn.Parameter(R)
 
     def _weight_modules(self):
+        """Yield linear layers that match the embedding dimension.
+
+        Returns pairs ``(module, mode)`` where ``mode`` indicates whether the
+        rotation should be applied on the input dimension (``"in"``) or the
+        output dimension (``"out"``).
+        """
         for m in self.model.modules():
-            if isinstance(m, nn.Linear):
-                yield m
+            if not isinstance(m, nn.Linear):
+                continue
+            in_dim = m.weight.shape[1]
+            out_dim = m.weight.shape[0]
+            if in_dim == self.n_embd:
+                yield m, "in"
+            elif out_dim == self.n_embd:
+                yield m, "out"
 
     def optimize(self, data: Iterable[torch.Tensor], steps: int = 100, lr: float = 1.5):
+        """Learn the rotation matrix using simple reconstruction loss."""
         opt = CayleySGD([self.R], lr=lr)
         for _ in range(steps):
             def closure():
                 opt.zero_grad()
                 loss = 0.0
                 R = self.R
-                for m in self._weight_modules():
+                for m, mode in self._weight_modules():
                     W = m.weight
-                    Wr = W @ R.t()
-                    Wq = _quantize_tensor(Wr, self.bits)
-                    Wrec = Wq @ R
+                    if mode == "in":
+                        Wr = W @ R.t()
+                        Wq = _quantize_tensor(Wr, self.bits)
+                        Wrec = Wq @ R
+                    else:  # mode == "out"
+                        Wr = R @ W
+                        Wq = _quantize_tensor(Wr, self.bits)
+                        Wrec = R.t() @ Wq
                     loss = loss + F.mse_loss(Wrec, W)
                 loss.backward()
                 return loss
@@ -93,10 +111,15 @@ class SpinQuant:
     def apply(self):
         with torch.no_grad():
             R = self.R
-            for m in self._weight_modules():
+            for m, mode in self._weight_modules():
                 W = m.weight.data
-                Wr = W @ R.t()
-                Wq = _quantize_tensor(Wr, self.bits)
-                m.weight.data = Wq @ R
+                if mode == "in":
+                    Wr = W @ R.t()
+                    Wq = _quantize_tensor(Wr, self.bits)
+                    m.weight.data = Wq @ R
+                else:  # mode == "out"
+                    Wr = R @ W
+                    Wq = _quantize_tensor(Wr, self.bits)
+                    m.weight.data = R.t() @ Wq
 
 
