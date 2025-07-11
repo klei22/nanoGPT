@@ -47,6 +47,11 @@ def save_checkpoint(model, original_ckpt, out_path, meta_src=None):
             src_meta = os.path.join(REPO_ROOT, "data", dataset, "meta.pkl")
     if src_meta and os.path.exists(src_meta):
         shutil.copy(src_meta, os.path.join(os.path.dirname(out_path), "meta.pkl"))
+    else:
+        print(
+            "warning: tokenizer metadata not found; specify --meta when running "
+            "inference"
+        )
 
 
 def main():

@@ -33,6 +33,12 @@ def main():
     p.add_argument("--device", default="cpu")
     p.add_argument("--prompt", default="Hello")
     p.add_argument("--max_new_tokens", type=int, default=50)
+    p.add_argument(
+        "--meta",
+        default=None,
+        help="Optional path to tokenizer meta.pkl. If not provided the script"
+        " searches next to the checkpoint and in the dataset directory",
+    )
     args = p.parse_args()
 
     model, ckpt = load_checkpoint(args.ckpt, device=args.device)
@@ -43,37 +49,45 @@ def main():
     encode = None
     decode = None
 
+    meta_paths = []
+    if args.meta:
+        meta_paths.append(args.meta)
     if "config" in ckpt and "dataset" in ckpt["config"]:
-        meta_paths = [
-            os.path.join(os.path.dirname(args.ckpt), "meta.pkl"),
-            os.path.join("data", ckpt["config"]["dataset"], "meta.pkl"),
-            str(REPO_ROOT / "data" / ckpt["config"]["dataset"] / "meta.pkl"),
-        ]
-        for mp in meta_paths:
-            if os.path.exists(mp):
-                with open(mp, "rb") as f:
-                    meta = pickle.load(f)
-                if meta.get("tokenizer") == "tiktoken":
-                    enc = tiktoken.get_encoding(meta["tiktoken_encoding"])
-                    encode = lambda s: enc.encode(s, allowed_special={""})
-                    decode = lambda l: enc.decode(l)
-                elif meta.get("tokenizer") == "sentencepiece":
-                    stoi, itos = meta["stoi"], meta["itos"]
-                    encode = lambda s: [stoi[c] for c in s]
-                    decode = lambda l: "".join([itos[i] for i in l])
-                break
+        meta_paths.extend(
+            [
+                os.path.join(os.path.dirname(args.ckpt), "meta.pkl"),
+                os.path.join("data", ckpt["config"]["dataset"], "meta.pkl"),
+                str(REPO_ROOT / "data" / ckpt["config"]["dataset"] / "meta.pkl"),
+            ]
+        )
+    for mp in meta_paths:
+        if os.path.exists(mp):
+            with open(mp, "rb") as f:
+                meta = pickle.load(f)
+            if meta.get("tokenizer") == "tiktoken":
+                enc = tiktoken.get_encoding(meta["tiktoken_encoding"])
+                encode = lambda s: enc.encode(s, allowed_special={""})
+                decode = lambda l: enc.decode(l)
+            elif meta.get("tokenizer") == "sentencepiece":
+                stoi, itos = meta["stoi"], meta["itos"]
+                encode = lambda s: [stoi[c] for c in s]
+                decode = lambda l: "".join([itos[i] for i in l])
+            break
 
     if enc is None:
         enc = tiktoken.get_encoding("gpt2")
         encode = lambda s: enc.encode(s, allowed_special={""})
         decode = lambda l: enc.decode(l)
+        if args.meta:
+            print(f"warning: tokenizer metadata not found at {args.meta}; "
+                  "falling back to gpt2 encoding")
 
     idx = torch.tensor(encode(args.prompt), dtype=torch.long, device=args.device)[None, :]
     vocab = model.config.vocab_size
     if idx.max().item() >= vocab:
         raise ValueError(
-            "Encoded token id exceeds vocabulary size; make sure meta.pkl was copied "
-            "alongside the checkpoint or specify the correct tokenizer."
+            "Encoded token id exceeds vocabulary size; ensure the correct meta.pkl is "
+            "passed via --meta or copied next to the checkpoint"
         )
 
     with torch.no_grad():
