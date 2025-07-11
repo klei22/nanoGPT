@@ -578,6 +578,10 @@ def parse_args():
                              help='Enable hyperspherical normalization steps from nGPT')
     model_group.add_argument('--ngpt_slerp', default=False, action=argparse.BooleanOptionalAction,
                              help='Use SLERP interpolation for residual updates')
+    model_group.add_argument('--ngpt_alpha_init', type=float, default=0.05,
+                             help='Initial value for nGPT eigen learning rates')
+    model_group.add_argument('--ngpt_alpha_learnable', action=argparse.BooleanOptionalAction,
+                             default=True, help='Whether nGPT alpha values are learnable')
 
     ## Flash Lobo
     model_group.add_argument("--use_flash_lobo",   type=bool, default=False, action=argparse.BooleanOptionalAction)

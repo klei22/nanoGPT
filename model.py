@@ -76,10 +76,17 @@ class Block(nn.Module):
 
         self.ngpt_norm = config.ngpt_norm
         self.ngpt_slerp = config.ngpt_slerp
+        self.ngpt_alpha_learnable = config.ngpt_alpha_learnable
         if self.ngpt_norm or self.ngpt_slerp:
-            # learnable step sizes for attention and MLP updates
-            self.alpha_attn = nn.Parameter(torch.tensor(0.5))
-            self.alpha_mlp = nn.Parameter(torch.tensor(0.5))
+            # step sizes for attention and MLP updates
+            self.alpha_attn = nn.Parameter(
+                torch.tensor(config.ngpt_alpha_init),
+                requires_grad=self.ngpt_alpha_learnable,
+            )
+            self.alpha_mlp = nn.Parameter(
+                torch.tensor(config.ngpt_alpha_init),
+                requires_grad=self.ngpt_alpha_learnable,
+            )
 
         # Allow for sharing attn between blocks
         if attn is None:

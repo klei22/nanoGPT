@@ -158,6 +158,8 @@ class GPTConfig:
     # nGPT ablation options
     ngpt_norm: bool = False
     ngpt_slerp: bool = False
+    ngpt_alpha_init: float = 0.05
+    ngpt_alpha_learnable: bool = True
 
     ## SSM - Attention Varient (same as Hymba)
     ssm_mamba_expand: int = 2
