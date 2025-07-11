@@ -12,7 +12,7 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 
-from train_variations.optimizer_variants import optimizer_dictionary
+from train_variations.optimizer_variants import optimizer_dictionary, MeZO
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 
 from utils.gpu_monitoring import get_gpu_memory_info
@@ -1344,18 +1344,27 @@ class Trainer:
                     if self.ddp:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
 
-                    with self.ctx:
-                        if self.args.training_mode == 'multicontext':
-                            total_loss = 0
-                            logits, training_losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
+                    if isinstance(self.optimizer, MeZO):
+                        def closure():
+                            with self.ctx:
+                                if self.args.training_mode == 'multicontext':
+                                    _, losses_list = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
+                                    l = sum(losses_list) / len(losses_list)
+                                else:
+                                    _, l = self.model(self.X, targets=self.Y, iter_num=self.iter_num)
+                            return l / self.args.gradient_accumulation_steps
 
-                            # For multicontext training let loss = first dataset loss
-                            # loss = training_losses[0]
-                            loss = sum(training_losses) / len(training_losses)
-                        else:
-                            logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num)
+                        loss = self.optimizer.step(closure)
+                    else:
+                        with self.ctx:
+                            if self.args.training_mode == 'multicontext':
+                                total_loss = 0
+                                logits, training_losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
+                                loss = sum(training_losses) / len(training_losses)
+                            else:
+                                logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num)
 
-                        loss = loss / self.args.gradient_accumulation_steps
+                            loss = loss / self.args.gradient_accumulation_steps
 
                     prior_dataset = current_dataset
                     tokens_trained_this_batch = self.args.batch_size * self.args.block_size
@@ -1373,10 +1382,13 @@ class Trainer:
                     else:
                         current_epoch = self.tokens_trained / self.dataset_size_tokens
 
-                    self.scaler.scale(loss).backward()
+                    if isinstance(self.optimizer, MeZO):
+                        pass
+                    else:
+                        self.scaler.scale(loss).backward()
 
-                    # measure grad norms
-                    self.get_gradient_stats()
+                        # measure grad norms
+                        self.get_gradient_stats()
 
                     if self.args.training_mode == 'multicontext':
                         self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
@@ -1390,19 +1402,23 @@ class Trainer:
 
 
 
-                if self.args.grad_clip != 0.0:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
-
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                if self.scheduler:
-                    if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                        self.scheduler.step(losses["val"])
-                    else:
+                if isinstance(self.optimizer, MeZO):
+                    if self.scheduler:
                         self.scheduler.step()
+                else:
+                    if self.args.grad_clip != 0.0:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
 
-                self.optimizer.zero_grad(set_to_none=True)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    if self.scheduler:
+                        if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                            self.scheduler.step(losses["val"])
+                        else:
+                            self.scheduler.step()
+
+                    self.optimizer.zero_grad(set_to_none=True)
 
                 t1 = time.time()
                 dt = t1 - t0
@@ -1464,8 +1480,9 @@ class Trainer:
                         log_message+= f", gns {self.gns:.2f}"
                     log_message+= f", batch_size {self.args.batch_size}"
                     log_message+= f", lr {self.lr:.4f}"
-                    log_message+= f", grad_norm {self.grad_norm:2f}"
-                    log_message+= f", grad_std {self.grad_std:.2f}"
+                    if self.grad_norm is not None:
+                        log_message+= f", grad_norm {self.grad_norm:.2f}"
+                        log_message+= f", grad_std {self.grad_std:.2f}"
 
                     print(log_message)
 

@@ -158,6 +158,7 @@ def parse_args():
             "sophiag",
             "soap",
             "var_adaptive_lr",
+            "mezo",
             "lookahead",
             ]
 
@@ -227,6 +228,7 @@ def parse_args():
     training_group.add_argument("--soap_graft_lr", type=float, default=1.0)
     # Variance Adaptive Lr
     training_group.add_argument("--varlr_beta", type=float, default=0.9, help="EMA smoothing for VarianceAdaptiveLR optimizer")
+    training_group.add_argument("--mezo_eps", type=float, default=1e-3, help="Perturbation scale for the MeZO optimizer")
 
 
     # AdaBelief -----------------------------------------------------------
