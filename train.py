@@ -1480,8 +1480,9 @@ class Trainer:
                         log_message+= f", gns {self.gns:.2f}"
                     log_message+= f", batch_size {self.args.batch_size}"
                     log_message+= f", lr {self.lr:.4f}"
-                    log_message+= f", grad_norm {self.grad_norm:2f}"
-                    log_message+= f", grad_std {self.grad_std:.2f}"
+                    if self.grad_norm is not None:
+                        log_message+= f", grad_norm {self.grad_norm:.2f}"
+                        log_message+= f", grad_std {self.grad_std:.2f}"
 
                     print(log_message)
 
