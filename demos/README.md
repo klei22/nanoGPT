@@ -16,3 +16,11 @@ Example for calling from repo root directory:
 python3 demos/check_ckpt_for_gelu_shift.py \
         --ckpt_path out/ckpt.pt
 ```
+
+## Softmax-1 with OrthoAdam
+Run a small demo training using the paper\x27s optimizer and softmax variant:
+```bash
+bash demos/orthoadam_softmax1_demo.sh
+```
+This demo also sets `--ortho_seed` for reproducibility.
+

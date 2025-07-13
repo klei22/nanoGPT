@@ -835,6 +835,9 @@ class OrthoAdam(Optimizer):
     weight_decay : AdamW-style decoupled weight decay
     permute_threshold : if tensor.numel() > threshold we skip rotation
                         (i.e. use identity Q) to avoid storing big buffers
+    tiny_threshold   : tensors smaller than this are also skipped to avoid
+                        overhead for biases and normalization parameters
+    seed             : optional RNG seed for generating the permutations/signs
     """
 
     # def __init__(self, params, *, lr=1e-3, betas=(0.9, 0.999),
@@ -849,6 +852,7 @@ class OrthoAdam(Optimizer):
         weight_decay=0.0,
         permute_threshold=1_000_000,
         tiny_threshold=128,
+        seed=None,
     ):
         if lr <= 0.0:
             raise ValueError("lr must be positive")
@@ -860,6 +864,9 @@ class OrthoAdam(Optimizer):
             permute_threshold=permute_threshold,
         )
         super().__init__(params, defaults)
+        self.generator = torch.Generator()
+        if seed is not None:
+            self.generator.manual_seed(int(seed))
 
         # Build permutation & sign for each parameter once
         for group in self.param_groups:
@@ -874,9 +881,19 @@ class OrthoAdam(Optimizer):
                     state["sign"] = None
                 else:
                     device = p.device
-                    state["perm"] = torch.randperm(n, device=device, dtype=torch.int64)
+                    state["perm"] = torch.randperm(
+                        n, device=device, dtype=torch.int64, generator=self.generator
+                    )
                     state["sign"] = (
-                        torch.randint(0, 2, (n,), device=device, dtype=p.dtype) * 2.0
+                        torch.randint(
+                            0,
+                            2,
+                            (n,),
+                            device=device,
+                            dtype=p.dtype,
+                            generator=self.generator,
+                        )
+                        * 2.0
                         - 1.0
                     )
 
@@ -1113,6 +1130,8 @@ def _orthoadam(param_groups, args):
         eps=args.adamw_eps,
         weight_decay=args.weight_decay,
         permute_threshold=getattr(args, "ortho_perm_threshold", 1_000_000),
+        tiny_threshold=getattr(args, "ortho_tiny_threshold", 128),
+        seed=getattr(args, "ortho_seed", None),
     )
 
 # Community contributed Optimizers
