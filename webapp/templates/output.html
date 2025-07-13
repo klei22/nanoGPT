@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Output - {{ key }}</title>
+  </head>
+  <body>
+    <h1>Process {{ key }}</h1>
+    {% if status == 'running' %}
+      <p>Status: running...</p>
+    {% else %}
+      <p>Status: finished</p>
+    {% endif %}
+    <pre>{{ log }}</pre>
+    <p><a href="/">Back</a></p>
+  </body>
+</html>

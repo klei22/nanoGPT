@@ -206,6 +206,17 @@ run a second tensorboard, use the script and specify a different port e.g. 6007:
 source ./logging/start_tensorboard.sh 6007
 ```
 
+### Webapp Front End
+
+A simple Flask app for launching runs is provided in `webapp/`. Start it with:
+
+```bash
+python3 webapp/app.py
+```
+
+The interface lets you configure `run_experiments.py`, run `train.py` with custom arguments and links to TensorBoard.
+
+
 ## TODO Section:
 
 TODO: Add links and descriptions to other Readme's and Demos.
