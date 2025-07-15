@@ -759,6 +759,57 @@ class PFLASoftmax(nn.Module):
         return out
 
 
+class AdaSplash(nn.Module):
+    """Adaptive sparse attention using the Halley-bisection algorithm."""
+
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.alpha = getattr(config, "adasplash_alpha", 1.5)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _adasplash_entmax(x, alpha=self.alpha, dim=self.dim)
+
+
+def _adasplash_entmax(logits: torch.Tensor, *, alpha: float = 1.5, dim: int = -1, n_iter: int = 8) -> torch.Tensor:
+    """Halley-bisection approximation of entmax used by AdaSplash."""
+    if not logits.numel():
+        return logits
+
+    dim = dim if dim >= 0 else logits.dim() + dim
+    input_shape = logits.shape
+    d = logits.size(dim)
+
+    x = logits.transpose(dim, -1).reshape(-1, d)
+
+    alpha_m1 = alpha - 1.0
+    power = 1.0 / alpha_m1
+    S = alpha_m1 * x
+
+    tau_lo = S.max(dim=1).values - d ** alpha_m1
+    tau_hi = S.max(dim=1).values - 1.0
+    tau = 0.5 * (tau_hi + tau_lo)
+
+    for _ in range(n_iter):
+        delta = S - tau.unsqueeze(1)
+        relu = torch.clamp(delta, min=0)
+        p = relu.pow(power)
+        f = p.sum(dim=1) - 1
+
+        tau_lo = torch.where(f >= 0, tau, tau_lo)
+        tau_hi = torch.where(f < 0, tau, tau_hi)
+
+        fp = -(relu.pow(power - 1).sum(dim=1)) / alpha_m1
+        fpp = (2 - alpha) * relu.pow(power - 2).sum(dim=1) / (alpha_m1 ** 2)
+        tau_h = tau - 2 * f * fp / (2 * fp * fp - f * fpp)
+        tau = torch.where((tau_h >= tau_lo) & (tau_h <= tau_hi), tau_h, 0.5 * (tau_lo + tau_hi))
+
+    output = torch.clamp(S - tau.unsqueeze(1), min=0).pow(power)
+    output = output.reshape(*logits.transpose(dim, -1).shape)
+    output = output.transpose(dim, -1).view(input_shape)
+    return output
+
+
 
 
 # Note: we use the built in library for regular softmax
@@ -779,4 +830,5 @@ softmax_dictionary = {
     "softplus": Softplus,
     "squareplus": Squareplus,
     "pfla_softmax": PFLASoftmax,
+    "adasplash": AdaSplash,
 }
