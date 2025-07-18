@@ -259,6 +259,8 @@ class Swiglu(nn.Module):
         self.full_quant_iteration = config.full_quant_iteration
         self.eval_interval = config.eval_interval
 
+        self.use_mlp_res = config.mlp_res
+
         self.start_quant_level = config.start_quant_level
         self.quant_scheduler = config.quant_scheduler
         self.mlp_down_projs = config.mlp_down_projs
@@ -365,10 +367,13 @@ class Swiglu(nn.Module):
         x_out = x_in1 * x_in2
 
         # MLP Residual on the x_out
-        if mlp_res is None:
-            mlp_res = torch.zeros_like(x_out)
-        x_out = mlp_res + x_out
-        mlp_res = x_out
+        if self.use_mlp_res:
+            if mlp_res is None:
+                mlp_res = torch.zeros_like(x_out)
+            x_out = x_out + mlp_res
+            mlp_res = x_out
+        else:
+            mlp_res = None
 
         # Apply fused down projection and sum the outputs
         x = self.c_fc_out(x_out)
