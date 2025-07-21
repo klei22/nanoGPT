@@ -216,12 +216,16 @@ python3 webapps/llm_photo_categorizer/app.py
 ```
 
 Navigate to `http://localhost:5000` and provide the path to a directory of images on
-the host machine. The app will show each image so you can assign one or more categories
-or create a new category on the fly. Instead of copying the file, a symbolic link is
-placed under `webapps/llm_photo_categorizer/static/categorized/<category>` for every
-selected tag.
+the host machine. The app shows each uncategorized image so you can assign one or more
+categories or create new ones. New categories may be entered as a comma separated list.
+Instead of copying the file, a symbolic link is placed under
+`webapps/llm_photo_categorizer/static/categorized/<category>` for every selected tag.
+Categorization progress is tracked in `tags.json` so already labeled images are
+skipped when you reload the page.
 
-You can view all images for a category by clicking its link on the main page.
+You can view all images for a category by clicking its link on the main page. The app
+supports common image formats including `.heic` and is case-insensitive about file
+extensions like `PNG`, `jpg`, etc.
 
 ## TODO Section:
 

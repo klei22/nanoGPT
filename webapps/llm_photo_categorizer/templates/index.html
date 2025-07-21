@@ -34,6 +34,10 @@
             <button type="submit">Load</button>
         </form>
 
+        {% if message %}
+            <p><em>{{ message }}</em></p>
+        {% endif %}
+
         {% if filename %}
             <h2>{{ filename }}</h2>
             <img src="{{ image_url }}" alt="image preview">
@@ -44,7 +48,7 @@
                 {% for cat in categories %}
                     <label><input type="checkbox" name="category" value="{{ cat }}"> {{ cat }}</label><br>
                 {% endfor %}
-                <label>Add category: <input type="text" name="new_category"></label><br>
+                <label>Add categories (comma separated): <input type="text" name="new_category"></label><br>
                 <button type="submit">Save & Next</button>
             </form>
         {% elif folder %}
