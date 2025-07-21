@@ -36,6 +36,7 @@ Hardware Related
   * [Prepare Training and Validation Data Sets](#prepare-training-and-validation-data-sets)
   * [Train Model From Scratch](#train-model-from-scratch)
   * [Perform Inference From Custom Model](#perform-inference-from-custom-model)
+  * [Recurrent Fine-Tuning](#recurrent-fine-tuning)
 * [Explorations](#explorations)
   * [Start Exploration](#start-exploration)
   * [Inspect and Monitor Best Val Losses](#inspect-and-monitor-best-val-losses)
@@ -132,6 +133,16 @@ I thank your eyes against it.
 This looks pretty good for a model which just learned how to spell from scratch.
 Keeping an eye on inference is very important, however, usually one can infer
 levels from validation losses.
+
+### Recurrent Fine-Tuning
+
+To continue training from an existing checkpoint using latent chaining, run
+
+```bash
+python3 train_recurrent.py --resume_ckpt out/ckpt.pt --latent_steps 4
+```
+
+See [Recurrent_Fine_Tuning.md](documentation/Recurrent_Fine_Tuning.md) for more details.
 
 The next section goes over how to do a massive _exploration_ of different models
 and quickly compare their quality using the `validation loss` as a proxy.

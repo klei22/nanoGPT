@@ -45,6 +45,8 @@ recur_parser.add_argument("--skip_steps",    type=int, default=0,
 recur_parser.add_argument("--weight_start",  type=float, default=1.0)
 recur_parser.add_argument("--weight_end",    type=float, default=1.0)
 recur_parser.add_argument("--reset_optim", action="store_true", help="Ignore optimiser state in the checkpoint")
+recur_parser.add_argument("--reset_best_val_loss", action="store_true",
+                          help="Start saving recurrent checkpoints from the beginning")
 
 # -- split cmdline -----------------------------------------------------
 latent_args, remaining = recur_parser.parse_known_args()
@@ -115,7 +117,8 @@ if ckpt.get("optimizer") and not getattr(args, "reset_optim", False):
 
 best_val_loss = ckpt["best_val_loss"].item()
 print("best_val_loss", best_val_loss)
-best_val_loss=5.00 # TODO: set a flag so that we can choose to definitely start saving checkpoints in recurrent mode
+if args.reset_best_val_loss:
+    best_val_loss = 5.0
 iter_num      = ckpt["iter_num"]          # not used, but preserved
 
 block_size = gpt_conf.block_size
@@ -186,6 +189,7 @@ def train_block(x_tokens, y_tokens):
 # 6)  EPOCH LOOPS
 # ----------------------------------------------------------------------
 def run_epoch(split):
+    global best_val_loss
     data   = train_bin if split == "train" else val_bin
     losses = []
     ptr    = 0
@@ -217,7 +221,7 @@ def run_epoch(split):
                 if tb:
                     tb.add_scalar("loss/val", val, global_step)
 
-                if val < 5.00:
+                if val < best_val_loss:
                     print(val)
                     best_val_loss = val
                     torch.save(
