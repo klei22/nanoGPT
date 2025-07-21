@@ -45,6 +45,10 @@ recur_parser.add_argument("--skip_steps",    type=int, default=0,
 recur_parser.add_argument("--weight_start",  type=float, default=1.0)
 recur_parser.add_argument("--weight_end",    type=float, default=1.0)
 recur_parser.add_argument("--reset_optim", action="store_true", help="Ignore optimiser state in the checkpoint")
+recur_parser.add_argument("--use_output_embedding", action="store_true",
+                          help="Feed the next step using the output embedding instead of the pre lmhead vector")
+recur_parser.add_argument("--mid_activation_target", choices=["none", "wte", "prelm"], default="none",
+                          help="Add the activation after the middle block to the given vector type")
 
 # -- split cmdline -----------------------------------------------------
 latent_args, remaining = recur_parser.parse_known_args()
@@ -96,7 +100,11 @@ if unexpected:
 
 # helpers exposed in patched model.py
 embed_tokens     = model.embed_tokens
-forward_embedded = lambda x: model.forward_embedded(x, return_hidden=True)
+forward_embedded = lambda x: model.forward_embedded(
+    x,
+    return_hidden=True,
+    return_middle=(args.mid_activation_target != "none")
+)
 
 decay, no_decay = [], []
 for n, p in model.named_parameters():
@@ -172,10 +180,27 @@ def train_block(x_tokens, y_tokens):
                      torch.cat([hidden_buf, new_piece], dim=1)
 
         # ---- full forward pass on the whole buffer -----------------
-        logits_all, h_all = forward_embedded(hidden_buf)
+        logits_all, h_all, mid_all = forward_embedded(hidden_buf)
 
         logits_step = logits_all[:, -1, :]   # newest position only
-        hidden_prev = h_all[:,  -1:, :]      # keep for next iteration
+        next_vec = h_all[:,  -1:, :]      # pre lmhead vector by default
+
+        if args.use_output_embedding:
+            probs = F.softmax(logits_step, dim=-1)
+            out_emb = F.linear(probs, model.transformer.wte.weight)
+            if hasattr(model.transformer, 'scale_up'):
+                out_emb = F.linear(out_emb, model.transformer.scale_up.weight.t())
+            next_vec = out_emb.unsqueeze(1)
+
+        if args.mid_activation_target != "none" and mid_all is not None:
+            mid_vec = mid_all[:, -1:, :]
+            if args.mid_activation_target == "wte":
+                base = embed_tokens(x_tokens[:, t:t+1]) if t < args.latent_steps else next_vec
+                next_vec = base + mid_vec
+            else:  # prelm
+                next_vec = next_vec + mid_vec
+
+        hidden_prev = next_vec
 
         ce = F.cross_entropy(logits_step, y_tokens[:, t], reduction="none")
         total_loss += (ce * weights[:, t]).sum()
