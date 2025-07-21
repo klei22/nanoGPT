@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Category - {{ category }}</title>
+    <style>
+        img {
+            max-width: 200px;
+            margin: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Images for {{ category }}</h1>
+    <div>
+        {% if images %}
+            {% for url in images %}
+                <img src="{{ url }}" alt="{{ category }} image">
+            {% endfor %}
+        {% else %}
+            <p>No images in this category.</p>
+        {% endif %}
+    </div>
+    <a href="{{ url_for('index') }}">Back</a>
+</body>
+</html>

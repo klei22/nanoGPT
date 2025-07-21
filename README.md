@@ -206,6 +206,23 @@ run a second tensorboard, use the script and specify a different port e.g. 6007:
 source ./logging/start_tensorboard.sh 6007
 ```
 
+## Photo Categorizer Web App
+
+This repository includes a Flask application for tagging existing images with LLM
+paper categories. Start the server with:
+
+```bash
+python3 webapps/llm_photo_categorizer/app.py
+```
+
+Navigate to `http://localhost:5000` and provide the path to a directory of images on
+the host machine. The app will show each image so you can assign one or more categories
+or create a new category on the fly. Instead of copying the file, a symbolic link is
+placed under `webapps/llm_photo_categorizer/static/categorized/<category>` for every
+selected tag.
+
+You can view all images for a category by clicking its link on the main page.
+
 ## TODO Section:
 
 TODO: Add links and descriptions to other Readme's and Demos.

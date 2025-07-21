@@ -28,3 +28,4 @@ adabelief-pytorch
 adan-pytorch
 torch_optimizer
 tensorboard
+Flask==2.3.3

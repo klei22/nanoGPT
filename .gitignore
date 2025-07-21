@@ -18,3 +18,5 @@ out*/
 .aider*
 
 venv/*
+webapps/llm_photo_categorizer/static/uploads/
+webapps/llm_photo_categorizer/static/categorized/
