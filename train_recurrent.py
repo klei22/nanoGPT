@@ -14,6 +14,7 @@ import os
 import time
 import math
 import pickle
+import random
 
 import numpy as np
 import torch
@@ -40,6 +41,12 @@ recur_parser.add_argument("--resume_ckpt",   required=True,
                           help="Path to .pt checkpoint produced by train.py")
 recur_parser.add_argument("--latent_steps",  type=int, default=0,
                           help="Chain this many hidden states before teacher-forcing")
+recur_parser.add_argument("--latent_schedule", type=str, default="",
+                          help="Comma-separated schedule of latent steps; overrides --latent_steps")
+recur_parser.add_argument("--auto_latent", action="store_true",
+                          help="Increase latent steps on validation improvement")
+recur_parser.add_argument("--latent_max_steps", type=int, default=0,
+                          help="Maximum latent steps when using --auto_latent")
 recur_parser.add_argument("--skip_steps",    type=int, default=0,
                           help="Mask loss for the first K positions in every block")
 recur_parser.add_argument("--weight_start",  type=float, default=1.0)
@@ -63,6 +70,20 @@ generic_args, *_ = parse_generic_args()
 args = generic_args
 for k, v in vars(latent_args).items():
     setattr(args, k, v)
+
+if args.latent_schedule:
+    args.latent_schedule = [int(x) for x in args.latent_schedule.split(',')]
+else:
+    args.latent_schedule = [args.latent_steps]
+if args.latent_max_steps == 0:
+    args.latent_max_steps = max(args.latent_schedule)
+curr_latent_steps = args.latent_schedule[0]
+
+def choose_latent_steps():
+    """Return latent steps for this iteration."""
+    if args.auto_latent:
+        return curr_latent_steps
+    return random.choice(args.latent_schedule)
 
 
 # ----------------------------------------------------------------------
@@ -145,7 +166,7 @@ def make_loss_weights(bsz: int, T: int, device):
 # ----------------------------------------------------------------------
 # 5)  ONE BLOCK (B,T)  →  scalar loss
 # ----------------------------------------------------------------------
-def train_block(x_tokens, y_tokens):
+def train_block(x_tokens, y_tokens, latent_steps):
     """
     One recurrent block that **preserves full self-attention context**.
     We build a `hidden_buf` (B, ≤T, E); at each step we append either
@@ -165,7 +186,7 @@ def train_block(x_tokens, y_tokens):
     for t in range(T):
         # ---- decide what to append ---------------------------------
         # ↳ Teacher-force **until** we reach latent_steps
-        if t < args.latent_steps:
+        if t < latent_steps:
             new_piece = embed_tokens(x_tokens[:, t:t+1])  # GT token
         else:
             new_piece = hidden_prev                       # latent
@@ -189,7 +210,7 @@ def train_block(x_tokens, y_tokens):
 # 6)  EPOCH LOOPS
 # ----------------------------------------------------------------------
 def run_epoch(split):
-    global best_val_loss
+    global best_val_loss, curr_latent_steps
     data   = train_bin if split == "train" else val_bin
     losses = []
     ptr    = 0
@@ -202,16 +223,20 @@ def run_epoch(split):
         if split == "train":
             model.train()
             optimizer.zero_grad()
-            loss = train_block(x, y)
+            loss = train_block(x, y, choose_latent_steps())
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
             global global_step
             global_step += 1
 
             if global_step % args.log_interval == 0:
+                ppl = math.exp(loss.item())
                 print(f"iter {global_step:>7} | "
-                      f"loss {loss.item():.4f}")
+                      f"loss {loss.item():.4f} | ppl {ppl:.2f} | grad {grad_norm:.2f}")
+                if tb:
+                    tb.add_scalar("grad_norm", grad_norm, global_step)
+                    tb.add_scalar("ppl/train", ppl, global_step)
             # ─── validation & checkpoint ───────────────────────────────
             if global_step % args.eval_interval == 0:
                 model.eval()
@@ -220,10 +245,14 @@ def run_epoch(split):
 
                 if tb:
                     tb.add_scalar("loss/val", val, global_step)
+                    tb.add_scalar("ppl/val", math.exp(val), global_step)
 
                 if val < best_val_loss:
                     print(val)
                     best_val_loss = val
+                    if args.auto_latent and curr_latent_steps < args.latent_max_steps:
+                        curr_latent_steps += 1
+                        print(f"latent_steps -> {curr_latent_steps}")
                     torch.save(
                         {"model": model.state_dict(),
                          "model_args": ckpt["model_args"],
@@ -238,7 +267,7 @@ def run_epoch(split):
 
             model.eval()
             with torch.no_grad():
-                loss = train_block(x, y)
+                loss = train_block(x, y, choose_latent_steps())
 
         losses.append(loss.item())
         ptr += block_size
@@ -261,9 +290,13 @@ while global_step < args.max_iters:
 
         if tb:
             tb.add_scalar("loss/val", val_loss, global_step)
+            tb.add_scalar("ppl/val_epoch", math.exp(val_loss), global_step)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            if args.auto_latent and curr_latent_steps < args.latent_max_steps:
+                curr_latent_steps += 1
+                print(f"latent_steps -> {curr_latent_steps}")
             torch.save(
                 {"model": model.state_dict(),
                  "model_args": ckpt["model_args"],
@@ -277,9 +310,13 @@ while global_step < args.max_iters:
 
     if tb:
         tb.add_scalar("loss/train", train_loss, global_step)
+        tb.add_scalar("ppl/train_epoch", math.exp(train_loss), global_step)
 
+    ppl_train = math.exp(train_loss)
+    ppl_val   = math.exp(val_loss)
     print(f"iter {global_step:03d} | "
-          f"train {train_loss:.4f} | val {val_loss:.4f} | "
+          f"train {train_loss:.4f} (ppl {ppl_train:.2f}) | "
+          f"val {val_loss:.4f} (ppl {ppl_val:.2f}) | "
           f"{(time.time()-t0):.1f}s")
 
 

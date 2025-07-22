@@ -142,7 +142,7 @@ To continue training from an existing checkpoint using latent chaining, run
 python3 train_recurrent.py --resume_ckpt out/ckpt.pt --latent_steps 4
 ```
 
-See [Recurrent_Fine_Tuning.md](documentation/Recurrent_Fine_Tuning.md) for more details.
+See [Recurrent_Fine_Tuning.md](documentation/Recurrent_Fine_Tuning.md) for more details on schedules, auto-length mode and metrics such as perplexity.
 
 The next section goes over how to do a massive _exploration_ of different models
 and quickly compare their quality using the `validation loss` as a proxy.
