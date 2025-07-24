@@ -210,6 +210,18 @@ source ./logging/start_tensorboard.sh 6007
 
 TODO: Add links and descriptions to other Readme's and Demos.
 
+### Pink Trombone Demo
+
+See [pink_trombone_py/README.md](pink_trombone_py/README.md) for a minimal
+Python port of the Pink Trombone speech synthesizer. After installing
+the requirements you can run:
+
+```bash
+python -m pink_trombone_py.demo "a" --out demo.wav
+```
+
+which prints `Wrote demo.wav` and produces the audio file `demo.wav`.
+
 ## Contributing
 
 This repo is under active development and accepting PR's, please see the
