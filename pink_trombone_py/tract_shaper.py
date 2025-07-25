@@ -15,6 +15,7 @@ class TractShaper:
     velum_target: float = 0.0
     tongue_index: float = 12.9
     tongue_diameter: float = 2.43
+    lip_closure: float = 0.0
     last_obstruction: int = -1
 
     def __post_init__(self):
@@ -29,6 +30,7 @@ class TractShaper:
             d = self.get_rest_diameter(i)
             self.tract.diameter[i] = d
             self.target_diameter[i] = d
+        self.update_lip_targets()
 
     def get_rest_diameter(self, i: int) -> float:
         if i < 7:
@@ -48,6 +50,7 @@ class TractShaper:
 
     def adjust_tract_shape(self, delta_time: float):
         amount = delta_time*MOVEMENT_SPEED
+        self.update_lip_targets()
         new_last = -1
         for i in range(Tract.N):
             diameter = self.tract.diameter[i]
@@ -84,3 +87,13 @@ class TractShaper:
 
     def set_velum_open(self, velum_open: bool):
         self.velum_target = self.velum_open_target if velum_open else self.velum_closed_target
+
+    def set_lip_closure(self, closure: float):
+        """Set desired lip closure amount (0=open, 1=closed)."""
+        self.lip_closure = np.clip(closure, 0.0, 1.0)
+
+    def update_lip_targets(self):
+        closed_d = 0.05
+        for i in range(LIP_START, Tract.N):
+            open_d = self.get_rest_diameter(i)
+            self.target_diameter[i] = open_d + self.lip_closure * (closed_d - open_d)

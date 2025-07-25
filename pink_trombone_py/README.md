@@ -24,11 +24,11 @@ sudo apt-get install espeak-ng
 
 ## Usage
 
-Run the demo module with a short text string and provide an output path for the generated WAV file. The string may
-contain multiple vowels, each synthesised for the same duration:
+Run the demo module with a short text string and provide an output path for the generated WAV file. The input may
+contain multiple vowels and simple lip-controlled consonants (`m`, `b`, `f`):
 
 ```bash
-python -m pink_trombone_py.demo "ae" --out demo.wav
+python -m pink_trombone_py.demo "mfam" --out demo.wav
 ```
 
 On success the script prints

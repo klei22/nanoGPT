@@ -217,10 +217,12 @@ Python port of the Pink Trombone speech synthesizer. After installing
 the requirements you can run:
 
 ```bash
-python -m pink_trombone_py.demo "ae" --out demo.wav
+python -m pink_trombone_py.demo "mfam" --out demo.wav
 ```
 
-which prints `Wrote demo.wav` and produces the audio file `demo.wav`.
+which prints `Wrote demo.wav` and produces the audio file `demo.wav`.  Lip
+closure is modeled, so bilabial and labiodental sounds like `m`, `f` and `b` are
+handled in addition to vowels.
 
 ## Contributing
 
