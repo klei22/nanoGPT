@@ -54,7 +54,12 @@ class Block(nn.Module):
         if not config.use_parallel_mlp:
             self.ln_2 = norm_variant_attn(config)
 
+        if config.use_peri_ln:
+            self.out_ln_attn = norm_variant_attn(config)
+            self.out_ln_mlp = norm_variant_attn(config)
+
         self.use_post_ln = config.use_post_ln
+        self.use_peri_ln = config.use_peri_ln
         self.use_parallel_mlp = config.use_parallel_mlp
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
 
@@ -84,16 +89,32 @@ class Block(nn.Module):
                     x = self.ln_2(x + self.mlp(x, iter_num))
                 return x, mlp_res
             else:
-                if self.use_parallel_mlp:
-                    ln_1 = self.ln_1(x)
-                    mlp, mlp_res = self.mlp(ln_1, iter_num)
-                    x = x + self.attn(ln_1, iter_num) + mlp
-                    return x, mlp_res
+                if self.use_peri_ln:
+                    if self.use_parallel_mlp:
+                        ln_1 = self.ln_1(x)
+                        attn_out = self.out_ln_attn(self.attn(ln_1, iter_num))
+                        mlp_out, mlp_res = self.mlp(ln_1, iter_num)
+                        mlp_out = self.out_ln_mlp(mlp_out)
+                        x = x + attn_out + mlp_out
+                        return x, mlp_res
+                    else:
+                        attn_out = self.out_ln_attn(self.attn(self.ln_1(x), iter_num))
+                        x = x + attn_out
+                        mlp_out, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
+                        mlp_out = self.out_ln_mlp(mlp_out)
+                        x = x + mlp_out
+                        return x, mlp_res
                 else:
-                    x = x + self.attn(self.ln_1(x), iter_num)
-                    mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
-                    x = x + mlp
-                    return x, mlp_res
+                    if self.use_parallel_mlp:
+                        ln_1 = self.ln_1(x)
+                        mlp, mlp_res = self.mlp(ln_1, iter_num)
+                        x = x + self.attn(ln_1, iter_num) + mlp
+                        return x, mlp_res
+                    else:
+                        x = x + self.attn(self.ln_1(x), iter_num)
+                        mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
+                        x = x + mlp
+                        return x, mlp_res
 
         if self.use_gradient_checkpointing and x.requires_grad:
             return checkpoint.checkpoint(custom_forward, x, iter_num, mlp_res, use_reentrant=False)

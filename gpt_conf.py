@@ -309,6 +309,7 @@ class GPTConfig:
 
     # Structuring Options, remember to compile the model
     use_post_ln: bool = False
+    use_peri_ln: bool = False
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"

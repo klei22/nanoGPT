@@ -357,6 +357,8 @@ def parse_args():
     model_group.add_argument('--wte_weight_tying', default=True, action=argparse.BooleanOptionalAction, help="Enable weight tying for non-factorized wte")
     model_group.add_argument('--dropout', default=0.0, type=float)
     model_group.add_argument('--use_post_ln', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--use_peri_ln', default=False, action=argparse.BooleanOptionalAction,
+                             help="apply layer norm before and after sublayers")
     model_group.add_argument('--window_size', default=None, type=int, help="Sliding window size, note this cannot be greater than block size")
     model_group.add_argument('--gate', default=False, action=argparse.BooleanOptionalAction, help="option for gated attention see https://arxiv.org/abs/2306.12929")
     model_group.add_argument('--use_moe', default=False,  action=argparse.BooleanOptionalAction, help="option for Mixture of Experts (MoE) architecture")

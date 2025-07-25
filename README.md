@@ -210,6 +210,13 @@ source ./logging/start_tensorboard.sh 6007
 
 TODO: Add links and descriptions to other Readme's and Demos.
 
+## Normalization Options
+
+The training CLI now supports `--use_peri_ln` for experimenting with
+*Peri-LN*, a normalization strategy that applies layer normalization
+around each sublayer (before and after). This can be combined with the
+existing `--use_post_ln` flag for Post-LN training.
+
 ## Contributing
 
 This repo is under active development and accepting PR's, please see the
