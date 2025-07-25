@@ -1065,6 +1065,7 @@ def main():
         # Build a separate tokenizer for each dataset
         token_dict = {}
         target_dict = {}
+        decode_dict = {}
 
         for i, dataset_name in enumerate(args.multicontext_datasets):
             # 1) Find meta.pkl for this dataset, e.g. data/<dataset_name>/meta.pkl
@@ -1073,10 +1074,15 @@ def main():
             with open(meta_path, "rb") as f:
                 meta = pickle.load(f)
 
-            stoi = meta['stoi']
-            itos = meta['itos']
-            encode_i = lambda s: [stoi[c] for c in s if c in stoi]
-            decode_i = lambda l: "".join([itos[i] for i in l])
+            if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
+                enc_obj = tiktoken.get_encoding(meta['tiktoken_encoding'])
+                encode_i = lambda s: enc_obj.encode(s)
+                decode_i = lambda l: enc_obj.decode(l)
+            else:
+                stoi = meta['stoi']
+                itos = meta['itos']
+                encode_i = lambda s: [stoi[c] for c in s if c in stoi]
+                decode_i = lambda l: "".join([itos[i] for i in l])
 
             # 3) Encode the start string for *this* context
             start_str = args.multicontext_start[i]
@@ -1089,8 +1095,8 @@ def main():
 
             # 4) Keep decode function if we want to print each context separately
             token_dict[f"context_{i}"] = token_tensor
-            # Optionally we could store decode_i if we want to decode separately
-            # e.g. a dictionary of decode functions: decode_dict[f"context_{i}"] = decode_i
+            # cache decode function for later to avoid re-loading meta.pkl
+            decode_dict[f"context_{i}"] = decode_i
 
         # Now do the same generation loop. We'll do the "one forward pass per time-step" approach
         block_size = args.block_size if args.block_size else model.config.block_size
@@ -1144,21 +1150,10 @@ def main():
 
                 # 8) After generation, decode each context
                 output_dict = {}
-                # Re-load the meta & decode for each context to show final text
+                # decode each context using cached tokenizer
                 for i, dataset_name in enumerate(args.multicontext_datasets):
-                    meta_path = os.path.join("data", dataset_name, "meta.pkl")
-                    with open(meta_path, "rb") as f:
-                        meta = pickle.load(f)
-                    if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
-                        enc_obj = tiktoken.get_encoding(meta['tiktoken_encoding'])
-                        decode_i = lambda l: enc_obj.decode(l)
-                    else:
-                        # or custom fallback
-                        stoi = meta['stoi']
-                        itos = meta['itos']
-                        decode_i = lambda l: "".join([itos[ix] for ix in l if ix in itos])
-
                     key = f"context_{i}"
+                    decode_i = decode_dict[key]
                     tokens_i = token_dict[key][0].tolist()
                     output_dict[key] = decode_i(tokens_i)
 
