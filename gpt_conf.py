@@ -129,10 +129,13 @@ class GPTConfig:
 
     gate: bool = False
     use_moe: bool = False
+    use_mole: bool = False
     moe_layer_freq: int = 2
+    mole_layer_freq: int = 2
     n_experts: int = 8
     moe_top_k: int = 2
     moe_router_scheme: str = "softmax"
+    mole_router_scheme: str = "softmax"
 
     # Logging options
     softmax_io_logging: bool = False

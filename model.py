@@ -30,6 +30,7 @@ import torch.utils.checkpoint as checkpoint
 from variations.attention_variations import attention_dictionary
 from variations.mlp_variations import get_mlp_instance
 from variations.moe_variations import MoELayer
+from variations.mole_variations import MoLELayer
 from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
