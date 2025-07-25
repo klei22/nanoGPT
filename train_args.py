@@ -434,6 +434,8 @@ def parse_args():
             "krmsnorm",
             "prmsnorm",
             "rmsnorm",
+            "rmsnorm_single",
+            "simple_rmsnorm",
             "layernorm",
             "hyperspherenorm",
             "dact",
