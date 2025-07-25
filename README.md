@@ -210,6 +210,20 @@ source ./logging/start_tensorboard.sh 6007
 
 TODO: Add links and descriptions to other Readme's and Demos.
 
+### Pink Trombone Demo
+
+See [pink_trombone_py/README.md](pink_trombone_py/README.md) for a minimal
+Python port of the Pink Trombone speech synthesizer. After installing
+the requirements you can run:
+
+```bash
+python -m pink_trombone_py.demo "mfam" --out demo.wav
+```
+
+which prints `Wrote demo.wav` and produces the audio file `demo.wav`.  Lip
+closure is modeled, so bilabial and labiodental sounds like `m`, `f` and `b` are
+handled in addition to vowels.
+
 ## Contributing
 
 This repo is under active development and accepting PR's, please see the
