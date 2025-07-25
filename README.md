@@ -217,7 +217,7 @@ Python port of the Pink Trombone speech synthesizer. After installing
 the requirements you can run:
 
 ```bash
-python -m pink_trombone_py.demo "a" --out demo.wav
+python -m pink_trombone_py.demo "ae" --out demo.wav
 ```
 
 which prints `Wrote demo.wav` and produces the audio file `demo.wav`.
