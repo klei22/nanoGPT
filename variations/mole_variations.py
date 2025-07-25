@@ -31,8 +31,6 @@ class MoLELayer(nn.Module):
         self.routed_expert = nn.ModuleList(
             [get_mlp_instance(config) for _ in range(config.n_experts)]
         )
-        self.input_layernorm = nn.LayerNorm(config.n_embd)
-        self.post_attention_layernorm = nn.LayerNorm(config.n_embd)
         self.expert_layernorm = nn.LayerNorm(config.n_embd)
         self.lut = None
         self.config = config
@@ -66,7 +64,6 @@ class MoLELayer(nn.Module):
             lookup = self.lut(input_ids).to(hidden_states.device, non_blocking=True)
             lookup = lookup.view(*input_ids.shape, self.num_experts, self.config.n_embd)
             residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
             router_value, _ = self.router(hidden_states)
             hidden_states = self.post_attention_layernorm(hidden_states)
             shared_output, _ = self.shared_expert(hidden_states, iter_num)
@@ -77,9 +74,7 @@ class MoLELayer(nn.Module):
         assert embedding_states is not None, "embedding_states required during training"
 
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
         router_value, _ = self.router(hidden_states)
-        hidden_states = self.post_attention_layernorm(hidden_states)
         shared_output, _ = self.shared_expert(hidden_states, iter_num)
         emb = self.expert_layernorm(embedding_states)
         expert_outs = []
