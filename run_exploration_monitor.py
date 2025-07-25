@@ -166,7 +166,32 @@ class MonitorApp(App):
             keys.update(entry.get("config", {}).keys())
         self.param_keys = sorted(keys)
         # Base columns: metrics + parameters
-        base_cols = ["best_val_loss", "best_val_iter", "num_params", "peak_gpu_mb", "iter_latency_avg"] + self.param_keys
+        base_cols = [
+            "best_val_loss",
+            "best_val_iter",
+            "num_params",
+            "peak_gpu_mb",
+            "iter_latency_avg",
+        ]
+
+        optional_metrics = [
+            "weight_stdev",
+            "weight_kurtosis",
+            "weight_max",
+            "weight_min",
+            "weight_abs_max",
+            "activation_stdev",
+            "activation_kurtosis",
+            "activation_max",
+            "activation_min",
+            "activation_abs_max",
+        ]
+
+        for key in optional_metrics:
+            if any(key in entry for entry in self.original_entries):
+                base_cols.append(key)
+
+        base_cols += self.param_keys
         self.all_columns = base_cols.copy()
         self.columns = base_cols.copy()
         # Load persisted layout if exists
@@ -207,7 +232,25 @@ class MonitorApp(App):
 
     def get_cell(self, entry: Dict, col_name: str):
         """Retrieve the value for a given column in an entry."""
-        if col_name in ("best_val_loss", "best_val_iter", "num_params", "peak_gpu_mb", "iter_latency_avg"):
+        metric_cols = {
+            "best_val_loss",
+            "best_val_iter",
+            "num_params",
+            "peak_gpu_mb",
+            "iter_latency_avg",
+            "weight_stdev",
+            "weight_kurtosis",
+            "weight_max",
+            "weight_min",
+            "weight_abs_max",
+            "activation_stdev",
+            "activation_kurtosis",
+            "activation_max",
+            "activation_min",
+            "activation_abs_max",
+        }
+
+        if col_name in metric_cols:
             return entry.get(col_name)
         return entry.get("config", {}).get(col_name)
 
