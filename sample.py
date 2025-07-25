@@ -413,6 +413,7 @@ def sample_with_existing_model(
     iter_num: Optional[int] = None,
     best_val_loss: Optional[float] = None,
     run_name: Optional[str] = None,
+    return_text: bool = False,
 ):
     """
     Generate text from an already-loaded GPT model.
@@ -446,6 +447,7 @@ def sample_with_existing_model(
 
     valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank"]
     modes_to_apply = valid_modes if colorize_mode == "all" else [colorize_mode]
+    generated_texts: List[str] = []
 
 
     for current_k in k_values:
@@ -687,6 +689,12 @@ def sample_with_existing_model(
                     best_val_loss,
                     f"{run_name}_{k_tag}" if run_name else k_tag,
                 )
+
+            if return_text:
+                generated_texts.append(plain_text)
+
+    if return_text:
+        return generated_texts
 
 
 def interactive_generation(model, start_ids, device, max_new_tokens, temperature, top_k, stop_string, decode, encode):

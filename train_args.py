@@ -59,6 +59,7 @@ def parse_args():
     training_group.add_argument('--sample_each_eval', default=False, action=argparse.BooleanOptionalAction, help="Produce sample even if the validation loss did not improve. Allows for testing what overtraining looks like.")
     training_group.add_argument('--sample_start_tokens', default='\n', type=str)
     training_group.add_argument('--sample_only', default=False, action=argparse.BooleanOptionalAction, help="Run only the sampling process and exit")
+    training_group.add_argument('--run_dataset_benchmarks', default=False, action=argparse.BooleanOptionalAction, help='Run simple dataset benchmark metrics on generated samples')
 
     # Checkpoint args
     training_group.add_argument('--save_major_ckpt_interval', default=None, type=int, help="Interval for saving major checkpoints.")
