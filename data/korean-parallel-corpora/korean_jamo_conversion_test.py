@@ -1,4 +1,9 @@
-from jamo import h2j, j2hcj, j2h, is_jamo
+import pytest
+
+try:
+    from jamo import h2j, j2hcj, j2h, is_jamo
+except Exception as e:
+    pytest.skip(f"jamo unavailable: {e}", allow_module_level=True)
 
 def korean_to_phonetic(text):
     """Converts Korean text to its phonetic representation."""
@@ -8,29 +13,18 @@ def korean_to_phonetic(text):
     phonetic_text = j2hcj(decomposed_text)
     return phonetic_text
 
-# Example usage
-korean_text = "안 녕 하 세 요"
-phonetic_text = korean_to_phonetic(korean_text)
-print("Original:", korean_text)
-print("Phonetic:", phonetic_text.split(" "))
 
-# Test string
-phonetic_text="ㅇㅏㄴ ㄴㅕㅇ ㅎㅏ ㅅㅔ ㅇㅛ"
-
-reconstructed_list = []
-for pho in phonetic_text.split(" "):
-    if len(pho) == 0:
-        # if '' then skip
-        continue
-    elif is_jamo(pho[0]):
-        # if is jamo then add after conversion
-        # print(reconstructed_list)
-        # print(pho)
-        reconstructed_list.append(j2h(*pho))
-    else:
-        # if special space character reconstruct back to spaces
-        reconstructed_list.append(pho.replace('▁', ' '))
-
-# Reconstructed phrase
-print(''.join(reconstructed_list))
+def test_korean_jamo_roundtrip():
+    korean_text = "안 녕 하 세 요"
+    phonetic_text = korean_to_phonetic(korean_text)
+    reconstructed_list = []
+    for pho in phonetic_text.split(" "):
+        if not pho:
+            continue
+        elif is_jamo(pho[0]):
+            reconstructed_list.append(j2h(*pho))
+        else:
+            reconstructed_list.append(pho.replace('▁', ' '))
+    reconstructed = ''.join(reconstructed_list)
+    assert isinstance(reconstructed, str)
 

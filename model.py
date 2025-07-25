@@ -81,22 +81,42 @@ class Block(nn.Module):
 
             if self.use_post_ln:
                 if self.use_parallel_mlp:
-                    mlp_out, mlp_res = self.mlp(x, iter_num, mlp_res, embedding_states, input_ids)
+                    if isinstance(self.mlp, MoLELayer):
+                        mlp_out, mlp_res = self.mlp(x, iter_num, mlp_res, embedding_states, input_ids)
+                    elif isinstance(self.mlp, MoELayer):
+                        mlp_out = self.mlp(x, iter_num)
+                    else:
+                        mlp_out, mlp_res = self.mlp(x, iter_num, mlp_res)
                     x = self.ln_1(x + self.attn(x, iter_num) + mlp_out)
                 else:
                     x = self.ln_1(x + self.attn(x, iter_num))
-                    mlp_out, mlp_res = self.mlp(x, iter_num, mlp_res, embedding_states, input_ids)
+                    if isinstance(self.mlp, MoLELayer):
+                        mlp_out, mlp_res = self.mlp(x, iter_num, mlp_res, embedding_states, input_ids)
+                    elif isinstance(self.mlp, MoELayer):
+                        mlp_out = self.mlp(x, iter_num)
+                    else:
+                        mlp_out, mlp_res = self.mlp(x, iter_num, mlp_res)
                     x = self.ln_2(x + mlp_out)
                 return x, mlp_res
             else:
                 if self.use_parallel_mlp:
                     ln_1 = self.ln_1(x)
-                    mlp, mlp_res = self.mlp(ln_1, iter_num, mlp_res, embedding_states, input_ids)
+                    if isinstance(self.mlp, MoLELayer):
+                        mlp, mlp_res = self.mlp(ln_1, iter_num, mlp_res, embedding_states, input_ids)
+                    elif isinstance(self.mlp, MoELayer):
+                        mlp = self.mlp(ln_1, iter_num)
+                    else:
+                        mlp, mlp_res = self.mlp(ln_1, iter_num, mlp_res)
                     x = x + self.attn(ln_1, iter_num) + mlp
                     return x, mlp_res
                 else:
                     x = x + self.attn(self.ln_1(x), iter_num)
-                    mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res, embedding_states, input_ids)
+                    if isinstance(self.mlp, MoLELayer):
+                        mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res, embedding_states, input_ids)
+                    elif isinstance(self.mlp, MoELayer):
+                        mlp = self.mlp(self.ln_2(x), iter_num)
+                    else:
+                        mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
                     x = x + mlp
                     return x, mlp_res
 

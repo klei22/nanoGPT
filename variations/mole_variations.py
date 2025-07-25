@@ -25,7 +25,8 @@ class MoLELayer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.num_experts = config.n_experts
-        self.router = router_dictionary[config.moe_router_scheme](config)
+        scheme = getattr(config, "mole_router_scheme", config.moe_router_scheme)
+        self.router = router_dictionary[scheme](config)
         self.shared_expert = get_mlp_instance(config)
         self.routed_expert = nn.ModuleList(
             [get_mlp_instance(config) for _ in range(config.n_experts)]
