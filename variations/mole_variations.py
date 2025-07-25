@@ -35,6 +35,7 @@ class MoLELayer(nn.Module):
         self.expert_layernorm = nn.LayerNorm(config.n_embd)
         self.lut = None
         self.config = config
+        self.is_mole = True
 
     def build_lut(self, embedding_weights):
         """Pre-compute expert outputs for each token.
@@ -47,7 +48,7 @@ class MoLELayer(nn.Module):
             outputs = []
             emb = self.expert_layernorm(embedding_weights)
             for expert in self.routed_expert:
-                out = expert(emb)[0] if isinstance(expert(emb), tuple) else expert(emb)
+                out, _ = expert(emb)
                 outputs.append(out.unsqueeze(1))
             lut = torch.cat(outputs, dim=1)
         self.lut = LookupTable(lut.size(0), lut.size(1) * lut.size(2))
@@ -57,31 +58,35 @@ class MoLELayer(nn.Module):
             p.requires_grad = False
         self.routed_expert = None
 
-    def forward(self, hidden_states, embedding_states=None, input_ids=None, iter_num=None):
-        # If LUT exists and input_ids provided, use lookup path (inference)
+    def forward(self, hidden_states, iter_num=None, mlp_res=None, embedding_states=None, input_ids=None):
+        """Forward pass that mirrors ``OriginalMLP`` signature with extra MoLE args."""
+
         if self.lut is not None and input_ids is not None:
             lookup = self.lut(input_ids).to(hidden_states.device, non_blocking=True)
             lookup = lookup.view(*input_ids.shape, self.num_experts, self.config.n_embd)
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
-            # router uses current hidden state
             router_value, _ = self.router(hidden_states)
             hidden_states = self.post_attention_layernorm(hidden_states)
-            shared_output = self.shared_expert(hidden_states)[0] if isinstance(self.shared_expert(hidden_states), tuple) else self.shared_expert(hidden_states)
+            shared_output, _ = self.shared_expert(hidden_states, iter_num)
             routed_output = (lookup * router_value.unsqueeze(-1)).sum(dim=-2)
             hidden_states = residual + shared_output + routed_output
-            return hidden_states
-        else:
-            # training mode uses routed experts on embedding states
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-            router_value, _ = self.router(hidden_states)
-            hidden_states = self.post_attention_layernorm(hidden_states)
-            shared_output = self.shared_expert(hidden_states)[0] if isinstance(self.shared_expert(hidden_states), tuple) else self.shared_expert(hidden_states)
-            emb = self.expert_layernorm(embedding_states)
-            expert_outs = [expert(emb)[0] if isinstance(expert(emb), tuple) else expert(emb) for expert in self.routed_expert]
-            routed_output = torch.stack(expert_outs, dim=2)
-            routed_output = (routed_output * router_value.unsqueeze(-1)).sum(dim=2)
-            hidden_states = residual + shared_output + routed_output
-            return hidden_states
+            return hidden_states, mlp_res
+
+        assert embedding_states is not None, "embedding_states required during training"
+
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        router_value, _ = self.router(hidden_states)
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        shared_output, _ = self.shared_expert(hidden_states, iter_num)
+        emb = self.expert_layernorm(embedding_states)
+        expert_outs = []
+        for expert in self.routed_expert:
+            out, _ = expert(emb, iter_num)
+            expert_outs.append(out.unsqueeze(2))
+        routed_output = torch.cat(expert_outs, dim=2)
+        routed_output = (routed_output * router_value.unsqueeze(-1)).sum(dim=2)
+        hidden_states = residual + shared_output + routed_output
+        return hidden_states, mlp_res
 
