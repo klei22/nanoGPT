@@ -361,6 +361,8 @@ def parse_args():
     model_group.add_argument('--gate', default=False, action=argparse.BooleanOptionalAction, help="option for gated attention see https://arxiv.org/abs/2306.12929")
     model_group.add_argument('--use_moe', default=False,  action=argparse.BooleanOptionalAction, help="option for Mixture of Experts (MoE) architecture")
     model_group.add_argument('--moe_layer_freq', default=2, type=int, help="set frequency for replacing FFNs with MoE layers")
+    model_group.add_argument('--use_mole', default=False,  action=argparse.BooleanOptionalAction, help="option for Mixture of Lookup Experts (MoLE) architecture")
+    model_group.add_argument('--mole_layer_freq', default=2, type=int, help="set frequency for replacing FFNs with MoLE layers")
     model_group.add_argument('--n_experts', default=8, type=int, help="set number of experts per MoE layer")
     model_group.add_argument('--moe_top_k', default=2, type=int)
     model_group.add_argument('--moe_router_scheme', default="softmax", type=str, help="option to set routing scheme for MoE layer, defaults to softmax")
