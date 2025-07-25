@@ -5,6 +5,7 @@ import torch.nn as nn
 
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
+from variations.mole_variations import MoLELayer
 from quantization.quantize import fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -411,7 +412,8 @@ mlp_dictionary = {
     "swiglu": Swiglu,
     "identity": MLP_Identity,
     "kan": KanMLP,
-    "dual_path": DualPathMLP
+    "dual_path": DualPathMLP,
+    "mole": MoLELayer
     }
 
 def get_mlp_instance(config):

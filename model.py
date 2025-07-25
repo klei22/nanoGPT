@@ -30,6 +30,7 @@ import torch.utils.checkpoint as checkpoint
 from variations.attention_variations import attention_dictionary
 from variations.mlp_variations import get_mlp_instance
 from variations.moe_variations import MoELayer
+from variations.mole_variations import MoLELayer
 from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
@@ -70,35 +71,39 @@ class Block(nn.Module):
         else:
             self.mlp = mlp
 
-    def forward(self, x, iter_num, mlp_res=None):
+    def forward(self, x, iter_num, mlp_res=None, embedding_tokens=None, input_ids=None):
         def custom_forward(*inputs):
             x = inputs[0]
             iter_num = inputs[1]
             mlp_res = inputs[2]
+            embedding_tokens = inputs[3]
+            input_ids = inputs[4]
 
             if self.use_post_ln:
                 if self.use_parallel_mlp:
-                    x = self.ln_1(x + self.attn(x, iter_num) + self.mlp(x, iter_num))
+                    mlp_out, mlp_res = self.mlp(x, iter_num, mlp_res, embedding_tokens, input_ids)
+                    x = self.ln_1(x + self.attn(x, iter_num) + mlp_out)
                 else:
                     x = self.ln_1(x + self.attn(x, iter_num))
-                    x = self.ln_2(x + self.mlp(x, iter_num))
+                    mlp_out, mlp_res = self.mlp(x, iter_num, mlp_res, embedding_tokens, input_ids)
+                    x = self.ln_2(x + mlp_out)
                 return x, mlp_res
             else:
                 if self.use_parallel_mlp:
                     ln_1 = self.ln_1(x)
-                    mlp, mlp_res = self.mlp(ln_1, iter_num)
-                    x = x + self.attn(ln_1, iter_num) + mlp
+                    mlp_out, mlp_res = self.mlp(ln_1, iter_num, mlp_res, embedding_tokens, input_ids)
+                    x = x + self.attn(ln_1, iter_num) + mlp_out
                     return x, mlp_res
                 else:
                     x = x + self.attn(self.ln_1(x), iter_num)
-                    mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
-                    x = x + mlp
+                    mlp_out, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res, embedding_tokens, input_ids)
+                    x = x + mlp_out
                     return x, mlp_res
 
         if self.use_gradient_checkpointing and x.requires_grad:
-            return checkpoint.checkpoint(custom_forward, x, iter_num, mlp_res, use_reentrant=False)
+            return checkpoint.checkpoint(custom_forward, x, iter_num, mlp_res, embedding_tokens, input_ids, use_reentrant=False)
         else:
-            return custom_forward(x, iter_num, mlp_res)
+            return custom_forward(x, iter_num, mlp_res, embedding_tokens, input_ids)
 
 class LearnedPositionEmbedding(nn.Module):
     """
@@ -213,6 +218,10 @@ class GPT(nn.Module):
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
+        if config.use_mole_lut:
+            for block in self.transformer['h']:
+                if isinstance(block.mlp, MoLELayer):
+                    block.mlp.precompute_lut(self.transformer['wte'].weight)
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
         if self.config.use_abs_pos_embeddings:
@@ -431,6 +440,8 @@ class GPT(nn.Module):
             if self.config.use_embedding_scale:
                 x = x * self.embedding_scale
 
+            embedding_tokens = x.clone()
+
             if self.config.use_abs_pos_embeddings:
                 pos = torch.arange(0, t, dtype=torch.long, device=device)
                 pos_emb = self.transformer.wpe(pos)  # (t, n_embd)
@@ -462,7 +473,10 @@ class GPT(nn.Module):
             layer_idx = 1
             mlp_res = None
             for block in self.transformer.h:
-                x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+                if isinstance(block.mlp, MoLELayer):
+                    x, mlp_res = block(x, iter_num, mlp_res=mlp_res, embedding_tokens=embedding_tokens, input_ids=token_list[0])
+                else:
+                    x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
 
                 # TODO: abstact into a method
                 if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == layer_idx:
