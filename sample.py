@@ -46,6 +46,8 @@ def parse_args():
     parser.add_argument('--compile', action=argparse.BooleanOptionalAction, help="Compile the model (requires PyTorch 2.0)")
     parser.add_argument('--sample_file', type=str, default=None, help="Output file for inference")
     parser.add_argument('--interactive', action=argparse.BooleanOptionalAction, help="Enable interactive generation")
+    parser.add_argument('--build_lut', default=False, action=argparse.BooleanOptionalAction, help="Build MoLE lookup tables before inference")
+    parser.add_argument('--lut_path', type=str, default=None, help="Optional path to load/save lookup tables")
     parser.add_argument('--stop_strings', nargs='+', type=str, default=['~W'], help="One or more strings to stop generation and allow user input. ""E.g. --stop_strings \"\n\n\" \".\"")
     parser.add_argument('--last_k_tokens', type=int, default=10, help="Number of last tokens to display in heatmaps")
     parser.add_argument('--chart_type', type=str, default='heatmap', choices=['heatmap', 'barchart'], help="Type of chart to display: 'heatmap' or 'barchart'")
@@ -944,6 +946,18 @@ def main():
 
         model.load_state_dict(state_dict, strict=False)
 
+        if args.build_lut and gptconf.use_mole:
+            mole_layers = [b.mlp for b in model.transformer.h if getattr(b.mlp, 'is_mole', False)]
+            if args.lut_path and os.path.exists(args.lut_path):
+                luts = torch.load(args.lut_path, map_location='cpu')
+                for layer, lut in zip(mole_layers, luts):
+                    layer.lut = lut
+            else:
+                for layer in mole_layers:
+                    layer.build_lut(model.transformer.wte.weight)
+                if args.lut_path:
+                    torch.save([layer.lut for layer in mole_layers], args.lut_path)
+
     else:
         # Need to create a completely "default" GPTConfig and overwrite using model_variations
         gptconf = GPTConfig()
@@ -951,6 +965,18 @@ def main():
         for k, v in variation_dict.items():
             setattr(gptconf, k, v)
         model = GPT.from_pretrained(gptconf, model_type=args.init_from)
+
+        if args.build_lut and gptconf.use_mole:
+            mole_layers = [b.mlp for b in model.transformer.h if getattr(b.mlp, 'is_mole', False)]
+            if args.lut_path and os.path.exists(args.lut_path):
+                luts = torch.load(args.lut_path, map_location='cpu')
+                for layer, lut in zip(mole_layers, luts):
+                    layer.lut = lut
+            else:
+                for layer in mole_layers:
+                    layer.build_lut(model.transformer.wte.weight)
+                if args.lut_path:
+                    torch.save([layer.lut for layer in mole_layers], args.lut_path)
 
     # Load meta information if available
     load_meta = False
