@@ -212,7 +212,24 @@ class GPT(nn.Module):
 
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
-        self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
+        self.transformer['h'] = nn.ModuleList([
+            Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i])
+            for i in range(config.n_layer)
+        ])
+        if config.use_aggregate_block:
+            # Additional block that will process the aggregated residuals
+            self.transformer['aggregate_block'] = Block(config)
+            scales = config.residual_scale_layerlist
+            if not scales:
+                scales = [1.0] * config.n_layer
+            if len(scales) != config.n_layer:
+                scales = (scales * (config.n_layer // len(scales) + 1))[:config.n_layer]
+            self.residual_scale_layerlist = nn.Parameter(
+                torch.tensor(scales, dtype=torch.float32),
+                requires_grad=config.learn_residual_scale_layerlist,
+            )
+        else:
+            self.residual_scale_layerlist = None
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
         if self.config.use_abs_pos_embeddings:
@@ -461,8 +478,12 @@ class GPT(nn.Module):
 
             layer_idx = 1
             mlp_res = None
+            if self.config.use_aggregate_block:
+                residual_sum = torch.zeros_like(x)
             for block in self.transformer.h:
                 x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+                if self.config.use_aggregate_block:
+                    residual_sum = residual_sum + x * self.residual_scale_layerlist[layer_idx-1]
 
                 # TODO: abstact into a method
                 if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == layer_idx:
@@ -488,6 +509,9 @@ class GPT(nn.Module):
 
                 layer_idx += 1
 
+            if self.config.use_aggregate_block:
+                # run an additional block over the collected residuals
+                x, _ = self.transformer['aggregate_block'](residual_sum, iter_num)
             # 3. Final layer norm
             x = self.transformer.ln_f(x)
 
@@ -574,9 +598,13 @@ class GPT(nn.Module):
 
             layer_idx = 1
             mlp_res = None
+            if self.config.use_aggregate_block:
+                residual_sum = torch.zeros_like(x)
             for block in self.transformer.h:
                 # Propagate tokens through layers
                 x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+                if self.config.use_aggregate_block:
+                    residual_sum = residual_sum + x * self.residual_scale_layerlist[layer_idx-1]
 
                 # Intercept for Learned Steering Vectors
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -604,6 +632,9 @@ class GPT(nn.Module):
 
                 layer_idx +=1
 
+            if self.config.use_aggregate_block:
+                # run an additional block over the collected residuals
+                x, _ = self.transformer['aggregate_block'](residual_sum, iter_num)
             x = self.transformer.ln_f(x)
 
             if self.n_embd_wte:
@@ -674,12 +705,18 @@ class GPT(nn.Module):
 
         mlp_res = None
         layer_idx = 1
+        if self.config.use_aggregate_block:
+            residual_sum = torch.zeros_like(x)
         for block in self.transformer.h:
             x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+            if self.config.use_aggregate_block:
+                residual_sum = residual_sum + x * self.residual_scale_layerlist[layer_idx-1]
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
             layer_idx += 1
-
+        if self.config.use_aggregate_block:
+            # process aggregated residuals through one more block
+            x, _ = self.transformer['aggregate_block'](residual_sum, iter_num)
         x = self.transformer.ln_f(x)
         if self.n_embd_wte:
             x = F.linear(x, self.transformer.scale_down.weight.t())
