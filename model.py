@@ -43,6 +43,7 @@ from quantization.quant_utils import set_variant, create_activation_buffers
 from initializations.initialization_variations import init_dictionary
 
 from shared_param_utils import SharedParamGroupCreator
+from variations.block_variations import block_forward_variations
 
 class Block(nn.Module):
     def __init__(self, config, mlp=None, attn=None):
@@ -63,6 +64,15 @@ class Block(nn.Module):
         self.use_parallel_mlp = config.use_parallel_mlp
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
 
+        # Select forward implementation based on normalization style
+        if self.use_peri_ln:
+            variant = "peri_ln"
+        elif self.use_post_ln:
+            variant = "post_ln"
+        else:
+            variant = "pre_ln"
+        self.block_forward = block_forward_variations[variant]
+
         # Allow for sharing attn between blocks
         if attn is None:
             self.attn = attention_dictionary[config.attention_variant](config)
@@ -76,50 +86,10 @@ class Block(nn.Module):
             self.mlp = mlp
 
     def forward(self, x, iter_num, mlp_res=None):
-        def custom_forward(*inputs):
-            x = inputs[0]
-            iter_num = inputs[1]
-            mlp_res = inputs[2]
-
-            if self.use_post_ln:
-                if self.use_parallel_mlp:
-                    x = self.ln_1(x + self.attn(x, iter_num) + self.mlp(x, iter_num))
-                else:
-                    x = self.ln_1(x + self.attn(x, iter_num))
-                    x = self.ln_2(x + self.mlp(x, iter_num))
-                return x, mlp_res
-            else:
-                if self.use_peri_ln:
-                    if self.use_parallel_mlp:
-                        ln_1 = self.ln_1(x)
-                        attn_out = self.out_ln_attn(self.attn(ln_1, iter_num))
-                        mlp_out, mlp_res = self.mlp(ln_1, iter_num)
-                        mlp_out = self.out_ln_mlp(mlp_out)
-                        x = x + attn_out + mlp_out
-                        return x, mlp_res
-                    else:
-                        attn_out = self.out_ln_attn(self.attn(self.ln_1(x), iter_num))
-                        x = x + attn_out
-                        mlp_out, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
-                        mlp_out = self.out_ln_mlp(mlp_out)
-                        x = x + mlp_out
-                        return x, mlp_res
-                else:
-                    if self.use_parallel_mlp:
-                        ln_1 = self.ln_1(x)
-                        mlp, mlp_res = self.mlp(ln_1, iter_num)
-                        x = x + self.attn(ln_1, iter_num) + mlp
-                        return x, mlp_res
-                    else:
-                        x = x + self.attn(self.ln_1(x), iter_num)
-                        mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
-                        x = x + mlp
-                        return x, mlp_res
-
         if self.use_gradient_checkpointing and x.requires_grad:
-            return checkpoint.checkpoint(custom_forward, x, iter_num, mlp_res, use_reentrant=False)
+            return checkpoint.checkpoint(self.block_forward, self, x, iter_num, mlp_res, use_reentrant=False)
         else:
-            return custom_forward(x, iter_num, mlp_res)
+            return self.block_forward(self, x, iter_num, mlp_res)
 
 class LearnedPositionEmbedding(nn.Module):
     """
