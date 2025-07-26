@@ -525,7 +525,6 @@ class Trainer:
                 with open(meta_path, 'rb') as f:
                     meta = pickle.load(f)
                     vocab_size = meta.get('vocab_size', None)
-                    print(vocab_size, dataset)
                     if vocab_size is None:
                         vocab_size = 1
                     self.vocab_sizes[dataset] = vocab_size
