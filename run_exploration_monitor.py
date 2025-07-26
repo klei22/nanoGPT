@@ -185,13 +185,35 @@ class MonitorApp(App):
             "activation_max",
             "activation_min",
             "activation_abs_max",
-            "weight_type_stats",
-            "activation_type_stats",
         ]
 
         for key in optional_metrics:
             if any(key in entry for entry in self.original_entries):
                 base_cols.append(key)
+
+        # ── Collect weight/activation tensor types across runs ──
+        self.type_col_map: dict[str, tuple[str, str, str]] = {}
+
+        weight_types: set[str] = set()
+        act_types: set[str] = set()
+        for entry in self.original_entries:
+            wts = entry.get("weight_type_stats") or {}
+            ats = entry.get("activation_type_stats") or {}
+            weight_types.update(wts.keys())
+            act_types.update(ats.keys())
+
+        def _add_type_cols(prefix: str, types: set[str], key: str):
+            for tname in sorted(types):
+                safe = tname.replace(".", "_")
+                col_mean = f"{prefix}{safe}_kurtosis_mean"
+                col_max = f"{prefix}{safe}_kurtosis_max"
+                base_cols.append(col_mean)
+                base_cols.append(col_max)
+                self.type_col_map[col_mean] = (key, tname, "kurtosis_mean")
+                self.type_col_map[col_max] = (key, tname, "kurtosis_max")
+
+        _add_type_cols("wt_", weight_types, "weight")
+        _add_type_cols("act_", act_types, "activation")
 
         base_cols += self.param_keys
         self.all_columns = base_cols.copy()
@@ -250,12 +272,16 @@ class MonitorApp(App):
             "activation_max",
             "activation_min",
             "activation_abs_max",
-            "weight_type_stats",
-            "activation_type_stats",
         }
 
         if col_name in metric_cols:
             return entry.get(col_name)
+
+        if col_name in self.type_col_map:
+            kind, tname, stat = self.type_col_map[col_name]
+            stats = entry.get(f"{kind}_type_stats", {})
+            return stats.get(tname, {}).get(stat)
+
         return entry.get("config", {}).get(col_name)
 
     # ──────────────────────── async worker for “E” export ────────────────────────
