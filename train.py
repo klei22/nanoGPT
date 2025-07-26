@@ -556,6 +556,9 @@ class Trainer:
             print("Dataset sample metrics:")
             for k, v in metrics.items():
                 print(f"  {k}: {v:.3f}")
+            if self.args.tensorboard_log and self.writer is not None:
+                for mk, mv in metrics.items():
+                    self.writer.add_scalar(f"dataset_benchmarks/{mk}", mv, self.iter_num)
         except Exception as e:
             print(f"Error running dataset benchmarks: {e}")
 

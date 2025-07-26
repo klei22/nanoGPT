@@ -629,7 +629,8 @@ def sample_with_existing_model(
                 )
                 if writer is not None and getattr(args, "tensorboard_log", False):
                     for mk, mv in metrics.items():
-                        writer.add_scalar(f"sample_metrics/{mk}/{k_tag}", mv, iter_num or 0)
+                        # group top-k runs on a single chart per metric
+                        writer.add_scalars(f"sample_metrics/{mk}", {k_tag: mv}, iter_num or 0)
 
             # ---------- colourised outputs ----------------------------------
             if colorize_output:
