@@ -37,6 +37,22 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+
+def _abbr(name: str) -> str:
+    """Abbreviate a tensor type name.
+
+    Uses first letter, letters following '.' or '_', and last letter.
+    Example: ``attn.c_attn_k`` -> ``acak``.
+    """
+    if not name:
+        return ""
+    chars = [name[0]]
+    for i in range(1, len(name)):
+        if name[i - 1] in {".", "_"}:
+            chars.append(name[i])
+    chars.append(name[-1])
+    return "".join(chars)
+
 import yaml
 import math
 from textual.app import App, ComposeResult
@@ -204,16 +220,16 @@ class MonitorApp(App):
 
         def _add_type_cols(prefix: str, types: set[str], key: str):
             for tname in sorted(types):
-                safe = tname.replace(".", "_")
-                col_mean = f"{prefix}{safe}_kurtosis_mean"
-                col_max = f"{prefix}{safe}_kurtosis_max"
+                abbr = _abbr(tname)
+                col_mean = f"{prefix}{abbr}_kmn"
+                col_max = f"{prefix}{abbr}_kmx"
                 base_cols.append(col_mean)
                 base_cols.append(col_max)
                 self.type_col_map[col_mean] = (key, tname, "kurtosis_mean")
                 self.type_col_map[col_max] = (key, tname, "kurtosis_max")
 
-        _add_type_cols("wt_", weight_types, "weight")
-        _add_type_cols("act_", act_types, "activation")
+        _add_type_cols("wts_", weight_types, "weight")
+        _add_type_cols("ats_", act_types, "activation")
 
         base_cols += self.param_keys
         self.all_columns = base_cols.copy()
