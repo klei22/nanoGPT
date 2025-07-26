@@ -43,53 +43,7 @@ from quantization.quant_utils import set_variant, create_activation_buffers
 from initializations.initialization_variations import init_dictionary
 
 from shared_param_utils import SharedParamGroupCreator
-from variations.block_variations import block_forward_variations
-
-class Block(nn.Module):
-    def __init__(self, config, mlp=None, attn=None):
-        super().__init__()
-
-        # Initialize and set attn normalization (e.g. rmsnorm)
-        norm_variant_attn = norm_dictionary[config.norm_variant_attn]
-        self.ln_1 = norm_variant_attn(config)
-        if not config.use_parallel_mlp:
-            self.ln_2 = norm_variant_attn(config)
-
-        if config.use_peri_ln:
-            self.out_ln_attn = norm_variant_attn(config)
-            self.out_ln_mlp = norm_variant_attn(config)
-
-        self.use_post_ln = config.use_post_ln
-        self.use_peri_ln = config.use_peri_ln
-        self.use_parallel_mlp = config.use_parallel_mlp
-        self.use_gradient_checkpointing = config.use_gradient_checkpointing
-
-        # Select forward implementation based on normalization style
-        if self.use_peri_ln:
-            variant = "peri_ln"
-        elif self.use_post_ln:
-            variant = "post_ln"
-        else:
-            variant = "pre_ln"
-        self.block_forward = block_forward_variations[variant]
-
-        # Allow for sharing attn between blocks
-        if attn is None:
-            self.attn = attention_dictionary[config.attention_variant](config)
-        else:
-            self.attn = attn
-
-        # Allow for sharing mlp between blocks
-        if mlp is None:
-            self.mlp = get_mlp_instance(config)
-        else:
-            self.mlp = mlp
-
-    def forward(self, x, iter_num):
-        if self.use_gradient_checkpointing and x.requires_grad:
-            return checkpoint.checkpoint(self.block_forward, self, x, iter_num, use_reentrant=False)
-        else:
-            return self.block_forward(self, x, iter_num)
+from variations.block_variations import Block
 
 class LearnedPositionEmbedding(nn.Module):
     """
