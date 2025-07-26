@@ -85,11 +85,11 @@ class Block(nn.Module):
         else:
             self.mlp = mlp
 
-    def forward(self, x, iter_num, mlp_res=None):
+    def forward(self, x, iter_num):
         if self.use_gradient_checkpointing and x.requires_grad:
-            return checkpoint.checkpoint(self.block_forward, self, x, iter_num, mlp_res, use_reentrant=False)
+            return checkpoint.checkpoint(self.block_forward, self, x, iter_num, use_reentrant=False)
         else:
-            return self.block_forward(self, x, iter_num, mlp_res)
+            return self.block_forward(self, x, iter_num)
 
 class LearnedPositionEmbedding(nn.Module):
     """
@@ -124,9 +124,8 @@ class LearnedPositionEmbedding(nn.Module):
         # dropout on combined embedding
         x = self.drop(x)
         # pass through Block modules
-        mlp_res = None
         for block in self.blocks:
-            x, mlp_res = block(x, iter_num, mlp_res)
+            x = block(x, iter_num)
         return x
 
 class GPT(nn.Module):
@@ -451,9 +450,8 @@ class GPT(nn.Module):
                 x = self.lsv_matrix(x)
 
             layer_idx = 1
-            mlp_res = None
             for block in self.transformer.h:
-                x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+                x = block(x, iter_num)
 
                 # TODO: abstact into a method
                 if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == layer_idx:
@@ -564,10 +562,9 @@ class GPT(nn.Module):
                 x = self.lsv_matrix(x)
 
             layer_idx = 1
-            mlp_res = None
             for block in self.transformer.h:
                 # Propagate tokens through layers
-                x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+                x = block(x, iter_num)
 
                 # Intercept for Learned Steering Vectors
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -663,10 +660,9 @@ class GPT(nn.Module):
         if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
             x = self.lsv_matrix(x)
 
-        mlp_res = None
         layer_idx = 1
         for block in self.transformer.h:
-            x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+            x = block(x, iter_num)
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
             layer_idx += 1
