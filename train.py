@@ -116,6 +116,9 @@ class Trainer:
             'min': 0.0,
             'abs_max': 0.0,
         }
+        # grouped stats by tensor type for latest evaluation
+        self.latest_weight_type_stats = {}
+        self.latest_activation_type_stats = {}
 
         # whether to show all model stats
         self.compute_model_stats = self.args.compute_model_stats
@@ -901,6 +904,8 @@ class Trainer:
 
             self.latest_overall_weight_stats     = overall_wt
             self.latest_overall_activation_stats = overall_act
+            self.latest_weight_type_stats = weight_type_stats
+            self.latest_activation_type_stats = act_type_stats
 
             print("Weight Statistics per tensor:")
             for name, s in weight_stats.items():
@@ -929,6 +934,8 @@ class Trainer:
             weight_stats = {}
             weight_type_stats = {}
             act_type_stats = {}
+            self.latest_weight_type_stats = {}
+            self.latest_activation_type_stats = {}
 
         if self.args.tensorboard_log and self.compute_model_stats:
             self.writer.add_scalars(
@@ -1393,26 +1400,29 @@ class Trainer:
                             # Save best validation loss
                             peak_mb = self.peak_gpu_usage / (1024 ** 2)
                             with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                                chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
-                                best_loss_file.write(
-                                    f"{self.best_val_loss.item()},"
-                                    f" {self.iter_num},"
-                                    f" {self.model.num_param},"
-                                    f" {chance_ratio:.3e},"
-                                    f" {chance_ratio/self.model.num_param:.3e},"
-                                    f" {peak_mb:.1f},"
-                                    f" {self.iter_latency_avg:.1f},"
-                                    f" {self.latest_overall_weight_stats['stdev']:.6f},"
-                                    f" {self.latest_overall_weight_stats['kurtosis']:.6f},"
-                                    f" {self.latest_overall_weight_stats['max']:.6f},"
-                                    f" {self.latest_overall_weight_stats['min']:.6f},"
-                                    f" {self.latest_overall_weight_stats['abs_max']:.6f},"
-                                    f" {self.latest_overall_activation_stats['stdev']:.6f},"
-                                    f" {self.latest_overall_activation_stats['kurtosis']:.6f},"
-                                    f" {self.latest_overall_activation_stats['max']:.6f},"
-                                    f" {self.latest_overall_activation_stats['min']:.6f},"
-                                    f" {self.latest_overall_activation_stats['abs_max']:.6f},"
-                                )
+                                chance_ratio = self.model_args['vocab_size'] / math.exp(self.best_val_loss.item())
+                                metrics = {
+                                    "best_val_loss": self.best_val_loss.item(),
+                                    "best_val_iter": self.iter_num,
+                                    "num_params": self.model.num_param,
+                                    "better_than_chance": chance_ratio,
+                                    "btc_per_param": chance_ratio / self.model.num_param,
+                                    "peak_gpu_mb": peak_mb,
+                                    "iter_latency_avg": self.iter_latency_avg,
+                                    "weight_stdev": self.latest_overall_weight_stats['stdev'],
+                                    "weight_kurtosis": self.latest_overall_weight_stats['kurtosis'],
+                                    "weight_max": self.latest_overall_weight_stats['max'],
+                                    "weight_min": self.latest_overall_weight_stats['min'],
+                                    "weight_abs_max": self.latest_overall_weight_stats['abs_max'],
+                                    "activation_stdev": self.latest_overall_activation_stats['stdev'],
+                                    "activation_kurtosis": self.latest_overall_activation_stats['kurtosis'],
+                                    "activation_max": self.latest_overall_activation_stats['max'],
+                                    "activation_min": self.latest_overall_activation_stats['min'],
+                                    "activation_abs_max": self.latest_overall_activation_stats['abs_max'],
+                                    "weight_type_stats": self.latest_weight_type_stats,
+                                    "activation_type_stats": self.latest_activation_type_stats,
+                                }
+                                json.dump(metrics, best_loss_file)
                             # Reset early exit counter
                             num_steps_with_worse_loss = 0
                         if self.iter_num > 0:

@@ -185,6 +185,8 @@ class MonitorApp(App):
             "activation_max",
             "activation_min",
             "activation_abs_max",
+            "weight_type_stats",
+            "activation_type_stats",
         ]
 
         for key in optional_metrics:
@@ -248,6 +250,8 @@ class MonitorApp(App):
             "activation_max",
             "activation_min",
             "activation_abs_max",
+            "weight_type_stats",
+            "activation_type_stats",
         }
 
         if col_name in metric_cols:

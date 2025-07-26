@@ -35,6 +35,8 @@ METRIC_KEYS = [
     "activation_max",
     "activation_min",
     "activation_abs_max",
+    "weight_type_stats",
+    "activation_type_stats",
 ]
 
 
@@ -161,10 +163,18 @@ def read_metrics(out_dir: str) -> dict:
     path = Path(out_dir) / METRICS_FILENAME
     if not path.exists():
         raise FileNotFoundError(f"Metrics file not found: {path}")
-    line = path.read_text().strip()
-    parts = [p.strip() for p in line.split(',')]
+    text = path.read_text().strip()
 
-    # Casting functions for each metric.  Default to float for extras.
+    # New JSON/YAML format
+    if text.startswith("{") or text.startswith("---"):
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError:
+            raise ValueError(f"Failed to parse metrics file: {path}")
+
+    # Old comma-separated format
+    parts = [p.strip() for p in text.split(',')]
+
     casts = [
         float,  # best_val_loss
         int,    # best_val_iter
@@ -178,7 +188,6 @@ def read_metrics(out_dir: str) -> dict:
         except ValueError:
             metrics[key] = float("nan")
 
-    # Fill missing values with NaN when file has fewer fields
     if len(parts) < len(METRIC_KEYS):
         for key in METRIC_KEYS[len(parts):]:
             metrics[key] = float("nan")
