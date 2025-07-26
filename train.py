@@ -892,10 +892,10 @@ class Trainer:
         if self.compute_model_stats:
             X_stat, Y_stat, _ = self.get_batch('val')
             # ── Run heavy ops on the selected device (GPU keeps host‑RAM flat) ──
-            act_stats,  overall_act  = compute_activation_stats(
+            act_stats, overall_act, act_type_stats = compute_activation_stats(
                 self.model, X_stat, Y_stat, self.iter_num, device=self.stats_device
             )
-            weight_stats, overall_wt = compute_weight_stats(
+            weight_stats, overall_wt, weight_type_stats = compute_weight_stats(
                 self.model, device=self.stats_device
             )
 
@@ -914,9 +914,21 @@ class Trainer:
                     f"{name}: stdev {s['stdev']:.6f}, kurtosis {s['kurtosis']:.6f}, "
                     f"max {s['max']:.6f}, min {s['min']:.6f}, abs_max {s['abs_max']:.6f}"
                 )
+            print("Weight Kurtosis by type:")
+            for tname, s in weight_type_stats.items():
+                print(
+                    f"{tname}: mean_kurtosis {s['kurtosis_mean']:.6f}, max_kurtosis {s['kurtosis_max']:.6f}"
+                )
+            print("Activation Kurtosis by type:")
+            for tname, s in act_type_stats.items():
+                print(
+                    f"{tname}: mean_kurtosis {s['kurtosis_mean']:.6f}, max_kurtosis {s['kurtosis_max']:.6f}"
+                )
         else:
-            act_stats  = {}   # keep API intact
+            act_stats = {}   # keep API intact
             weight_stats = {}
+            weight_type_stats = {}
+            act_type_stats = {}
 
         if self.args.tensorboard_log and self.compute_model_stats:
             self.writer.add_scalars(
