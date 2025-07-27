@@ -46,6 +46,7 @@ from sample import (
     custom_char_with_byte_fallback_decode as ccwb_decode,
     get_tokenizer_functions,
 )
+from benchmarks.dataset_quality import run_benchmarks
 
 from rich.progress import (
         Progress,
@@ -478,7 +479,7 @@ class Trainer:
             start_ids = torch.tensor(self.encode(self.args.sample_start_tokens), dtype=torch.long, device=self.device)[None, ...]
 
             with torch.no_grad():
-                sample_with_existing_model(
+                texts = sample_with_existing_model(
                     model=self.model,
                     start_ids=start_ids,
                     start_tokens=self.args.sample_start_tokens,
@@ -498,7 +499,13 @@ class Trainer:
                     best_val_loss=self.best_val_loss,
                     run_name=self.args.tensorboard_run_name,
                     args=self.args,
+                    return_text=True,
                 )
+
+            if self.args.run_dataset_benchmarks:
+                for idx, t in enumerate(texts):
+                    results = run_benchmarks(t)
+                    print(f"Benchmark sample {idx}: {results}")
 
         self.model.train()
 
