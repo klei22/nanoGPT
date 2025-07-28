@@ -44,6 +44,22 @@ from initializations.initialization_variations import init_dictionary
 
 from shared_param_utils import SharedParamGroupCreator
 
+# Utility functions for nGPT-style updates
+def _lerp(a, b, alpha):
+    return a + alpha * (b - a)
+
+def _slerp(a, b, alpha):
+    dot = (a * b).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
+    omega = torch.acos(dot)
+    so = torch.sin(omega)
+    # avoid division by zero
+    res = torch.where(
+        so == 0,
+        _lerp(a, b, alpha),
+        torch.sin((1 - alpha) * omega) / so * a + torch.sin(alpha * omega) / so * b,
+    )
+    return res
+
 class Block(nn.Module):
     def __init__(self, config, mlp=None, attn=None):
         super().__init__()
@@ -57,6 +73,20 @@ class Block(nn.Module):
         self.use_post_ln = config.use_post_ln
         self.use_parallel_mlp = config.use_parallel_mlp
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
+
+        self.ngpt_norm = config.ngpt_norm
+        self.ngpt_slerp = config.ngpt_slerp
+        self.ngpt_alpha_learnable = config.ngpt_alpha_learnable
+        if self.ngpt_norm or self.ngpt_slerp:
+            # step sizes for attention and MLP updates
+            self.alpha_attn = nn.Parameter(
+                torch.tensor(config.ngpt_alpha_init),
+                requires_grad=self.ngpt_alpha_learnable,
+            )
+            self.alpha_mlp = nn.Parameter(
+                torch.tensor(config.ngpt_alpha_init),
+                requires_grad=self.ngpt_alpha_learnable,
+            )
 
         # Allow for sharing attn between blocks
         if attn is None:
@@ -78,21 +108,100 @@ class Block(nn.Module):
 
             if self.use_post_ln:
                 if self.use_parallel_mlp:
-                    x = self.ln_1(x + self.attn(x, iter_num) + self.mlp(x, iter_num))
+                    attn_out = self.attn(x, iter_num)
+                    mlp_out = self.mlp(x, iter_num)
+                    if isinstance(mlp_out, tuple):
+                        mlp_out, mlp_res = mlp_out
+                    if self.ngpt_norm:
+                        attn_out = F.normalize(attn_out, dim=-1)
+                        mlp_out = F.normalize(mlp_out, dim=-1)
+                    if self.ngpt_slerp:
+                        x = _slerp(x, attn_out, torch.clamp(self.alpha_attn, 0.0, 1.0))
+                    else:
+                        x = _lerp(x, attn_out, torch.clamp(self.alpha_attn, 0.0, 1.0))
+                    if self.ngpt_norm:
+                        x = F.normalize(x, dim=-1)
+                    if self.ngpt_slerp:
+                        x = _slerp(x, mlp_out, torch.clamp(self.alpha_mlp, 0.0, 1.0))
+                    else:
+                        x = _lerp(x, mlp_out, torch.clamp(self.alpha_mlp, 0.0, 1.0))
+                    if self.ngpt_norm:
+                        x = F.normalize(x, dim=-1)
+                    x = self.ln_1(x)
                 else:
-                    x = self.ln_1(x + self.attn(x, iter_num))
-                    x = self.ln_2(x + self.mlp(x, iter_num))
+                    attn_out = self.attn(x, iter_num)
+                    if self.ngpt_norm:
+                        attn_out = F.normalize(attn_out, dim=-1)
+                    if self.ngpt_slerp:
+                        x = _slerp(x, attn_out, torch.clamp(self.alpha_attn, 0.0, 1.0))
+                    else:
+                        x = _lerp(x, attn_out, torch.clamp(self.alpha_attn, 0.0, 1.0))
+                    if self.ngpt_norm:
+                        x = F.normalize(x, dim=-1)
+                    mlp_out = self.mlp(x, iter_num)
+                    if isinstance(mlp_out, tuple):
+                        mlp_out, mlp_res = mlp_out
+                    if self.ngpt_norm:
+                        mlp_out = F.normalize(mlp_out, dim=-1)
+                    if self.ngpt_slerp:
+                        x = _slerp(x, mlp_out, torch.clamp(self.alpha_mlp, 0.0, 1.0))
+                    else:
+                        x = _lerp(x, mlp_out, torch.clamp(self.alpha_mlp, 0.0, 1.0))
+                    if self.ngpt_norm:
+                        x = F.normalize(x, dim=-1)
+                    x = self.ln_1(x)
+                    x = self.ln_2(x)
                 return x, mlp_res
             else:
                 if self.use_parallel_mlp:
                     ln_1 = self.ln_1(x)
-                    mlp, mlp_res = self.mlp(ln_1, iter_num)
-                    x = x + self.attn(ln_1, iter_num) + mlp
+                    attn_out = self.attn(ln_1, iter_num)
+                    mlp_ret = self.mlp(ln_1, iter_num)
+                    if isinstance(mlp_ret, tuple):
+                        mlp, mlp_res = mlp_ret
+                    else:
+                        mlp = mlp_ret
+                    if self.ngpt_norm:
+                        attn_out = F.normalize(attn_out, dim=-1)
+                        mlp = F.normalize(mlp, dim=-1)
+                    if self.ngpt_slerp:
+                        x = _slerp(x, attn_out, torch.clamp(self.alpha_attn, 0.0, 1.0))
+                    else:
+                        x = _lerp(x, attn_out, torch.clamp(self.alpha_attn, 0.0, 1.0))
+                    if self.ngpt_norm:
+                        x = F.normalize(x, dim=-1)
+                    if self.ngpt_slerp:
+                        x = _slerp(x, mlp, torch.clamp(self.alpha_mlp, 0.0, 1.0))
+                    else:
+                        x = _lerp(x, mlp, torch.clamp(self.alpha_mlp, 0.0, 1.0))
+                    if self.ngpt_norm:
+                        x = F.normalize(x, dim=-1)
                     return x, mlp_res
                 else:
-                    x = x + self.attn(self.ln_1(x), iter_num)
-                    mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
-                    x = x + mlp
+                    attn_in = self.ln_1(x)
+                    attn_out = self.attn(attn_in, iter_num)
+                    if self.ngpt_norm:
+                        attn_out = F.normalize(attn_out, dim=-1)
+                    if self.ngpt_slerp:
+                        x = _slerp(x, attn_out, torch.clamp(self.alpha_attn, 0.0, 1.0))
+                    else:
+                        x = _lerp(x, attn_out, torch.clamp(self.alpha_attn, 0.0, 1.0))
+                    if self.ngpt_norm:
+                        x = F.normalize(x, dim=-1)
+                    mlp_in = self.ln_2(x)
+                    mlp_ret = self.mlp(mlp_in, iter_num, mlp_res)
+                    if isinstance(mlp_ret, tuple):
+                        mlp, mlp_res = mlp_ret
+                    else:
+                        mlp = mlp_ret
+                    if self.ngpt_norm:
+                        mlp = F.normalize(mlp, dim=-1)
+                    if self.ngpt_slerp:
+                        x = _slerp(x, mlp, torch.clamp(self.alpha_mlp, 0.0, 1.0))
+                    else:
+                        x = _lerp(x, mlp, torch.clamp(self.alpha_mlp, 0.0, 1.0))
+                    if self.ngpt_norm:
+                        x = F.normalize(x, dim=-1)
                     return x, mlp_res
 
         if self.use_gradient_checkpointing and x.requires_grad:
