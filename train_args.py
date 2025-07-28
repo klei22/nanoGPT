@@ -210,7 +210,24 @@ def parse_args():
     training_group.add_argument("--asgd_alpha", type=float, default=0.75, help="Power for eta calculation in ASGD.")
     training_group.add_argument("--asgd_t0", type=float, default=1e6, help="Point at which to start averaging in ASGD.")
     # --------  OrthoAdam --------------------------------------------------
-    training_group.add_argument("--ortho_perm_threshold", type=int, default=1_000_000, help="If a tensor has more elements than this, OrthoAdam uses identity rotation for it.")
+    training_group.add_argument(
+        "--ortho_perm_threshold",
+        type=int,
+        default=1_000_000,
+        help="If a tensor has more elements than this, OrthoAdam uses identity rotation for it.",
+    )
+    training_group.add_argument(
+        "--ortho_tiny_threshold",
+        type=int,
+        default=128,
+        help="Tensors with fewer elements than this always use identity rotation in OrthoAdam.",
+    )
+    training_group.add_argument(
+        "--ortho_seed",
+        type=int,
+        default=None,
+        help="Optional seed for OrthoAdam's random rotations.",
+    )
     # --------  LBFGS --------------------------------------------------
     training_group.add_argument("--lbfgs_max_iter", type=int, default=20, help="Maximum iterations per LBFGS step.")
     training_group.add_argument("--lbfgs_max_eval", type=int, default=None, help="Maximum function evaluations per LBFGS step.")
@@ -436,6 +453,7 @@ def parse_args():
             "krmsnorm",
             "prmsnorm",
             "rmsnorm",
+            "rmsnormsingle",
             "layernorm",
             "hyperspherenorm",
             "dact",
