@@ -11,6 +11,13 @@ defaults to int4.
 A small training loop in PyTorch is run and the movement of the vector is visualised
 with Plotly as an interactive HTML animation.
 
+The HTML shows two 3‑D views (a plain point plot and a HEALPix sphere) along with
+XY, XZ and YZ projections. The XYZ coordinates of the current vector, its
+normalized counterpart and the target are printed in the lower-right panel.
+
+You can directly specify the coordinates of either vector using
+`--init-x`, `--init-y`, `--init-z` and `--target-x`, `--target-y`, `--target-z`.
+
 ```
 python vector_movement.py --help
 ```
