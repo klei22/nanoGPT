@@ -26,6 +26,13 @@ def add_xyz_axes(fig, length=1.2):
         ))
 
 
+def fake_quantize_int(v: torch.Tensor, bits: int) -> torch.Tensor:
+    """Round tensor to nearest integer within the given bit width."""
+    qmin = -(2 ** (bits - 1))
+    qmax = 2 ** (bits - 1) - 1
+    return torch.round(v).clamp(qmin, qmax)
+
+
 def rms_norm_to_unit(vec, eps=1e-8):
     dim = vec.numel()
     rms = torch.sqrt(torch.mean(vec ** 2) + eps)
@@ -97,6 +104,8 @@ def parse_args():
     p.add_argument('--optimizer', choices=['adamw','adam','sgd'], default='adamw')
     p.add_argument('--loss', choices=['dot','cosine'], default='dot')
     p.add_argument('--no-norm', action='store_true', help='disable RMS normalization')
+    p.add_argument('--quant-bits', type=int, default=4, choices=range(3, 9),
+                   metavar='B', help='fake quantization bit width (3-8)')
     p.add_argument('--out', default='vector_movement.html')
     return p.parse_args()
 
@@ -116,7 +125,9 @@ def main():
         target_v = np.random.normal(loc=args.target_mean, scale=args.target_std, size=3).astype(np.float32)
 
     v = torch.tensor(init_v, requires_grad=True)
+    v.data = fake_quantize_int(v.data, args.quant_bits)
     target = torch.tensor(target_v)
+    target = fake_quantize_int(target, args.quant_bits)
     target_unit = target / (target.norm() + 1e-8)
 
     if args.optimizer == 'adamw':
@@ -145,6 +156,8 @@ def main():
             loss = loss.squeeze()
         loss.backward()
         opt.step()
+        with torch.no_grad():
+            v.data = fake_quantize_int(v.data, args.quant_bits)
         if sched:
             sched.step()
         with torch.no_grad():
