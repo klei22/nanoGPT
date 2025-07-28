@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>LLM Paper Photo Categorizer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+        .container {
+            width: 80%;
+            margin: 20px auto;
+            background: #fff;
+            padding: 20px;
+            border: 1px solid #ddd;
+        }
+        img {
+            max-width: 300px;
+            display: block;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LLM Paper Photo Categorizer</h1>
+        <form method="GET">
+            <label>Source folder:
+                <input type="text" name="folder" value="{{ folder or '' }}" required>
+            </label>
+            <button type="submit">Load</button>
+        </form>
+
+        {% if message %}
+            <p><em>{{ message }}</em></p>
+        {% endif %}
+
+        {% if filename %}
+            <h2>{{ filename }}</h2>
+            <img src="{{ image_url }}" alt="image preview">
+            <form method="POST">
+                <input type="hidden" name="folder" value="{{ folder }}">
+                <input type="hidden" name="filename" value="{{ filename }}">
+                <input type="hidden" name="index" value="{{ index }}">
+                {% for cat in categories %}
+                    <label><input type="checkbox" name="category" value="{{ cat }}"> {{ cat }}</label><br>
+                {% endfor %}
+                <label>Add categories (comma separated): <input type="text" name="new_category"></label><br>
+                <button type="submit">Save & Next</button>
+            </form>
+        {% elif folder %}
+            <p>All images categorized.</p>
+        {% endif %}
+
+        <h3>View Categories</h3>
+        <ul>
+            {% for cat in categories %}
+                <li><a href="{{ url_for('show_category', cat=cat) }}">{{ cat }}</a></li>
+            {% endfor %}
+        </ul>
+    </div>
+</body>
+</html>
