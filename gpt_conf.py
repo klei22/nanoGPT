@@ -311,6 +311,8 @@ class GPTConfig:
     use_post_ln: bool = False
 
     # Layernorm Alternatives and Options
+    # available options defined in variations/norm_variations.py
+    # e.g. "layernorm", "rmsnorm", "rmsnorm_single", "simple_rmsnorm", etc.
     norm_variant_attn: str = "rmsnorm"
     norm_variant_output: str = "rmsnorm"
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
