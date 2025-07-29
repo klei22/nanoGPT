@@ -35,7 +35,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import yaml
 import math
@@ -44,6 +44,18 @@ from textual.containers import Container
 from textual.widgets import DataTable, Footer, Header, Input, Label, Button
 from textual import events, on, work
 from textual.screen import Screen
+
+
+def _flatten(prefix: str, d: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively flatten a nested dict using dot-separated keys."""
+    out: Dict[str, Any] = {}
+    for k, v in d.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            out.update(_flatten(key, v))
+        else:
+            out[key] = v
+    return out
 
 
 def load_runs(log_file: Path) -> List[Dict]:
@@ -159,14 +171,29 @@ class MonitorApp(App):
         self.table = self.query_one(DataTable)
         # Load YAML runs
         self.original_entries = load_runs(self.log_file)
-        self.current_entries = list(self.original_entries)
-        # Determine parameter keys across all runs
-        keys = set()
+
+        # Flatten nested metric dicts for easier display
         for entry in self.original_entries:
-            keys.update(entry.get("config", {}).keys())
-        self.param_keys = sorted(keys)
-        # Base columns: metrics + parameters
-        base_cols = ["best_val_loss", "best_val_iter", "num_params", "peak_gpu_mb", "iter_latency_avg"] + self.param_keys
+            for key in ["weight_type_stats", "activation_type_stats"]:
+                if isinstance(entry.get(key), dict):
+                    entry.update(_flatten(key, entry[key]))
+
+        self.current_entries = list(self.original_entries)
+
+        # Determine parameter and metric keys across all runs
+        param_keys = set()
+        metric_keys = set()
+        for entry in self.original_entries:
+            param_keys.update(entry.get("config", {}).keys())
+            for k in entry:
+                if k not in {"config", "formatted_name"}:
+                    metric_keys.add(k)
+
+        self.param_keys = sorted(param_keys)
+        metric_cols = sorted(metric_keys)
+
+        # Default visible columns
+        base_cols = metric_cols + self.param_keys
         self.all_columns = base_cols.copy()
         self.columns = base_cols.copy()
         # Load persisted layout if exists
@@ -207,9 +234,9 @@ class MonitorApp(App):
 
     def get_cell(self, entry: Dict, col_name: str):
         """Retrieve the value for a given column in an entry."""
-        if col_name in ("best_val_loss", "best_val_iter", "num_params", "peak_gpu_mb", "iter_latency_avg"):
-            return entry.get(col_name)
-        return entry.get("config", {}).get(col_name)
+        if col_name in self.param_keys:
+            return entry.get("config", {}).get(col_name)
+        return entry.get(col_name)
 
     # ──────────────────────── async worker for “E” export ────────────────────────
     @work(exclusive=True)                      # ← runs in a background worker
