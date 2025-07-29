@@ -285,11 +285,13 @@ class GPT(nn.Module):
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         if self.wte_weight_tying:
-            if config.multicontext and not config.mc_use_index_mlp:
-                for i, vocab_size in enumerate(self.config.vocab_sizes):
-                    self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
+            if config.multicontext:
+                if not config.mc_use_index_mlp:
+                    for i, vocab_size in enumerate(self.config.vocab_sizes):
+                        self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
+                # If using Index MLP mode there are no embedding tables to tie
             else:
-                self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
+                self.lm_head.weight = self.transformer.wte.weight  # https://paperswithcode.com/method/weight-tying
 
         # import wte
         if self.config.import_wte_npy:
