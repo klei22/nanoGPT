@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+  <head>
+    <title>nanoGPT Webapp</title>
+  </head>
+  <body>
+    <h1>Experiment Runner</h1>
+    <h2>Run Experiments</h2>
+    <form action="/run_experiments" method="post">
+      <label>Config path: <input type="text" name="config"></label><br>
+      <label>Format:
+        <select name="format">
+          <option value="yaml">yaml</option>
+          <option value="json">json</option>
+        </select>
+      </label><br>
+      <label>Output dir: <input type="text" name="output_dir" value="out"></label><br>
+      <label>Prefix: <input type="text" name="prefix"></label><br>
+      <label>Use timestamp: <input type="checkbox" name="use_timestamp"></label><br>
+      <input type="submit" value="Run">
+    </form>
+
+    <h2>Run train.py</h2>
+    <form action="/run_train" method="post">
+      <label>Arguments: <input type="text" name="train_args"></label><br>
+      <input type="submit" value="Run">
+    </form>
+
+    <p><a href="/tensorboard">Open TensorBoard</a></p>
+  </body>
+</html>
