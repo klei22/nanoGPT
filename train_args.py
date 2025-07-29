@@ -3,9 +3,10 @@ import argparse
 import math
 import re
 
-def clean_dataset_path(dataset_name):
-    """Removes leading './data/' or 'data/' from dataset paths."""
-    return re.sub(r'^(?:\./)?data/', '', dataset_name)
+def clean_dataset_path(dataset_name, data_root='data'):
+    """Removes leading '<data_root>/' or './<data_root>/' from dataset paths."""
+    pattern = rf'^(?:\./)?{re.escape(data_root)}/'
+    return re.sub(pattern, '', dataset_name)
 
 def parse_args():
 
@@ -84,6 +85,11 @@ def parse_args():
 
     # Data args
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)
+    training_group.add_argument(
+        '--data_root',
+        default='data',
+        type=str,
+        help='Root directory containing dataset folders')
     training_group.add_argument('--batch_size', default=64, type=int)
     training_group.add_argument("--seed", default=1337, type=int)
 
@@ -1054,13 +1060,13 @@ def parse_args():
 
     # Apply cleaning to dataset arguments
     if args.dataset:
-        args.dataset = clean_dataset_path(args.dataset)
+        args.dataset = clean_dataset_path(args.dataset, args.data_root)
     print(args.dataset)
     if args.dataset_list:
-        args.dataset_list = [clean_dataset_path(ds) for ds in args.dataset_list]
+        args.dataset_list = [clean_dataset_path(ds, args.data_root) for ds in args.dataset_list]
     if args.multicontext_datasets:
         print(args.multicontext_datasets)
-        args.multicontext_datasets = [clean_dataset_path(ds) for ds in args.multicontext_datasets]
+        args.multicontext_datasets = [clean_dataset_path(ds, args.data_root) for ds in args.multicontext_datasets]
         print(args.multicontext_datasets)
 
     return args, model_group, training_group, logging_group
