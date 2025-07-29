@@ -16,3 +16,22 @@ Example for calling from repo root directory:
 python3 demos/check_ckpt_for_gelu_shift.py \
         --ckpt_path out/ckpt.pt
 ```
+
+## SpinQuant PTQ
+
+`spinquant_ptq.py` loads a checkpoint produced by `train.py`, learns SpinQuant
+rotations on a small calibration set and writes a new quantized checkpoint. Run
+the script from the repo root so that Python can locate `gpt_conf.py`.
+
+```bash
+python3 demos/spinquant_ptq.py --in_dir out --out_dir spinquant_out
+```
+
+After running the PTQ demo you can perform inference from the produced checkpoint:
+
+```bash
+python3 demos/spinquant_sample.py --ckpt spinquant_out/ckpt_spinquant.pt --prompt "Hello" --max_new_tokens 40
+```
+Make sure `meta.pkl` from the training run is copied into the output directory,
+otherwise the inference script will fall back to GPT-2 tokenization which may
+not match the checkpoint vocabulary.
