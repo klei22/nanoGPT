@@ -17,6 +17,7 @@ _console = Console()
 from variations.attention_variations import attention_dictionary
 from variations.mlp_variations import get_mlp_instance
 from variations.moe_variations import MoELayer
+from variations.mole_variations import MoLELayer
 from variations.position_encoding_variations import FIRE
 
 class SharedParamGroupCreator:
@@ -233,10 +234,11 @@ class SharedParamGroupCreator:
 def _build_block(layer_type: str, layer_config, fire_pos_enc):
     """Factory wrapper so we don’t repeat the same if/else everywhere."""
     if layer_type == "mlp":
+        if getattr(layer_config, "use_mole", False) and layer_config.layer_idx % layer_config.mole_layer_freq == 0:
+            return MoLELayer(layer_config)
         if layer_config.use_moe and layer_config.layer_idx % layer_config.moe_layer_freq == 0:
             return MoELayer(layer_config)
-        else:
-            block = get_mlp_instance(layer_config)
+        block = get_mlp_instance(layer_config)
         # remember the hidden size for debugging tables
         try:
             block._debug_size = block.c_fc.out_features   # OriginalMLP
