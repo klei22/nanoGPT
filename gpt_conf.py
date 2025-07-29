@@ -21,6 +21,11 @@ class GPTConfig:
     n_v_head_dim_layerlist: List[int] = field(default_factory=list)
     mlp_size_layerlist: List[int] = field(default_factory=list)
 
+    # Aggregated residual options
+    use_aggregate_block: bool = False
+    residual_scale_layerlist: List[float] = field(default_factory=list)
+    learn_residual_scale_layerlist: bool = False
+
     # For multicontext training
     multicontext: bool = False
     vocab_sizes: List[int] = field(default_factory=lambda: []) # Used in place of vocab

@@ -581,6 +581,14 @@ def parse_args():
     model_group.add_argument("--mlp_size_layerlist", nargs='+', action=LayerListAction, default=None, help="Override mlp_size per layer, cycling through the list. " "Example: --mlp_size_layerlist 100 200 300")
     model_group.add_argument("--n_v_head_dim_layerlist", nargs='+', action=LayerListAction, default=None)
 
+    # Residual aggregation options
+    model_group.add_argument('--use_aggregate_block', default=False, action=argparse.BooleanOptionalAction,
+                             help='Run an additional block over aggregated residuals before final norm')
+    model_group.add_argument('--residual_scale_layerlist', nargs='+', action=FlattenListAction, default=None,
+                             help='Scaling factors for each residual summed into aggregate block')
+    model_group.add_argument('--learn_residual_scale_layerlist', default=False, action=argparse.BooleanOptionalAction,
+                             help='Whether residual_scale_layerlist is learnable parameters')
+
     ## Infinite Attention variation
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
     model_group.add_argument('--n_v_head_dim', default=None, type=int)
