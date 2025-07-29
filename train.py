@@ -80,6 +80,7 @@ from model import GPT, GPTConfig
 
 # Inference related imports
 import tiktoken
+from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
 
 from train_args import parse_args
 
@@ -509,6 +510,27 @@ class Trainer:
         if self.args.dataset_benchmarks and self.args.max_sample_tokens:
             self.run_dataset_benchmarks()
 
+        self.model.train()
+
+    @torch.no_grad()
+    def run_lm_eval_tasks(self):
+        if not self.args.lm_eval_tasks:
+            return
+
+        wrapped_model = NanoGPTLM.create_model(
+            model=self.model,
+            encode_fn=self.encode,
+            decode_fn=self.decode,
+            args=self.args,
+        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        wrapped_model.evaluate_and_save(
+            tasks=self.args.lm_eval_tasks.split(","),
+            batch_size=self.args.batch_size,
+            out_dir=self.args.out_dir,
+            timestamp=timestamp,
+            results_output=self.args.lm_eval_results_output,
+        )
         self.model.train()
 
     def get_vocab_size_from_meta(self):
@@ -1437,6 +1459,9 @@ class Trainer:
                         # Sample
                         if self.args.max_sample_tokens:
                             self.sample_and_print()
+                        # Optional LM evaluation tasks
+                        if self.args.lm_eval_tasks:
+                            self.run_lm_eval_tasks()
                         # export embedding table to npy file
                         if self.args.export_wte_npy:
                             self.raw_model.export_wte(self.args.export_wte_npy)
@@ -1448,6 +1473,8 @@ class Trainer:
                             # Try model inference (e.g. exploring inference from overfitting)
                             if self.args.max_sample_tokens:
                                 self.sample_and_print()
+                        if self.args.lm_eval_each_eval and self.args.lm_eval_tasks:
+                            self.run_lm_eval_tasks()
                         if self.args.export_wte_each_eval:
                             # export wte table to npy file
                             if self.args.export_wte_npy:
