@@ -173,7 +173,7 @@ def main():
         if key.endswith("mlp.c_fc.weight") and tensor.ndim == 2:
             mlp_sizes.append(tensor.shape[0])
 
-        vertical = args.cproj_vertical and key.endswith("c_proj.weight")
+        vertical = args.cproj_vertical and key.endswith(".weight") and "c_proj" in key
         state_dict[key] = jl_project_tensor(tensor, proj, vertical_only=vertical)
 
     if "model_args" in checkpoint:
