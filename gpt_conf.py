@@ -167,7 +167,6 @@ class GPTConfig:
     mlp_variant: str = "mlp"
     mlp_expansion_factor: int = 4
     mlp_size: int = None
-    mlp_res: bool = False
 
     ## KAN Option
     kan_poly_order: int = 3
@@ -309,6 +308,7 @@ class GPTConfig:
 
     # Structuring Options, remember to compile the model
     use_post_ln: bool = False
+    use_peri_ln: bool = False
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"

@@ -15,7 +15,6 @@ class OriginalMLP(nn.Module):
         self.full_quant_iteration = config.full_quant_iteration
         self.eval_interval = config.eval_interval
 
-        self.use_mlp_res = config.mlp_res
         self.mlp_down_projs = config.mlp_down_projs
 
         self.start_quant_level = config.start_quant_level
@@ -89,7 +88,7 @@ class OriginalMLP(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x, iter_num=None, mlp_res=None):
+    def forward(self, x, iter_num=None):
 
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
@@ -111,12 +110,6 @@ class OriginalMLP(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_activation_output", x, num_bits, quant_method, iter_num)
 
-        # MLP Residual
-        if self.use_mlp_res:
-            if mlp_res is None:
-                mlp_res = torch.zeros_like(x)
-            mlp_res = x + mlp_res
-            x = mlp_res
 
         # Apply fused down projection and sum the outputs
         x = self.c_proj(x)
@@ -131,7 +124,7 @@ class OriginalMLP(nn.Module):
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
-        return x, mlp_res
+        return x
 
 class DualPathMLP(nn.Module):
     def __init__(self, config):
@@ -213,7 +206,7 @@ class DualPathMLP(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x, iter_num=None, mlp_res=None):
+    def forward(self, x, iter_num=None):
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
@@ -250,7 +243,7 @@ class DualPathMLP(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
 
-        return x, None
+        return x
 
 class Swiglu(nn.Module):
     def __init__(self, config):
@@ -340,7 +333,7 @@ class Swiglu(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
-    def forward(self, x, iter_num=None, mlp_res=None):
+    def forward(self, x, iter_num=None):
 
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
@@ -364,12 +357,6 @@ class Swiglu(nn.Module):
         x_in2 = self.c_fc_in2(x)
         x_out = x_in1 * x_in2
 
-        # MLP Residual on the x_out
-        if mlp_res is None:
-            mlp_res = torch.zeros_like(x_out)
-        x_out = mlp_res + x_out
-        mlp_res = x_out
-
         # Apply fused down projection and sum the outputs
         x = self.c_fc_out(x_out)
         if self.mlp_down_projs > 1:
@@ -383,7 +370,7 @@ class Swiglu(nn.Module):
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
-        return x, mlp_res
+        return x
 
 class KanMLP(nn.Module):
     def __init__(self, config):
