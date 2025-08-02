@@ -655,7 +655,7 @@ class GPT(nn.Module):
             tok_emb = tok_emb + self.transformer.wpe(pos)
         return self.transformer.drop(tok_emb)
 
-    def forward_embedded(self, x_emb, iter_num=None, return_hidden=False):
+    def forward_embedded(self, x_emb, iter_num=None, return_hidden=False, return_middle=False):
         """
         Complete forward pass **starting from an already-embedded tensor**
         `x_emb` of shape (B,T,E).  Returns (`logits`, `loss`) identical to
@@ -674,8 +674,12 @@ class GPT(nn.Module):
 
         mlp_res = None
         layer_idx = 1
+        middle_x = None
+        mid_idx = len(self.transformer.h) // 2 if return_middle else None
         for block in self.transformer.h:
             x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+            if return_middle and layer_idx == mid_idx:
+                middle_x = x
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
             layer_idx += 1
@@ -689,7 +693,16 @@ class GPT(nn.Module):
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping
 
-        return (logits, x) if return_hidden else (logits, None)
+        if return_hidden:
+            if return_middle:
+                return logits, x, middle_x
+            else:
+                return logits, x, None
+        else:
+            if return_middle:
+                return logits, None, middle_x
+            else:
+                return logits, None
 
     def set_lsv_scaling_factor(self, factor):
         self.lsv_matrix.update_lsv_scaling_factor(factor)
