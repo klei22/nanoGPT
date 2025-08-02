@@ -200,7 +200,7 @@ class GPT(nn.Module):
                 self.transformer['wte'] = word_embd
             else:
                 #TODO: currently multicontext is in own category, add support later for WTE factorization
-                if config.multicontext:
+                if config.multicontext or config.multidataset_wte:
                     for i, vocab_size in enumerate(self.config.vocab_sizes):
                         embedding_layer = nn.Embedding(vocab_size, config.n_embd)
                         self.transformer[f'wte_{i}'] = embedding_layer
@@ -231,7 +231,7 @@ class GPT(nn.Module):
             self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
         else:
             #TODO: currently multicontext is in own category, add support later for WTE factorization
-            if config.multicontext:
+            if config.multicontext or config.multidataset_wte:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
@@ -259,7 +259,7 @@ class GPT(nn.Module):
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         if self.wte_weight_tying:
-            if config.multicontext:
+            if config.multicontext or config.multidataset_wte:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
@@ -408,7 +408,7 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None):
+    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None):
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -536,7 +536,10 @@ class GPT(nn.Module):
             # assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
             # forward the GPT model itself
-            tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+            if self.config.multidataset_wte and dataset_idx is not None:
+                tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
+            else:
+                tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
             x = None
 
             if self.config.use_embedding_scale:
@@ -612,7 +615,10 @@ class GPT(nn.Module):
 
             if targets is not None:
                 # if we are given some desired targets also calculate the loss
-                logits = self.lm_head(x)
+                if self.config.multidataset_wte and dataset_idx is not None:
+                    logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+                else:
+                    logits = self.lm_head(x)
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -622,7 +628,10 @@ class GPT(nn.Module):
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
-                logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+                if self.config.multidataset_wte and dataset_idx is not None:
+                    logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
+                else:
+                    logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -636,7 +645,7 @@ class GPT(nn.Module):
     #  LATENT-CHAINING
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def embed_tokens(self, idx):
+    def embed_tokens(self, idx, dataset_idx=None):
         """
         Return the (B,T,E) tensor right *after* token embeddings,
         factor-scale-up, positional embedding and dropout.  Exactly the
@@ -644,7 +653,10 @@ class GPT(nn.Module):
         `forward()`.  Used by train_recurrent.py for the FIRST step.
         """
         device = idx.device
-        tok_emb = self.transformer.wte(idx)
+        if self.config.multidataset_wte and dataset_idx is not None:
+            tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
+        else:
+            tok_emb = self.transformer.wte(idx)
         if self.n_embd_wte:
             tok_emb = self.transformer.scale_up(tok_emb)
         if self.config.use_embedding_scale:
@@ -655,7 +667,7 @@ class GPT(nn.Module):
             tok_emb = tok_emb + self.transformer.wpe(pos)
         return self.transformer.drop(tok_emb)
 
-    def forward_embedded(self, x_emb, iter_num=None, return_hidden=False):
+    def forward_embedded(self, x_emb, iter_num=None, return_hidden=False, dataset_idx=None):
         """
         Complete forward pass **starting from an already-embedded tensor**
         `x_emb` of shape (B,T,E).  Returns (`logits`, `loss`) identical to
@@ -684,7 +696,10 @@ class GPT(nn.Module):
         if self.n_embd_wte:
             x = F.linear(x, self.transformer.scale_down.weight.t())
 
-        logits = self.lm_head(x)
+        if self.config.multidataset_wte and dataset_idx is not None:
+            logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+        else:
+            logits = self.lm_head(x)
         if self.final_logit_softcapping is not None:
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping
