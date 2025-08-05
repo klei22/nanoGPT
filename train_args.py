@@ -528,6 +528,7 @@ def parse_args():
                           "ssm",
                           "identity",
                           "infinite",
+                          "moa_embedding",
                           "mla",
                           "co4",
                           ]

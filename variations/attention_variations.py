@@ -899,7 +899,7 @@ class InfiniteHeadAttention(nn.Module):
 class QueryEmbeddingMoAAttention(nn.Module):
     """Shared heads plus embedding-based MoA heads."""
 
-    def __init__(self, config, embedding_table, fire_pos_enc=None):
+    def __init__(self, config, embedding_table=None, fire_pos_enc=None):
         super().__init__()
 
         self.n_moa = getattr(config, "n_moa_head", 0)
@@ -963,6 +963,8 @@ class QueryEmbeddingMoAAttention(nn.Module):
     def precompute_lookup(self):
         if self.n_moa == 0:
             return
+        if self.embedding_table is None:
+            raise ValueError("embedding_table is not set for MoA lookup precomputation")
         emb_k = self.k_proj(self.embedding_table)
         weight = self.c_attn_q_moa.weight.view(self.n_moa, self.moa_qk_dim, self.n_embd).transpose(1, 2)
         bias = self.c_attn_q_moa.bias.view(self.n_moa, self.moa_qk_dim)
@@ -986,6 +988,8 @@ class QueryEmbeddingMoAAttention(nn.Module):
             outputs.append(y_shared)
 
         if self.n_moa > 0:
+            if self.embedding_table is None:
+                raise ValueError("embedding_table is not set for MoA attention")
             emb_k = self.k_proj(self.embedding_table)
             emb_v = self.v_proj(self.embedding_table)
             gate, _ = self.router(x)  # (B, T, n_moa)
