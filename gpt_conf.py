@@ -53,6 +53,17 @@ class GPTConfig:
     n_cproj: int = None
     use_concat_heads: bool = False
 
+    ## MoA attention variation
+    n_shared_head: int | None = None
+    n_moa_head: int = 0
+    n_shared_qk_head_dim: int | None = None
+    n_shared_v_head_dim: int | None = None
+    n_moa_qk_head_dim: int | None = None
+    n_moa_v_head_dim: int | None = None
+    moa_router_variant: str = "moa_topk"
+    moa_top_k: int = 0
+    moa_threshold: float = 0.0
+
     # Softcapping params
     attn_logit_softcapping: float | None = None
     final_logit_softcapping: float | None = None

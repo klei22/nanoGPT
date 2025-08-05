@@ -587,6 +587,17 @@ def parse_args():
     model_group.add_argument('--n_cproj', default=None, type=int)
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
 
+    ## MoA attention variation
+    model_group.add_argument('--n_shared_head', default=None, type=int)
+    model_group.add_argument('--n_moa_head', default=0, type=int)
+    model_group.add_argument('--n_shared_qk_head_dim', default=None, type=int)
+    model_group.add_argument('--n_shared_v_head_dim', default=None, type=int)
+    model_group.add_argument('--n_moa_qk_head_dim', default=None, type=int)
+    model_group.add_argument('--n_moa_v_head_dim', default=None, type=int)
+    model_group.add_argument('--moa_router_variant', type=str, default='moa_topk', choices=['moa_topk', 'moa_threshold'])
+    model_group.add_argument('--moa_top_k', default=0, type=int)
+    model_group.add_argument('--moa_threshold', default=0.0, type=float)
+
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
     model_group.add_argument("--use_qk_norm_scale",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies norm scale, preloads scale for flash attn, post qk multiplication in manual attn")
