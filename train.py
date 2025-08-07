@@ -12,7 +12,15 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 
-from train_variations.optimizer_variants import optimizer_dictionary
+from rich.console import Group
+from rich.text import Text
+from rich.live import Live
+
+
+from train_variations.optimizer_variants import (
+    optimizer_dictionary,
+    ActRegularizedAdamW,
+)
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 
 from utils.gpu_monitoring import get_gpu_memory_info
@@ -30,10 +38,17 @@ from utils.statistic_plots import (
     create_statistics,
 )
 
+from utils.model_stats import (
+    compute_weight_stats,
+    compute_activation_stats,
+    print_model_stats_table,
+)
+
 from sample import (
     sample_with_existing_model,
     custom_char_with_byte_fallback_encode as ccwb_encode,
     custom_char_with_byte_fallback_decode as ccwb_decode,
+    get_tokenizer_functions,
 )
 
 from rich.progress import (
@@ -89,6 +104,32 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+
+        # store overall statistics for weights and activations
+        self.latest_overall_weight_stats = {
+            'stdev': 0.0,
+            'kurtosis': 0.0,
+            'max': 0.0,
+            'min': 0.0,
+            'abs_max': 0.0,
+        }
+        self.latest_overall_activation_stats = {
+            'stdev': 0.0,
+            'kurtosis': 0.0,
+            'max': 0.0,
+            'min': 0.0,
+            'abs_max': 0.0,
+        }
+
+        # whether to show all model stats
+        self.compute_model_stats = self.args.compute_model_stats
+
+        # Where to aggregate statistics:  'cpu' (default) or 'gpu'.
+        # The CLI flag is optional; fall back to CPU if it isn’t present.
+        stats_dev_flag  = getattr(self.args, "model_stats_device", "cpu")
+        self.stats_device = torch.device("cuda") if stats_dev_flag == "gpu" else torch.device("cpu")
+
+        self.stats_csv_path = getattr(self.args, "print_model_stats_table", None)
 
         # calculation on end time via eval cycle
         self.eval_cycle_window = deque(maxlen=self.args.eval_cycle_window)
@@ -220,6 +261,7 @@ class Trainer:
 
             self.iter_num = 0 # for starting from scratch
             self.best_val_loss = 1e9 # really big number
+            self.best_iter = 0 # for starting from scratch
 
             self.optimizer = self.create_optimizer()
             self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
@@ -256,6 +298,7 @@ class Trainer:
                     state_dict[k[len('_orig_mod.'):]] = state_dict.pop(k)
             self.model.load_state_dict(state_dict)
             self.best_val_loss = checkpoint['best_val_loss']
+            self.best_iter = checkpoint['best_iter']
             if self.args.lsv_focused_training:
                 self.model.freeze_non_lsv_parameters()
 
@@ -283,6 +326,7 @@ class Trainer:
 
             self.iter_num = 0 # for starting from scratch
             self.best_val_loss = 1e9 # really big number
+            self.best_iter = 0 # really big number
 
             variation_dict = model_variation_dictionary[self.args.gpt2_type]
             # NOTE: the hierarchy of parameters goes: 1)variation_dict >> 2)cmd-line args >> 3)GPTConfig defaults
@@ -403,43 +447,24 @@ class Trainer:
         if os.path.exists(meta_path):
             with open(meta_path, 'rb') as f:
                 meta = pickle.load(f)
-            if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
-                enc = tiktoken.get_encoding(meta['tiktoken_encoding'])
-                print(f"Using tiktoken encoding: {meta['tiktoken_encoding']}")
-                self.encode = lambda s: enc.encode(s, allowed_special={""})
-                self.decode = lambda l: enc.decode(l)
-            elif 'tokenizer' in meta and meta['tokenizer'] == 'sentencepiece':
-                self.separator_token = "▁"
-                self.stoi, self.itos = meta['stoi'], meta['itos']
-                self.encode = lambda s: [self.stoi[c] for c in s]
-                self.decode = lambda l: ''.join([self.itos[i] for i in l])
-            elif 'tokenizer' in meta and meta['tokenizer'] == 'custom_char_with_byte_fallback':
+
+            # Use get_tokenizer_functions for all tokenizer types
+            self.encode, self.decode = get_tokenizer_functions(meta)
+
+            # Store additional tokenizer-specific attributes if needed
+            if 'tokenizer' in meta:
+                if meta['tokenizer'] == 'sentencepiece':
+                    self.separator_token = "▁"
+                print(f"Using {meta['tokenizer']} tokenizer")
+            else:
+                print("Using default character-level tokenizer")
+
+            # Store stoi/itos for other uses in the Trainer class
+            if 'stoi' in meta and 'itos' in meta:
                 self.stoi = meta['stoi']
                 self.itos = meta['itos']
-                # One-liners pointing at the shared helpers
-                self.encode = lambda s: ccwb_encode(s, self.stoi)
-                self.decode = lambda l: ccwb_decode(l, self.itos)
-                print("Using CustomCharTokenizerWithByteFallback tokenizer")
-            else:
-                self.stoi, self.itos = meta['stoi'], meta['itos']
-                self.encode = lambda s: [self.stoi[c] for c in s]
-                self.decode = lambda l: ''.join([self.itos[i] for i in l])
         else:
-            raise FileNotFoundError(f"Meta file not found at {meta_path}")
-
-
-    def custom_char_with_byte_fallback_encode(self, text):
-        ids = []
-        for ch in text:
-            if ch in self.stoi:
-                ids.append(self.stoi[ch])
-            else:
-                # Byte fallback
-                byte_sequence = ch.encode('utf-8')
-                for byte in byte_sequence:
-                    ids.append(self.stoi[byte])
-
-        return ids
+            sys.exit("Error: meta.pkl not found")
 
     @torch.no_grad()
     def sample_and_print(self):
@@ -479,7 +504,12 @@ class Trainer:
                     best_val_loss=self.best_val_loss,
                     run_name=self.args.tensorboard_run_name,
                     args=self.args,
+                    writer=self.writer if self.args.tensorboard_log else None,
                 )
+
+        # After sampling from the model, optionally run simple dataset benchmarks
+        if self.args.dataset_benchmarks and self.args.max_sample_tokens:
+            self.run_dataset_benchmarks()
 
         self.model.train()
 
@@ -510,6 +540,34 @@ class Trainer:
         except Exception as e:
             print(f"Error copying file: {e}")
 
+    def run_dataset_benchmarks(self):
+        """Sample a chunk of dataset text and print simple metrics."""
+        try:
+            if hasattr(self, "train_data"):
+                data = self.train_data
+            elif hasattr(self, "train_data_dict") and self.args.dataset_list:
+                data = self.train_data_dict[self.args.dataset_list[0]]
+            else:
+                return
+
+            if len(data) < self.args.max_sample_tokens:
+                return
+
+            start = random.randint(0, len(data) - self.args.max_sample_tokens)
+            ids = data[start : start + self.args.max_sample_tokens].astype(int)
+            text = self.decode(ids.tolist())
+            from benchmarks import run_all
+
+            metrics = run_all(text)
+            print("Dataset sample metrics:")
+            for k, v in metrics.items():
+                print(f"  {k}: {v:.3f}")
+            if self.args.tensorboard_log and self.writer is not None:
+                for mk, mv in metrics.items():
+                    self.writer.add_scalar(f"dataset_benchmarks/{mk}", mv, self.iter_num)
+        except Exception as e:
+            print(f"Error running dataset benchmarks: {e}")
+
     def load_data(self):
 
         if self.args.training_mode == 'multicontext':
@@ -533,7 +591,7 @@ class Trainer:
 
             # Also store total token counts per dataset.
             self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.multicontext_datasets}
-            # tell the model we are in “multicontext” mode and pass
+            # tell the model we are in "multicontext" mode and pass
             #         the (ordered) list of vocab sizes it needs.
             self.model_args['multicontext'] = True
             self.model_args['vocab_sizes'] = [
@@ -621,17 +679,17 @@ class Trainer:
             ix = None
             # For each context/dataset, grab a batch
             for dataset_name in self.args.multicontext_datasets:
-                data = (self.train_data_dict[dataset_name] 
+                data = (self.train_data_dict[dataset_name]
                         if split == 'train' else self.val_data_dict[dataset_name])
                 if ix is None:
                     ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
                 # pick random offset
                 x = torch.stack([
-                    torch.from_numpy(data[i : i+self.args.block_size].astype(np.int64)) 
+                    torch.from_numpy(data[i : i+self.args.block_size].astype(np.int64))
                     for i in ix
                 ])
                 y = torch.stack([
-                    torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.int64)) 
+                    torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.int64))
                     for i in ix
                 ])
                 # Move to device
@@ -869,6 +927,58 @@ class Trainer:
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
 
+        # compute statistics from a single validation batch
+        if self.compute_model_stats:
+            X_stat, Y_stat, _ = self.get_batch('val')
+            # ── Run heavy ops on the selected device (GPU keeps host‑RAM flat) ──
+            act_stats,  overall_act  = compute_activation_stats(
+                self.model, X_stat, Y_stat, self.iter_num, device=self.stats_device
+            )
+            weight_stats, overall_wt = compute_weight_stats(
+                self.model, device=self.stats_device
+            )
+
+            self.latest_overall_weight_stats     = overall_wt
+            self.latest_overall_activation_stats = overall_act
+
+            print_model_stats_table(weight_stats, act_stats, csv_path=self.stats_csv_path)
+        else:
+            act_stats  = {}   # keep API intact
+            weight_stats = {}
+
+        if self.args.tensorboard_log and self.compute_model_stats:
+            self.writer.add_scalars(
+                "model_stats",
+                {
+                    "weight_stdev": overall_wt['stdev'],
+                    "weight_kurtosis": overall_wt['kurtosis'],
+                    "weight_max": overall_wt['max'],
+                    "weight_min": overall_wt['min'],
+                    "weight_abs_max": overall_wt['abs_max'],
+                    "activation_stdev": overall_act['stdev'],
+                    "activation_kurtosis": overall_act['kurtosis'],
+                    "activation_max": overall_act['max'],
+                    "activation_min": overall_act['min'],
+                    "activation_abs_max": overall_act['abs_max'],
+                },
+                self.iter_num,
+            )
+
+            # Log per-tensor stats grouped by statistic
+            for stat_key in ["stdev", "kurtosis", "max", "min", "abs_max"]:
+                if weight_stats:
+                    self.writer.add_scalars(
+                        f"weights/{stat_key}",
+                        {n: s[stat_key] for n, s in weight_stats.items()},
+                        self.iter_num,
+                    )
+                if act_stats:
+                    self.writer.add_scalars(
+                        f"activations/{stat_key}",
+                        {n: s[stat_key] for n, s in act_stats.items()},
+                        self.iter_num,
+                    )
+
         self.model.train()
         return out
 
@@ -957,28 +1067,30 @@ class Trainer:
                     )
 
             # vocab agnostic, cross tokenizer comparison
-            self.writer.add_scalars(
-                    f"{target_dataset}/chance_tokens",
-                    {f"val_chance": val_better_than_chance},
-                    tokens_trained
-                    )
-            self.writer.add_scalars(
-                    f"{target_dataset}/chance_iters",
-                    {f"val_chance": val_better_than_chance},
-                    self.iter_num
-                    )
+            if self.args.log_btc_train:
+                self.writer.add_scalars(
+                        f"{target_dataset}/chance_tokens",
+                        {"val_chance": val_better_than_chance},
+                        tokens_trained
+                        )
+                self.writer.add_scalars(
+                        f"{target_dataset}/chance_iters",
+                        {"val_chance": val_better_than_chance},
+                        self.iter_num
+                        )
 
             # vocab agnostic, cross parameter size comparison
-            self.writer.add_scalars(
-                    f"{target_dataset}/btc_per_param_tokens",
-                    {f"val_chance": val_better_than_chance/self.model.num_param},
-                    tokens_trained
-                    )
-            self.writer.add_scalars(
-                    f"{target_dataset}/btc_per_param_iters",
-                    {f"val_chance": val_better_than_chance/self.model.num_param},
-                    self.iter_num
-                    )
+            if self.args.log_btc_per_param:
+                self.writer.add_scalars(
+                        f"{target_dataset}/btc_per_param_tokens",
+                        {"val_chance": val_better_than_chance/self.model.num_param},
+                        tokens_trained
+                        )
+                self.writer.add_scalars(
+                        f"{target_dataset}/btc_per_param_iters",
+                        {"val_chance": val_better_than_chance/self.model.num_param},
+                        self.iter_num
+                        )
 
             self.writer.add_scalar(f"{target_dataset}/epoch", epoch, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/tokens_trained", tokens_trained, self.iter_num)
@@ -1013,38 +1125,38 @@ class Trainer:
         if self.args.tensorboard_log:
             self.writer.add_scalars(
                     f"{target_dataset}/loss_iters",
-                    {f"train": loss_training},
+                    {"train": loss_training},
                     self.iter_num
                     )
             self.writer.add_scalars(
                     f"{target_dataset}/loss_tokens",
-                    {f"train": loss_training},
+                    {"train": loss_training},
                     tokens_trained
                     )
 
-            # vocab agnostic, cross tokenizer comparison
-            self.writer.add_scalars(
-                    f"{target_dataset}/chance_tokens",
-                    {f"train_chance": train_better_than_chance},
-                    tokens_trained
-                    )
-            self.writer.add_scalars(
-                    f"{target_dataset}/chance_iters",
-                    {f"train_chance": train_better_than_chance},
-                    self.iter_num
-                    )
+            if self.args.log_btc_train:
+                self.writer.add_scalars(
+                        f"{target_dataset}/chance_tokens",
+                        {"train_chance": train_better_than_chance},
+                        tokens_trained
+                        )
+                self.writer.add_scalars(
+                        f"{target_dataset}/chance_iters",
+                        {"train_chance": train_better_than_chance},
+                        self.iter_num
+                        )
 
-            # vocab agnostic, cross parameter size comparison
-            self.writer.add_scalars(
-                    f"{target_dataset}/btc_per_param_tokens",
-                    {f"train_chance": train_better_than_chance/self.model.num_param},
-                    tokens_trained
-                    )
-            self.writer.add_scalars(
-                    f"{target_dataset}/btc_per_param_iters",
-                    {f"train_chance": train_better_than_chance/self.model.num_param},
-                    self.iter_num
-                    )
+            if self.args.log_btc_per_param:
+                self.writer.add_scalars(
+                        f"{target_dataset}/btc_per_param_tokens",
+                        {"train_chance": train_better_than_chance/self.model.num_param},
+                        tokens_trained
+                        )
+                self.writer.add_scalars(
+                        f"{target_dataset}/btc_per_param_iters",
+                        {"train_chance": train_better_than_chance/self.model.num_param},
+                        self.iter_num
+                        )
 
             self.writer.add_scalar(f"{target_dataset}/mfu_pct", running_mfu * 100, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/vram", self.vram_allocated, self.iter_num)
@@ -1059,11 +1171,13 @@ class Trainer:
             self.writer.add_scalar(f"{target_dataset}/batch_size_iter", self.args.batch_size, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/batch_size_tokens", self.args.batch_size, tokens_trained)
 
-            self.writer.add_scalar(f"{target_dataset}/grad_norm_iters", self.grad_norm, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/grad_norm_tokens", self.grad_norm, tokens_trained)
+            if self.args.log_grad_norm:
+                self.writer.add_scalar(f"{target_dataset}/grad_norm_iters", self.grad_norm, self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/grad_norm_tokens", self.grad_norm, tokens_trained)
 
-            self.writer.add_scalar(f"{target_dataset}/grad_std_iters", self.grad_std, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/grad_std_tokens", self.grad_std, tokens_trained)
+            if self.args.log_grad_std:
+                self.writer.add_scalar(f"{target_dataset}/grad_std_iters", self.grad_std, self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/grad_std_tokens", self.grad_std, tokens_trained)
 
             if self.args.gns_type is not None:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
@@ -1144,6 +1258,7 @@ class Trainer:
                 'model_args': self.model_args,
                 'iter_num': self.iter_num,
                 'best_val_loss': self.best_val_loss,
+                'best_iter': self.best_iter,
                 'config': vars(self.args),
                 }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
@@ -1176,12 +1291,15 @@ class Trainer:
             BarColumn(),
             TaskProgressColumn(),
             TimeRemainingColumn(compact=False),
-            TextColumn("-- [bold dark_cyan]BestValLoss:[/bold dark_cyan]{task.fields[best_val_loss]}"),
+            TextColumn("-- [bold dark_cyan]BestIter:[/bold dark_cyan]{task.fields[best_iter]} [bold dark_cyan]BestValLoss:[/bold dark_cyan]{task.fields[best_val_loss]}"),
             TextColumn("-- [bold purple3]ETA:[/bold purple3]{task.fields[eta]}"),
             TextColumn("[bold purple3]Remaining:[/bold purple3]{task.fields[hour]}h{task.fields[min]}m"),
             TextColumn("[bold purple3]total_est:[/bold purple3]{task.fields[total_hour]}h{task.fields[total_min]}m"),
         )
-        with progress:
+
+        cli_settings = " ".join(sys.argv)
+        cli_text = Text(f"CLI: {cli_settings}", style="chartreuse1")
+        with Live(Group(progress.get_renderable(), cli_text), refresh_per_second=10) as live:
             task_id = progress.add_task(
                 "[green]Training...",
                 total=((self.args.max_iters - self.iter_num) + self.evaluations_remaining * self.args.eval_iters),
@@ -1190,7 +1308,8 @@ class Trainer:
                 total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
                 hour=f"{int((self.time_remaining_ms // (1000*3600)) % 24):02d}",
                 min=f"{int((self.time_remaining_ms // 60000) % 60):02d}",
-                best_val_loss=f"{self.best_val_loss:.3f}"
+                best_val_loss=f"{self.best_val_loss:.3f}",
+                best_iter=f"{self.best_iter}",
             )
 
             while True:
@@ -1285,8 +1404,8 @@ class Trainer:
 
                     if losses['val'] < self.best_val_loss or self.args.always_save_checkpoint:
                         if losses['val'] < self.best_val_loss:
-                            self.iter_num_best_val_loss = self.iter_num
                             self.best_val_loss = losses['val']
+                            self.best_iter = self.iter_num
                             # Save best validation loss
                             peak_mb = self.peak_gpu_usage / (1024 ** 2)
                             with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
@@ -1298,7 +1417,17 @@ class Trainer:
                                     f" {chance_ratio:.3e},"
                                     f" {chance_ratio/self.model.num_param:.3e},"
                                     f" {peak_mb:.1f},"
-                                    f" {self.iter_latency_avg:.1f}"
+                                    f" {self.iter_latency_avg:.1f},"
+                                    f" {self.latest_overall_weight_stats['stdev']:.6f},"
+                                    f" {self.latest_overall_weight_stats['kurtosis']:.6f},"
+                                    f" {self.latest_overall_weight_stats['max']:.6f},"
+                                    f" {self.latest_overall_weight_stats['min']:.6f},"
+                                    f" {self.latest_overall_weight_stats['abs_max']:.6f},"
+                                    f" {self.latest_overall_activation_stats['stdev']:.6f},"
+                                    f" {self.latest_overall_activation_stats['kurtosis']:.6f},"
+                                    f" {self.latest_overall_activation_stats['max']:.6f},"
+                                    f" {self.latest_overall_activation_stats['min']:.6f},"
+                                    f" {self.latest_overall_activation_stats['abs_max']:.6f},"
                                 )
                             # Reset early exit counter
                             num_steps_with_worse_loss = 0
@@ -1394,6 +1523,12 @@ class Trainer:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
 
+                if isinstance(self.optimizer, ActRegularizedAdamW):
+                    stat_key = getattr(self.args, "activation_stat", "stdev")
+                    self.optimizer.set_activation_stat(
+                        self.latest_overall_activation_stats.get(stat_key, 0.0)
+                    )
+
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 if self.scheduler:
@@ -1442,14 +1577,17 @@ class Trainer:
                         for i, mc_dataset in enumerate(self.args.multicontext_datasets):
                             self.mc_btc_train[mc_dataset] = self.vocab_sizes[mc_dataset] / math.exp(training_losses[i].item())
                             log_message+= f", {self.underscore_abbr(mc_dataset)}"
-                            log_message+= f" btc {self.mc_btc_train[mc_dataset]:.4f}"
+                            if self.args.log_btc_train:
+                                log_message+= f" btc {self.mc_btc_train[mc_dataset]:.4f}"
                             log_message+= f", {self.underscore_abbr(mc_dataset)}"
                             log_message+= f" loss {training_losses[i].item():.4f}"
                     else:
                         better_than_chance = self.model_args['vocab_size'] / math.exp(lossf)
                         log_message+= f", loss {lossf:.4f}"
-                        log_message+=f", btc_train {better_than_chance:.2e}"
-                        log_message+=f", btc_train_per_param {(better_than_chance/self.model.num_param):.2e}"
+                        if self.args.log_btc_train:
+                            log_message+=f", btc_train {better_than_chance:.2e}"
+                        if self.args.log_btc_per_param:
+                            log_message+=f", btc_train_per_param {(better_than_chance/self.model.num_param):.2e}"
 
                     if self.args.dataset_list:
                         log_message+= f", epoch {self.epochs_trained_dict[prior_dataset]:2.2f}"
@@ -1464,8 +1602,10 @@ class Trainer:
                         log_message+= f", gns {self.gns:.2f}"
                     log_message+= f", batch_size {self.args.batch_size}"
                     log_message+= f", lr {self.lr:.4f}"
-                    log_message+= f", grad_norm {self.grad_norm:2f}"
-                    log_message+= f", grad_std {self.grad_std:.2f}"
+                    if self.args.log_grad_norm:
+                        log_message+= f", grad_norm {self.grad_norm:2f}"
+                    if self.args.log_grad_std:
+                        log_message+= f", grad_std {self.grad_std:.2f}"
 
                     print(log_message)
 
@@ -1499,11 +1639,13 @@ class Trainer:
                         hour=f"{int((self.time_remaining_ms // 3_600_000) % 24):02d}",
                         min=f"{int((self.time_remaining_ms // 60_000) % 60):02d}",
                         best_val_loss=f"{self.best_val_loss:.3f}",
+                        best_iter=f"{self.best_iter}",
                 )
+                live.update(Group(progress.get_renderable(), cli_text))
 
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
-                    print(self.best_val_loss)
+                    print(self.best_val_loss, self.best_iter)
                     if self.args.only_save_checkpoint_at_end:
 
                         self.save_checkpoint('ckpt.pt')

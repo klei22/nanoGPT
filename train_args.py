@@ -59,6 +59,8 @@ def parse_args():
     training_group.add_argument('--sample_each_eval', default=False, action=argparse.BooleanOptionalAction, help="Produce sample even if the validation loss did not improve. Allows for testing what overtraining looks like.")
     training_group.add_argument('--sample_start_tokens', default='\n', type=str)
     training_group.add_argument('--sample_only', default=False, action=argparse.BooleanOptionalAction, help="Run only the sampling process and exit")
+    training_group.add_argument('--dataset_benchmarks', default=False, action=argparse.BooleanOptionalAction, help="Run dataset benchmark metrics on a random slice after each validation")
+    training_group.add_argument('--sample_metrics', default=False, action=argparse.BooleanOptionalAction, help="Display sample metrics like spelling correctness during sampling")
 
     # Checkpoint args
     training_group.add_argument('--save_major_ckpt_interval', default=None, type=int, help="Interval for saving major checkpoints.")
@@ -120,6 +122,7 @@ def parse_args():
             "sgd",
             "adam",
             "adamw",
+            "adamw_act_reg",
             "adamax",
             "radam",
             "nadam",
@@ -173,6 +176,20 @@ def parse_args():
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
     training_group.add_argument("--adamw_weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer.")
+    # --------  ADAMW_ACT_REG --------------------------------------------------
+    training_group.add_argument(
+        "--activation_decay",
+        type=float,
+        default=0.0,
+        help="L2 regularization coefficient for activations used by adamw_act_reg optimiser.",
+    )
+    training_group.add_argument(
+        "--activation_stat",
+        type=str,
+        default="stdev",
+        choices=["stdev", "kurtosis", "max", "min", "abs_max"],
+        help="Statistic to modulate activation regularization for adamw_act_reg optimizer.",
+    )
     # --------  ADAGRAD --------------------------------------------------
     training_group.add_argument("--adagrad_lr_decay", type=float, default=0, help="Learning rate decay for Adagrad optimizer.")
     # --------  RMSProp --------------------------------------------------
@@ -431,6 +448,7 @@ def parse_args():
             "layernorm",
             "hyperspherenorm",
             "dact",
+            "identity",
             ]
 
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)
@@ -615,11 +633,18 @@ def parse_args():
             "onehot",
             "hypercube",
             "numpy_import",
+            "rand_hypercube",
+            "angle_hypersphere",
+            "unique_hypercube",
+            "gaussian_norm_range",
             ]
 
     model_group.add_argument( "--init_variant", choices=embedding_init_variations, default="gaussian", help="options for embedding initializations")
     model_group.add_argument( "--init_scale", type=float, default=0.01, help="initialization scaling factor with non-gaussian variations")
     model_group.add_argument( "--init_wte_npy", type=str, default="wte.npy", help="npy file for initialization of wte files")
+    model_group.add_argument( "--init_radius", type=float, default=1.0, help="radius for angle_hypersphere initialization")
+    model_group.add_argument( "--gaussian_min_norm", type=float, default=0.0, help="minimum norm for gaussian_norm_range initialization")
+    model_group.add_argument( "--gaussian_max_norm", type=float, default=float('inf'), help="maximum norm for gaussian_norm_range initialization")
 
     # Quantization
     model_group.add_argument("--full_quant_iteration", type=int, default=None,
@@ -758,6 +783,7 @@ def parse_args():
         "softplus",
         "squareplus",
         "exppolymax",
+        "pfla_softmax",
         ]
 
     ## Selection of softmax variation for attention and output layers
@@ -841,6 +867,51 @@ def parse_args():
     ### Sequence Length Division https://arxiv.org/abs/2309.
     model_group.add_argument('--div_by_seq_len', default=False, action=argparse.BooleanOptionalAction)
 
+    # ─────────── PFLA‑Softmax options ─────────────────────────────────────
+    model_group.add_argument("--pfla_softmax_num_points",   type=int,  default=30)
+    model_group.add_argument("--pfla_softmax_left_bound",   type=float, default=-10.0)
+    model_group.add_argument("--pfla_softmax_right_bound",  type=float, default=10.0)
+    model_group.add_argument("--pfla_softmax_learn_x",      action=argparse.BooleanOptionalAction, default=False)
+    model_group.add_argument("--pfla_softmax_learn_y",      action=argparse.BooleanOptionalAction, default=True)
+    model_group.add_argument("--pfla_softmax_init_activation",
+                             type=str,
+                             default="gelu",
+                             choices=activation_variations,
+                             help="Reference activation used to initialise √y knots.")
+    model_group.add_argument("--pfla_softmax_density",
+                             type=str,
+                             default="linear",
+                             choices=["linear", "quad", "exp"],
+                             help="Distribution of x‑knots over the interval.")
+
+    # normalisation knobs
+    model_group.add_argument("--pfla_softmax_use_learned_divisor",
+                             action=argparse.BooleanOptionalAction,
+                             default=False,
+                             help="Replace Σy with a learned positive scalar γ.")
+    model_group.add_argument("--pfla_softmax_gamma_init",   type=float, default=1.0)
+
+    model_group.add_argument("--pfla_softmax_use_obo",
+                             action=argparse.BooleanOptionalAction,
+                             default=False,
+                             help="Adds an off‑by‑one (+obo) addend. Do this first before adding the 'learned_obo' feature.")
+    
+    model_group.add_argument("--pfla_softmax_use_learned_obo",
+                             action=argparse.BooleanOptionalAction,
+                             default=False,
+                             help="First must activate pfla_softmax_use_obo. This makes it a learned off‑by‑one (+obo) addend.")
+    model_group.add_argument("--pfla_softmax_obo",          type=float, default=0.0)
+
+    # interpolation variant
+    model_group.add_argument("--pfla_softmax_mode",
+                             type=str,
+                             default="linear",
+                             choices=["linear", "quadratic"],
+                             help="Interpolation scheme: "
+                                  "'linear' or 'quadratic'.")
+    # ───────────────────────────────────────────────────────────────────────
+
+
     # Gradient Checkpointing
     model_group.add_argument('--use_gradient_checkpointing', default=False, action=argparse.BooleanOptionalAction, help="Memory efficient training, but takes longer time to train due to trading compute time for memory efficiency. For best memory tradeoff omit the --compile flag. For medium memory tradeoff add --compile.")
     model_group.add_argument('--recompute_backward_pass', default=False, action=argparse.BooleanOptionalAction, help="Recomputes for the backward pass, must use with --use_gradient_checkpointing")
@@ -918,6 +989,39 @@ def parse_args():
     logging_group.add_argument('--tensorboard_run_name', type=str, default=None)
     logging_group.add_argument('--tensorboard_graph', default=True, action=argparse.BooleanOptionalAction)
 
+    # Metric logging toggles
+    logging_group.add_argument('--log_btc_train', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance training metrics')
+    logging_group.add_argument('--log_btc_per_param', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance-per-parameter metrics')
+    logging_group.add_argument('--log_grad_norm', default=False, action=argparse.BooleanOptionalAction, help='Log gradient norm metrics')
+    logging_group.add_argument('--log_grad_std', default=False, action=argparse.BooleanOptionalAction, help='Log gradient std metrics')
+    logging_group.add_argument('--log_all_metrics', default=False, action=argparse.BooleanOptionalAction, help='Enable logging of all metrics including gns')
+
+    # Turn activation/weight statistics off to save CPU RAM and wall time.
+    training_group.add_argument(
+        '--compute_model_stats',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='If true (default) run compute_weight_stats / compute_activation_stats '
+             'every eval cycle.  Disable to eliminate the large host‑RAM spike that '
+             'occurs when those tensors are copied to CPU.'
+    )
+
+    training_group.add_argument(
+            '--model_stats_device',
+            default='gpu',
+            choices=['cpu', 'gpu'],
+            help="Where to aggregate weight / activation statistics. "
+            "'gpu' avoids host‑RAM spikes; 'cpu' saves VRAM."
+            )
+
+    training_group.add_argument(
+            '--print_model_stats_table',
+            type=str,
+            default=None,
+            metavar='CSV_PATH',
+            help='If set, also save the printed model statistics table to this CSV file.'
+            )
+
     ## Export Model graph
     logging_group.add_argument('--export_model_graph', default=False, action=argparse.BooleanOptionalAction, help="exports tensorboard model of graph")
 
@@ -943,6 +1047,14 @@ def parse_args():
     logging_group.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction)
 
     args = parser.parse_args()
+
+    if args.log_all_metrics:
+        args.log_btc_train = True
+        args.log_btc_per_param = True
+        args.log_grad_norm = True
+        args.log_grad_std = True
+        if args.gns_type is None:
+            args.gns_type = 'sogns'
 
     if args.load_config_json is not None:
         with open(args.load_config_json, 'r') as config_file:

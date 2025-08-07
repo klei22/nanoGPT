@@ -194,6 +194,15 @@ class kRMSNorm(nn.Module):
 
         return x
 
+class IdentityNorm(nn.Module):
+    def __init__(self, config=None):  # Accept config for API consistency
+        super().__init__()
+        self.identity = nn.Identity()
+
+    def forward(self, x):
+        return self.identity(x)
+
+
 norm_dictionary = {
     "layernorm": LayerNorm,
     "rmsnorm": RMSNorm,
@@ -201,4 +210,5 @@ norm_dictionary = {
     "krmsnorm": kRMSNorm,
     "hyperspherenorm": HyperSphereNorm,
     "dact": DynamicActivation,
+    "identity": IdentityNorm,
 }

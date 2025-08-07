@@ -29,6 +29,7 @@ from variations.model_variations import model_variation_dictionary
 
 import lm_eval
 from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
+from benchmarks import run_all
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
@@ -190,7 +191,7 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
     if colorize_mode == 'softmax' or colorize_mode == 'softmax_top_k':
         # data_for_color is shape (T, vocab_size) per step
-        # gather the chosen token’s probability each step
+        # gather the chosen token's probability each step
         # then apply min–max to those probabilities
         dist_tensor = torch.stack(data_for_color, dim=0)  # shape (T, vocab_size)
 
@@ -413,6 +414,7 @@ def sample_with_existing_model(
     iter_num: Optional[int] = None,
     best_val_loss: Optional[float] = None,
     run_name: Optional[str] = None,
+    writer: Optional[object] = None,
 ):
     """
     Generate text from an already-loaded GPT model.
@@ -425,6 +427,8 @@ def sample_with_existing_model(
         • list  – run once per k in the list (duplicates filtered).
     colorize_mode :
         "minmax" | "softmax" | "softmax_top_k" | "dot_product" | **"rank"** | "all"
+    writer : torch.utils.tensorboard.SummaryWriter | None
+        When provided, dataset metrics for each top-k sample will be logged to TensorBoard.
     """
 
     console = Console()
@@ -617,6 +621,17 @@ def sample_with_existing_model(
             if token_boundary is not None:
                 plain_text = plain_text.replace(token_boundary, " ")
 
+            if args and getattr(args, "sample_metrics", False):
+                metrics = run_all(plain_text)
+                metric_str = ", ".join(f"{k}={v:.3f}" for k, v in metrics.items())
+                console.print(
+                    f"\n[bold magenta]Metrics ({k_tag}, sample {sample_idx+1}):[/bold magenta] {metric_str}"
+                )
+                if writer is not None and getattr(args, "tensorboard_log", False):
+                    for mk, mv in metrics.items():
+                        # group top-k runs on a single chart per metric
+                        writer.add_scalars(f"sample_metrics/{mk}", {k_tag: mv}, iter_num or 0)
+
             # ---------- colourised outputs ----------------------------------
             if colorize_output:
                 # --- Pre-calculate any special data sources for colorization ---
@@ -795,6 +810,104 @@ def custom_char_with_byte_fallback_decode(ids: list[int], itos: dict) -> str:
 
     return ''.join(out_parts)
 
+def get_tokenizer_functions(meta):
+    """Get encode/decode functions based on tokenizer metadata"""
+    if 'tokenizer' not in meta:
+        # Default character-level tokenizer
+        stoi, itos = meta['stoi'], meta['itos']
+        encode = lambda s: [stoi[c] for c in s]
+        decode = lambda l: ''.join([itos[i] for i in l])
+        return encode, decode
+
+    if meta['tokenizer'] == 'tiktoken':
+        enc = tiktoken.get_encoding(meta['tiktoken_encoding'])
+        encode = lambda s: enc.encode(s, allowed_special={""})
+        decode = lambda l: enc.decode(l)
+        return encode, decode
+
+    if meta['tokenizer'] == 'json_byte_fallback':
+        stoi, itos = meta['stoi'], meta['itos']
+
+        # Sort tokens by length in descending order for precedence
+        string_token_tuples = [(token, token_id) for token, token_id in stoi.items() if isinstance(token, str)]
+
+        def encode(text):
+            ids = []
+            current_pos = 0
+            text_len = len(text)
+
+            while current_pos < text_len:
+                remaining_text = text[current_pos:]
+                token_found = False
+
+                # Try string tokens first, from longest to shortest
+                for token, token_id in string_token_tuples:
+                    if remaining_text.startswith(token):
+                        ids.append(token_id)
+                        current_pos += len(token)
+                        token_found = True
+                        break
+
+                if not token_found:
+                    # If no token matches, fall back to byte encoding
+                    char = text[current_pos]
+                    char_bytes = char.encode('utf-8')
+                    for byte in char_bytes:
+                        byte_token = bytes([byte])
+                        if byte_token in stoi:
+                            ids.append(stoi[byte_token])
+                        else:
+                            # Use UNK token if available
+                            ids.append(stoi.get('<unk>', 0))
+                    current_pos += 1
+
+            return ids
+
+        def decode(token_ids):
+            tokens = []
+            byte_buffer = []
+
+            for id in token_ids:
+                if id not in itos:
+                    continue
+
+                token = itos[id]
+
+                # Handle bytes vs string tokens
+                if isinstance(token, bytes):
+                    byte_buffer.append(token[0])  # Append the actual byte value
+                else:
+                    # If we have bytes in buffer, try to decode them first
+                    if byte_buffer:
+                        try:
+                            decoded = bytes(byte_buffer).decode('utf-8', errors='replace')
+                            tokens.append(decoded)
+                        except UnicodeDecodeError:
+                            tokens.append('')  # Unicode replacement character
+                        byte_buffer = []
+
+                    # Handle the string token
+                    token = token.replace('Ġ', ' ')  # Replace Ġ with space
+                    tokens.append(token)
+
+            # Handle any remaining bytes in the buffer
+            if byte_buffer:
+                try:
+                    decoded = bytes(byte_buffer).decode('utf-8', errors='replace')
+                    tokens.append(decoded)
+                except UnicodeDecodeError:
+                    tokens.append('')
+
+            return ''.join(tokens)
+
+        return encode, decode
+
+    # Default fallback
+    stoi, itos = meta['stoi'], meta['itos']
+    encode = lambda s: [stoi[c] for c in s]
+    decode = lambda l: ''.join([itos[i] for i in l])
+    return encode, decode
+
 def main():
     args = parse_args()
 
@@ -880,30 +993,7 @@ def main():
         print(f"Loading meta from {meta_path}...")
         with open(meta_path, 'rb') as f:
             meta = pickle.load(f)
-        if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
-            enc = tiktoken.get_encoding(meta['tiktoken_encoding'])
-            print(f"using tiktoken encoding {meta['tiktoken_encoding']}")
-            encode = lambda s: enc.encode(s, allowed_special={""})
-            decode = lambda l: enc.decode(l)
-        elif 'tokenizer' in meta and meta['tokenizer'] == 'sentencepiece':
-            separator_token = "▁"
-            stoi, itos = meta['stoi'], meta['itos']
-            encode = lambda s: [stoi[c] for c in s]
-            decode = lambda l: ''.join([itos[i] for i in l])
-        elif 'tokenizer' in meta and meta['tokenizer'] == 'custom_char_with_byte_fallback':
-            stoi = meta['stoi']
-            itos = meta['itos']
-            encode = lambda s: custom_char_with_byte_fallback_encode(s, stoi)
-            decode = lambda l: custom_char_with_byte_fallback_decode(l, itos)
-            print("Using CustomCharTokenizerWithByteFallback tokenizer")
-        elif args.token_boundary:
-            stoi, itos = meta['stoi'], meta['itos']
-            encode = lambda s: [stoi[c] for c in s]
-            decode = lambda l: args.token_boundary.join([itos[i] for i in l])
-        else:
-            stoi, itos = meta['stoi'], meta['itos']
-            encode = lambda s: [stoi[c] for c in s]
-            decode = lambda l: ''.join([itos[i] for i in l])
+            encode, decode = get_tokenizer_functions(meta)
 
     if args.start.startswith('FILE:'):
         with open(args.start[5:], 'r', encoding='utf-8') as f:

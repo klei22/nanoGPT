@@ -26,3 +26,8 @@ Run it from the repository root:
 ```bash
 bash demos/grokking_muon_demo.sh
 ```
+
+## Optimizer Comparison
+
+`adam_vs_adamw.sh` trains two tiny Shakespeare models, one with Adam and one
+with AdamW, then compares their statistics using `view_model_stats.py`.
