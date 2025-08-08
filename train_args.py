@@ -124,6 +124,38 @@ def parse_args():
         help='Enable nGPT-style per-step weight normalisation and related operations.'
     )
 
+    # Johnson-Lindenstrauss transform options
+    training_group.add_argument(
+        '--jl_every',
+        type=int,
+        default=None,
+        help='If set, apply a JL transform to model weights every N iterations.'
+    )
+    training_group.add_argument(
+        '--jl_out_embd',
+        type=int,
+        default=None,
+        help='Embedding dimension after JL transform; defaults to current size.'
+    )
+    training_group.add_argument(
+        '--jl_type',
+        choices=['sign', 'gaussian', 'sparse', 'srht', 'qr'],
+        default='gaussian',
+        help='Type of JL projection to sample.'
+    )
+    training_group.add_argument(
+        '--jl_seed',
+        type=int,
+        default=1337,
+        help='Random seed for JL projection matrices.'
+    )
+    training_group.add_argument(
+        '--jl_cproj_vertical',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Project c_proj weights along out_features instead of in_features.'
+    )
+
 
     # Optimizer-specific arguments
     optimizer_variations = [
