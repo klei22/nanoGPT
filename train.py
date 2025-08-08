@@ -441,28 +441,40 @@ class Trainer:
             raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
 
     def load_tokenizer(self):
-        meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
-        if os.path.exists(meta_path):
-            with open(meta_path, 'rb') as f:
-                meta = pickle.load(f)
-
-            # Use get_tokenizer_functions for all tokenizer types
-            self.encode, self.decode = get_tokenizer_functions(meta)
-
-            # Store additional tokenizer-specific attributes if needed
-            if 'tokenizer' in meta:
-                if meta['tokenizer'] == 'sentencepiece':
-                    self.separator_token = "▁"
-                print(f"Using {meta['tokenizer']} tokenizer")
-            else:
-                print("Using default character-level tokenizer")
-
-            # Store stoi/itos for other uses in the Trainer class
-            if 'stoi' in meta and 'itos' in meta:
-                self.stoi = meta['stoi']
-                self.itos = meta['itos']
+        if self.args.dataset_list is not None and self.args.multidataset_wte:
+            self.encode_dict = {}
+            self.decode_dict = {}
+            for dataset in self.args.dataset_list:
+                meta_path = os.path.join('data', dataset, 'meta.pkl')
+                if not os.path.exists(meta_path):
+                    sys.exit(f"Error: meta.pkl not found for {dataset}")
+                with open(meta_path, 'rb') as f:
+                    meta = pickle.load(f)
+                encode, decode = get_tokenizer_functions(meta)
+                self.encode_dict[dataset] = encode
+                self.decode_dict[dataset] = decode
+            self.encode = self.encode_dict[self.args.dataset_list[0]]
+            self.decode = self.decode_dict[self.args.dataset_list[0]]
         else:
-            sys.exit("Error: meta.pkl not found")
+            meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
+            if os.path.exists(meta_path):
+                with open(meta_path, 'rb') as f:
+                    meta = pickle.load(f)
+
+                self.encode, self.decode = get_tokenizer_functions(meta)
+
+                if 'tokenizer' in meta:
+                    if meta['tokenizer'] == 'sentencepiece':
+                        self.separator_token = "▁"
+                    print(f"Using {meta['tokenizer']} tokenizer")
+                else:
+                    print("Using default character-level tokenizer")
+
+                if 'stoi' in meta and 'itos' in meta:
+                    self.stoi = meta['stoi']
+                    self.itos = meta['itos']
+            else:
+                sys.exit("Error: meta.pkl not found")
 
     @torch.no_grad()
     def sample_and_print(self):
@@ -479,14 +491,21 @@ class Trainer:
                 self.model.set_lsv_index(i)
                 print(f"lsv index {i}")
 
-            start_ids = torch.tensor(self.encode(self.args.sample_start_tokens), dtype=torch.long, device=self.device)[None, ...]
+            if hasattr(self, 'encode_dict'):
+                encode_fn = self.encode_dict[self.args.dataset_list[i]]
+                decode_fn = self.decode_dict[self.args.dataset_list[i]]
+            else:
+                encode_fn = self.encode
+                decode_fn = self.decode
+
+            start_ids = torch.tensor(encode_fn(self.args.sample_start_tokens), dtype=torch.long, device=self.device)[None, ...]
 
             with torch.no_grad():
                 sample_with_existing_model(
                     model=self.model,
                     start_ids=start_ids,
                     start_tokens=self.args.sample_start_tokens,
-                    decode=self.decode,
+                    decode=decode_fn,
                     device=self.device,
                     out_dir=self.args.out_dir,
                     max_new_tokens=self.args.max_sample_tokens,
@@ -503,6 +522,7 @@ class Trainer:
                     run_name=self.args.tensorboard_run_name,
                     args=self.args,
                     writer=self.writer if self.args.tensorboard_log else None,
+                    dataset_idx=i if hasattr(self, 'encode_dict') else None,
                 )
 
         # After sampling from the model, optionally run simple dataset benchmarks
@@ -543,8 +563,11 @@ class Trainer:
         try:
             if hasattr(self, "train_data"):
                 data = self.train_data
+                decode_fn = self.decode
             elif hasattr(self, "train_data_dict") and self.args.dataset_list:
-                data = self.train_data_dict[self.args.dataset_list[0]]
+                first_ds = self.args.dataset_list[0]
+                data = self.train_data_dict[first_ds]
+                decode_fn = self.decode_dict[first_ds] if hasattr(self, 'decode_dict') else self.decode
             else:
                 return
 
@@ -553,7 +576,7 @@ class Trainer:
 
             start = random.randint(0, len(data) - self.args.max_sample_tokens)
             ids = data[start : start + self.args.max_sample_tokens].astype(int)
-            text = self.decode(ids.tolist())
+            text = decode_fn(ids.tolist())
             from benchmarks import run_all
 
             metrics = run_all(text)
@@ -601,6 +624,7 @@ class Trainer:
         if self.args.training_mode == 'multidataset':
             self.train_data_dict = {}
             self.val_data_dict = {}
+            self.vocab_sizes = []
 
             for dataset in self.args.dataset_list:
                 train_data = None
@@ -613,27 +637,25 @@ class Trainer:
                     meta = pickle.load(f)
                     vocab_size = meta.get('vocab_size', None)
                     if vocab_size:
-                        self.model_args['vocab_size'] = vocab_size
+                        self.vocab_sizes.append(vocab_size)
 
                 # Load train and val data for each dataset
-                if self.model_args['vocab_size'] is None:
-                    sys.exit("Error: no vocab size specified")
-                elif self.model_args['vocab_size'] == 100277:
-                    # cl100k_base, vocab size 100277, requires np.uint32
-                    train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint32, mode='r')
-                    val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint32, mode='r')
-                else:
-                    # all other tokenations so far require only np.uint16
-                    train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                    val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+                dtype = np.uint16 if vocab_size != 100277 else np.uint32
+                train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=dtype, mode='r')
+                val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=dtype, mode='r')
 
                 # Store in dictionaries
                 self.train_data_dict[dataset] = train_data
                 self.val_data_dict[dataset] = val_data
-            # For multi-dataset case, store the token count for each dataset in a dictionary.
-            # print(self.train_data_dict, self.args.dataset_list)
-            # print({d: len(self.train_data_dict[d]) for d in self.args.dataset_list})
+
             self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.dataset_list}
+
+            if self.args.multidataset_wte:
+                self.model_args['multidataset_wte'] = True
+                self.model_args['vocab_sizes'] = self.vocab_sizes
+                self.model_args['vocab_size'] = self.vocab_sizes[0]
+            else:
+                self.model_args['vocab_size'] = max(self.vocab_sizes)
         else:
 
             if self.model_args['vocab_size'] is None:
@@ -864,7 +886,8 @@ class Trainer:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
                         with self.ctx:
-                            logits, loss = self.model(X, Y, iter_num=self.iter_num)
+                            idx = self.args.dataset_list.index(dataset)
+                            logits, loss = self.model(X, Y, iter_num=self.iter_num, dataset_idx=idx if self.args.multidataset_wte else None)
                         dataset_losses[split][k] = loss.item()
                 out['datasets'][dataset] = {
                     'train': dataset_losses['train'].mean(),
@@ -920,7 +943,7 @@ class Trainer:
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
                     with self.ctx:
-                        logits, loss = self.model(X, Y, iter_num=self.iter_num)
+                        logits, loss = self.model(X, Y, iter_num=self.iter_num, dataset_idx=0 if self.args.multidataset_wte else None)
                     losses[k] = loss.item()
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
@@ -1480,7 +1503,8 @@ class Trainer:
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
                         else:
-                            logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num)
+                            idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
+                            logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num, dataset_idx=idx_ds if self.args.multidataset_wte else None)
 
                         loss = loss / self.args.gradient_accumulation_steps
 
