@@ -116,6 +116,14 @@ def parse_args():
     training_group.add_argument('--gns_max_batch', type=int, default=100)
     training_group.add_argument('--gns_batch_pct', type=float, default=0.2)
 
+    # Normalized Transformer (nGPT) options
+    training_group.add_argument(
+        '--use_ngpt',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Enable nGPT-style per-step weight normalisation and related operations.'
+    )
+
 
     # Optimizer-specific arguments
     optimizer_variations = [

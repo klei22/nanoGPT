@@ -82,6 +82,7 @@ from model import GPT, GPTConfig
 import tiktoken
 
 from train_args import parse_args
+from utils.ngpt_utils import normalize_module_weights
 
 class Trainer:
 
@@ -1531,6 +1532,11 @@ class Trainer:
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                if self.args.use_ngpt:
+                    # After each parameter update, project all weight matrices and
+                    # embeddings back onto the unit hypersphere as required by
+                    # the normalized Transformer recipe.
+                    normalize_module_weights(self.model, self.model.config.n_embd)
                 if self.scheduler:
                     if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                         self.scheduler.step(losses["val"])
