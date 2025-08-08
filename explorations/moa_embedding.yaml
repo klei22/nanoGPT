@@ -1,0 +1,48 @@
+# moa_embedding.yaml
+---
+# base hyperparameters
+max_iters: [20000]
+eval_interval: [500]
+device: ["cuda"]
+dataset: ["minipile"]
+
+attention_variant: "moa_embedding"
+
+# explore router variants
+moa_router_variant: ["moa_topk", "moa_threshold"]
+
+moa_top_k:
+  conditions:
+    - ["moa_router_variant", "moa_topk"]
+  options: ["2", "4"]
+
+moa_threshold:
+  conditions:
+    - ["moa_router_variant", "moa_threshold"]
+  options: ["0.2", "0.5"]
+
+# shared vs MoA head allocation
+n_head: [8]
+n_shared_head: [8, 4]
+
+n_moa_head:
+  conditions:
+    - ["n_shared_head", 4]
+  options: ["4"]
+
+# dimension splits
+n_shared_qk_head_dim: [64]
+n_shared_v_head_dim: [64]
+
+n_moa_qk_head_dim:
+  conditions:
+    - ["n_shared_head", 4]
+  options: ["128"]
+
+n_moa_v_head_dim:
+  conditions:
+    - ["n_shared_head", 4]
+  options: ["64", "128"]
+
+# concatenate vs shared projection
+use_concat_heads: [false, true]
