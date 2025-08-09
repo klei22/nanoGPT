@@ -33,7 +33,13 @@ from variations.moe_variations import MoELayer
 from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
-from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
+from variations.position_encoding_variations import (
+    QuantizedEmbedding,
+    RotaryEmbedding,
+    SymmetricalOverlapAngularPositions,
+    FIRE,
+    FourierPositionEmbedding,
+)
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
