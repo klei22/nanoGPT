@@ -444,9 +444,22 @@ class Trainer:
             raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
 
     def load_tokenizer(self):
-        if self.args.dataset_list is not None and self.args.multidataset_wte:
+        def compute_weights(meta):
+            if 'token_counts' not in meta:
+                return None
+            vocab_size = meta['vocab_size']
+            counts = np.ones(vocab_size, dtype=np.float64)
+            for tok, cnt in meta['token_counts'].items():
+                counts[int(tok)] += cnt
+            freq = counts / counts.sum()
+            inv_freq = 1.0 / freq
+            weights = torch.from_numpy(inv_freq / inv_freq.mean()).float().to(self.device)
+            return weights
+
+        if self.args.dataset_list is not None:
             self.encode_dict = {}
             self.decode_dict = {}
+            self.token_weights_dict = {}
             for dataset in self.args.dataset_list:
                 meta_path = os.path.join('data', dataset, 'meta.pkl')
                 if not os.path.exists(meta_path):
@@ -456,8 +469,20 @@ class Trainer:
                 encode, decode = get_tokenizer_functions(meta)
                 self.encode_dict[dataset] = encode
                 self.decode_dict[dataset] = decode
+                self.token_weights_dict[dataset] = compute_weights(meta)
             self.encode = self.encode_dict[self.args.dataset_list[0]]
             self.decode = self.decode_dict[self.args.dataset_list[0]]
+            self.token_weights = self.token_weights_dict[self.args.dataset_list[0]]
+        elif self.args.training_mode == 'multicontext':
+            self.token_weights_dict = {}
+            for dataset in self.args.multicontext_datasets:
+                meta_path = os.path.join('data', dataset, 'meta.pkl')
+                if not os.path.exists(meta_path):
+                    sys.exit(f"Error: meta.pkl not found for {dataset}")
+                with open(meta_path, 'rb') as f:
+                    meta = pickle.load(f)
+                self.token_weights_dict[dataset] = compute_weights(meta)
+            self.token_weights = None
         else:
             meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
             if os.path.exists(meta_path):
@@ -476,6 +501,8 @@ class Trainer:
                 if 'stoi' in meta and 'itos' in meta:
                     self.stoi = meta['stoi']
                     self.itos = meta['itos']
+
+                self.token_weights = compute_weights(meta)
             else:
                 sys.exit("Error: meta.pkl not found")
 
@@ -865,8 +892,8 @@ class Trainer:
 
     @torch.no_grad()
     def custom_loss_with_top1_focus(self, logits, targets):
-        # Compute standard cross-entropy loss
-        ce_loss = torch.nn.functional.cross_entropy(logits, targets)
+        # Compute standard cross-entropy loss with optional token weighting
+        ce_loss = torch.nn.functional.cross_entropy(logits, targets, weight=self.token_weights)
 
         # Get the top-1 predictions
         top1_preds = torch.argmax(logits, dim=-1)
@@ -894,7 +921,10 @@ class Trainer:
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
                         with self.ctx:
                             idx = self.args.dataset_list.index(dataset)
-                            logits, loss = self.model(X, Y, iter_num=self.iter_num, dataset_idx=idx if self.args.multidataset_wte else None)
+                            weight = self.token_weights_dict.get(dataset, None) if hasattr(self, 'token_weights_dict') else self.token_weights
+                            logits, loss = self.model(X, Y, iter_num=self.iter_num,
+                                                      dataset_idx=idx if self.args.multidataset_wte else None,
+                                                      token_weights=weight)
                         dataset_losses[split][k] = loss.item()
                 out['datasets'][dataset] = {
                         'train': dataset_losses['train'].mean(),
@@ -925,7 +955,8 @@ class Trainer:
                     x_dict, y_dict, dataset_list = self.get_batch(split)
 
                     with self.ctx:
-                        logits, loss_list = self.model(None, token_dict=x_dict, target_dict=y_dict, iter_num=self.iter_num)
+                        logits, loss_list = self.model(None, token_dict=x_dict, target_dict=y_dict,
+                                                       iter_num=self.iter_num, token_weights=self.token_weights_dict)
                     for i in range(len(self.args.multicontext_datasets)):
                         losses[f"{i}"][k] = loss_list[i]
 
@@ -950,7 +981,9 @@ class Trainer:
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
                     with self.ctx:
-                        logits, loss = self.model(X, Y, iter_num=self.iter_num, dataset_idx=0 if self.args.multidataset_wte else None)
+                        logits, loss = self.model(X, Y, iter_num=self.iter_num,
+                                                  dataset_idx=0 if self.args.multidataset_wte else None,
+                                                  token_weights=self.token_weights)
                     losses[k] = loss.item()
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
@@ -1510,14 +1543,22 @@ class Trainer:
                     with self.ctx:
                         if self.args.training_mode == 'multicontext':
                             total_loss = 0
-                            logits, training_losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
+                            logits, training_losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict,
+                                                                 iter_num=self.iter_num, token_weights=self.token_weights_dict)
 
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num, dataset_idx=idx_ds if self.args.multidataset_wte else None)
+                            weight = None
+                            if self.args.dataset_list is not None:
+                                weight = self.token_weights_dict.get(current_dataset)
+                            else:
+                                weight = self.token_weights
+                            logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num,
+                                                      dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                                      token_weights=weight)
 
                         loss = loss / self.args.gradient_accumulation_steps
 
