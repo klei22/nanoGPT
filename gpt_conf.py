@@ -134,6 +134,11 @@ class GPTConfig:
     moe_top_k: int = 2
     moe_router_scheme: str = "softmax"
 
+    # Output router over MLPs
+    use_output_router: bool = False
+    output_router_top_k: int = 2
+    output_router_eval_top_k: int = 1
+
     # Logging options
     softmax_io_logging: bool = False
     consmax_beta_gamma_logging: bool = False

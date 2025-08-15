@@ -36,7 +36,6 @@ from variations.norm_variations import norm_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
-from variations.router_variations import router_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -78,22 +77,24 @@ class Block(nn.Module):
 
             if self.use_post_ln:
                 if self.use_parallel_mlp:
-                    x = self.ln_1(x + self.attn(x, iter_num) + self.mlp(x, iter_num))
+                    mlp_out, mlp_res = self.mlp(x, iter_num)
+                    x = self.ln_1(x + self.attn(x, iter_num) + mlp_out)
                 else:
+                    mlp_out, mlp_res = self.mlp(x, iter_num)
                     x = self.ln_1(x + self.attn(x, iter_num))
-                    x = self.ln_2(x + self.mlp(x, iter_num))
-                return x, mlp_res
+                    x = self.ln_2(x + mlp_out)
+                return x, mlp_res, mlp_out
             else:
                 if self.use_parallel_mlp:
                     ln_1 = self.ln_1(x)
-                    mlp, mlp_res = self.mlp(ln_1, iter_num)
-                    x = x + self.attn(ln_1, iter_num) + mlp
-                    return x, mlp_res
+                    mlp_out, mlp_res = self.mlp(ln_1, iter_num)
+                    x = x + self.attn(ln_1, iter_num) + mlp_out
+                    return x, mlp_res, mlp_out
                 else:
                     x = x + self.attn(self.ln_1(x), iter_num)
-                    mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
-                    x = x + mlp
-                    return x, mlp_res
+                    mlp_out, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
+                    x = x + mlp_out
+                    return x, mlp_res, mlp_out
 
         if self.use_gradient_checkpointing and x.requires_grad:
             return checkpoint.checkpoint(custom_forward, x, iter_num, mlp_res, use_reentrant=False)
@@ -135,7 +136,7 @@ class LearnedPositionEmbedding(nn.Module):
         # pass through Block modules
         mlp_res = None
         for block in self.blocks:
-            x, mlp_res = block(x, iter_num, mlp_res)
+            x, mlp_res, _ = block(x, iter_num, mlp_res)
         return x
 
 class GPT(nn.Module):
@@ -214,6 +215,13 @@ class GPT(nn.Module):
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
+
+        # Optional router over MLP outputs
+        self.use_output_router = config.use_output_router
+        if self.use_output_router:
+            self.output_router = nn.Linear(config.n_embd, config.n_layer)
+            self.output_router_top_k = config.output_router_top_k
+            self.output_router_eval_top_k = config.output_router_eval_top_k
 
         if self.config.use_abs_pos_embeddings:
             if config.quantize_wpe:
@@ -461,8 +469,11 @@ class GPT(nn.Module):
 
             layer_idx = 1
             mlp_res = None
+            mlp_outputs = [] if self.use_output_router else None
             for block in self.transformer.h:
-                x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+                x, mlp_res, mlp_out = block(x, iter_num, mlp_res=mlp_res)
+                if self.use_output_router:
+                    mlp_outputs.append(mlp_out)
 
                 # TODO: abstact into a method
                 if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == layer_idx:
@@ -487,6 +498,15 @@ class GPT(nn.Module):
                     x = self.obtain_vector_from_layer_output(x)
 
                 layer_idx += 1
+
+            if self.use_output_router:
+                candidates = torch.stack(mlp_outputs, dim=2)
+                router_logits = self.output_router(x)
+                top_k = self.output_router_top_k if self.training else self.output_router_eval_top_k
+                top_logits, top_idx = router_logits.topk(top_k, dim=-1)
+                weights = F.softmax(top_logits, dim=-1)
+                selected = torch.gather(candidates, 2, top_idx.unsqueeze(-1).expand(-1, -1, -1, candidates.size(-1)))
+                x = x + (selected * weights.unsqueeze(-1)).sum(dim=2)
 
             # 3. Final layer norm
             x = self.transformer.ln_f(x)
@@ -574,9 +594,12 @@ class GPT(nn.Module):
 
             layer_idx = 1
             mlp_res = None
+            mlp_outputs = [] if self.use_output_router else None
             for block in self.transformer.h:
                 # Propagate tokens through layers
-                x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+                x, mlp_res, mlp_out = block(x, iter_num, mlp_res=mlp_res)
+                if self.use_output_router:
+                    mlp_outputs.append(mlp_out)
 
                 # Intercept for Learned Steering Vectors
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -603,6 +626,15 @@ class GPT(nn.Module):
                     x = self.obtain_vector_from_layer_output(x)
 
                 layer_idx +=1
+
+            if self.use_output_router:
+                candidates = torch.stack(mlp_outputs, dim=2)
+                router_logits = self.output_router(x)
+                top_k = self.output_router_top_k if self.training else self.output_router_eval_top_k
+                top_logits, top_idx = router_logits.topk(top_k, dim=-1)
+                weights = F.softmax(top_logits, dim=-1)
+                selected = torch.gather(candidates, 2, top_idx.unsqueeze(-1).expand(-1, -1, -1, candidates.size(-1)))
+                x = x + (selected * weights.unsqueeze(-1)).sum(dim=2)
 
             x = self.transformer.ln_f(x)
 
@@ -674,11 +706,23 @@ class GPT(nn.Module):
 
         mlp_res = None
         layer_idx = 1
+        mlp_outputs = [] if self.use_output_router else None
         for block in self.transformer.h:
-            x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
+            x, mlp_res, mlp_out = block(x, iter_num, mlp_res=mlp_res)
+            if self.use_output_router:
+                mlp_outputs.append(mlp_out)
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
             layer_idx += 1
+
+        if self.use_output_router:
+            candidates = torch.stack(mlp_outputs, dim=2)
+            router_logits = self.output_router(x)
+            top_k = self.output_router_top_k if self.training else self.output_router_eval_top_k
+            top_logits, top_idx = router_logits.topk(top_k, dim=-1)
+            weights = F.softmax(top_logits, dim=-1)
+            selected = torch.gather(candidates, 2, top_idx.unsqueeze(-1).expand(-1, -1, -1, candidates.size(-1)))
+            x = x + (selected * weights.unsqueeze(-1)).sum(dim=2)
 
         x = self.transformer.ln_f(x)
         if self.n_embd_wte:
