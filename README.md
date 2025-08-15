@@ -15,6 +15,7 @@ Key exploration features include:
 * `Flexible Tokenization`: Explore different tokenization: tiktoken, sentencepiece, phonemization, character level, custom tokenization, etc.
 * `Diverse Dataset Performance Testing`: Evaluate model efficacy across various languages and datasets including: csv-timeseries, mathematics, music, lyrics, literature, and webtext.
 * `Standard and Custom Hyperparameters`: Fine-tune models using conventional hyperparameters and explore the impact of custom settings on model performance and PPA impacts.
+* `Output Router Visualization`: Route over MLP outputs before the final layernorm and visualize which layer contributes to each token. See [documentation/Output_Router.md](documentation/Output_Router.md).
 
 Key analysis features:
 

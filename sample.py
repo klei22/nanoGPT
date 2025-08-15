@@ -68,9 +68,9 @@ def parse_args():
 
 
     # Output Confidence
-    parser.add_argument('--colorize_mode', type=str, default='minmax', choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product',  'all'],
-                        help="Mode to colorize text: 'minmax' (default), 'softmax', or 'softmax_top_k' for softmax only over the top k vals. "
-                        "Requires --colorize_output (enabled by default).")
+    parser.add_argument('--colorize_mode', type=str, default='minmax', choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'router', 'all'],
+                        help="Mode to colorize text: 'minmax' (default), 'softmax', 'softmax_top_k' for softmax only over the top k vals, "
+                        "'router' to show which residual vector was selected. Requires --colorize_output (enabled by default).")
     parser.add_argument('--colorize_output', default=False, action=argparse.BooleanOptionalAction,
                     help="Colorize tokens based on their predicted probabilities. Default = True. "
                     "Disable with --no-colorize-output.")
@@ -178,12 +178,14 @@ def append_to_sample_file(sample_file, output_line, start_token, k_tag, iter_num
 def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
     """
-    Colorizes each token according to one of two modes:
+    Colorizes each token according to one of several modes:
       - 'minmax': data_for_color is a 1D list/array of chosen-token logits.
                   We min-max normalize them across time, then map to R->G colors.
       - 'softmax': data_for_color is a 2D list/array (T, vocab_size) containing
                    the *full* distribution at each step. We extract the chosen
                    token's probability for each step, then min-max normalize.
+      - 'router': data_for_color contains normalized layer indices (0..1)
+                  from the output router; values are mapped directly to R->G.
     """
     text = Text()
 
@@ -206,7 +208,10 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
         norm_values = values
 
-    if colorize_mode == 'minmax' or colorize_mode == 'dot_product':
+    if colorize_mode == 'router':
+        values = torch.tensor(data_for_color, dtype=torch.float32)
+        norm_values = values
+    elif colorize_mode == 'minmax' or colorize_mode == 'dot_product':
         # data_for_color is shape (T,) with each chosen-token score (logit or dot product)
         values = torch.tensor(data_for_color, dtype=torch.float32)
 
@@ -448,7 +453,7 @@ def sample_with_existing_model(
     console = Console()
     model.eval()
 
-    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank"]
+    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank", "router"]
     modes_to_apply = valid_modes if colorize_mode == "all" else [colorize_mode]
 
 
@@ -490,6 +495,7 @@ def sample_with_existing_model(
             pre_temp_scalar_rows: List[torch.Tensor] = []
             scalar_rows: List[torch.Tensor] = []
             ranks_list: List[int] = []  # NEW
+            router_choices: List[int] = []
 
             with torch.no_grad():
                 for _step in range(max_new_tokens):
@@ -587,6 +593,8 @@ def sample_with_existing_model(
                         if args.show_minmax_chart:
                             pre_temp_scalar_rows.append(raw_logits_row[0, chosen])
                         ranks_list.append(rank)
+                        if 'router' in modes_to_apply and getattr(model, 'last_router_indices', None) is not None:
+                            router_choices.append(int(model.last_router_indices[0, -1, 0]))
 
                     if show_heatmaps:
                         sel_txt = decode([idx_next.item()])
@@ -645,6 +653,11 @@ def sample_with_existing_model(
                         # The dot product of two unit vectors is their cosine similarity.
                         dot_product_values.append(torch.dot(prev_vec, current_vec).item())
 
+                router_norm_values = None
+                if 'router' in modes_to_apply and len(router_choices) > 0:
+                    denom = max(1, model.config.n_layer - 1)
+                    router_norm_values = [rc / denom for rc in router_choices]
+
                 for cm in modes_to_apply:
                     # Select the appropriate data source for the current colorization mode
                     data_for_color = None
@@ -656,6 +669,8 @@ def sample_with_existing_model(
                         data_for_color = topk_rows
                     elif cm == "dot_product":
                         data_for_color = dot_product_values
+                    elif cm == "router":
+                        data_for_color = router_norm_values
 
                     if data_for_color is not None:
                          coloured = colorize_text(              # type: ignore

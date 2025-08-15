@@ -218,6 +218,7 @@ class GPT(nn.Module):
 
         # Optional router over MLP outputs
         self.use_output_router = config.use_output_router
+        self.last_router_indices = None
         if self.use_output_router:
             self.output_router = nn.Linear(config.n_embd, config.n_layer)
             self.output_router_top_k = config.output_router_top_k
@@ -417,6 +418,7 @@ class GPT(nn.Module):
         print(f"Scale matrices saved to {file_path}")
 
     def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None):
+        self.last_router_indices = None
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -504,6 +506,7 @@ class GPT(nn.Module):
                 router_logits = self.output_router(x)
                 top_k = self.output_router_top_k if self.training else self.output_router_eval_top_k
                 top_logits, top_idx = router_logits.topk(top_k, dim=-1)
+                self.last_router_indices = top_idx
                 weights = F.softmax(top_logits, dim=-1)
                 selected = torch.gather(candidates, 2, top_idx.unsqueeze(-1).expand(-1, -1, -1, candidates.size(-1)))
                 x = x + (selected * weights.unsqueeze(-1)).sum(dim=2)
@@ -632,6 +635,7 @@ class GPT(nn.Module):
                 router_logits = self.output_router(x)
                 top_k = self.output_router_top_k if self.training else self.output_router_eval_top_k
                 top_logits, top_idx = router_logits.topk(top_k, dim=-1)
+                self.last_router_indices = top_idx
                 weights = F.softmax(top_logits, dim=-1)
                 selected = torch.gather(candidates, 2, top_idx.unsqueeze(-1).expand(-1, -1, -1, candidates.size(-1)))
                 x = x + (selected * weights.unsqueeze(-1)).sum(dim=2)
@@ -720,6 +724,7 @@ class GPT(nn.Module):
             router_logits = self.output_router(x)
             top_k = self.output_router_top_k if self.training else self.output_router_eval_top_k
             top_logits, top_idx = router_logits.topk(top_k, dim=-1)
+            self.last_router_indices = top_idx
             weights = F.softmax(top_logits, dim=-1)
             selected = torch.gather(candidates, 2, top_idx.unsqueeze(-1).expand(-1, -1, -1, candidates.size(-1)))
             x = x + (selected * weights.unsqueeze(-1)).sum(dim=2)
