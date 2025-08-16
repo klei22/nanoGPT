@@ -132,6 +132,9 @@ class GPTConfig:
     use_mole: bool = False
     moe_layer_freq: int = 2
     mole_layer_freq: int = 2
+    mole_n_experts: int = 8
+    mole_shared_mlp_size: int = None
+    mole_routed_mlp_size: int = None
     n_experts: int = 8
     moe_top_k: int = 2
     moe_router_scheme: str = "softmax"

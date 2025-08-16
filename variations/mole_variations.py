@@ -24,12 +24,28 @@ class MoLELayer(nn.Module):
     """
     def __init__(self, config):
         super().__init__()
-        self.num_experts = config.n_experts
+        self.num_experts = getattr(config, "mole_n_experts", config.n_experts)
         scheme = getattr(config, "mole_router_scheme", config.moe_router_scheme)
-        self.router = router_dictionary[scheme](config)
-        self.shared_expert = get_mlp_instance(config)
+
+        # build separate configs for router/shared/routed experts
+        from dataclasses import replace
+
+        router_cfg = replace(config, n_experts=self.num_experts)
+        self.router = router_dictionary[scheme](router_cfg)
+
+        shared_cfg = replace(config)
+        shared_size = getattr(config, "mole_shared_mlp_size", None)
+        if shared_size is not None:
+            shared_cfg = replace(shared_cfg, mlp_size=shared_size)
+        self.shared_expert = get_mlp_instance(shared_cfg)
+
+        routed_cfg = replace(config)
+        routed_size = getattr(config, "mole_routed_mlp_size", None)
+        if routed_size is not None:
+            routed_cfg = replace(routed_cfg, mlp_size=routed_size)
+        routed_cfg = replace(routed_cfg, n_experts=self.num_experts)
         self.routed_expert = nn.ModuleList(
-            [get_mlp_instance(config) for _ in range(config.n_experts)]
+            [get_mlp_instance(routed_cfg) for _ in range(self.num_experts)]
         )
         self.input_layernorm = nn.LayerNorm(config.n_embd)
         self.post_attention_layernorm = nn.LayerNorm(config.n_embd)
