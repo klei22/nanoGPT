@@ -1,24 +1,35 @@
 # explorations/kv_cache_sharing.yaml
 # Sweep KV-cache sharing patterns vs vanilla, along with MLP/Attn parameter sharing
 # Based on explorations/config.yaml template
+#
+parameter_groups:
+  - use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+    # --- KV-cache sharing variants ---
+    kv_cache_sharing: ["group", "cycle", "symmetric"]
+    kv_cache_group_size: [1, 2]
+    kv_cache_num_slots: [1, 2, 3]
+  - use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
 
 # --- dataset & compute ---
 dataset: ["shakespeare_char"]
 device: ["cuda"]
 compile: [true]
 dtype: ["float16"]
+never_save_checkpoint: [true]
 
 # --- base model hyper-params (SMALL net) ---
 n_embd: [384]
 n_head: [6]
-max_iters: [2000]
+max_iters: [1500]
 eval_interval: [250]
 
 # explore both odd/even layer counts
 n_layer: [5, 6]
 
 # --- KV-cache sharing variants ---
-kv_cache_sharing: [null, "group", "cycle", "symmetric"]
+kv_cache_sharing: ["group", "cycle", "symmetric"]
 kv_cache_group_size: [1, 2]
 kv_cache_num_slots: [1, 2, 3]
 
