@@ -70,35 +70,45 @@ class Block(nn.Module):
         else:
             self.mlp = mlp
 
-    def forward(self, x, iter_num, mlp_res=None):
-        def custom_forward(*inputs):
-            x = inputs[0]
-            iter_num = inputs[1]
-            mlp_res = inputs[2]
-
+    def forward(self, x, iter_num, mlp_res=None, kv_cache=None, return_kv=False):
+        def custom_forward(x, iter_num, mlp_res, kv_cache):
+            present = None
             if self.use_post_ln:
                 if self.use_parallel_mlp:
-                    x = self.ln_1(x + self.attn(x, iter_num) + self.mlp(x, iter_num))
+                    attn_out = self.attn(x, iter_num, kv_cache=kv_cache, return_kv=return_kv)
+                    if return_kv:
+                        attn_out, present = attn_out
+                    mlp_out = self.mlp(x, iter_num)
+                    x = self.ln_1(x + attn_out + mlp_out)
                 else:
-                    x = self.ln_1(x + self.attn(x, iter_num))
+                    attn_out = self.attn(x, iter_num, kv_cache=kv_cache, return_kv=return_kv)
+                    if return_kv:
+                        attn_out, present = attn_out
+                    x = self.ln_1(x + attn_out)
                     x = self.ln_2(x + self.mlp(x, iter_num))
-                return x, mlp_res
+                return (x, mlp_res, present) if return_kv else (x, mlp_res)
             else:
                 if self.use_parallel_mlp:
                     ln_1 = self.ln_1(x)
+                    attn_out = self.attn(ln_1, iter_num, kv_cache=kv_cache, return_kv=return_kv)
+                    if return_kv:
+                        attn_out, present = attn_out
                     mlp, mlp_res = self.mlp(ln_1, iter_num)
-                    x = x + self.attn(ln_1, iter_num) + mlp
-                    return x, mlp_res
+                    x = x + attn_out + mlp
+                    return (x, mlp_res, present) if return_kv else (x, mlp_res)
                 else:
-                    x = x + self.attn(self.ln_1(x), iter_num)
+                    attn_out = self.attn(self.ln_1(x), iter_num, kv_cache=kv_cache, return_kv=return_kv)
+                    if return_kv:
+                        attn_out, present = attn_out
+                    x = x + attn_out
                     mlp, mlp_res = self.mlp(self.ln_2(x), iter_num, mlp_res)
                     x = x + mlp
-                    return x, mlp_res
+                    return (x, mlp_res, present) if return_kv else (x, mlp_res)
 
         if self.use_gradient_checkpointing and x.requires_grad:
-            return checkpoint.checkpoint(custom_forward, x, iter_num, mlp_res, use_reentrant=False)
+            return checkpoint.checkpoint(custom_forward, x, iter_num, mlp_res, kv_cache, use_reentrant=False)
         else:
-            return custom_forward(x, iter_num, mlp_res)
+            return custom_forward(x, iter_num, mlp_res, kv_cache)
 
 class LearnedPositionEmbedding(nn.Module):
     """
@@ -149,6 +159,11 @@ class GPT(nn.Module):
 
         # Final-logit softcapping
         self.final_logit_softcapping = config.final_logit_softcapping
+
+        # KV cache sharing configuration
+        self.kv_cache_sharing = getattr(config, "kv_cache_sharing", "none")
+        self.kv_cache_share_n = getattr(config, "kv_cache_share_n", 1)
+        self.kv_cache_map = self._build_kv_cache_map()
 
         # Use the new SharedParamGroupCreator for MLP and Attn layers
         spg_creator = SharedParamGroupCreator(config)
@@ -281,6 +296,34 @@ class GPT(nn.Module):
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+    def _build_kv_cache_map(self):
+        """Map each layer index to a KV-cache group according to strategy."""
+        n_layers = self.config.n_layer
+        n = max(1, int(self.kv_cache_share_n))
+        strategy = getattr(self, "kv_cache_sharing", "none")
+        if strategy == "every_n":
+            mapping = [i // n for i in range(n_layers)]
+        elif strategy == "cyclic":
+            mapping = [i % n for i in range(n_layers)]
+        elif strategy == "symmetric":
+            seg_size = n
+            num_segs = math.ceil(n_layers / seg_size)
+            groups = []
+            for s in range(num_segs):
+                if s < (num_segs + 1) // 2:
+                    groups.append(s)
+                else:
+                    groups.append(num_segs - 1 - s)
+            mapping = []
+            for s, g in enumerate(groups):
+                start = s * seg_size
+                end = min(start + seg_size, n_layers)
+                mapping.extend([g] * (end - start))
+        else:
+            mapping = list(range(n_layers))
+        self.n_kv_cache_groups = max(mapping) + 1 if mapping else 0
+        return mapping
 
     def get_num_params(self, non_embedding=True):
         """
@@ -632,6 +675,47 @@ class GPT(nn.Module):
                 loss = None
 
             return logits, loss
+
+    @torch.no_grad()
+    def forward_with_kv_cache(self, idx, kv_cache=None):
+        """Forward pass that updates and returns KV cache."""
+        b, t = idx.size()
+        assert t == 1, "forward_with_kv_cache expects a single token"
+        if kv_cache is None:
+            kv_cache = [None] * self.n_kv_cache_groups
+
+        tok_emb = self.transformer.wte(idx)
+        if self.config.use_embedding_scale:
+            tok_emb = tok_emb * self.embedding_scale
+        if self.n_embd_wte:
+            tok_emb = self.transformer.scale_up(tok_emb)
+
+        past_len = 0
+        if kv_cache[0] is not None:
+            past_len = kv_cache[0][0].size(2)
+        if self.config.use_abs_pos_embeddings:
+            pos = torch.tensor([past_len], dtype=torch.long, device=idx.device)
+            pos_emb = self.transformer.wpe(pos)
+            x = self.transformer.drop(tok_emb + pos_emb)
+        else:
+            x = self.transformer.drop(tok_emb)
+
+        mlp_res = None
+        layer_idx = 0
+        for block in self.transformer.h:
+            group = self.kv_cache_map[layer_idx]
+            cache = kv_cache[group]
+            x, mlp_res, new_cache = block(x, None, mlp_res=mlp_res, kv_cache=cache, return_kv=True)
+            kv_cache[group] = new_cache
+            layer_idx += 1
+
+        x = self.transformer.ln_f(x)
+        if self.n_embd_wte:
+            x = F.linear(x, self.transformer.scale_down.weight.t())
+        logits = self.lm_head(x[:, [-1], :])
+        if self.config.final_logit_softcapping is not None:
+            logits = torch.tanh(logits / self.config.final_logit_softcapping) * self.config.final_logit_softcapping
+        return logits, kv_cache
     # ------------------------------------------------------------------
     #  LATENT-CHAINING
     # ------------------------------------------------------------------

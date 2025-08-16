@@ -234,7 +234,7 @@ class CausalSelfAttention(nn.Module):
         return block_mask
     # End Flex Attention Related
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, kv_cache=None, return_kv=False):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
@@ -277,6 +277,15 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
         v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
 
+        if kv_cache is not None:
+            past_k, past_v = kv_cache
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
+            T_kv = k.size(2)
+            self.flash = False
+        else:
+            T_kv = T
+
         # rotate q and k before evaluating with the heads
         if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
             q = self.rotary_emb_q(q)
@@ -289,7 +298,7 @@ class CausalSelfAttention(nn.Module):
             k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
+        if self.flash and kv_cache is None:
 
             # Flash QK Norm
             if self.use_qk_norm_scale:
@@ -362,7 +371,7 @@ class CausalSelfAttention(nn.Module):
             if self.window_size is not None:
                 # add mask for sliding window attention
                 att = att.masked_fill(self.window_mask == 0, float('-inf'))
-            else:
+            elif kv_cache is None:
                 # regular lower triangle attention
                 att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
 
@@ -395,9 +404,9 @@ class CausalSelfAttention(nn.Module):
 
             if self.n_head != self.n_kv_group:
                 v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-                y = att @ v_repeated # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+                y = att @ v_repeated # (B, nh, T, T_kv) x (B, nh, T_kv, hs)
             else:
-                y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+                y = att @ v # (B, nh, T, T_kv) x (B, nh, T_kv, hs)
 
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]
@@ -414,7 +423,8 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method, iter_num)
 
-        return y
+        present = (k, v) if return_kv else None
+        return (y, present) if return_kv else y
 
 class LinearAttention(nn.Module):
     """ Implements Linear Attention as described in:
