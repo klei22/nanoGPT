@@ -10,10 +10,10 @@ from variations.mlp_variations import get_mlp_instance
 from variations.norm_variations import norm_dictionary
 
 # type alias for the forward function
-BlockForward = Callable[['Block', torch.Tensor, int], torch.Tensor]
+BlockForward = Callable[['Block', torch.Tensor, int, dict | None], torch.Tensor]
 
 
-def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int, kv_cache: dict | None = None) -> torch.Tensor:
     """Forward pass where attention and MLP run in parallel."""
     if block.use_pre_ln: # pre-LN
         x_1 = block.pre_ln(x)
@@ -21,10 +21,10 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
         x_1 = x
 
     if block.use_peri_ln: # peri-LN
-        attn_out = block.out_ln_attn(block.attn(x_1, iter_num))
+        attn_out = block.out_ln_attn(block._attn_forward(x_1, iter_num, kv_cache))
         mlp_out = block.out_ln_mlp(block.mlp(x_1, iter_num))
     else:
-        attn_out = block.attn(x_1, iter_num)
+        attn_out = block._attn_forward(x_1, iter_num, kv_cache)
         mlp_out = block.mlp(x_1, iter_num)
 
     x = x + attn_out + mlp_out
@@ -35,7 +35,7 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     return x
 
 
-def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int, kv_cache: dict | None = None) -> torch.Tensor:
     """Attention followed by MLP."""
 
     # Attn
@@ -45,9 +45,9 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         x_1 = x
 
     if block.use_peri_ln: # peri-LN Attn
-        attn_out = block.out_ln_attn(block.attn(x_1, iter_num))
+        attn_out = block.out_ln_attn(block._attn_forward(x_1, iter_num, kv_cache))
     else:
-        attn_out = block.attn(x_1, iter_num)
+        attn_out = block._attn_forward(x_1, iter_num, kv_cache)
 
     x = attn_out + x
 
@@ -119,6 +119,9 @@ class Block(nn.Module):
 
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
 
+        # KV-cache slot id (set externally by model)
+        self.kv_cache_id: int | None = None
+
         variant = "parallel_mlp" if self.use_parallel_mlp else "attn_then_mlp"
         self.block_forward = block_forward_variations[variant]
 
@@ -132,8 +135,16 @@ class Block(nn.Module):
         else:
             self.mlp = mlp
 
-    def forward(self, x: torch.Tensor, iter_num: int):
+    def _attn_forward(self, x: torch.Tensor, iter_num: int, kv_cache: dict | None = None):
+        if kv_cache is not None:
+            try:
+                return self.attn(x, iter_num, kv_cache)
+            except TypeError:
+                return self.attn(x, iter_num)
+        return self.attn(x, iter_num)
+
+    def forward(self, x: torch.Tensor, iter_num: int, kv_cache: dict | None = None):
         if self.use_gradient_checkpointing and x.requires_grad:
-            return checkpoint.checkpoint(self.block_forward, self, x, iter_num, use_reentrant=False)
-        return self.block_forward(self, x, iter_num)
+            return checkpoint.checkpoint(self.block_forward, self, x, iter_num, kv_cache, use_reentrant=False)
+        return self.block_forward(self, x, iter_num, kv_cache)
 
