@@ -289,6 +289,161 @@ class CharTokenizer(Tokenizer):
     def detokenize(self, ids):
         return ''.join([self.itos[id] for id in ids])
 
+
+class CharTokenizerWithByteFallback(Tokenizer):
+    """Character-level tokenizer with byte fallback.
+
+    Builds a vocabulary of characters from the provided training/validation
+    data. Characters are assigned token ids starting at 256, while raw bytes
+    always occupy ids 0-255. If a character is not in the vocabulary, its UTF-8
+    bytes are emitted individually as byte tokens.
+
+    The character vocabulary can be limited either by an explicit maximum size
+    (keeping the most frequent characters) or by a minimum frequency
+    requirement. Both limits can be used together.
+    """
+
+    def __init__(self, args, train_data, val_data):
+        super().__init__(args)
+        self.reuse_chars = args.reuse_chars
+        self.char_vocab_limit = getattr(args, "char_vocab_limit", None)
+        self.char_coverage = getattr(args, "char_coverage", None)
+        self.char_freq_cache = getattr(args, "char_freq_cache", "char_freqs.json")
+        self.char_hist_file = getattr(args, "char_hist_file", "char_freq_hist.png")
+
+        if self.reuse_chars:
+            self.chars = self.get_key_from_meta("chars")
+            if self.chars is None:
+                raise ValueError("No chars found in meta.pkl. Cannot reuse chars.")
+            # If we reuse chars, we don't need freq info for histogram
+            self.char_items = [(ch, 0) for ch in self.chars]
+            self.total_chars = 0
+        else:
+            # Load cached frequencies if available
+            if os.path.exists(self.char_freq_cache):
+                with open(self.char_freq_cache, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+                char_items = [(item[0], item[1]) for item in cache["char_counts"]]
+                self.total_chars = cache["total_chars"]
+            else:
+                combined_data = (train_data or "") + (val_data or "")
+                freq = defaultdict(int)
+                for ch in combined_data:
+                    freq[ch] += 1
+                self.total_chars = sum(freq.values())
+                char_items = sorted(freq.items(), key=lambda x: (-x[1], x[0]))
+                # Save counts for reuse
+                with open(self.char_freq_cache, "w", encoding="utf-8") as f:
+                    json.dump({"char_counts": char_items, "total_chars": self.total_chars}, f, ensure_ascii=False)
+
+            # Select characters based on limits
+            selected = []
+            cumulative = 0
+            for ch, count in char_items:
+                selected.append(ch)
+                cumulative += count
+                if self.char_vocab_limit is not None and len(selected) >= self.char_vocab_limit:
+                    break
+                if self.char_coverage is not None and self.total_chars > 0 and (cumulative / self.total_chars) >= self.char_coverage:
+                    break
+            self.chars = selected
+            self.char_items = char_items
+
+        self.build_vocab()
+        self.save_histogram()
+
+    def build_vocab(self):
+        # Assign IDs 0..255 to individual bytes
+        self.stoi = {}
+        self.itos = {}
+        for b in range(256):
+            key = bytes([b])
+            self.stoi[key] = b
+            self.itos[b] = key
+
+        # Characters start from 256 upwards
+        offset = 256
+        self.char_token_bytes = {}
+        for i, ch in enumerate(self.chars):
+            token_id = offset + i
+            self.stoi[ch] = token_id
+            self.itos[token_id] = ch
+            self.char_token_bytes[ch] = ch.encode("utf-8")
+
+        self.vocab_size = 256 + len(self.chars)
+
+    def save_histogram(self):
+        """Save a histogram of token id vs frequency with log-scaled y-axis."""
+        if not self.char_items:
+            return
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            return
+
+        freqs = [count for _, count in self.char_items]
+        ids = [256 + i for i in range(len(freqs))]
+        plt.figure()
+        plt.plot(ids, freqs)
+        plt.yscale('log')
+        plt.xlabel('token id')
+        plt.ylabel('frequency')
+        if self.char_vocab_limit is not None or self.char_coverage is not None:
+            cutoff_id = 256 + len(self.chars) - 1
+            plt.axvline(x=cutoff_id, color='red', linestyle='--', label='vocab limit')
+            plt.legend()
+        plt.tight_layout()
+        plt.savefig(self.char_hist_file)
+        plt.close()
+
+    def tokenize(self, data):
+        ids = []
+        if data is None:
+            return ids
+
+        pbar = tqdm(total=len(data), desc="Tokenizing Char + Byte Fallback")
+        for ch in data:
+            if ch in self.stoi:
+                token_id = self.stoi[ch]
+                self.record_token(token_id)
+                ids.append(token_id)
+            else:
+                for b in ch.encode("utf-8"):
+                    byte_token = self.stoi[bytes([b])]
+                    self.record_token(byte_token)
+                    ids.append(byte_token)
+            pbar.update(1)
+        pbar.close()
+
+        meta = {
+            "vocab_size": self.vocab_size,
+            "tokenizer": "char_with_byte_fallback",
+            "chars": self.chars,
+            "stoi": self.stoi,
+            "itos": self.itos,
+        }
+        self.finalize_meta(meta)
+        return ids
+
+    def detokenize(self, ids):
+        out_pieces = []
+        byte_buffer = []
+        for token_id in ids:
+            if token_id < 256:
+                byte_buffer.append(self.itos[token_id])
+            else:
+                if byte_buffer:
+                    all_bytes = b"".join(byte_buffer)
+                    out_pieces.append(all_bytes.decode("utf-8", errors="replace"))
+                    byte_buffer = []
+                out_pieces.append(self.itos[token_id])
+
+        if byte_buffer:
+            all_bytes = b"".join(byte_buffer)
+            out_pieces.append(all_bytes.decode("utf-8", errors="replace"))
+
+        return "".join(out_pieces)
+
 class CustomCharTokenizerWithByteFallback(Tokenizer):
     """
     In this version, we assign IDs 0..255 to raw bytes,
