@@ -57,6 +57,7 @@ python3 quantization/visualize.py \
 - **affine_quant**: Uses an asymmetric transformation for quantization.
 - **stochastic_quant**: Introduces randomness into the quantization process for stochastic rounding.
 - **ternary_quant**: Symmetrically quantizes values to a 1.58 bit range of -1, 0, and 1
+- **kurtail_quant**: Applies a learned rotation that minimizes kurtosis before symmetric quantization.
 
 ---
 
@@ -181,3 +182,43 @@ python3 quantization/visualize.py \
     - **Purpose**: Allows the model to stabilize before introducing quantization, which can improve training convergence.
 
 ---
+
+## KurTail Rotation
+
+KurTail is an optional rotation step that can be applied to activations
+before quantization. It learns an orthogonal matrix that minimizes the
+kurtosis of the activation distribution which helps mitigate outliers for
+extreme bit-widths.
+
+```python
+from quantization.kurtail import apply_kurtail_quantization
+zpt, scale, q, R = apply_kurtail_quantization(tensor, bits=4)
+```
+
+The learned rotation matrix `R` can be fused into the model weights or
+stored for later use during inference. KurTail relies only on PyTorch and
+does not require multiple GPUs to train the rotation.
+
+### Quantization Aware Training Demo
+
+The repository includes `demos/kurtail_qat_demo.sh` which trains a small
+quantized model end-to-end using KurTail during training:
+
+```bash
+bash demos/kurtail_qat_demo.sh
+```
+
+### Post-Training Quantization Example
+
+KurTail can also be used to quantize an already trained checkpoint. Run
+`quantization/ptq_kurtail.py` on a checkpoint produced by `train.py`:
+
+```bash
+python3 quantization/ptq_kurtail.py \
+  --ckpt out/ckpt.pt \
+  --output quantized_kurtail.pt \
+  --bits 4
+```
+
+This script will create a new checkpoint where each weight matrix has been
+rotated and quantized with KurTail.
