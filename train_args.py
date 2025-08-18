@@ -440,6 +440,7 @@ def parse_args():
             "krmsnorm",
             "prmsnorm",
             "rmsnorm",
+            "rmsnorm_single",
             "layernorm",
             "hyperspherenorm",
             "dact",
