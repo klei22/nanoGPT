@@ -11,6 +11,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     CharTokenizer,
+    CharTokenizerWithByteFallback,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
 )
@@ -107,6 +108,10 @@ class TestTokenizers(unittest.TestCase):
             os.remove("meta.pkl")
         if os.path.exists("remaining.txt"):
             os.remove("remaining.txt")
+        if os.path.exists("char_freqs.json"):
+            os.remove("char_freqs.json")
+        if os.path.exists("char_freq_hist.png"):
+            os.remove("char_freq_hist.png")
 
     # --------------------------------------------------------------------------
     # Helper Method to Print Token Count Histogram
@@ -194,6 +199,25 @@ class TestTokenizers(unittest.TestCase):
     def test_char_tokenizer(self):
         args = Namespace(reuse_chars=False)
         tokenizer = CharTokenizer(args, self.sample_text, None)
+        ids = tokenizer.tokenize(self.sample_text)
+        detokenized = tokenizer.detokenize(ids)
+
+        console.print("[input]Input:[/input]")
+        console.print(self.sample_text, style="input")
+        console.print("[output]Detokenized Output:[/output]")
+        console.print(detokenized, style="output")
+
+        self.assertEqual(self.sample_text, detokenized)
+
+    def test_char_tokenizer_with_byte_fallback(self):
+        args = Namespace(
+            reuse_chars=False,
+            char_vocab_limit=5,
+            char_coverage=0.8,
+            char_freq_cache="char_freqs.json",
+            char_hist_file="char_freq_hist.png",
+        )
+        tokenizer = CharTokenizerWithByteFallback(args, self.sample_text, None)
         ids = tokenizer.tokenize(self.sample_text)
         detokenized = tokenizer.detokenize(ids)
 

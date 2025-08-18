@@ -827,6 +827,39 @@ def get_tokenizer_functions(meta):
         decode = lambda l: enc.decode(l)
         return encode, decode
 
+    if meta['tokenizer'] == 'char_with_byte_fallback':
+        stoi, itos = meta['stoi'], meta['itos']
+
+        def encode(text: str):
+            ids = []
+            for ch in text:
+                if ch in stoi:
+                    ids.append(stoi[ch])
+                else:
+                    for b in ch.encode('utf-8'):
+                        ids.append(stoi[bytes([b])])
+            return ids
+
+        def decode(token_ids: Sequence[int]):
+            out_pieces: List[str] = []
+            byte_buffer: List[bytes] = []
+            for tok_id in token_ids:
+                token = itos.get(tok_id)
+                if token is None:
+                    continue
+                if isinstance(token, bytes):
+                    byte_buffer.append(token)
+                else:
+                    if byte_buffer:
+                        out_pieces.append(b"".join(byte_buffer).decode('utf-8', errors='replace'))
+                        byte_buffer = []
+                    out_pieces.append(token)
+            if byte_buffer:
+                out_pieces.append(b"".join(byte_buffer).decode('utf-8', errors='replace'))
+            return ''.join(out_pieces)
+
+        return encode, decode
+
     if meta['tokenizer'] == 'json_byte_fallback':
         stoi, itos = meta['stoi'], meta['itos']
 
@@ -1166,14 +1199,7 @@ def main():
                     meta_path = os.path.join("data", dataset_name, "meta.pkl")
                     with open(meta_path, "rb") as f:
                         meta = pickle.load(f)
-                    if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
-                        enc_obj = tiktoken.get_encoding(meta['tiktoken_encoding'])
-                        decode_i = lambda l: enc_obj.decode(l)
-                    else:
-                        # or custom fallback
-                        stoi = meta['stoi']
-                        itos = meta['itos']
-                        decode_i = lambda l: "".join([itos[ix] for ix in l if ix in itos])
+                    _, decode_i = get_tokenizer_functions(meta)
 
                     key = f"context_{i}"
                     tokens_i = token_dict[key][0].tolist()

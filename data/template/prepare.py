@@ -8,6 +8,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     CharTokenizer,
+    CharTokenizerWithByteFallback,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
 )
@@ -26,7 +27,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "custom_char_byte_fallback", "json_byte_fallback"],
+                       choices=["sentencepiece", "tiktoken", "char", "char_byte_fallback", "custom", "custom_char_byte_fallback", "json_byte_fallback"],
                        default="tiktoken", help="Tokenization method")
 
     # SentencePiece arguments
@@ -44,6 +45,14 @@ def parse_arguments():
 
     # Char tokenizer arguments
     parser.add_argument("--reuse_chars", action="store_true", help="Reuse character list from meta.pkl")
+    parser.add_argument("--char_vocab_limit", type=int, default=None,
+                       help="Maximum number of non-byte characters to keep for char_byte_fallback tokenizer")
+    parser.add_argument("--char_coverage", type=float, default=None,
+                       help="Target fraction of data to cover with char vocab before falling back to bytes")
+    parser.add_argument("--char_freq_cache", type=str, default="char_freqs.json",
+                       help="Path to cache file for character frequencies")
+    parser.add_argument("--char_hist_file", type=str, default="char_freq_hist.png",
+                       help="Path to save histogram of character frequencies")
 
     # Custom tokenizer arguments
     parser.add_argument("--tokens_file", type=str, default=None, help="Path to the file containing newline-separated tokens for tokenization")
@@ -92,6 +101,8 @@ def main():
         tokenizer = CustomTokenizer(args)
     elif args.method == "char":
         tokenizer = CharTokenizer(args, train_data, val_data)
+    elif args.method == "char_byte_fallback":
+        tokenizer = CharTokenizerWithByteFallback(args, train_data, val_data)
     elif args.method == "custom_char_byte_fallback":
         tokenizer = CustomCharTokenizerWithByteFallback(args)
     elif args.method == "json_byte_fallback":
