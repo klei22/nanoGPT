@@ -371,6 +371,18 @@ def parse_args():
     model_group.add_argument('--n_experts', default=8, type=int, help="set number of experts per MoE layer")
     model_group.add_argument('--moe_top_k', default=2, type=int)
     model_group.add_argument('--moe_router_scheme', default="softmax", type=str, help="option to set routing scheme for MoE layer, defaults to softmax")
+
+    # Early exit routing
+    model_group.add_argument('--use_early_exit', default=False, action=argparse.BooleanOptionalAction,
+                             help='Enable early exit after each transformer block')
+    model_group.add_argument('--early_exit_router_variant', default='random', type=str,
+                             help='Router variant for early exit decisions')
+    model_group.add_argument('--early_exit_threshold', default=0.5, type=float,
+                             help='Threshold for linear early exit router')
+    model_group.add_argument('--early_exit_prob', default=0.0, type=float,
+                             help='Exit probability for random early exit router')
+    model_group.add_argument('--early_exit_norm_threshold', default=1e9, type=float,
+                             help='Norm threshold for norm-based early exit router')
     model_group.add_argument('--use_flex_attn', default=None,  action=argparse.BooleanOptionalAction, help="option for using flex attention for sliding windows")
     model_group.add_argument('--attn_logit_softcapping', default=None, action=argparse.BooleanOptionalAction, help="option for softcapping attention (before masking)")
     model_group.add_argument('--final_logit_softcapping', default=None, action=argparse.BooleanOptionalAction, help="option for softcapping final logits")

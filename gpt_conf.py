@@ -136,6 +136,13 @@ class GPTConfig:
     moe_top_k: int = 2
     moe_router_scheme: str = "softmax"
 
+    # Early exit routing
+    use_early_exit: bool = False
+    early_exit_router_variant: str = "random"
+    early_exit_threshold: float = 0.5
+    early_exit_prob: float = 0.0
+    early_exit_norm_threshold: float = 1e9
+
     # Logging options
     softmax_io_logging: bool = False
     consmax_beta_gamma_logging: bool = False

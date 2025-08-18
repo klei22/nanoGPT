@@ -37,6 +37,7 @@ from variations.position_encoding_variations import QuantizedEmbedding, RotaryEm
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
+from variations.early_exit_router_variants import early_exit_router_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -158,6 +159,12 @@ class GPT(nn.Module):
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
+
+        if config.use_early_exit:
+            router_cls = early_exit_router_dictionary[config.early_exit_router_variant]
+            self.early_exit_routers = nn.ModuleList([router_cls(config) for _ in range(config.n_layer)])
+        else:
+            self.early_exit_routers = None
 
         if self.config.use_abs_pos_embeddings:
             if config.quantize_wpe:
@@ -429,6 +436,22 @@ class GPT(nn.Module):
                         and layer_idx == self.config.obtain_vector_at_layer_idx):
                     x = self.obtain_vector_from_layer_output(x)
 
+                if self.config.use_early_exit and target_list is None:
+                    if self.early_exit_routers[layer_idx - 1](x):
+                        x = self.transformer.ln_f(x)
+                        if self.n_embd_wte:
+                            x = F.linear(x, self.transformer.scale_down.weight.t())
+                        logits = []
+                        for i in range(len(token_list)):
+                            logits.append(self.transformer[f'lm_head_{i}'](x))
+                        if self.config.final_logit_softcapping is not None:
+                            logits = [
+                                torch.tanh(logit_var / self.config.final_logit_softcapping)
+                                * self.config.final_logit_softcapping
+                                for logit_var in logits
+                            ]
+                        return logits, None
+
                 layer_idx += 1
 
             # 3. Final layer norm
@@ -547,6 +570,21 @@ class GPT(nn.Module):
                     print(layer_idx, self.config.obtain_vector_at_layer_idx)
                     x = self.obtain_vector_from_layer_output(x)
 
+                if self.config.use_early_exit and targets is None:
+                    if self.early_exit_routers[layer_idx - 1](x):
+                        x = self.transformer.ln_f(x)
+                        if self.n_embd_wte:
+                            x = F.linear(x, self.transformer.scale_down.weight.t())
+                        if self.config.multidataset_wte and dataset_idx is not None:
+                            logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
+                        else:
+                            logits = self.lm_head(x[:, [-1], :])
+                        if self.config.final_logit_softcapping is not None:
+                            logits = logits / self.config.final_logit_softcapping
+                            logits = torch.tanh(logits)
+                            logits = logits * self.config.final_logit_softcapping
+                        return logits, None
+
                 layer_idx +=1
 
             x = self.transformer.ln_f(x)
@@ -631,6 +669,19 @@ class GPT(nn.Module):
             x = block(x, iter_num)
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
+            if self.config.use_early_exit:
+                if self.early_exit_routers[layer_idx - 1](x):
+                    x = self.transformer.ln_f(x)
+                    if self.n_embd_wte:
+                        x = F.linear(x, self.transformer.scale_down.weight.t())
+                    if self.config.multidataset_wte and dataset_idx is not None:
+                        logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+                    else:
+                        logits = self.lm_head(x)
+                    if self.final_logit_softcapping is not None:
+                        logits = torch.tanh(logits / self.final_logit_softcapping) \
+                                 * self.final_logit_softcapping
+                    return (logits, x) if return_hidden else (logits, None)
             layer_idx += 1
 
         x = self.transformer.ln_f(x)
