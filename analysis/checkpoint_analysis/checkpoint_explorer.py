@@ -3,8 +3,11 @@ import sys
 import argparse
 import torch
 
-# Add top level dir
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Determine repository root and add it to PYTHONPATH so that `model.py` can be
+# imported when this script is executed from anywhere inside the repo.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, os.pardir, os.pardir))
+sys.path.append(REPO_ROOT)
 
 from model import GPT, GPTConfig
 
@@ -57,7 +60,7 @@ def display_heatmap(tensor, full_key):
         return
 
     # Create the images directory if it doesn't exist
-    images_dir = os.path.join('checkpoint_analysis', 'images')
+    images_dir = os.path.join(REPO_ROOT, 'analysis', 'checkpoint_analysis', 'images')
     os.makedirs(images_dir, exist_ok=True)
 
     # Clean the full_key to create a valid filename
@@ -125,7 +128,7 @@ def display_histogram(tensor, full_key):
             print("Invalid input. Please enter a positive integer.")
 
     # Create the images directory if it doesn't exist
-    images_dir = os.path.join('checkpoint_analysis', 'images')
+    images_dir = os.path.join(REPO_ROOT, 'analysis', 'checkpoint_analysis', 'images')
     os.makedirs(images_dir, exist_ok=True)
 
     # Clean the full_key to create a valid filename
@@ -204,6 +207,24 @@ def display_stats(tensor, full_key):
     console.print(table)
     input("Press Enter to continue...")
 
+def export_weights(tensor, full_key, fmt):
+    """Export the selected tensor to `weights_export` in the repository root."""
+    import numpy as np
+
+    export_dir = os.path.join(REPO_ROOT, 'weights_export')
+    os.makedirs(export_dir, exist_ok=True)
+
+    filename = full_key.replace('.', '_').replace('/', '_')
+    if fmt == 'csv':
+        path = os.path.join(export_dir, f"{filename}.csv")
+        np.savetxt(path, tensor.detach().cpu().numpy().reshape(-1), delimiter=',')
+    else:
+        path = os.path.join(export_dir, f"{filename}.npy")
+        np.save(path, tensor.detach().cpu().numpy())
+
+    print(f"\nWeights exported to {path}")
+    input("Press Enter to continue...")
+
 def explore_tree(tree, path=[]):
     while True:
         current_level = tree
@@ -239,6 +260,7 @@ def explore_tree(tree, path=[]):
                 print("2: Display 2D heatmap")
                 print("3: Display histogram")
                 print("4: Display summary statistics")
+                print("5: Export weights to file")
                 print("b: Go back")
                 choice = input("Enter your choice: ")
                 if choice == '1':
@@ -259,6 +281,14 @@ def explore_tree(tree, path=[]):
                 elif choice == '4':
                     # Display stats
                     display_stats(current_level, full_key)
+                elif choice == '5':
+                    fmt = input("Enter format (npy/csv) [npy]: ").strip().lower()
+                    if fmt not in ('npy', 'csv', ''):
+                        print("Invalid format. Defaulting to npy.")
+                        fmt = 'npy'
+                    if fmt == '':
+                        fmt = 'npy'
+                    export_weights(current_level, full_key, fmt)
                 elif choice == 'b':
                     path.pop()
                     break
