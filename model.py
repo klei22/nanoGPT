@@ -352,7 +352,7 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None):
+    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, token_weights=None):
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -457,10 +457,17 @@ class GPT(nn.Module):
             if target_list is not None:
                 # If we do want to compute losses for each context
                 losses = []
+                weight_list = None
+                if isinstance(token_weights, dict):
+                    weight_list = [token_weights.get(k) for k in token_dict.keys()]
+                elif token_weights is not None:
+                    weight_list = [token_weights] * len(token_list)
                 for i in range(len(token_list)):
+                    w = weight_list[i] if weight_list is not None else None
                     loss_i = F.cross_entropy(
                         logits[i].view(-1, logits[i].size(-1)),
                         target_list[i].view(-1),
+                        weight=w,
                         ignore_index=-1
                     )
                     losses.append(loss_i)
@@ -567,7 +574,8 @@ class GPT(nn.Module):
                     logits = torch.tanh(logits)
                     logits = logits * self.config.final_logit_softcapping
 
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1),
+                                       weight=token_weights, ignore_index=-1)
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
                 if self.config.multidataset_wte and dataset_idx is not None:
