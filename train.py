@@ -73,14 +73,27 @@ import torch
 import torch.onnx
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
-
 from variations.model_variations import model_variation_dictionary
 
 from model import GPT, GPTConfig
 
 # Inference related imports
 import tiktoken
+
+from loggers.trainer_logger import log_train_step, log_validation_step
+from loggers.tensorboard_logger import (
+    setup_tensorboard,
+    log_validation_metrics as tb_log_validation_metrics,
+    log_train_metrics as tb_log_train_metrics,
+    log_gamma_beta as tb_log_gamma_beta,
+    close_tensorboard,
+)
+from loggers.wandb_logger import (
+    setup_wandb,
+    log_validation_metrics as wb_log_validation_metrics,
+    log_train_metrics as wb_log_train_metrics,
+    finish_wandb,
+)
 
 from train_args import parse_args
 
@@ -105,6 +118,7 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+        self.writer = None
 
         # store overall statistics for weights and activations
         self.latest_overall_weight_stats = {
@@ -381,32 +395,8 @@ class Trainer:
 
         self.raw_model = self.model.module if self.ddp else self.model
 
-        timestamp_prefix = time.strftime("%Y%m%d-%H%M%S")
-        if self.args.timestamp:
-            timestamp_prefix = self.args.timestamp
-
-        # Tensorboard
-        if self.args.tensorboard_log:
-            # 1) Give the run a safe default name when the user did not supply one
-            if self.args.tensorboard_run_name is None:
-                self.args.tensorboard_run_name = f"{timestamp_prefix}"
-
-            run_name = self.args.tensorboard_run_name
-
-            # 2) Derive a *filename-safe* dataset tag (slashes ⇒ underscores)
-            sanitized_dataset = self.args.dataset.replace("/", "_")
-
-            # 3) Store a matching, safe CSV filename for later use
-            if self.args.csv_log:
-                self.args.csv_name = f"{sanitized_dataset}_{run_name}"
-            log_subpath = os.path.join(self.args.tensorboard_log_dir, run_name)
-            self.writer = SummaryWriter(log_subpath)
-
-        # Wandb
-        if self.args.wandb_log and self.master_process:
-            import wandb
-            self.args.csv_name = wandb_run_name
-            wandb.init(project=self.args.wandb_project, name=self.args.wandb_run_name, config=self.args)
+        self.writer = setup_tensorboard(self.args)
+        setup_wandb(self.args, self.master_process)
         self.load_tokenizer()
 
 
@@ -1075,141 +1065,28 @@ class Trainer:
                                             'output': {0: 'batch_size', 1: 'sequence_length'}})
 
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance):
-
-        if self.iter_num == 0 and self.args.tensorboard_log and self.args.export_model_graph == True  and self.args.compile == False:
+        if (
+            self.iter_num == 0
+            and self.args.tensorboard_log
+            and self.args.export_model_graph is True
+            and self.args.compile is False
+        ):
             self.export_model_graph()
 
-        if self.args.tensorboard_log:
-            # Log metrics for each dataset separately
-            self.writer.add_scalars(
-                    f"{target_dataset}/loss_iters", {
-                        f"val": losses['val'].item(),
-                        },
-                    self.iter_num
-                    )
-            self.writer.add_scalars(
-                    f"{target_dataset}/loss_tokens", {
-                        f"val": losses['val'].item(),
-                        },
-                    tokens_trained
-                    )
-
-            # vocab agnostic, cross tokenizer comparison
-            if self.args.log_btc_train:
-                self.writer.add_scalars(
-                        f"{target_dataset}/chance_tokens",
-                        {"val_chance": val_better_than_chance},
-                        tokens_trained
-                        )
-                self.writer.add_scalars(
-                        f"{target_dataset}/chance_iters",
-                        {"val_chance": val_better_than_chance},
-                        self.iter_num
-                        )
-
-            # vocab agnostic, cross parameter size comparison
-            if self.args.log_btc_per_param:
-                self.writer.add_scalars(
-                        f"{target_dataset}/btc_per_param_tokens",
-                        {"val_chance": val_better_than_chance/self.model.num_param},
-                        tokens_trained
-                        )
-                self.writer.add_scalars(
-                        f"{target_dataset}/btc_per_param_iters",
-                        {"val_chance": val_better_than_chance/self.model.num_param},
-                        self.iter_num
-                        )
-
-            self.writer.add_scalar(f"{target_dataset}/epoch", epoch, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/tokens_trained", tokens_trained, self.iter_num)
-
-            self.writer.add_scalar(f"{target_dataset}/vram", self.vram_allocated, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/mfu_pct", running_mfu * 100, self.iter_num)
-
-            self.writer.add_scalar(f"{target_dataset}/loss_vocab", self.model_args['vocab_size'] / torch.exp(losses['val']).item(), self.iter_num)
-
-            self.writer.add_scalar(f"{target_dataset}/lr_iters", self.lr, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/lr_tokens", self.lr, tokens_trained)
-
-            self.writer.add_scalar(f"{target_dataset}/batch_size_iters", self.args.batch_size, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/batch_size_tokens", self.args.batch_size, tokens_trained)
-
-            self.writer.add_scalar(f"{target_dataset}/std_val_iters", losses['val_std'].item(), self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/std_val_tokens", losses['val_std'].item(), tokens_trained)
-
-            if self.args.gns_type is not None:
-                self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
-                self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
-
+        tb_log_validation_metrics(
+            self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance
+        )
+        wb_log_validation_metrics(self, losses, running_mfu)
 
         if self.args.csv_log:
-            # concise training metrics
             self.write_to_csv(target_dataset, losses['train'].item(), losses['val'].item(), prefix=f"{target_dataset}_")
-
-            # bulk metrics
             self.write_to_csv(target_dataset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
 
     def log_metrics_non_validation(self, loss_training, running_mfu, epoch, tokens_trained, target_dataset, train_better_than_chance):
-        if self.args.tensorboard_log:
-            self.writer.add_scalars(
-                    f"{target_dataset}/loss_iters",
-                    {"train": loss_training},
-                    self.iter_num
-                    )
-            self.writer.add_scalars(
-                    f"{target_dataset}/loss_tokens",
-                    {"train": loss_training},
-                    tokens_trained
-                    )
-
-            if self.args.log_btc_train:
-                self.writer.add_scalars(
-                        f"{target_dataset}/chance_tokens",
-                        {"train_chance": train_better_than_chance},
-                        tokens_trained
-                        )
-                self.writer.add_scalars(
-                        f"{target_dataset}/chance_iters",
-                        {"train_chance": train_better_than_chance},
-                        self.iter_num
-                        )
-
-            if self.args.log_btc_per_param:
-                self.writer.add_scalars(
-                        f"{target_dataset}/btc_per_param_tokens",
-                        {"train_chance": train_better_than_chance/self.model.num_param},
-                        tokens_trained
-                        )
-                self.writer.add_scalars(
-                        f"{target_dataset}/btc_per_param_iters",
-                        {"train_chance": train_better_than_chance/self.model.num_param},
-                        self.iter_num
-                        )
-
-            self.writer.add_scalar(f"{target_dataset}/mfu_pct", running_mfu * 100, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/vram", self.vram_allocated, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/param", self.model.num_param, self.iter_num)
-
-            self.writer.add_scalar(f"{target_dataset}/epoch", epoch, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/tokens_trained", tokens_trained, self.iter_num)
-
-            self.writer.add_scalar(f"{target_dataset}/lr_iters", self.lr, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/lr_tokens", self.lr, tokens_trained)
-
-            self.writer.add_scalar(f"{target_dataset}/batch_size_iter", self.args.batch_size, self.iter_num)
-            self.writer.add_scalar(f"{target_dataset}/batch_size_tokens", self.args.batch_size, tokens_trained)
-
-            if self.args.log_grad_norm:
-                self.writer.add_scalar(f"{target_dataset}/grad_norm_iters", self.grad_norm, self.iter_num)
-                self.writer.add_scalar(f"{target_dataset}/grad_norm_tokens", self.grad_norm, tokens_trained)
-
-            if self.args.log_grad_std:
-                self.writer.add_scalar(f"{target_dataset}/grad_std_iters", self.grad_std, self.iter_num)
-                self.writer.add_scalar(f"{target_dataset}/grad_std_tokens", self.grad_std, tokens_trained)
-
-            if self.args.gns_type is not None:
-                self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
-                self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
+        tb_log_train_metrics(
+            self, loss_training, running_mfu, epoch, tokens_trained, target_dataset, train_better_than_chance
+        )
+        wb_log_train_metrics(self, loss_training, running_mfu)
 
     def write_to_csv(self, *args, prefix=""):
         args = list(args)
@@ -1246,27 +1123,7 @@ class Trainer:
 
 
     def log_gamma_beta(self, gamma, beta, layer_num, head_num=None):
-        if self.args.tensorboard_log:
-            if head_num:
-                self.writer.add_scalars(
-                        "gammas",
-                        {"gamma_L" + str(layer_num) + "_H" + head_num: gamma}, self.iter_num)
-                self.writer.add_scalars(
-                        "betas",
-                        {"beta_L" + str(layer_num) + "_H" + head_num: beta}, self.iter_num)
-            else:
-                self.writer.add_scalar( "gamma_L" + str(layer_num), gamma, self.iter_num)
-                self.writer.add_scalar( "beta_L" + str(layer_num), beta, self.iter_num)
-
-        if self.args.wandb_log and self.master_process:
-            import wandb
-            wandb.log({
-                "iter": self.iter_num,
-                "train/loss": losses['train'],
-                "val/loss": losses['val'],
-                "lr": self.lr,
-                "mfu": running_mfu*100,
-                })
+        tb_log_gamma_beta(self, gamma, beta, layer_num, head_num)
 
     def underscore_abbr(self, dataset_name):
         """ Transforms long dataset name to abbreviation
@@ -1369,61 +1226,7 @@ class Trainer:
                                 )
 
                     self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
-                    if self.args.dataset_list is not None:
-                        # Print loss for each dataset if multiple datasets are used
-                        for dataset, dataset_losses in losses['datasets'].items():
-                            better_than_chance = self.model_args['vocab_size'] / math.exp(dataset_losses['val'].item())
-                            log_message=f"step {self.iter_num}: "
-                            log_message+=f"{dataset:<20s}"
-                            log_message+=f", {self.model.num_param}"
-                            log_message+=f", train loss {dataset_losses['train']:.4f}"
-                            log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
-                            log_message+=f", btc_val_set {better_than_chance:.2e}"
-                            log_message+=f", btc_val_per_param {(better_than_chance/self.model.num_param):.2e}"
-                            log_message+=f", val loss {dataset_losses['val']:.4f}"
-                            log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
-                            if self.args.gns_type is not None:
-                                log_message+=f", gns {self.gns:.2f}"
-                            log_message+=f", lr {self.lr:.4f}"
-                            log_message+=f", tokens_trained {self.tokens_trained_dict[dataset]:.2e}"
-                            self.console.print(log_message)
-                            self.log_metrics(dataset_losses, running_mfu, self.epochs_trained_dict[dataset], self.tokens_trained_dict[dataset], dataset, better_than_chance)
-                    elif self.args.multicontext_datasets is not None:
-                        # Print loss for each dataset if multiple datasets are used
-                        # print(losses['datasets'])
-                        # for dataset, dataset_losses in losses['datasets'].items():
-                            #     print(dataset, dataset_losses)
-                        for dataset, dataset_losses in losses['datasets'].items():
-                            log_message=f"step {self.iter_num}: "
-                            log_message+=f"{dataset:<20s}"
-                            log_message+=f", train loss {dataset_losses['train']:.4f}"
-                            log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
-                            log_message+=f", val loss {dataset_losses['val']:.4f}"
-                            log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
-                            if self.args.gns_type is not None:
-                                log_message+=f", gns {self.gns:.2f}"
-                            log_message+=f", lr {self.lr:.4f}"
-                            log_message+=f", tokens_trained {self.tokens_trained:.2e}"
-                            self.console.print(log_message)
-                            better_than_chance = self.vocab_sizes[dataset] / math.exp(dataset_losses['val'].item())
-                            self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained, dataset, better_than_chance)
-                    else:
-                        # Default behavior for a single dataset
-                        better_than_chance = self.model_args['vocab_size'] / math.exp(losses['val'].item())
-                        log_message=f"step {self.iter_num}:"
-                        log_message+=f", {self.model.num_param}"
-                        log_message+=f", train loss {losses['train']:.4f}"
-                        log_message+=f", train_stdev {losses['train_std']:.4f}"
-                        log_message+=f", btc_val {better_than_chance:.2e}"
-                        log_message+=f", btc_val_per_param {(better_than_chance/self.model.num_param):.2e}"
-                        log_message+=f", val loss {losses['val']:.4f}"
-                        log_message+=f", val_stdev {losses['val_std']:.4f}"
-                        if self.args.gns_type is not None:
-                            log_message+=f", gns {self.gns:.2f}"
-                        log_message+=f", batch_size {self.args.batch_size}"
-                        log_message+=f", lr {self.lr:.4f}"
-                        self.console.print(log_message)
-                        self.log_metrics(losses, running_mfu, current_epoch, self.tokens_trained, current_dataset, better_than_chance)
+                    log_validation_step(self, losses, running_mfu, current_epoch, current_dataset)
 
                     if math.isnan(losses["val"]):
                         # If val loss is nan, then exit.
@@ -1610,46 +1413,7 @@ class Trainer:
                         mfu = self.raw_model.estimate_mfu(self.args.batch_size * self.args.gradient_accumulation_steps, dt)
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
 
-
-                    # training _loss section
-                    log_message= f"iter {self.iter_num}"
-                    log_message+= f", {dt*1000:.2f} ms"
-                    log_message+= f", {self.model.num_param}"
-                    if self.args.multicontext_datasets:
-                        for i, mc_dataset in enumerate(self.args.multicontext_datasets):
-                            self.mc_btc_train[mc_dataset] = self.vocab_sizes[mc_dataset] / math.exp(training_losses[i].item())
-                            log_message+= f", {self.underscore_abbr(mc_dataset)}"
-                            if self.args.log_btc_train:
-                                log_message+= f" btc {self.mc_btc_train[mc_dataset]:.4f}"
-                            log_message+= f", {self.underscore_abbr(mc_dataset)}"
-                            log_message+= f" loss {training_losses[i].item():.4f}"
-                    else:
-                        better_than_chance = self.model_args['vocab_size'] / math.exp(lossf)
-                        log_message+= f", loss {lossf:.4f}"
-                        if self.args.log_btc_train:
-                            log_message+=f", btc_train {better_than_chance:.2e}"
-                        if self.args.log_btc_per_param:
-                            log_message+=f", btc_train_per_param {(better_than_chance/self.model.num_param):.2e}"
-
-                    if self.args.dataset_list:
-                        log_message+= f", epoch {self.epochs_trained_dict[prior_dataset]:2.2f}"
-                        log_message+= f", tokens_trained {self.tokens_trained_dict[prior_dataset]:.2e}"
-                        log_message+= f", dataset: {prior_dataset}"
-                    else:
-                        log_message+= f", epoch {current_epoch:6.2f}"
-                        log_message+= f", tokens_trained {self.tokens_trained:.2e}"
-                    log_message+= f", mfu {running_mfu*100:.2f}%"
-                    if self.args.gns_type is not None:
-                        self.gns = self.gns_ema.get_gns()
-                        log_message+= f", gns {self.gns:.2f}"
-                    log_message+= f", batch_size {self.args.batch_size}"
-                    log_message+= f", lr {self.lr:.4f}"
-                    if self.args.log_grad_norm:
-                        log_message+= f", grad_norm {self.grad_norm:2f}"
-                    if self.args.log_grad_std:
-                        log_message+= f", grad_std {self.grad_std:.2f}"
-
-                    self.console.print(log_message)
+                    log_train_step(self, lossf, dt, running_mfu, current_epoch, prior_dataset, training_losses)
 
                     if math.isnan(lossf):
                         # If training loss is nan, then exit.
@@ -1658,13 +1422,6 @@ class Trainer:
                             sys.exit("Exiting training loss is NaN")
 
                     self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
-                    if self.args.dataset_list:
-                        self.log_metrics_non_validation(lossf, running_mfu, self.epochs_trained_dict[prior_dataset], self.tokens_trained_dict[prior_dataset], prior_dataset, better_than_chance)
-                    if self.args.multicontext_datasets:
-                        for i, mc_dataset in enumerate(self.args.multicontext_datasets):
-                            self.log_metrics_non_validation(training_losses[i].item(), running_mfu, current_epoch, self.tokens_trained, mc_dataset, self.mc_btc_train[mc_dataset])
-                    else:
-                        self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset, better_than_chance)
 
                 if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
                     create_statistics(self, graph_y_labels)
@@ -1705,14 +1462,11 @@ class Trainer:
             if self.args.plot_statistics:
                 plot_statistics(self.args, self.stats, graph_y_labels)
 
-            if self.args.tensorboard_log:
-                self.writer.flush()
-                self.writer.close()
+            if self.args.tensorboard_log and self.writer is not None:
+                close_tensorboard(self.writer)
 
             if self.args.wandb_log and self.master_process:
-                import wandb
-                wandb.log({"finished": True})
-                wandb.finish()
+                finish_wandb()
 
 def main():
     args, model_group, training_group, logging_group = parse_args()
@@ -1724,9 +1478,10 @@ def main():
     if trainer.ddp:
         destroy_process_group()
 
-    if args.tensorboard_log:
-        trainer.writer.flush()
-        trainer.writer.close()
+    if args.tensorboard_log and trainer.writer is not None:
+        close_tensorboard(trainer.writer)
+    if args.wandb_log and trainer.master_process:
+        finish_wandb()
 
 if __name__ == '__main__':
     main()
