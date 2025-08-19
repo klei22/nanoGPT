@@ -1,0 +1,26 @@
+# early_exit_router.yaml
+---
+# base hyperparameters
+max_iters: [20000]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+eval_interval: [500]
+block_size: [256]
+device: ["cuda"]
+dataset: ["minipile"]
+dtype: ["float16"]
+compile: [true]
+
+# parameter groups comparing conventional model vs early exit routers
+parameter_groups:
+  - use_early_exit: [false]
+  - use_early_exit: [true]
+    early_exit_router_variant: ["random"]
+    early_exit_prob: [0.1]
+  - use_early_exit: [true]
+    early_exit_router_variant: ["linear"]
+    early_exit_threshold: [0.5]
+  - use_early_exit: [true]
+    early_exit_router_variant: ["norm"]
+    early_exit_norm_threshold: [10.0]
