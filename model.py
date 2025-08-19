@@ -156,7 +156,23 @@ class GPT(nn.Module):
 
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
-        self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
+        self.transformer['h'] = nn.ModuleList([
+            Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i])
+            for i in range(config.n_layer)
+        ])
+
+        # KV-cache sharing across layers ---------------------------------
+        self.kv_cache_mode = config.kv_cache_sharing
+        self.kv_cache_group_size = config.kv_cache_group_size
+        self.kv_cache_num_slots = config.kv_cache_num_slots
+        self.layer_kv_map = self._assign_kv_cache_layers(config.n_layer)
+        if self.layer_kv_map is not None:
+            num_slots = max(self.layer_kv_map) + 1
+            self.kv_caches = [dict() for _ in range(num_slots)]
+            for i, block in enumerate(self.transformer['h']):
+                block.kv_cache_id = self.layer_kv_map[i]
+        else:
+            self.kv_caches = None
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
         if self.config.use_abs_pos_embeddings:
@@ -225,6 +241,32 @@ class GPT(nn.Module):
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+    def _assign_kv_cache_layers(self, n_layer):
+        """Return list mapping layer index to KV-cache slot."""
+        mode = self.kv_cache_mode
+        if not mode:
+            return None
+        g = max(1, self.kv_cache_group_size)
+        slots = max(1, self.kv_cache_num_slots)
+        if mode == 'group':
+            return [i // g for i in range(n_layer)]
+        if mode == 'cycle':
+            return [i % slots for i in range(n_layer)]
+        if mode == 'symmetric':
+            seq = list(range(slots)) + list(range(slots-2, -1, -1))
+            pattern = []
+            for s in seq:
+                pattern.extend([s] * g)
+            L = len(pattern)
+            return [pattern[i % L] for i in range(n_layer)]
+        return None
+
+    def reset_kv_caches(self):
+        """Clear all stored KV caches."""
+        if self.kv_caches is not None:
+            for cache in self.kv_caches:
+                cache.clear()
 
     def get_num_params(self, non_embedding=True):
         """
@@ -403,9 +445,11 @@ class GPT(nn.Module):
             if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
                 x = self.lsv_matrix(x)
 
-            layer_idx = 1
-            for block in self.transformer.h:
-                x = block(x, iter_num)
+            for layer_idx, block in enumerate(self.transformer.h, start=1):
+                kv_cache = None
+                if self.kv_caches is not None:
+                    kv_cache = self.kv_caches[block.kv_cache_id]
+                x = block(x, iter_num, kv_cache=kv_cache)
 
                 # TODO: abstact into a method
                 if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == layer_idx:
@@ -428,8 +472,6 @@ class GPT(nn.Module):
                 if (self.config.obtain_vector_at_layer_idx is not None
                         and layer_idx == self.config.obtain_vector_at_layer_idx):
                     x = self.obtain_vector_from_layer_output(x)
-
-                layer_idx += 1
 
             # 3. Final layer norm
             x = self.transformer.ln_f(x)
@@ -518,10 +560,12 @@ class GPT(nn.Module):
             if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
                 x = self.lsv_matrix(x)
 
-            layer_idx = 1
-            for block in self.transformer.h:
+            for layer_idx, block in enumerate(self.transformer.h, start=1):
                 # Propagate tokens through layers
-                x = block(x, iter_num)
+                kv_cache = None
+                if self.kv_caches is not None:
+                    kv_cache = self.kv_caches[block.kv_cache_id]
+                x = block(x, iter_num, kv_cache=kv_cache)
 
                 # Intercept for Learned Steering Vectors
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -546,8 +590,6 @@ class GPT(nn.Module):
                 if self.config.obtain_vector_at_layer_idx is not None and layer_idx == self.config.obtain_vector_at_layer_idx:
                     print(layer_idx, self.config.obtain_vector_at_layer_idx)
                     x = self.obtain_vector_from_layer_output(x)
-
-                layer_idx +=1
 
             x = self.transformer.ln_f(x)
 
@@ -626,14 +668,14 @@ class GPT(nn.Module):
         if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
             x = self.lsv_matrix(x)
 
-        layer_idx = 1
-        for block in self.transformer.h:
-            x = block(x, iter_num)
+        for layer_idx, block in enumerate(self.transformer.h, start=1):
+            kv_cache = None
+            if self.kv_caches is not None:
+                kv_cache = self.kv_caches[block.kv_cache_id]
+            x = block(x, iter_num, kv_cache=kv_cache)
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
-            layer_idx += 1
-
-        x = self.transformer.ln_f(x)
+            x = self.transformer.ln_f(x)
         if self.n_embd_wte:
             x = F.linear(x, self.transformer.scale_down.weight.t())
 

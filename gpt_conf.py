@@ -185,6 +185,15 @@ class GPTConfig:
     shared_attn_sym: bool = False
     shared_attn_seq: int = 1
 
+    # KV-cache sharing options
+    # None    -> each layer has its own cache (default)
+    # "group"   -> share cache every `kv_cache_group_size` sequential layers
+    # "cycle"   -> cycle through `kv_cache_num_slots` caches (e.g. a b c a b c)
+    # "symmetric" -> up-then-down pattern (e.g. a a b b a a)
+    kv_cache_sharing: str | None = None
+    kv_cache_group_size: int = 1
+    kv_cache_num_slots: int = 1
+
     # Softmax Alternatives and Options
     softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
     softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"

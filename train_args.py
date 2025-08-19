@@ -435,6 +435,15 @@ def parse_args():
     model_group.add_argument('--shared_attn_sym', default=False, action=argparse.BooleanOptionalAction, help="symmetrical attention sharing")
     model_group.add_argument('--shared_attn_seq', default=1, type=int, help="Sequence length for cyclic sharing of attention layers")
 
+    # KV-cache sharing across transformer blocks
+    model_group.add_argument('--kv_cache_sharing', default=None,
+                             choices=['group', 'cycle', 'symmetric'],
+                             help="Pattern for reusing KV caches across layers")
+    model_group.add_argument('--kv_cache_group_size', default=1, type=int,
+                             help="For 'group'/'symmetric', number of consecutive layers per cache")
+    model_group.add_argument('--kv_cache_num_slots', default=1, type=int,
+                             help="For 'cycle'/'symmetric', how many cache slots to rotate through")
+
     # NORM VARIATIONS
     norm_variations = [
             "krmsnorm",
