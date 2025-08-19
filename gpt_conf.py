@@ -4,11 +4,14 @@ from typing import List
 import json
 import math
 
+
 @dataclass
 class GPTConfig:
     attention_list: List[str] = field(default_factory=lambda: [])
     block_size: int = 1024
-    vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+    vocab_size: int = (
+        50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+    )
     n_layer: int = 12
     n_head: int = 12
     n_kv_group: int = 12
@@ -25,7 +28,7 @@ class GPTConfig:
     multicontext: bool = False
     # Use separate embeddings/LM heads per dataset in multidataset mode
     multidataset_wte: bool = False
-    vocab_sizes: List[int] = field(default_factory=lambda: []) # Used in place of vocab
+    vocab_sizes: List[int] = field(default_factory=lambda: [])  # Used in place of vocab
 
     # MLP bias configuration
     mlp_up_bias: bool | None = None  # If None, uses global bias setting
@@ -38,11 +41,11 @@ class GPTConfig:
     learn_mlp_y_offset: bool = False
 
     ## MLA Variations
-    mla_latent_dim: int | None = None   # d_c  (proj dimension of the shared latent)
-    mla_rotary_dim: int       = 32      # d_r  (# rotary channels per head)
+    mla_latent_dim: int | None = None  # d_c  (proj dimension of the shared latent)
+    mla_rotary_dim: int = 32  # d_r  (# rotary channels per head)
 
-    use_mla_lobo: bool = False          # turns the feature on/off
-    mla_lobo_init: float = 0.0          # log-space initial value (like flash_lobo_log_const)
+    use_mla_lobo: bool = False  # turns the feature on/off
+    mla_lobo_init: float = 0.0  # log-space initial value (like flash_lobo_log_const)
 
     ## CO4 attention variation
     n_latent: int = None
@@ -111,7 +114,7 @@ class GPTConfig:
 
     # weight tying
     n_embd_wte_scale_tying: bool = True
-    wte_weight_tying: bool = True # Non-factorized wte weight tying
+    wte_weight_tying: bool = True  # Non-factorized wte weight tying
 
     # wte import/export
     import_wte_freeze: bool = False
@@ -169,6 +172,7 @@ class GPTConfig:
     mlp_variant: str = "mlp"
     mlp_expansion_factor: int = 4
     mlp_size: int = None
+    fire_mlp_hidden: int | None = None  # Hidden size of the shared per-element MLP
 
     ## KAN Option
     kan_poly_order: int = 3
@@ -186,31 +190,36 @@ class GPTConfig:
     shared_attn_seq: int = 1
 
     # Softmax Alternatives and Options
-    softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
-    softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
-
+    softmax_variant_attn: str = (
+        "softmax"  # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
+    )
+    softmax_variant_output: str = (
+        "softmax"  # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
+    )
 
     ## General Options
-    div_by_seq_len: bool = False # for supported functions will divide by seq length
+    div_by_seq_len: bool = False  # for supported functions will divide by seq length
 
     ## ConSmax Options
-    consmax_initial_beta: float = 2.0 # beta adjustment
-    consmax_initial_gamma: float = 100.0 # denominator adjustment
-    consmax_base: float = 2.0 # base to utilize for ConSmax
-    consmax_use_euler_base: bool = True # use 'e' as base for ConSmax, default
+    consmax_initial_beta: float = 2.0  # beta adjustment
+    consmax_initial_gamma: float = 100.0  # denominator adjustment
+    consmax_base: float = 2.0  # base to utilize for ConSmax
+    consmax_use_euler_base: bool = True  # use 'e' as base for ConSmax, default
 
     ## ConSmaxV2 Special Options
-    consmax_per_head: bool = True # different beta gamma per head
+    consmax_per_head: bool = True  # different beta gamma per head
     consmax_v2_clamping: bool = True
     consmax_v2_clamp_value: float = 80.0
 
     ## SaturatingConSmax Special options (otherwise same as ConSmax)
-    consmax_saturation: float = 11.0 # for SaturatingConSmax saturation point
+    consmax_saturation: float = 11.0  # for SaturatingConSmax saturation point
     consmax_learnable_beta: bool = True
     consmax_learnable_gamma: bool = True
 
     ## Softermax options
-    softermax_use_xmax: bool = True # Softermax Option active is softermax selected - True: uses (x - x_max) normalization; False: removes normalization (potential overflow)
+    softermax_use_xmax: bool = (
+        True  # Softermax Option active is softermax selected - True: uses (x - x_max) normalization; False: removes normalization (potential overflow)
+    )
 
     ## Polymax options
     polymax_x_intercept: float = -100.0
@@ -219,8 +228,8 @@ class GPTConfig:
     polymax_divisor: float = 1000.0
 
     ## SigSoftmaxBase
-    sigsoftmax_use_euler_base: bool = True # use 'e' as base for Constantmax
-    sigsoftmax_base: float = 2.0 # denominator to utilize for Constantmax
+    sigsoftmax_use_euler_base: bool = True  # use 'e' as base for Constantmax
+    sigsoftmax_base: float = 2.0  # denominator to utilize for Constantmax
 
     ## Strongermax options
     strongermax_strength: float = math.e
@@ -267,38 +276,40 @@ class GPTConfig:
 
     # ──────────────────────────────────────────────────────────────────────
     ## PFLA‑Softmax configuration
-    pfla_softmax_num_points: int  = 30      # # inner control points
-    pfla_softmax_left_bound: float  = -10.0 # x‑range start
+    pfla_softmax_num_points: int = 30  # # inner control points
+    pfla_softmax_left_bound: float = -10.0  # x‑range start
     pfla_softmax_right_bound: float = 10.0  # x‑range end
-    pfla_softmax_learn_x: bool  = False     # learn knot x‑positions?
-    pfla_softmax_learn_y: bool  = True      # learn √y values?
-    pfla_softmax_init_activation: str = "gelu"   # reference curve for init
-    pfla_softmax_density: str = "linear"    # linear | quad | exp
+    pfla_softmax_learn_x: bool = False  # learn knot x‑positions?
+    pfla_softmax_learn_y: bool = True  # learn √y values?
+    pfla_softmax_init_activation: str = "gelu"  # reference curve for init
+    pfla_softmax_density: str = "linear"  # linear | quad | exp
 
     ### normalisation extras
     pfla_softmax_use_learned_divisor: bool = False
-    pfla_softmax_gamma_init: float  = 1.0   # γ initial value iff learned
+    pfla_softmax_gamma_init: float = 1.0  # γ initial value iff learned
 
-    pfla_softmax_use_obo: bool = False # enables obo feature
-    pfla_softmax_use_learned_obo: bool = False # we require "use_obo" before use_learned_obo
-    pfla_softmax_obo: float = 0.0           # fixed or initial OBO (+1) addend
+    pfla_softmax_use_obo: bool = False  # enables obo feature
+    pfla_softmax_use_learned_obo: bool = (
+        False  # we require "use_obo" before use_learned_obo
+    )
+    pfla_softmax_obo: float = 0.0  # fixed or initial OBO (+1) addend
 
     ### interpolation mode
-    pfla_softmax_mode: str = "linear"       # "linear" | "quadratic"
+    pfla_softmax_mode: str = "linear"  # "linear" | "quadratic"
     # ──────────────────────────────────────────────────────────────────────
 
     # Positional Embeddings Variations
-    use_abs_pos_embeddings: bool = True # Note: one can use this AND rotary embeddings
+    use_abs_pos_embeddings: bool = True  # Note: one can use this AND rotary embeddings
     use_fire_embeddings: bool = False
     shared_fire_embeddings: bool = False
     use_rotary_embeddings: bool = False
     sym_rot_num_angles: int = 512
-    rope_variant: str = "rope" # options: "shortrope", "rope"
-    rope_length: int = 8 # number of embeddings to use in shortrope
+    rope_variant: str = "rope"  # options: "shortrope", "rope"
+    rope_length: int = 8  # number of embeddings to use in shortrope
 
     ## Embedding Intialization Options
-    embedding_mean_init: float= 0.0
-    embedding_std_init: float= 0.02
+    embedding_mean_init: float = 0.0
+    embedding_std_init: float = 0.02
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
     fire_log_bias: float = 1.0
@@ -316,19 +327,21 @@ class GPTConfig:
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
     norm_variant_output: str = "rmsnorm"
-    bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    bias: bool = (
+        False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    )
     prmsnorm_pct: float = 0.0625
     krmsnorm_num: float = 10
-    krmsnorm_quantize_type: str = 'int8'
+    krmsnorm_quantize_type: str = "int8"
     krmsnorm_enable_gain: bool = True
-    krmsnorm_selection_type: str = 'last'
+    krmsnorm_selection_type: str = "last"
     krmsnorm_recompute_percentage: float = 0.05
     hsnorm_gain: bool = False
     hsnorm_radius: float = 1.0
     hsnorm_radius_learning: bool = False
 
     dact_alpha_init: float = 1.0
-    dact_activation: str = 'tanh'
+    dact_activation: str = "tanh"
     dact_use_gamma: bool = True
     dact_use_beta: bool = True
     dact_use_alpha: bool = True
@@ -355,7 +368,6 @@ class GPTConfig:
     ## LearnedSplineActivation - lsa
     lsa_num_knots: int = 30
 
-
     # Linear Alternatives
     linear_variant_attn: str = "linear"
     linear_variant_mlp: str = "linear"
@@ -367,8 +379,8 @@ class GPTConfig:
     linear_variant_mlp_down: str = None
 
     ## Linear Initialization Options
-    linear_mean_init: float= 0.0
-    linear_std_init: float= 0.02
+    linear_mean_init: float = 0.0
+    linear_std_init: float = 0.02
 
     ## Embedding initialization options
     init_variant: str = "gaussian"
@@ -376,7 +388,7 @@ class GPTConfig:
     init_wte_npy: str = "wte.npy"
     init_radius: float = 1.0
     gaussian_min_norm: float = 0.0
-    gaussian_max_norm: float = float('inf')
+    gaussian_max_norm: float = float("inf")
 
     # Quantizations
     start_quant_level: float = 0
@@ -445,7 +457,7 @@ class GPTConfig:
     @classmethod
     def from_json(cls, filename: str):
         try:
-            with open(filename, 'r') as json_file:
+            with open(filename, "r") as json_file:
                 config_dict = json.load(json_file)
 
             # Get all field names of the dataclass
@@ -476,6 +488,5 @@ class GPTConfig:
         """
         conf_dict = asdict(self)
 
-        with open(filename, 'w') as json_file:
+        with open(filename, "w") as json_file:
             json.dump(conf_dict, json_file)
-
