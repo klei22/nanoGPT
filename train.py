@@ -33,11 +33,14 @@ from utils.model_info import (
     print_model_blocks,
     print_model_tree,
 )
-from utils.statistic_plots import (
-    initialize_statistics,
-    plot_statistics,
-    create_statistics,
-)
+try:
+    from utils.statistic_plots import (
+        initialize_statistics,
+        plot_statistics,
+        create_statistics,
+    )
+except ModuleNotFoundError:
+    initialize_statistics = plot_statistics = create_statistics = None
 
 from utils.model_stats import (
     compute_weight_stats,
@@ -73,7 +76,10 @@ import torch
 import torch.onnx
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ModuleNotFoundError:
+    SummaryWriter = None
 
 from variations.model_variations import model_variation_dictionary
 
@@ -170,6 +176,8 @@ class Trainer:
             self.sample_and_print()
 
         if self.args.create_statistics:
+            if initialize_statistics is None:
+                raise ImportError("Optional dependency 'plotly' is required when --create_statistics is set")
             self.stats = initialize_statistics(self.args.n_layer, self.args.n_head)
 
     def setup(self):
@@ -265,7 +273,11 @@ class Trainer:
             self.best_iter = 0 # for starting from scratch
 
             self.optimizer = self.create_optimizer()
-            self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+            try:
+                self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+            except AttributeError:
+                from torch.cuda.amp import GradScaler
+                self.scaler = GradScaler(enabled=(self.args.dtype == 'float16'))
             self.scheduler = self.create_scheduler()
 
         elif self.args.init_from in ['resume', "prev_run"] :
@@ -306,7 +318,11 @@ class Trainer:
             self.model.to(self.device)
             # Ensure optimizer and scheduler are initialized before loading state
             self.optimizer = self.create_optimizer()
-            self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+            try:
+                self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+            except AttributeError:
+                from torch.cuda.amp import GradScaler
+                self.scaler = GradScaler(enabled=(self.args.dtype == 'float16'))
 
             self.scheduler = self.create_scheduler()
 
@@ -343,12 +359,22 @@ class Trainer:
                 self.model.freeze_non_lsv_parameters()
 
             self.optimizer = self.create_optimizer()
-            self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+            try:
+                self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+            except AttributeError:
+                from torch.cuda.amp import GradScaler
+                self.scaler = GradScaler(enabled=(self.args.dtype == 'float16'))
             self.scheduler = self.create_scheduler()
 
         if self.args.block_size < self.model.config.block_size:
             self.model.crop_block_size(self.args.block_size)
             self.model_args['block_size'] = self.args.block_size
+
+        # Configure gradient checkpointing across all blocks
+        self.model.configure_gradient_checkpointing(
+            self.args.use_gradient_checkpointing,
+            self.args.recompute_backward_pass,
+        )
 
         # Add gradient monitoring
         if self.args.gns_type is not None:
@@ -386,7 +412,8 @@ class Trainer:
             timestamp_prefix = self.args.timestamp
 
         # Tensorboard
-        if self.args.tensorboard_log:
+        self.writer = None
+        if self.args.tensorboard_log and SummaryWriter is not None:
             # 1) Give the run a safe default name when the user did not supply one
             if self.args.tensorboard_run_name is None:
                 self.args.tensorboard_run_name = f"{timestamp_prefix}"
@@ -401,6 +428,9 @@ class Trainer:
                 self.args.csv_name = f"{sanitized_dataset}_{run_name}"
             log_subpath = os.path.join(self.args.tensorboard_log_dir, run_name)
             self.writer = SummaryWriter(log_subpath)
+        elif self.args.tensorboard_log and SummaryWriter is None:
+            print("tensorboard is not installed; disabling tensorboard logging")
+            self.args.tensorboard_log = False
 
         # Wandb
         if self.args.wandb_log and self.master_process:

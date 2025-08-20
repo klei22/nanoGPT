@@ -118,6 +118,7 @@ class Block(nn.Module):
         self.use_parallel_mlp = config.use_parallel_mlp
 
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
+        self.recompute_backward_pass = getattr(config, 'recompute_backward_pass', False)
 
         variant = "parallel_mlp" if self.use_parallel_mlp else "attn_then_mlp"
         self.block_forward = block_forward_variations[variant]
@@ -134,6 +135,11 @@ class Block(nn.Module):
 
     def forward(self, x: torch.Tensor, iter_num: int):
         if self.use_gradient_checkpointing and x.requires_grad:
-            return checkpoint.checkpoint(self.block_forward, self, x, iter_num, use_reentrant=False)
+            use_reentrant = not self.recompute_backward_pass
+            return checkpoint.checkpoint(
+                lambda inp: self.block_forward(self, inp, iter_num),
+                x,
+                use_reentrant=use_reentrant,
+            )
         return self.block_forward(self, x, iter_num)
 

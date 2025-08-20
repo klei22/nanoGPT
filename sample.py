@@ -27,9 +27,14 @@ from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
 
-import lm_eval
-from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
-from benchmarks import run_all
+try:
+    import lm_eval
+    from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
+    from benchmarks import run_all
+except ModuleNotFoundError:
+    lm_eval = None
+    NanoGPTLM = None
+    run_all = None
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
