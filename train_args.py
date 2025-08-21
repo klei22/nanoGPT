@@ -46,6 +46,51 @@ def parse_args():
     training_group.add_argument('--eval_iters', default=200, type=int)
     training_group.add_argument('--eval_only', default=False, action=argparse.BooleanOptionalAction)
 
+    # JL transform options
+    training_group.add_argument(
+        '--jl_transform_interval_mult',
+        type=int,
+        default=None,
+        help='Apply a JL transform every N * eval_interval iterations.'
+    )
+    training_group.add_argument(
+        '--jl_transform_out_dim',
+        type=int,
+        default=None,
+        help='Embedding dimension after applying the JL transform.'
+    )
+    training_group.add_argument(
+        '--jl_type',
+        type=str,
+        default='gaussian',
+        choices=['sign', 'gaussian', 'sparse', 'srht', 'qr'],
+        help='Type of JL transform to apply during training.'
+    )
+    training_group.add_argument(
+        '--jl_seed',
+        type=int,
+        default=1337,
+        help='Random seed used when constructing JL projection matrices.'
+    )
+    training_group.add_argument(
+        '--jl_cproj_vertical',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Project c_proj weights along the out_features dimension instead of the in_features dimension.'
+    )
+    training_group.add_argument(
+        '--jl_out_dim_mult',
+        type=float,
+        default=None,
+        help='Multiply embedding dimension by this factor at each JL transform (result rounded).'
+    )
+    training_group.add_argument(
+        '--jl_out_dim_add',
+        type=float,
+        default=None,
+        help='Add this amount to embedding dimension at each JL transform (result rounded).'
+    )
+
     # latency / ETA estimate options
     training_group.add_argument('--eta_variant', choices=['iteration', 'eval_cycle'], default='eval_cycle', help="iteration - estimates only based on training iterations -- use if doing one eval at the end; eval_cycle -- use if doing multiple evals, will use a single cycle for the estimation.")
     training_group.add_argument('--iteration_window', default=100, type=int)

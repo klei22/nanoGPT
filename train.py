@@ -23,6 +23,7 @@ from train_variations.optimizer_variants import (
     ActRegularizedAdamW,
 )
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
+from train_variations.jl_transform_variants import jl_transform_model
 
 from utils.gpu_monitoring import get_gpu_memory_info
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated
@@ -381,6 +382,11 @@ class Trainer:
 
         self.raw_model = self.model.module if self.ddp else self.model
 
+        # Track embedding dimension for JL transforms
+        self.jl_current_dim = self.raw_model.config.n_embd
+        # Optional first target dimension override
+        self._jl_first_target = self.args.jl_transform_out_dim
+
         timestamp_prefix = time.strftime("%Y%m%d-%H%M%S")
         if self.args.timestamp:
             timestamp_prefix = self.args.timestamp
@@ -442,6 +448,66 @@ class Trainer:
             return torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode=self.args.plateau_mode, factor=self.args.plateau_factor, patience=self.args.plateau_patience)
         else:
             raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
+
+    def next_jl_dim(self) -> int:
+        """Compute the embedding dimension for the next JL transform."""
+        if self._jl_first_target is not None:
+            dim = self._jl_first_target
+            self._jl_first_target = None
+        else:
+            dim = self.jl_current_dim
+            if self.args.jl_out_dim_mult is not None:
+                dim = round(dim * self.args.jl_out_dim_mult)
+            if self.args.jl_out_dim_add is not None:
+                dim = round(dim + self.args.jl_out_dim_add)
+
+        dim = max(1, int(dim))
+        self.jl_current_dim = dim
+        return dim
+
+    def jl_transform_and_rebuild(self):
+        """Apply a JL transform to the model and rebuild optimiser/scheduler."""
+        if self.ddp:
+            torch.distributed.barrier()
+            base_model = self.model.module
+        else:
+            base_model = self.model
+
+        out_dim = self.next_jl_dim()
+        new_model = jl_transform_model(
+            base_model,
+            out_dim,
+            jl_type=self.args.jl_type,
+            seed=self.args.jl_seed,
+            cproj_vertical=self.args.jl_cproj_vertical,
+        )
+        new_model.to(self.device)
+
+        if self.args.compile:
+            self.unoptimized_model = new_model
+            new_model = torch.compile(new_model)
+
+        if self.ddp:
+            new_model = DDP(new_model, device_ids=[self.ddp_local_rank])
+            self.raw_model = new_model.module
+        else:
+            self.raw_model = new_model
+
+        self.model = new_model
+
+        print("JL transform applied. New tensor shapes:")
+        for name, tensor in self.raw_model.state_dict().items():
+            print(f"  {name}: {tuple(tensor.shape)}")
+
+        # update model args for logging/ckpts
+        self.model_args['n_embd'] = out_dim
+
+        self.model.num_param = self.raw_model.get_num_params(non_embedding=False)
+
+        # rebuild optimiser, scaler, and scheduler
+        self.optimizer = self.create_optimizer()
+        self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+        self.scheduler = self.create_scheduler()
 
     def load_tokenizer(self):
         if self.args.dataset_list is not None and self.args.multidataset_wte:
@@ -1505,6 +1571,19 @@ class Trainer:
                         break
                     if losses['val'] > self.best_val_loss:
                         num_steps_with_worse_loss += 1
+
+                if self.iter_num % self.args.eval_interval == 0:
+                    if (
+                        self.args.jl_transform_interval_mult is not None
+                        and (
+                            self.args.jl_transform_out_dim is not None
+                            or self.args.jl_out_dim_mult is not None
+                            or self.args.jl_out_dim_add is not None
+                        )
+                        and self.iter_num > 0
+                        and self.iter_num % (self.args.eval_interval * self.args.jl_transform_interval_mult) == 0
+                    ):
+                        self.jl_transform_and_rebuild()
 
                 if self.args.eval_only:
                     break

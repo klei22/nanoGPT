@@ -1,0 +1,30 @@
+# jl_transform_comparison.yaml
+---
+
+# base hyperparameters
+max_iters: [5000]
+eval_interval: [500]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+device: ["cuda"]
+dataset: ["minipile"]
+
+# position encodings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# training precision and compilation
+dtype: ["bfloat16"]
+compile: [true]
+
+parameter_groups:
+  - {}  # default training
+  - jl_transform_interval_mult: [2]   # transform every 2 * eval_interval
+    jl_transform_out_dim: [256]        # initial projection dimension
+    jl_type: ["gaussian"]
+    jl_seed: [1337]
+    jl_out_dim_mult: [1.0]            # subsequent transforms keep dimension
+    jl_out_dim_add: [0.0]
+
