@@ -841,7 +841,21 @@ class GPT(nn.Module):
 
                 # Ensure the key exists in your model before trying to copy
                 if my_key in sd:
-                    assert sd_hf[key].shape == sd[my_key].shape, f"Shape mismatch for key {my_key}: HF is {sd_hf[key].shape}, yours is {sd[my_key].shape}"
+                    if sd_hf[key].shape != sd[my_key].shape:
+                        # When using multidataset token embeddings, the first
+                        # dataset's vocabulary size may differ from GPT-2's
+                        # vocabulary. In that case, copy the overlapping
+                        # portion of the embedding or head and leave the rest
+                        # as already-initialized random weights.
+                        if config.multidataset_wte and key in ("transformer.wte.weight", "lm_head.weight"):
+                            with torch.no_grad():
+                                rows_to_copy = min(sd_hf[key].shape[0], sd[my_key].shape[0])
+                                sd[my_key][:rows_to_copy].copy_(sd_hf[key][:rows_to_copy])
+                            continue
+                        else:
+                            raise AssertionError(
+                                f"Shape mismatch for key {my_key}: HF is {sd_hf[key].shape}, yours is {sd[my_key].shape}"
+                            )
                     with torch.no_grad():
                         sd[my_key].copy_(sd_hf[key])
         # Reinitialize any additional embedding tables and heads for

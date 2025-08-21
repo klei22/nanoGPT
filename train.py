@@ -637,7 +637,7 @@ class Trainer:
             self.val_data_dict = {}
             self.vocab_sizes = []
 
-            for dataset in self.args.dataset_list:
+            for i, dataset in enumerate(self.args.dataset_list):
                 train_data = None
                 val_data = None
                 meta_path = os.path.join('data', dataset, 'meta.pkl')
@@ -647,8 +647,16 @@ class Trainer:
                 with open(meta_path, 'rb') as f:
                     meta = pickle.load(f)
                     vocab_size = meta.get('vocab_size', None)
-                    if vocab_size:
-                        self.vocab_sizes.append(vocab_size)
+
+                # If vocab_size is missing (some tokenizers omit it), fall
+                # back to GPT-2's vocabulary size for the first dataset when
+                # using multidataset embeddings initialized from GPT-2.
+                if vocab_size is None:
+                    if self.args.multidataset_wte and i == 0 and self.args.init_from == 'gpt2':
+                        vocab_size = 50257
+                    else:
+                        sys.exit(f"Error: vocab_size not found for {dataset}")
+                self.vocab_sizes.append(vocab_size)
 
                 # Load train and val data for each dataset
                 dtype = np.uint16 if vocab_size != 100277 else np.uint32
