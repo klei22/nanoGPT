@@ -1332,6 +1332,7 @@ class Trainer:
                 TextColumn("[bold purple3]total_est:[/bold purple3]{task.fields[total_hour]}h{task.fields[total_min]}m"),
                 TextColumn("-- [bold dark_magenta]iter_latency:[/bold dark_magenta]{task.fields[iter_latency]}ms"),
                 TextColumn("[bold dark_magenta]peak_gpu_mb:[/bold dark_magenta]{task.fields[peak_gpu_mb]}MB"),
+                TextColumn("-- [bold yellow]bs:[/bold yellow]{task.fields[batch_size]} [bold yellow]lr:[/bold yellow]{task.fields[lr]}",),
                 console=self.console
                 )
 
@@ -1348,6 +1349,8 @@ class Trainer:
                     best_iter=f"{self.best_iter}",
                     iter_latency=f"{self.iter_latency_avg:.1f}",
                     peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                    batch_size=f"{self.args.batch_size}",
+                    lr=f"{self.lr:.4f}",
                     )
 
             while True:
@@ -1606,6 +1609,11 @@ class Trainer:
                 self.iter_num += 1
                 local_iter_num += 1
 
+                # Recompute learning rate in case GNS controller adjusted the schedule
+                self.lr = self.get_lr(self.iter_num)
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = self.lr
+
                 if self.iter_num % self.args.log_interval == 0 and self.master_process:
                     lossf = loss.item() * self.args.gradient_accumulation_steps
                     if local_iter_num >= 5:
@@ -1686,6 +1694,8 @@ class Trainer:
                         best_iter=f"{self.best_iter}",
                         iter_latency=f"{self.iter_latency_avg:.1f}",
                         peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                        batch_size=f"{self.args.batch_size}",
+                        lr=f"{self.lr:.4f}",
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
