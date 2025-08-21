@@ -233,6 +233,13 @@ class GPT(nn.Module):
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
 
+    def configure_gradient_checkpointing(self, enable: bool = True, recompute_backward: bool = False) -> None:
+        """Enable or disable gradient checkpointing for all transformer blocks."""
+        for block in self.transformer.h:
+            block.use_gradient_checkpointing = enable
+            if hasattr(block, "recompute_backward_pass"):
+                block.recompute_backward_pass = recompute_backward
+
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
