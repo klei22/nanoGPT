@@ -3,6 +3,8 @@ import argparse
 import math
 import re
 
+from train_variations.gns_variants import gns_feedback_dictionary
+
 def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
@@ -114,10 +116,15 @@ def parse_args():
 
     # Add GNS settings
     training_group.add_argument('--gns_type', type=str, default=None, choices=['sogns', 'exact'], help='Type of gradient norm scaling to use (default: None)')
-    training_group.add_argument('--gns_ema_beta', type=float, default=0.9, choices=['sogns', 'exact'], help='Type of gradient norm scaling to use (default: None)')
+    training_group.add_argument('--gns_ema_beta', type=float, default=0.9, help='Decay factor for the GNS exponential moving average')
     training_group.add_argument('--gns_target', type=float, default=None)
     training_group.add_argument('--gns_max_batch', type=int, default=100)
     training_group.add_argument('--gns_batch_pct', type=float, default=0.2)
+    training_group.add_argument('--gns_variant', type=str, default='none', choices=list(gns_feedback_dictionary.keys()),
+                                help='Strategy for adjusting batch size using gradient noise scale feedback')
+    training_group.add_argument('--gns_pid_kp', type=float, default=0.1, help='PID proportional gain')
+    training_group.add_argument('--gns_pid_ki', type=float, default=0.0, help='PID integral gain')
+    training_group.add_argument('--gns_pid_kd', type=float, default=0.0, help='PID derivative gain')
 
 
     # Optimizer-specific arguments

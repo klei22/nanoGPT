@@ -1,0 +1,27 @@
+# gns_feedback.yaml
+---
+# Base hyperparameters
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["float16"]
+compile: [true]
+
+# Positional embeddings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# Training run length
+max_iters: [10000]
+eval_interval: [10000]
+eta_variant: ["iteration"]
+
+# Gradient Noise Scale options
+gns_type: ["sogns", "exact"]
+gns_variant:
+  - none
+  - proportional
+  - doubling
+  - pid
+  - temperature
+gns_target: [128]
+

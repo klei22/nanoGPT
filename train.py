@@ -63,8 +63,14 @@ from rich.progress import (
 
 # GNS Related
 import utils.gns_monitoring.gns_utils as gns_utils
-from utils.gns_monitoring.hook import (add_hooks_to_model, add_sogns_hooks,
-                   add_exact_hooks,  gather_hook_results)
+from utils.gns_monitoring.hook import (
+    add_hooks_to_model,
+    add_sogns_hooks,
+    add_exact_hooks,
+    gather_hook_results,
+)
+
+from train_variations.gns_variants import gns_feedback_dictionary
 
 import numpy as np
 
@@ -356,11 +362,12 @@ class Trainer:
             add_hooks_to_model(self.model, get_gns_fn[self.args.gns_type])
             ema_beta = self.args.gns_ema_beta
             self.gns_ema = gns_utils.EMA(beta=ema_beta)
-
             # Initialize GNS for later
             self.gns = None
 
-
+        
+        # controller for GNS-driven batch-size feedback
+        self.gns_controller = gns_feedback_dictionary[self.args.gns_variant](self.args)
         # Get Model Size
         self.model.num_param = self.model.get_num_params(non_embedding=False)
 
@@ -805,12 +812,7 @@ class Trainer:
             data = self.train_data if split == 'train' else self.val_data
 
         # Adaptive GNS settings
-        if (self.gns is not None) and (self.args.gns_target is not None):
-            if self.gns < self.args.gns_target:
-                if self.args.batch_size < self.args.gns_max_batch:
-                    self.args.batch_size = math.ceil(self.args.batch_size * (1.0 + self.args.gns_batch_pct))
-            if self.gns > self.args.gns_target:
-                self.args.batch_size = math.ceil(self.args.batch_size * (1.0 - self.args.gns_batch_pct))
+        self.gns_controller.update(self)
 
         # Generate random indices for the batch
         ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
@@ -1330,6 +1332,8 @@ class Trainer:
                 TextColumn("[bold purple3]total_est:[/bold purple3]{task.fields[total_hour]}h{task.fields[total_min]}m"),
                 TextColumn("-- [bold dark_magenta]iter_latency:[/bold dark_magenta]{task.fields[iter_latency]}ms"),
                 TextColumn("[bold dark_magenta]peak_gpu_mb:[/bold dark_magenta]{task.fields[peak_gpu_mb]}MB"),
+                TextColumn("-- [bold dark_orange]bs:[/bold dark_orange]{task.fields[batch_size]}", justify="left"),
+                TextColumn("[bold dark_orange]lr:[/bold dark_orange]{task.fields[learning_rate]}", justify="left"),
                 console=self.console
                 )
 
@@ -1346,11 +1350,15 @@ class Trainer:
                     best_iter=f"{self.best_iter}",
                     iter_latency=f"{self.iter_latency_avg:.1f}",
                     peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                    batch_size=f"{self.args.batch_size}",
+                    learning_rate=f"{self.lr:.4f}",
                     )
 
             while True:
                 if self.scheduler is not None:
                     self.lr = self.get_lr(self.iter_num)
+                else:
+                    self.lr = self.args.learning_rate
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.lr
 
@@ -1684,6 +1692,8 @@ class Trainer:
                         best_iter=f"{self.best_iter}",
                         iter_latency=f"{self.iter_latency_avg:.1f}",
                         peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                        batch_size=f"{self.args.batch_size}",
+                        learning_rate=f"{self.lr:.4f}",
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
