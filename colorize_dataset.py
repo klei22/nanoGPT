@@ -5,6 +5,7 @@ Modes
 -----
 * **minmax**  – colour on chosen-token *logits* (after min-max normalisation).
 * **softmax** – colour on chosen-token *probabilities*.
+* **none**    – no colour; show plain decoded characters.
 
 Window strategies
 -----------------
@@ -98,7 +99,7 @@ def parse_args():
     p.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     p.add_argument("--num_tokens", type=int, default=1024)
     p.add_argument("--block_size", type=int)
-    p.add_argument("--mode", choices=["minmax", "softmax"], default="minmax")
+    p.add_argument("--mode", choices=["minmax", "softmax", "none"], default="minmax")
     p.add_argument("--window", choices=["block", "rolling"], default="block", help="Context window strategy")
     p.add_argument("--offset", type=int, default=0, help="Starting token index within the binary dataset file")
     p.add_argument("--output_file", default="dataset_color.txt")
@@ -171,20 +172,21 @@ def main():
         ctx_len = logits.size(0)
         tgt_token = int(seq[-1])  # ground-truth next token
 
-        # chosen scalar
-        scalar_val = (
-            F.softmax(logits[-1], dim=-1)[tgt_token].item()
-            if args.mode == "softmax" else logits[-1, tgt_token].item()
-        )
+        # chosen scalar (if colourising)
+        if args.mode != "none":
+            scalar_val = (
+                F.softmax(logits[-1], dim=-1)[tgt_token].item()
+                if args.mode == "softmax" else logits[-1, tgt_token].item()
+            )
+            scalars.append(scalar_val)
         ids.append(tgt_token)
-        scalars.append(scalar_val)
 
         # advance
         step = 1 if args.window == "rolling" else ctx_len
         pos += step
         tokens_left -= 1 if args.window == "rolling" else min(ctx_len, tokens_left)
 
-    coloured = _colour(ids, scalars, decode)
+    coloured = _colour(ids, scalars, decode) if args.mode != "none" else Text(decode(ids))
     console.print(coloured)
 
     if args.output_file:
