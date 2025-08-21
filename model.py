@@ -844,6 +844,15 @@ class GPT(nn.Module):
                     assert sd_hf[key].shape == sd[my_key].shape, f"Shape mismatch for key {my_key}: HF is {sd_hf[key].shape}, yours is {sd[my_key].shape}"
                     with torch.no_grad():
                         sd[my_key].copy_(sd_hf[key])
+        # Reinitialize any additional embedding tables and heads for
+        # datasets beyond the first when using multidataset token
+        # embeddings. These modules are not loaded from the GPT-2
+        # checkpoint and should use the model's standard initialization.
+        if config.multidataset_wte and len(getattr(config, 'vocab_sizes', [])) > 1:
+            for i in range(1, len(config.vocab_sizes)):
+                model._init_weights(model.transformer[f'wte_{i}'])
+                if not model.wte_weight_tying:
+                    model._init_weights(model.transformer[f'lm_head_{i}'])
 
         return model
 
