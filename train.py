@@ -495,6 +495,10 @@ class Trainer:
 
         self.model = new_model
 
+        print("JL transform applied. New tensor shapes:")
+        for name, tensor in self.raw_model.state_dict().items():
+            print(f"  {name}: {tuple(tensor.shape)}")
+
         # update model args for logging/ckpts
         self.model_args['n_embd'] = out_dim
 
@@ -1576,6 +1580,7 @@ class Trainer:
                             or self.args.jl_out_dim_mult is not None
                             or self.args.jl_out_dim_add is not None
                         )
+                        and self.iter_num > 0
                         and self.iter_num % (self.args.eval_interval * self.args.jl_transform_interval_mult) == 0
                     ):
                         self.jl_transform_and_rebuild()
