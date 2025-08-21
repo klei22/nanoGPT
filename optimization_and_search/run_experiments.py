@@ -1,7 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import product
 import argparse
 import os
@@ -247,9 +247,27 @@ def main():
     base = Path(args.config).stem
     configs = load_configurations(args.config, args.config_format)
 
+    # Precompute all combinations to know total experiment count
+    all_combos = []
     for cfg in configs:
-        for combo in generate_combinations(cfg):
-            run_experiment(combo, base, args)
+        all_combos.extend(list(generate_combinations(cfg)))
+
+    total = len(all_combos)
+    start_time = datetime.now()
+    for idx, combo in enumerate(all_combos, 1):
+        configs_left = total - idx + 1
+        if idx == 1:
+            print(
+                f"[green]Starting config {idx}/{total} ({configs_left} configs left). Estimated time remaining: N/A[/]"
+            )
+        else:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            avg = elapsed / (idx - 1)
+            eta = timedelta(seconds=int(avg * configs_left))
+            print(
+                f"[green]Starting config {idx}/{total} ({configs_left} configs left). Estimated time remaining: {eta}[/]"
+            )
+        run_experiment(combo, base, args)
 
 
 if __name__ == '__main__':
