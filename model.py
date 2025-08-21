@@ -785,11 +785,25 @@ class GPT(nn.Module):
         for key in sd_keys_hf:
             # START FIX: Rename keys to match nanoGPT's convention
             my_key = key
+
+            # When using separate embeddings per dataset, map the GPT-2 embedding
+            # and lm_head weights to the first dataset's tables.
+            if config.multidataset_wte:
+                if key == 'transformer.wte.weight':
+                    my_key = 'transformer.wte_0.weight'
+                elif key == 'lm_head.weight':
+                    my_key = 'transformer.lm_head_0.weight'
+
             if 'ln_1' in my_key:
                 my_key = my_key.replace('ln_1', 'ln1')
             if 'ln_2' in my_key:
                 my_key = my_key.replace('ln_2', 'ln2')
             # END FIX
+
+            if my_key not in sd:
+                # skip parameters that do not exist in the target model (e.g.,
+                # extra lm_heads for additional datasets)
+                continue
 
             if any(key.endswith(w) for w in transposed):
                 # special treatment for the Conv1D weights we need to transpose

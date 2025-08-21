@@ -334,10 +334,14 @@ class Trainer:
             for k in variation_dict:
                 self.model_args[k] = variation_dict[k]
 
+            # load dataset metadata before initializing the model so that
+            # multidataset settings (e.g., vocab_sizes) are available to the
+            # configuration passed into GPT.from_pretrained
+            self.load_data()
+
             gptconf = GPTConfig(**self.model_args)
             self.model = GPT.from_pretrained(gptconf, model_type=self.args.gpt2_type)
             self.model.to(self.device)
-            self.load_data()
 
             if self.args.lsv_focused_training:
                 self.model.freeze_non_lsv_parameters()
