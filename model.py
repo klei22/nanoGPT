@@ -854,6 +854,32 @@ class GPT(nn.Module):
                 if not model.wte_weight_tying:
                     model._init_weights(model.transformer[f'lm_head_{i}'])
 
+        # Initialize learned steering vectors if they are enabled. These
+        # parameters are not present in the GPT-2 checkpoint and therefore
+        # need standard initialization after loading the pretrained weights.
+        if config.use_lsv and hasattr(model, 'lsv_matrix'):
+            # initialize any submodules (e.g., Linear layers inside variants)
+            model.lsv_matrix.apply(model._init_weights)
+            # initialize direct parameter tensors
+            if hasattr(model.lsv_matrix, 'lsv_matrix'):
+                torch.nn.init.normal_(
+                    model.lsv_matrix.lsv_matrix,
+                    mean=config.embedding_mean_init,
+                    std=config.embedding_std_init,
+                )
+            if hasattr(model.lsv_matrix, 'linear_comb_matrix'):
+                torch.nn.init.normal_(
+                    model.lsv_matrix.linear_comb_matrix,
+                    mean=config.linear_mean_init,
+                    std=config.linear_std_init,
+                )
+            if hasattr(model.lsv_matrix, 'queries'):
+                torch.nn.init.normal_(
+                    model.lsv_matrix.queries,
+                    mean=config.embedding_mean_init,
+                    std=config.embedding_std_init,
+                )
+
         return model
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
