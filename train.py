@@ -23,6 +23,7 @@ from train_variations.optimizer_variants import (
     ActRegularizedAdamW,
 )
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
+from train_variations.loss_variants import build_loss_function
 
 from utils.gpu_monitoring import get_gpu_memory_info
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated
@@ -157,6 +158,9 @@ class Trainer:
         # init optimizer and scheduler
         self.optimizer = None
         self.scheduler = None
+
+        # Loss function (potentially scheduled)
+        self.loss_fn = build_loss_function(self.args)
 
         # Learning Rate Settings
         self.lr = self.args.learning_rate
@@ -864,22 +868,6 @@ class Trainer:
         return x, y, dataset
 
     @torch.no_grad()
-    def custom_loss_with_top1_focus(self, logits, targets):
-        # Compute standard cross-entropy loss
-        ce_loss = torch.nn.functional.cross_entropy(logits, targets)
-
-        # Get the top-1 predictions
-        top1_preds = torch.argmax(logits, dim=-1)
-
-        # Focus more on the top-1 prediction by adding an additional term
-        correct_top1 = (top1_preds == targets).float()  # 1 for correct, 0 for incorrect
-        top1_focus_loss = 1.0 - correct_top1  # Emphasize the wrong top-1 predictions
-
-        # Combine the original cross-entropy loss and the top-1 focus term
-        loss = ce_loss + 0.5 * top1_focus_loss.mean()  # Adjust the weight (0.5) as needed
-        return loss
-
-    @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
 
@@ -894,7 +882,13 @@ class Trainer:
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
                         with self.ctx:
                             idx = self.args.dataset_list.index(dataset)
-                            logits, loss = self.model(X, Y, iter_num=self.iter_num, dataset_idx=idx if self.args.multidataset_wte else None)
+                            logits, loss = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=idx if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
                         dataset_losses[split][k] = loss.item()
                 out['datasets'][dataset] = {
                         'train': dataset_losses['train'].mean(),
@@ -925,7 +919,13 @@ class Trainer:
                     x_dict, y_dict, dataset_list = self.get_batch(split)
 
                     with self.ctx:
-                        logits, loss_list = self.model(None, token_dict=x_dict, target_dict=y_dict, iter_num=self.iter_num)
+                        logits, loss_list = self.model(
+                            None,
+                            token_dict=x_dict,
+                            target_dict=y_dict,
+                            iter_num=self.iter_num,
+                            loss_fn=self.loss_fn,
+                        )
                     for i in range(len(self.args.multicontext_datasets)):
                         losses[f"{i}"][k] = loss_list[i]
 
@@ -950,7 +950,13 @@ class Trainer:
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
                     with self.ctx:
-                        logits, loss = self.model(X, Y, iter_num=self.iter_num, dataset_idx=0 if self.args.multidataset_wte else None)
+                        logits, loss = self.model(
+                            X,
+                            Y,
+                            iter_num=self.iter_num,
+                            dataset_idx=0 if self.args.multidataset_wte else None,
+                            loss_fn=self.loss_fn,
+                        )
                     losses[k] = loss.item()
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
@@ -1517,14 +1523,26 @@ class Trainer:
                     with self.ctx:
                         if self.args.training_mode == 'multicontext':
                             total_loss = 0
-                            logits, training_losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
+                            logits, training_losses = self.model(
+                                None,
+                                token_dict=self.X_dict,
+                                target_dict=self.Y_dict,
+                                iter_num=self.iter_num,
+                                loss_fn=self.loss_fn,
+                            )
 
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num, dataset_idx=idx_ds if self.args.multidataset_wte else None)
+                            logits, loss = self.model(
+                                self.X,
+                                targets=self.Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
 
                         loss = loss / self.args.gradient_accumulation_steps
 

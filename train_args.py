@@ -3,6 +3,8 @@ import argparse
 import math
 import re
 
+from train_variations.loss_variants import LOSS_VARIANTS
+
 def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
@@ -52,7 +54,19 @@ def parse_args():
     training_group.add_argument('--eval_cycle_window', default=5, type=int)
 
     # Loss variations
-    training_group.add_argument('--focus_on_top1_loss', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument(
+        '--loss_fn',
+        type=str,
+        default='cross_entropy',
+        choices=sorted(LOSS_VARIANTS.keys()),
+        help='Loss function to use during training.',
+    )
+    training_group.add_argument(
+        '--loss_schedule',
+        type=str,
+        default=None,
+        help='Comma-separated schedule of step:loss_fn pairs to switch loss during training.',
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")

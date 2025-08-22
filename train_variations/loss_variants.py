@@ -1,0 +1,191 @@
+# train_variations/loss_variants.py
+"""Collection of loss functions and scheduling utilities.
+
+This module provides a dictionary mapping loss names to callables. Each
+loss takes ``logits`` and ``targets`` tensors and returns a scalar loss.
+Optionally the current training iteration ``iter_num`` can be supplied
+for schedulers or adaptive losses.
+
+The default loss is standard cross entropy, but additional options are
+provided that more strongly encourage correct top-1 predictions.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, Dict, Iterable, List, Tuple
+
+import torch
+import torch.nn.functional as F
+
+
+# ---------------------------------------------------------------------------
+# Individual loss implementations
+# ---------------------------------------------------------------------------
+
+def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
+    """Standard cross-entropy loss used by the original codebase."""
+    return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+
+
+def label_smoothing_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    smoothing: float = 0.1,
+) -> torch.Tensor:
+    """Cross entropy with label smoothing to prevent overconfidence."""
+    return F.cross_entropy(
+        logits.view(-1, logits.size(-1)),
+        targets.view(-1),
+        ignore_index=-1,
+        label_smoothing=smoothing,
+    )
+
+
+def focal_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    gamma: float = 2.0,
+) -> torch.Tensor:
+    """Focal loss from classification literature to focus on hard examples."""
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+    ce = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+    with torch.no_grad():
+        pt = torch.exp(-ce)
+    loss = ((1 - pt) ** gamma) * ce
+    return loss[targets_flat != -1].mean()
+
+
+def top1_focus_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    alpha: float = 0.5,
+) -> torch.Tensor:
+    """Cross entropy with an extra penalty for wrong top-1 predictions."""
+    ce = cross_entropy_loss(logits, targets)
+    top1 = torch.argmax(logits, dim=-1)
+    correct_top1 = (top1 == targets).float()
+    penalty = 1.0 - correct_top1
+    return ce + alpha * penalty.mean()
+
+
+def top1_margin_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    margin: float = 0.1,
+) -> torch.Tensor:
+    """Encourage the target logit to exceed others by a margin."""
+    ce = cross_entropy_loss(logits, targets)
+    b, t, v = logits.shape
+    logits_flat = logits.view(-1, v)
+    targets_flat = targets.view(-1)
+    target_logits = logits_flat[torch.arange(logits_flat.size(0)), targets_flat]
+    others = logits_flat.clone()
+    others[torch.arange(logits_flat.size(0)), targets_flat] = float("-inf")
+    max_other, _ = others.max(dim=-1)
+    margin_loss = torch.clamp(margin - (target_logits - max_other), min=0.0)
+    return ce + margin_loss.mean()
+
+
+def entropy_penalty_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    beta: float = 0.01,
+) -> torch.Tensor:
+    """Cross entropy plus penalty on prediction entropy to encourage peaky outputs."""
+    ce = cross_entropy_loss(logits, targets)
+    probs = torch.softmax(logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
+    entropy = -(probs * log_probs).sum(dim=-1)
+    mask = targets != -1
+    return ce + beta * entropy[mask].mean()
+
+
+def top1_ratio_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    beta: float = 0.5,
+) -> torch.Tensor:
+    """Novel loss encouraging the target logit to dominate all others exponentially."""
+    ce = cross_entropy_loss(logits, targets)
+    b, t, v = logits.shape
+    logits_flat = logits.view(-1, v)
+    targets_flat = targets.view(-1)
+    mask = targets_flat != -1
+    logits_flat = logits_flat[mask]
+    targets_flat = targets_flat[mask]
+    target_logits = logits_flat[torch.arange(logits_flat.size(0)), targets_flat]
+    others = logits_flat.clone()
+    others[torch.arange(logits_flat.size(0)), targets_flat] = float("-inf")
+    max_other, _ = others.max(dim=-1)
+    ratio_penalty = torch.exp(max_other - target_logits)
+    return ce + beta * ratio_penalty.mean()
+
+
+LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
+    "cross_entropy": cross_entropy_loss,
+    "label_smoothing": label_smoothing_loss,
+    "focal": focal_loss,
+    "top1_focus": top1_focus_loss,
+    "top1_margin": top1_margin_loss,
+    "entropy_penalty": entropy_penalty_loss,
+    "top1_ratio": top1_ratio_loss,
+}
+
+
+# ---------------------------------------------------------------------------
+# Loss scheduling
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ScheduledLoss:
+    """Switch between different loss functions at predefined iterations."""
+
+    schedule: List[Tuple[int, str]]
+    loss_dict: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]]
+
+    def __post_init__(self) -> None:
+        self.schedule.sort(key=lambda x: x[0])
+
+    def __call__(self, logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
+        name = self.schedule[0][1]
+        if iter_num is not None:
+            for step, candidate in self.schedule:
+                if iter_num >= step:
+                    name = candidate
+                else:
+                    break
+        return self.loss_dict[name](logits, targets, iter_num=iter_num)
+
+
+def parse_loss_schedule(schedule_str: str) -> List[Tuple[int, str]]:
+    """Parse a schedule string like ``"0:cross_entropy,1000:top1_focus"``."""
+    schedule: List[Tuple[int, str]] = []
+    for part in schedule_str.split(","):
+        step_str, name = part.split(":")
+        schedule.append((int(step_str), name.strip()))
+    return schedule
+
+
+def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    """Return the loss function or a scheduler based on ``args``."""
+    schedule_str = getattr(args, "loss_schedule", None)
+    if schedule_str:
+        schedule = parse_loss_schedule(schedule_str)
+        return ScheduledLoss(schedule, LOSS_VARIANTS)
+    loss_name = getattr(args, "loss_fn", "cross_entropy")
+    return LOSS_VARIANTS.get(loss_name, cross_entropy_loss)
+
