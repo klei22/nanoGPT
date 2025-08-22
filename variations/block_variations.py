@@ -9,6 +9,7 @@ from variations.attention_variations import attention_dictionary
 from variations.mlp_variations import get_mlp_instance
 from variations.norm_variations import norm_dictionary
 from variations.learned_confidence_variations import learned_confidence_dictionary
+from variations.residual_variations import residual_dictionary
 
 # type alias for the forward function
 BlockForward = Callable[['Block', torch.Tensor, int], torch.Tensor]
@@ -33,7 +34,14 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
-    x = x + attn_out + mlp_out
+    combined = attn_out + mlp_out
+    x = block.resid_fn(
+        x,
+        combined,
+        block.resid_alpha,
+        block.resid_slerp_threshold,
+        block.resid_slerp_use_lerp_fallback,
+    )
 
     if block.use_post_ln: # post-LN
         x = block.post_ln(x)
@@ -58,7 +66,13 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     if block.attn_resid_scaler is not None:
         attn_out = block.attn_resid_scaler(attn_out)
 
-    x = attn_out + x
+    x = block.resid_fn(
+        x,
+        attn_out,
+        block.resid_alpha,
+        block.resid_slerp_threshold,
+        block.resid_slerp_use_lerp_fallback,
+    )
 
     if block.use_post_ln: # post-LN Attn
         x = block.post_ln_attn(x)
@@ -77,7 +91,13 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
-    x = mlp_out + x
+    x = block.resid_fn(
+        x,
+        mlp_out,
+        block.resid_alpha,
+        block.resid_slerp_threshold,
+        block.resid_slerp_use_lerp_fallback,
+    )
 
     if block.use_post_ln: # post-LN MLP
         x = block.post_ln_mlp(x)
@@ -130,6 +150,29 @@ class Block(nn.Module):
         self.use_parallel_mlp = config.use_parallel_mlp
 
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
+
+        if getattr(config, "resid_lerp_alpha_learnable", False):
+            self.resid_alpha = nn.Parameter(torch.tensor(getattr(config, "resid_lerp_alpha", 1.0)))
+        else:
+            self.register_buffer(
+                "resid_alpha", torch.tensor(getattr(config, "resid_lerp_alpha", 1.0))
+            )
+
+        if getattr(config, "resid_slerp_threshold_learnable", False):
+            self.resid_slerp_threshold = nn.Parameter(
+                torch.tensor(getattr(config, "resid_slerp_threshold", 1e-7))
+            )
+        else:
+            self.register_buffer(
+                "resid_slerp_threshold",
+                torch.tensor(getattr(config, "resid_slerp_threshold", 1e-7)),
+            )
+
+        self.resid_slerp_use_lerp_fallback = getattr(
+            config, "resid_slerp_use_lerp_fallback", False
+        )
+
+        self.resid_fn = residual_dictionary[getattr(config, "resid_variant", "add")]
 
         if config.use_attn_resid_scaling:
             cls = learned_confidence_dictionary[config.attn_confidence_variant]

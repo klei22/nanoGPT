@@ -1,0 +1,35 @@
+# residual_variant_sweep.yaml
+---
+parameter_groups:
+  # Baseline with standard addition
+  - resid_variant: ["add"]
+
+  # Linear interpolation residual connection
+  - resid_variant: ["lerp"]
+    resid_lerp_alpha: [0.5, 1.0]
+    resid_lerp_alpha_learnable: [false, true]
+
+  # Spherical linear interpolation residual connection
+  - resid_variant: ["slerp"]
+    resid_lerp_alpha: [0.5, 1.0]
+    resid_lerp_alpha_learnable: [false, true]
+    resid_slerp_threshold: [1e-7, 1e-5]
+    resid_slerp_threshold_learnable: [false, true]
+    resid_slerp_use_lerp_fallback: [false, true]
+
+# base hyperparameters
+max_iters: [250]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+device: ["cuda"]
+dtype: ["bfloat16"]
+dataset: ["shakespeare_char"]
+
+# position encoding
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# misc
+compile: [true]

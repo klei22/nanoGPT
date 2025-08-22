@@ -141,6 +141,14 @@ class GPTConfig:
     moe_top_k: int = 2
     moe_router_scheme: str = "softmax"
 
+    # Residual connection variants
+    resid_variant: str = "add"
+    resid_lerp_alpha: float = 1.0
+    resid_lerp_alpha_learnable: bool = False
+    resid_slerp_threshold: float = 1e-7
+    resid_slerp_threshold_learnable: bool = False
+    resid_slerp_use_lerp_fallback: bool = False
+
     # Logging options
     softmax_io_logging: bool = False
     consmax_beta_gamma_logging: bool = False
