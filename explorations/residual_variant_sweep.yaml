@@ -7,15 +7,15 @@ parameter_groups:
   # Linear interpolation residual connection
   - resid_variant: ["lerp"]
     resid_lerp_alpha: [0.5, 1.0]
-    learn_resid_lerp_alpha: [false, true]
+    resid_lerp_alpha_learnable: [false, true]
 
   # Spherical linear interpolation residual connection
   - resid_variant: ["slerp"]
     resid_lerp_alpha: [0.5, 1.0]
-    learn_resid_lerp_alpha: [false, true]
+    resid_lerp_alpha_learnable: [false, true]
     resid_slerp_threshold: [1e-7, 1e-5]
-    learn_resid_slerp_threshold: [false, true]
-    use_slerp_lerp_fallback: [false, true]
+    resid_slerp_threshold_learnable: [false, true]
+    resid_slerp_use_lerp_fallback: [false, true]
 
 # base hyperparameters
 max_iters: [250]

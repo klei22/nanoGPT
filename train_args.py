@@ -472,13 +472,13 @@ def parse_args():
                              help='Interpolation factor for lerp/slerp residuals')
     model_group.add_argument('--resid_slerp_threshold', type=float, default=1e-7,
                              help='Threshold for slerp to avoid small-angle instability')
-    model_group.add_argument('--use_slerp_lerp_fallback', default=False,
+    model_group.add_argument('--resid_slerp_use_lerp_fallback', default=False,
                              action=argparse.BooleanOptionalAction,
                              help='Enable LERP fallback for small slerp angles')
-    model_group.add_argument('--learn_resid_lerp_alpha', default=False,
+    model_group.add_argument('--resid_lerp_alpha_learnable', default=False,
                              action=argparse.BooleanOptionalAction,
                              help='Learn the residual lerp alpha parameter')
-    model_group.add_argument('--learn_resid_slerp_threshold', default=False,
+    model_group.add_argument('--resid_slerp_threshold_learnable', default=False,
                              action=argparse.BooleanOptionalAction,
                              help='Learn the slerp threshold parameter')
 
