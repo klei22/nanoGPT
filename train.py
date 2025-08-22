@@ -1487,28 +1487,29 @@ class Trainer:
                             peak_mb = self.peak_gpu_usage / (1024 ** 2)
                             with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
                                 chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
-                                best_loss_file.write(
-                                        f"{self.best_val_loss.item()},"
-                                        f" {self.iter_num},"
-                                        f" {self.model.num_param},"
-                                        f" {chance_ratio:.3e},"
-                                        f" {chance_ratio/self.model.num_param:.3e},"
-                                        f" {peak_mb:.1f},"
-                                        f" {self.iter_latency_avg:.1f},"
-                                        f" {losses.get('top1_prob', float('nan')):.6f},",
-                                        f" {losses.get('top1_correct', float('nan')):.6f},",
-                                        f" {losses.get('target_rank', float('nan')):.2f},",
-                                        f" {self.latest_overall_weight_stats['stdev']:.6f},"
-                                        f" {self.latest_overall_weight_stats['kurtosis']:.6f},"
-                                        f" {self.latest_overall_weight_stats['max']:.6f},"
-                                        f" {self.latest_overall_weight_stats['min']:.6f},"
-                                        f" {self.latest_overall_weight_stats['abs_max']:.6f},"
-                                        f" {self.latest_overall_activation_stats['stdev']:.6f},"
-                                        f" {self.latest_overall_activation_stats['kurtosis']:.6f},"
-                                        f" {self.latest_overall_activation_stats['max']:.6f},"
-                                        f" {self.latest_overall_activation_stats['min']:.6f},"
-                                        f" {self.latest_overall_activation_stats['abs_max']:.6f},"
-                                        )
+                                metrics = [
+                                        f"{self.best_val_loss.item()}",
+                                        f"{self.iter_num}",
+                                        f"{self.model.num_param}",
+                                        f"{chance_ratio:.3e}",
+                                        f"{chance_ratio/self.model.num_param:.3e}",
+                                        f"{peak_mb:.1f}",
+                                        f"{self.iter_latency_avg:.1f}",
+                                        f"{losses.get('top1_prob', float('nan')):.6f}",
+                                        f"{losses.get('top1_correct', float('nan')):.6f}",
+                                        f"{losses.get('target_rank', float('nan')):.2f}",
+                                        f"{self.latest_overall_weight_stats['stdev']:.6f}",
+                                        f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
+                                        f"{self.latest_overall_weight_stats['max']:.6f}",
+                                        f"{self.latest_overall_weight_stats['min']:.6f}",
+                                        f"{self.latest_overall_weight_stats['abs_max']:.6f}",
+                                        f"{self.latest_overall_activation_stats['stdev']:.6f}",
+                                        f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
+                                        f"{self.latest_overall_activation_stats['max']:.6f}",
+                                        f"{self.latest_overall_activation_stats['min']:.6f}",
+                                        f"{self.latest_overall_activation_stats['abs_max']:.6f}",
+                                ]
+                                best_loss_file.write(", ".join(metrics) + "\n")
                             # Reset early exit counter
                             num_steps_with_worse_loss = 0
                         if self.iter_num > 0 and not self.args.never_save_checkpoint:
