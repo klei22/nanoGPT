@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Tuple
 
+import math
 import torch
 import torch.nn.functional as F
 
@@ -135,6 +136,53 @@ def top1_ratio_loss(
     return ce + beta * ratio_penalty.mean()
 
 
+def rank_distance_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    gamma: float = 1.0,
+) -> torch.Tensor:
+    """Scale loss by how far the target's rank is from top-1."""
+    b, t, v = logits.shape
+    logits_flat = logits.view(-1, v)
+    targets_flat = targets.view(-1)
+    loss = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+    mask = targets_flat != -1
+    with torch.no_grad():
+        logits_sel = logits_flat[mask]
+        targets_sel = targets_flat[mask]
+        target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
+        rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+        scale = 1 + gamma * (rank.float() - 1)
+    scaled = torch.zeros_like(loss)
+    scaled[mask] = loss[mask] * scale
+    return scaled[mask].mean()
+
+
+def flatness_boost_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    beta: float = 1.0,
+) -> torch.Tensor:
+    """Boost loss when the predicted distribution is flat (high entropy)."""
+    b, t, v = logits.shape
+    logits_flat = logits.view(-1, v)
+    targets_flat = targets.view(-1)
+    loss = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+    mask = targets_flat != -1
+    with torch.no_grad():
+        probs = torch.softmax(logits_flat[mask], dim=-1)
+        entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)
+        entropy_norm = entropy / math.log(v)
+        scale = 1 + beta * entropy_norm
+    scaled = torch.zeros_like(loss)
+    scaled[mask] = loss[mask] * scale
+    return scaled[mask].mean()
+
+
 LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
     "cross_entropy": cross_entropy_loss,
     "label_smoothing": label_smoothing_loss,
@@ -143,12 +191,34 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "top1_margin": top1_margin_loss,
     "entropy_penalty": entropy_penalty_loss,
     "top1_ratio": top1_ratio_loss,
+    "rank_distance": rank_distance_loss,
+    "flatness_boost": flatness_boost_loss,
 }
 
 
 # ---------------------------------------------------------------------------
 # Loss scheduling
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class ScheduledValue:
+    """Schedule a scalar value over training iterations."""
+
+    schedule: List[Tuple[int, float]]
+
+    def __post_init__(self) -> None:
+        self.schedule.sort(key=lambda x: x[0])
+
+    def __call__(self, iter_num: int | None) -> float:
+        val = self.schedule[0][1]
+        if iter_num is not None:
+            for step, candidate in self.schedule:
+                if iter_num >= step:
+                    val = candidate
+                else:
+                    break
+        return val
 
 @dataclass
 class ScheduledLoss:
@@ -180,6 +250,15 @@ def parse_loss_schedule(schedule_str: str) -> List[Tuple[int, str]]:
     return schedule
 
 
+def parse_value_schedule(schedule_str: str) -> ScheduledValue:
+    """Parse a schedule string like ``"0:1.0,1000:2.0"`` for scalar values."""
+    schedule: List[Tuple[int, float]] = []
+    for part in schedule_str.split(","):
+        step_str, value_str = part.split(":")
+        schedule.append((int(step_str), float(value_str)))
+    return ScheduledValue(schedule)
+
+
 def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     """Return the loss function or a scheduler based on ``args``."""
     schedule_str = getattr(args, "loss_schedule", None)
@@ -187,5 +266,17 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
         schedule = parse_loss_schedule(schedule_str)
         return ScheduledLoss(schedule, LOSS_VARIANTS)
     loss_name = getattr(args, "loss_fn", "cross_entropy")
+
+    if loss_name == "rank_distance":
+        base = getattr(args, "rank_scale", 1.0)
+        scale_sched_str = getattr(args, "rank_scale_schedule", None)
+        scaler = parse_value_schedule(scale_sched_str) if scale_sched_str else None
+
+        def loss_fn(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
+            gamma = scaler(iter_num) if scaler else base
+            return rank_distance_loss(logits, targets, iter_num=iter_num, gamma=gamma)
+
+        return loss_fn
+
     return LOSS_VARIANTS.get(loss_name, cross_entropy_loss)
 

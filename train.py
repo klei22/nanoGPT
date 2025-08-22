@@ -1581,6 +1581,13 @@ class Trainer:
                                 loss_fn=self.loss_fn,
                             )
 
+                        if hasattr(self.optimizer, "set_entropy"):
+                            with torch.no_grad():
+                                probs = torch.softmax(logits, dim=-1)
+                                ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
+                                ent = ent / math.log(logits.size(-1))
+                            self.optimizer.set_entropy(float(ent))
+
                         loss = loss / self.args.gradient_accumulation_steps
 
                     prior_dataset = current_dataset
