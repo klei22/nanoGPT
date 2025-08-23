@@ -11,6 +11,7 @@
 \usepackage{nicefrac}
 \usepackage{microtype}
 \usepackage{xcolor}
+\usepackage{listings}
 
 \title{Rank-Aware Losses and Entropy-Aware Optimization for Improved Top-1 Accuracy}
 
@@ -28,27 +29,126 @@ We explore loss functions and optimizer modifications that explicitly encourage 
 Cross-entropy remains the de facto training objective for autoregressive language models, yet it does not directly optimize top-1 accuracy. Building on work such as focal loss~\cite{lin2017focal} and label smoothing~\cite{szegedy2016rethinking}, we investigate losses and optimizers that focus training on confidently predicting the correct next token. TODO: expand motivation and related work.
 
 \section{Methods}
-\subsection{Rank-distance loss}
-This variant scales the per-token loss by how far the target logit ranks from the model's top prediction. TODO: include full formulation and scheduling strategy.
+We implemented a suite of loss functions and an adaptive optimizer that emphasize confident top-1 predictions. The pseudocode below summarizes each variant's core update.
 
-\subsection{Flatness-boost loss}
-To discourage overly flat distributions, we amplify the loss when the maximum probability is low, akin to confidence penalties~\cite{pereyra2017regularizing}. TODO: add ablation details.
+\subsection{Loss variants}
 
-\subsection{Loss scheduling}
-Our framework allows switching between loss variants during training. TODO: describe scheduling policies and implementation.
+\paragraph{Cross-entropy (baseline)}
+\begin{lstlisting}
+function CROSS_ENTROPY(logits, target):
+    return -log_softmax(logits)[target]
+\end{lstlisting}
+Standard maximum-likelihood objective.
 
-\subsection{Entropy-aware AdamW}
-We propose an optimizer that boosts the learning rate when output entropy rises, drawing inspiration from entropy-aware methods~\cite{chaudhari2019entropy}. TODO: provide algorithmic pseudocode.
+\paragraph{Label smoothing}
+\begin{lstlisting}
+function LABEL_SMOOTHING(logits, target, s):
+    p = one_hot(target)*(1-s) + s/|V|
+    return -sum(p * log_softmax(logits))
+\end{lstlisting}
+Reduces overconfidence by distributing $s$ mass across other classes.
+
+\paragraph{Focal loss}
+\begin{lstlisting}
+function FOCAL(logits, target, gamma):
+    ce = CROSS_ENTROPY(logits, target)
+    pt = exp(-ce)
+    return (1-pt)^gamma * ce
+\end{lstlisting}
+Down-weights easy examples via $(1-p_t)^\gamma$.
+
+\paragraph{Top-1 focus}
+\begin{lstlisting}
+function TOP1_FOCUS(logits, target, alpha):
+    ce = CROSS_ENTROPY(logits, target)
+    top = argmax(logits)
+    penalty = 1 if top != target else 0
+    return ce + alpha * penalty
+\end{lstlisting}
+Adds a margin if the model's prediction is not the target.
+
+\paragraph{Top-1 margin}
+\begin{lstlisting}
+function TOP1_MARGIN(logits, target, m):
+    ce = CROSS_ENTROPY(logits, target)
+    max_other = max(logits[!=target])
+    return ce + max(0, m - (logits[target] - max_other))
+\end{lstlisting}
+Encourages the target logit to exceed others by margin $m$.
+
+\paragraph{Entropy penalty}
+\begin{lstlisting}
+function ENTROPY_PENALTY(logits, target, beta):
+    ce = CROSS_ENTROPY(logits, target)
+    H = -sum(softmax(logits)*log_softmax(logits))
+    return ce + beta * H
+\end{lstlisting}
+Penalizes high-entropy predictions.
+
+\paragraph{Top-1 ratio \textbf{(novel)}}
+\begin{lstlisting}
+function TOP1_RATIO(logits, target, beta):
+    ce = CROSS_ENTROPY(logits, target)
+    max_other = max(logits[!=target])
+    ratio = exp(max_other - logits[target])
+    return ce + beta * ratio
+\end{lstlisting}
+Pushes the target logit to dominate alternatives exponentially.
+
+\paragraph{Rank-distance \textbf{(novel)}}
+\begin{lstlisting}
+function RANK_DISTANCE(logits, target, gamma):
+    ce = CROSS_ENTROPY(logits, target)
+    rank = 1 + count(logits > logits[target])
+    scale = 1 + gamma * (rank-1)
+    return ce * scale
+\end{lstlisting}
+Scales loss by how far the target ranks from top-1.
+
+\paragraph{Flatness-boost \textbf{(novel)}}
+\begin{lstlisting}
+function FLATNESS_BOOST(logits, target, beta):
+    ce = CROSS_ENTROPY(logits, target)
+    H = entropy(softmax(logits)) / log(|V|)
+    return ce * (1 + beta * H)
+\end{lstlisting}
+Amplifies loss on flat (high-entropy) distributions.
+
+\subsection{Optimizer variant}
+
+\paragraph{Entropy-aware AdamW \textbf{(novel)}}
+\begin{lstlisting}
+function ENTROPY_AWARE_ADAMW(g, m, v, H, lr, beta1, beta2, eps, w, wd, c):
+    m = beta1*m + (1-beta1)*g
+    v = beta2*v + (1-beta2)*g*g
+    lr_eff = lr * (1 + c * H)
+    w = w*(1-lr_eff*wd) - lr_eff * m / (sqrt(v)+eps)
+\end{lstlisting}
+Boosts the effective learning rate in proportion to batch entropy $H$.
 
 \section{Experiments}
 We train 6-layer GPT models on the Minipile dataset using rotary embeddings and no absolute positional embeddings. Validation metrics include top-1 probability, correctness of the top prediction, and the rank of the target token. A preliminary summary appears in Table~\ref{tab:results}.
 
-\input{results_summary.tex}
+\begin{table}[ht]
+    \centering
+    \begin{tabular}{lccc}
+        \toprule
+        Loss Variant & Best Val Loss & Avg Top-1 Prob & Avg Top-1 Correctness \\
+        \midrule
+        focal & 1.57 & 0.54 & 0.44 \\
+        rank\_distance & 1.62 & 0.53 & 0.44 \\
+        flatness\_boost & 1.64 & 0.53 & 0.43 \\
+        cross\_entropy & 1.65 & 0.52 & 0.42 \\
+        \bottomrule
+    \end{tabular}
+    \caption{Preliminary validation metrics on the Minipile dataset. TODO: extend with additional losses, seeds, and variance estimates.}
+    \label{tab:results}
+\end{table}
 
 TODO: detail training hyperparameters, compute costs, and additional baselines.
 
 \section{Discussion}
-Preliminary results suggest that rank-aware and entropy-aware techniques can modestly improve top-1 accuracy over vanilla cross-entropy. TODO: analyze failure cases and interactions between components.
+Table~\ref{tab:results} shows that losses emphasizing rank and entropy yield higher top-1 probability than vanilla cross-entropy. The novel rank-distance and flatness-boost losses each target different failure modes: the former penalizes low-ranked targets, while the latter reacts to diffuse predictions. Our entropy-aware AdamW further increases learning when predictions are flat. Combining these ideas---e.g., scheduling label smoothing early, then switching to rank-distance with entropy-aware AdamW---may tighten perplexity while boosting top-1 correctness. Future work can explore mixtures such as applying a top-1 ratio penalty alongside flatness-boost to jointly sharpen distributions and enforce logit dominance.
 
 \section{Conclusion}
 We presented a suite of modifications targeting top-1 accuracy, spanning loss design and optimizer behavior. TODO: finalize conclusions with full experimental evidence.
