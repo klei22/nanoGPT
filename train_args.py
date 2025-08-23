@@ -3,6 +3,8 @@ import argparse
 import math
 import re
 
+from train_variations.loss_variants import LOSS_VARIANTS
+
 def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
@@ -62,7 +64,31 @@ def parse_args():
     training_group.add_argument('--eval_cycle_window', default=5, type=int)
 
     # Loss variations
-    training_group.add_argument('--focus_on_top1_loss', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument(
+        '--loss_fn',
+        type=str,
+        default='cross_entropy',
+        choices=sorted(LOSS_VARIANTS.keys()),
+        help='Loss function to use during training.',
+    )
+    training_group.add_argument(
+        '--loss_schedule',
+        type=str,
+        default=None,
+        help='Comma-separated schedule of step:loss_fn pairs to switch loss during training.',
+    )
+    training_group.add_argument(
+        '--rank_scale',
+        type=float,
+        default=1.0,
+        help='Base scaling factor for rank_distance loss.',
+    )
+    training_group.add_argument(
+        '--rank_scale_schedule',
+        type=str,
+        default=None,
+        help="Schedule for rank_distance's scaling factor, e.g. 0:1.0,1000:2.0",
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
@@ -175,6 +201,7 @@ def parse_args():
             "soap",
             "var_adaptive_lr",
             "lookahead",
+            "entropy_aware_adamw",
             ]
 
     training_group.add_argument("--optimizer", type=str, default="adamw",
@@ -188,6 +215,12 @@ def parse_args():
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
     training_group.add_argument("--adamw_weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer.")
+    training_group.add_argument(
+        "--entropy_lr_boost",
+        type=float,
+        default=1.0,
+        help="Coefficient for entropy_aware_adamw to scale learning rate when logits are flat.",
+    )
     # --------  ADAMW_ACT_REG --------------------------------------------------
     training_group.add_argument(
         "--activation_decay",
