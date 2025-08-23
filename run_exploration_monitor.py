@@ -19,6 +19,7 @@ Interactive keybindings:
   1–9   - graph & connect points sharing merged columns 3..(2+N)
   q # # - multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels.
   z # # - Δ-bar chart (trim baseline) – e.g. ‘z 3 2’
+  R # # - radar chart – `R [1-9] [1-9]` - e.g. 'R 3 2' will create a radar chart for columns 1 2 and 3 with the next two columns (column 4 and column 5) merged for labels.
   r–y   - barcharts with labels merged (r=1, y=3)
   c     - toggle colour-map on first column (green → red)
   u     - unsort / remove current column from the sort stack
@@ -78,6 +79,7 @@ HOTKEYS_TEXT = (
     "1–9: graph & connect points sharing merged columns 3..(2+N)\n"
     "q # #: multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels\n"
     "z # #: Δ-bar chart (trim baseline) – e.g. ‘z 3 2’\n"
+    "R # #: radar chart - `R [1-9] [1-9]` - e.g. 'R 3 2' will create a radar chart for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels\n"
     "r–y: barcharts with labels merged (r=1, y=3)\n"
     "c: toggle colour-map on first column (green → red)\n"
     "u: unsort / remove current column from the sort stack\n"
@@ -144,6 +146,8 @@ class MonitorApp(App):
         self.colour_columns: set[int] = set()   # columns currently colourised
         self._bar_mode: bool = False           # are we collecting digits?
         self._bar_digits: List[int] = []       # collected numeric keys
+        self._radar_mode: bool = False         # 'R' radar chart mode
+        self._radar_digits: List[int] = []     # collected numeric keys for radar
         self._trim_mode: bool = False          # 'z' zoom-bar mode
         self._trim_digit: List[int] = []       # holds the single digit
         self.csv_dir: str = csv_dir
@@ -452,6 +456,35 @@ class MonitorApp(App):
             return
         r, c = coord.row, coord.column
         key = event.key
+        if self._radar_mode:
+            if key.isdigit() and key != "0":
+                self._radar_digits.append(int(key))
+                if len(self._radar_digits) == 2:
+                    n_spokes, n_labels = self._radar_digits
+                    self._radar_mode, self._radar_digits = False, []
+                    try:
+                        needed = n_spokes + n_labels
+                        if len(self.columns) < needed:
+                            raise ValueError(
+                                f"Need at least {needed} visible columns for this radar chart"
+                            )
+                        y_cols = self.columns[0:n_spokes]
+                        lbl_cols = self.columns[n_spokes:n_spokes+n_labels]
+                        plot_view.plot_radar(
+                            self.current_entries,
+                            y_cols=y_cols,
+                            label_cols=lbl_cols,
+                        )
+                        self._msg(
+                            f"Radar: {', '.join(y_cols)} by {', '.join(lbl_cols)}",
+                            timeout=3,
+                        )
+                    except Exception as exc:
+                        self._msg(f"Graph error: {exc}", timeout=4)
+            else:
+                self._radar_mode, self._radar_digits = False, []
+                self._msg("Radar mode cancelled")
+            return
         if self._bar_mode:
             if key.isdigit() and key != "0":
                 self._bar_digits.append(int(key))
@@ -525,6 +558,10 @@ class MonitorApp(App):
 
         # ────────────────────────── normal hotkeys ────────────────────────────
 
+        if key == "R":
+            self._radar_mode, self._radar_digits = True, []
+            self._msg("Radar mode: type <#metrics><#labels>")
+            return
         if key == "q":
             # enter modal bar-chart mode
             self._bar_mode, self._bar_digits = True, []
