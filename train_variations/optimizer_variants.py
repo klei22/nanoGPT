@@ -1048,6 +1048,43 @@ def _adamw_act_reg(param_groups, args):
         stat_type=getattr(args, "activation_stat", "stdev"),
     )
 
+
+class EntropyAwareAdamW(AdamW):
+    """AdamW variant that increases learning rate for flat output distributions."""
+
+    def __init__(self, params, *, entropy_coeff: float = 1.0, **kwargs):
+        super().__init__(params, **kwargs)
+        self.entropy_coeff = entropy_coeff
+        for group in self.param_groups:
+            group.setdefault("base_lr", group["lr"])
+        self._entropy: float = 0.0
+
+    def set_entropy(self, value: float) -> None:
+        self._entropy = float(value)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        scale = 1.0 + self.entropy_coeff * self._entropy
+        for group in self.param_groups:
+            base_lr = group.get("base_lr", group["lr"])
+            group["lr"] = base_lr * scale
+        loss = super().step(closure)
+        for group in self.param_groups:
+            group["lr"] = group.get("base_lr", group["lr"])
+        self._entropy = 0.0
+        return loss
+
+
+def _entropy_aware_adamw(param_groups, args):
+    return EntropyAwareAdamW(
+        param_groups,
+        lr=args.learning_rate,
+        betas=(args.beta1, args.beta2),
+        eps=args.adamw_eps,
+        weight_decay=args.adamw_weight_decay,
+        entropy_coeff=getattr(args, "entropy_lr_boost", 1.0),
+    )
+
 def _radam(param_groups, args):
     return RAdam(
         param_groups,
@@ -1639,4 +1676,5 @@ optimizer_dictionary: dict[str, callable] = {
     "soap": _soap,
     "var_adaptive_lr": _var_adaptive_lr,
     "lookahead": _lookahead,
+    "entropy_aware_adamw": _entropy_aware_adamw,
 }

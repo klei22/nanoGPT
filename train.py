@@ -23,6 +23,7 @@ from train_variations.optimizer_variants import (
     ActRegularizedAdamW,
 )
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
+from train_variations.loss_variants import build_loss_function
 
 from utils.gpu_monitoring import get_gpu_memory_info
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated
@@ -71,6 +72,7 @@ import numpy as np
 # Torch
 import torch
 import torch.onnx
+import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
@@ -157,6 +159,9 @@ class Trainer:
         # init optimizer and scheduler
         self.optimizer = None
         self.scheduler = None
+
+        # Loss function (potentially scheduled)
+        self.loss_fn = build_loss_function(self.args)
 
         # Learning Rate Settings
         self.lr = self.args.learning_rate
@@ -864,22 +869,6 @@ class Trainer:
         return x, y, dataset
 
     @torch.no_grad()
-    def custom_loss_with_top1_focus(self, logits, targets):
-        # Compute standard cross-entropy loss
-        ce_loss = torch.nn.functional.cross_entropy(logits, targets)
-
-        # Get the top-1 predictions
-        top1_preds = torch.argmax(logits, dim=-1)
-
-        # Focus more on the top-1 prediction by adding an additional term
-        correct_top1 = (top1_preds == targets).float()  # 1 for correct, 0 for incorrect
-        top1_focus_loss = 1.0 - correct_top1  # Emphasize the wrong top-1 predictions
-
-        # Combine the original cross-entropy loss and the top-1 focus term
-        loss = ce_loss + 0.5 * top1_focus_loss.mean()  # Adjust the weight (0.5) as needed
-        return loss
-
-    @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
 
@@ -889,23 +878,44 @@ class Trainer:
             for dataset in self.args.dataset_list:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
+                top1_probs, top1_corrects, target_ranks = [], [], []
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
                         with self.ctx:
                             idx = self.args.dataset_list.index(dataset)
-                            logits, loss = self.model(X, Y, iter_num=self.iter_num, dataset_idx=idx if self.args.multidataset_wte else None)
+                            logits, loss = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=idx if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
                         dataset_losses[split][k] = loss.item()
+                        if split == 'val':
+                            probs = F.softmax(logits, dim=-1)
+                            top1_prob, top1_idx = probs.max(dim=-1)
+                            top1_probs.append(top1_prob)
+                            top1_corrects.append((top1_idx == Y).float())
+                            target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                            ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+                            target_ranks.append(ranks.float())
                 out['datasets'][dataset] = {
                         'train': dataset_losses['train'].mean(),
                         'train_std': dataset_losses['train'].std(),
                         'val': dataset_losses['val'].mean(),
                         'val_std': dataset_losses['val'].std(),
+                        'top1_prob': torch.cat(top1_probs).mean() if top1_probs else torch.tensor(float('nan')),
+                        'top1_correct': torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan')),
+                        'target_rank': torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan')),
                         }
             out['val'] = out['datasets'][self.args.dataset]['val']
             out['val_std'] = out['datasets'][self.args.dataset]['val_std']
             out['train'] = out['datasets'][self.args.dataset]['train']
             out['train_std'] = out['datasets'][self.args.dataset]['train_std']
+            out['top1_prob'] = out['datasets'][self.args.dataset]['top1_prob']
+            out['top1_correct'] = out['datasets'][self.args.dataset]['top1_correct']
+            out['target_rank'] = out['datasets'][self.args.dataset]['target_rank']
         elif self.args.training_mode == "multicontext":
             for i, dataset in enumerate(self.args.multicontext_datasets):
                 out['datasets'][dataset] = {}
@@ -925,7 +935,13 @@ class Trainer:
                     x_dict, y_dict, dataset_list = self.get_batch(split)
 
                     with self.ctx:
-                        logits, loss_list = self.model(None, token_dict=x_dict, target_dict=y_dict, iter_num=self.iter_num)
+                        logits, loss_list = self.model(
+                            None,
+                            token_dict=x_dict,
+                            target_dict=y_dict,
+                            iter_num=self.iter_num,
+                            loss_fn=self.loss_fn,
+                        )
                     for i in range(len(self.args.multicontext_datasets)):
                         losses[f"{i}"][k] = loss_list[i]
 
@@ -947,13 +963,32 @@ class Trainer:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
+                top1_probs, top1_corrects, target_ranks = [], [], []
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
                     with self.ctx:
-                        logits, loss = self.model(X, Y, iter_num=self.iter_num, dataset_idx=0 if self.args.multidataset_wte else None)
+                        logits, loss = self.model(
+                            X,
+                            Y,
+                            iter_num=self.iter_num,
+                            dataset_idx=0 if self.args.multidataset_wte else None,
+                            loss_fn=self.loss_fn,
+                        )
                     losses[k] = loss.item()
+                    if split == 'val':
+                        probs = F.softmax(logits, dim=-1)
+                        top1_prob, top1_idx = probs.max(dim=-1)
+                        top1_probs.append(top1_prob)
+                        top1_corrects.append((top1_idx == Y).float())
+                        target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                        ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+                        target_ranks.append(ranks.float())
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
+                if split == 'val':
+                    out['top1_prob'] = torch.cat(top1_probs).mean() if top1_probs else torch.tensor(float('nan'))
+                    out['top1_correct'] = torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan'))
+                    out['target_rank'] = torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan'))
 
         # compute statistics from a single validation batch
         if self.compute_model_stats:
@@ -1136,6 +1171,11 @@ class Trainer:
 
             self.writer.add_scalar(f"{target_dataset}/std_val_iters", losses['val_std'].item(), self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/std_val_tokens", losses['val_std'].item(), tokens_trained)
+
+            if 'top1_prob' in losses:
+                self.writer.add_scalar(f"{target_dataset}/avg_top1_prob", losses['top1_prob'], self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/avg_top1_correct", losses['top1_correct'], self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/avg_target_rank", losses['target_rank'], self.iter_num)
 
             if self.args.gns_type is not None:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
@@ -1446,26 +1486,31 @@ class Trainer:
                             # Save best validation loss
                             peak_mb = self.peak_gpu_usage / (1024 ** 2)
                             with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                                chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
-                                best_loss_file.write(
-                                        f"{self.best_val_loss.item()},"
-                                        f" {self.iter_num},"
-                                        f" {self.model.num_param},"
-                                        f" {chance_ratio:.3e},"
-                                        f" {chance_ratio/self.model.num_param:.3e},"
-                                        f" {peak_mb:.1f},"
-                                        f" {self.iter_latency_avg:.1f},"
-                                        f" {self.latest_overall_weight_stats['stdev']:.6f},"
-                                        f" {self.latest_overall_weight_stats['kurtosis']:.6f},"
-                                        f" {self.latest_overall_weight_stats['max']:.6f},"
-                                        f" {self.latest_overall_weight_stats['min']:.6f},"
-                                        f" {self.latest_overall_weight_stats['abs_max']:.6f},"
-                                        f" {self.latest_overall_activation_stats['stdev']:.6f},"
-                                        f" {self.latest_overall_activation_stats['kurtosis']:.6f},"
-                                        f" {self.latest_overall_activation_stats['max']:.6f},"
-                                        f" {self.latest_overall_activation_stats['min']:.6f},"
-                                        f" {self.latest_overall_activation_stats['abs_max']:.6f},"
-                                        )
+                                exp_arg = min(self.best_val_loss.item(), 100)
+                                chance_ratio = self.model_args['vocab_size']/math.exp(exp_arg)
+                                metrics = [
+                                        f"{self.best_val_loss.item()}",
+                                        f"{self.iter_num}",
+                                        f"{self.model.num_param}",
+                                        f"{chance_ratio:.3e}",
+                                        f"{chance_ratio/self.model.num_param:.3e}",
+                                        f"{peak_mb:.1f}",
+                                        f"{self.iter_latency_avg:.1f}",
+                                        f"{losses.get('top1_prob', float('nan')):.6f}",
+                                        f"{losses.get('top1_correct', float('nan')):.6f}",
+                                        f"{losses.get('target_rank', float('nan')):.2f}",
+                                        f"{self.latest_overall_weight_stats['stdev']:.6f}",
+                                        f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
+                                        f"{self.latest_overall_weight_stats['max']:.6f}",
+                                        f"{self.latest_overall_weight_stats['min']:.6f}",
+                                        f"{self.latest_overall_weight_stats['abs_max']:.6f}",
+                                        f"{self.latest_overall_activation_stats['stdev']:.6f}",
+                                        f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
+                                        f"{self.latest_overall_activation_stats['max']:.6f}",
+                                        f"{self.latest_overall_activation_stats['min']:.6f}",
+                                        f"{self.latest_overall_activation_stats['abs_max']:.6f}",
+                                ]
+                                best_loss_file.write(", ".join(metrics) + "\n")
                             # Reset early exit counter
                             num_steps_with_worse_loss = 0
                         if self.iter_num > 0 and not self.args.never_save_checkpoint:
@@ -1517,14 +1562,33 @@ class Trainer:
                     with self.ctx:
                         if self.args.training_mode == 'multicontext':
                             total_loss = 0
-                            logits, training_losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
+                            logits, training_losses = self.model(
+                                None,
+                                token_dict=self.X_dict,
+                                target_dict=self.Y_dict,
+                                iter_num=self.iter_num,
+                                loss_fn=self.loss_fn,
+                            )
 
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num, dataset_idx=idx_ds if self.args.multidataset_wte else None)
+                            logits, loss = self.model(
+                                self.X,
+                                targets=self.Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
+
+                        if hasattr(self.optimizer, "set_entropy"):
+                            with torch.no_grad():
+                                probs = torch.softmax(logits, dim=-1)
+                                ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
+                                ent = ent / math.log(logits.size(-1))
+                            self.optimizer.set_entropy(float(ent))
 
                         loss = loss / self.args.gradient_accumulation_steps
 

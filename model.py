@@ -359,7 +359,7 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None):
+    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -474,11 +474,14 @@ class GPT(nn.Module):
                 # If we do want to compute losses for each context
                 losses = []
                 for i in range(len(token_list)):
-                    loss_i = F.cross_entropy(
-                        logits[i].view(-1, logits[i].size(-1)),
-                        target_list[i].view(-1),
-                        ignore_index=-1
-                    )
+                    if loss_fn is None:
+                        loss_i = F.cross_entropy(
+                            logits[i].view(-1, logits[i].size(-1)),
+                            target_list[i].view(-1),
+                            ignore_index=-1
+                        )
+                    else:
+                        loss_i = loss_fn(logits[i], target_list[i], iter_num=iter_num)
                     losses.append(loss_i)
 
             else:
@@ -592,7 +595,10 @@ class GPT(nn.Module):
                     logits = torch.tanh(logits)
                     logits = logits * self.config.final_logit_softcapping
 
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+                if loss_fn is None:
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+                else:
+                    loss = loss_fn(logits, targets, iter_num=iter_num)
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
                 if self.config.multidataset_wte and dataset_idx is not None:
