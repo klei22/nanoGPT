@@ -93,6 +93,14 @@ class OriginalMLP(nn.Module):
             bias=use_down_bias,
         )
 
+        self.cproj_scale = config.mlp_cproj_scale
+        self.cproj_row_norm = config.mlp_cproj_row_norm
+        if self.cproj_row_norm:
+            with torch.no_grad():
+                w = self.c_proj.weight.data
+                w_norm = w.norm(dim=1, keepdim=True).clamp_min(1e-6)
+                self.c_proj.weight.data = w / w_norm
+
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x, iter_num=None):
@@ -133,6 +141,9 @@ class OriginalMLP(nn.Module):
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
             x = x.sum(dim=2)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x = x / self.cproj_scale
 
         x = self.dropout(x)
 
@@ -226,6 +237,15 @@ class DualPathMLP(nn.Module):
             bias=config.mlp_down_bias
         )
 
+        self.cproj_scale = config.mlp_cproj_scale
+        self.cproj_row_norm = config.mlp_cproj_row_norm
+        if self.cproj_row_norm:
+            with torch.no_grad():
+                for proj in (self.c_proj1, self.c_proj2):
+                    w = proj.weight.data
+                    w_norm = w.norm(dim=1, keepdim=True).clamp_min(1e-6)
+                    proj.weight.data = w / w_norm
+
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x, iter_num=None):
@@ -266,6 +286,9 @@ class DualPathMLP(nn.Module):
 
         # Combine paths
         x = x1 + x2
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x = x / self.cproj_scale
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
@@ -373,6 +396,14 @@ class Swiglu(nn.Module):
             bias=use_down_bias,
         )
 
+        self.cproj_scale = config.mlp_cproj_scale
+        self.cproj_row_norm = config.mlp_cproj_row_norm
+        if self.cproj_row_norm:
+            with torch.no_grad():
+                w = self.c_fc_out.weight.data
+                w_norm = w.norm(dim=1, keepdim=True).clamp_min(1e-6)
+                self.c_fc_out.weight.data = w / w_norm
+
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x, iter_num=None):
@@ -419,6 +450,9 @@ class Swiglu(nn.Module):
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
             x = x.sum(dim=2)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x = x / self.cproj_scale
 
         x = self.dropout(x)
 

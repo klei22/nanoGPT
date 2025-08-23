@@ -1,0 +1,29 @@
+# mlp_cproj_comparison.yaml
+---
+parameter_groups:
+  # Baseline: default down projection
+  - mlp_cproj_scale: [1.0]
+    mlp_cproj_row_norm: [false]
+  # Divide down projection by 2
+  - mlp_cproj_scale: [2.0]
+    mlp_cproj_row_norm: [false]
+  # Normalize down projection vectors
+  - mlp_cproj_scale: [1.0]
+    mlp_cproj_row_norm: [true]
+
+mlp_variant: ["mlp"]
+activation_variant: ["relu"]
+compile: [true]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+max_iters: [10000]
+lr_decay_iters: [10000]
+eval_interval: [10000]
+eta_variant: ["iteration"]
+warmup_iters: [1000]
+decay_lr: [true]
+
+dataset: ["minipile"]
+
+dtype: ["float16", "bfloat16"]
