@@ -155,6 +155,8 @@ def rank_distance_loss(
         target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
         rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
         scale = 1 + gamma * (rank.float() - 1)
+        scale = torch.nan_to_num(scale, nan=0.0, posinf=1e4, neginf=0.0)
+        scale = scale.clamp(max=1e4)
     scaled = torch.zeros_like(loss)
     scaled[mask] = loss[mask] * scale
     return scaled[mask].mean()
@@ -228,6 +230,8 @@ def rank_distance_focal_loss(
         target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
         rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
         rank_scale = 1 + gamma * (rank.float() - 1)
+        rank_scale = torch.nan_to_num(rank_scale, nan=0.0, posinf=1e4, neginf=0.0)
+        rank_scale = rank_scale.clamp(max=1e4)
         pt = torch.exp(-ce[mask])
         focal_scale = (1 - pt) ** focal_gamma
     scaled = torch.zeros_like(ce)

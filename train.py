@@ -1486,7 +1486,8 @@ class Trainer:
                             # Save best validation loss
                             peak_mb = self.peak_gpu_usage / (1024 ** 2)
                             with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                                chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
+                                exp_arg = min(self.best_val_loss.item(), 100)
+                                chance_ratio = self.model_args['vocab_size']/math.exp(exp_arg)
                                 metrics = [
                                         f"{self.best_val_loss.item()}",
                                         f"{self.iter_num}",
