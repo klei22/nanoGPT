@@ -3,6 +3,8 @@ import argparse
 import math
 import re
 
+from train_variations.loss_variants import LOSS_VARIANTS
+
 def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
@@ -52,7 +54,75 @@ def parse_args():
     training_group.add_argument('--eval_cycle_window', default=5, type=int)
 
     # Loss variations
-    training_group.add_argument('--focus_on_top1_loss', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument(
+        '--loss_fn',
+        type=str,
+        default='cross_entropy',
+        choices=sorted(LOSS_VARIANTS.keys()),
+        help='Loss function to use during training.',
+    )
+    training_group.add_argument(
+        '--loss_schedule',
+        type=str,
+        default=None,
+        help='Comma-separated schedule of step:loss_fn pairs to switch loss during training.',
+    )
+    training_group.add_argument(
+        '--rank_scale',
+        type=float,
+        default=1.0,
+        help='Base scaling factor for rank_distance loss.',
+    )
+    training_group.add_argument(
+        '--rank_scale_schedule',
+        type=str,
+        default=None,
+        help="Schedule for rank_distance's scaling factor, e.g. 0:1.0,1000:2.0",
+    )
+
+    # Loss hyperparameters
+    training_group.add_argument(
+        '--label_smoothing',
+        type=float,
+        default=0.1,
+        help='Smoothing factor for label_smoothing loss.',
+    )
+    training_group.add_argument(
+        '--focal_gamma',
+        type=float,
+        default=2.0,
+        help='Gamma parameter for focal-style losses.',
+    )
+    training_group.add_argument(
+        '--top1_focus_alpha',
+        type=float,
+        default=0.5,
+        help='Penalty weight for incorrect top-1 predictions in top1_focus loss.',
+    )
+    training_group.add_argument(
+        '--top1_margin',
+        type=float,
+        default=0.1,
+        help='Desired logit margin for top1_margin loss.',
+    )
+    training_group.add_argument(
+        '--entropy_beta',
+        type=float,
+        default=0.01,
+        help='Weight of entropy penalty in entropy-based losses.',
+    )
+    training_group.add_argument(
+        '--top1_ratio_beta',
+        type=float,
+        default=0.5,
+        help='Weight for ratio penalty in top1_ratio loss.',
+    )
+    training_group.add_argument(
+        '--flatness_beta',
+        type=float,
+        default=1.0,
+        help='Scaling for flatness_boost loss when predictions are flat.',
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
@@ -165,6 +235,7 @@ def parse_args():
             "soap",
             "var_adaptive_lr",
             "lookahead",
+            "entropy_aware_adamw",
             ]
 
     training_group.add_argument("--optimizer", type=str, default="adamw",
@@ -178,6 +249,12 @@ def parse_args():
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
     training_group.add_argument("--adamw_weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer.")
+    training_group.add_argument(
+        "--entropy_lr_boost",
+        type=float,
+        default=1.0,
+        help="Coefficient for entropy_aware_adamw to scale learning rate when logits are flat.",
+    )
     # --------  ADAMW_ACT_REG --------------------------------------------------
     training_group.add_argument(
         "--activation_decay",
