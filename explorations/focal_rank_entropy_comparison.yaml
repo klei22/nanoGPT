@@ -1,0 +1,51 @@
+# focal_rank_entropy_comparison.yaml
+---
+# Compare focal-based loss combinations for top-1 accuracy
+
+# base hyperparameters
+max_iters: [20000]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+eval_interval: [500]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["bfloat16"]
+
+# position encodings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# optimizer
+optimizer: ["adamw"]
+
+# loss variants to compare
+parameter_groups:
+  - loss_fn:
+      - cross_entropy
+      - entropy_penalty
+      - rank_distance
+      - focal
+      - entropy_focal
+      - rank_distance_focal
+      - entropy_rank_distance_focal
+
+# conditional knobs for rank-distance variants
+rank_scale:
+  conditions:
+    - ["loss_fn", "rank_distance"]
+    - ["loss_fn", "rank_distance_focal"]
+    - ["loss_fn", "entropy_rank_distance_focal"]
+  options: ["1.0", "2.0"]
+
+rank_scale_schedule:
+  conditions:
+    - ["loss_fn", "rank_distance"]
+    - ["loss_fn", "rank_distance_focal"]
+    - ["loss_fn", "entropy_rank_distance_focal"]
+  options: ["0:1.0,10000:2.0"]
+
+# misc
+compile: [true]
+tensorboard_run_name: ["focal_rank_entropy_comp"]

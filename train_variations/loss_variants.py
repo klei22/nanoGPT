@@ -183,6 +183,78 @@ def flatness_boost_loss(
     return scaled[mask].mean()
 
 
+def entropy_focal_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    gamma: float = 2.0,
+    beta: float = 0.01,
+) -> torch.Tensor:
+    """Focal loss with an added entropy penalty to prefer peaky outputs."""
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+    ce = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+    with torch.no_grad():
+        pt = torch.exp(-ce)
+    focal = ((1 - pt) ** gamma) * ce
+    mask = targets_flat != -1
+    focal_mean = focal[mask].mean()
+
+    probs = torch.softmax(logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
+    entropy = -(probs * log_probs).sum(dim=-1)
+    entropy_mean = entropy[targets != -1].mean()
+    return focal_mean + beta * entropy_mean
+
+
+def rank_distance_focal_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    gamma: float = 1.0,
+    focal_gamma: float = 2.0,
+) -> torch.Tensor:
+    """Rank-distance scaled focal loss to emphasize hard, misranked targets."""
+    b, t, v = logits.shape
+    logits_flat = logits.view(-1, v)
+    targets_flat = targets.view(-1)
+    ce = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+    mask = targets_flat != -1
+    with torch.no_grad():
+        logits_sel = logits_flat[mask]
+        targets_sel = targets_flat[mask]
+        target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
+        rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+        rank_scale = 1 + gamma * (rank.float() - 1)
+        pt = torch.exp(-ce[mask])
+        focal_scale = (1 - pt) ** focal_gamma
+    scaled = torch.zeros_like(ce)
+    scaled[mask] = ce[mask] * rank_scale * focal_scale
+    return scaled[mask].mean()
+
+
+def entropy_rank_distance_focal_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    gamma: float = 1.0,
+    focal_gamma: float = 2.0,
+    beta: float = 0.01,
+) -> torch.Tensor:
+    """Combine rank-distance scaling, focal weighting, and entropy penalty."""
+    loss = rank_distance_focal_loss(
+        logits, targets, iter_num=iter_num, gamma=gamma, focal_gamma=focal_gamma
+    )
+    probs = torch.softmax(logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
+    entropy = -(probs * log_probs).sum(dim=-1)
+    mask = targets != -1
+    return loss + beta * entropy[mask].mean()
+
+
 LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
     "cross_entropy": cross_entropy_loss,
     "label_smoothing": label_smoothing_loss,
@@ -193,6 +265,9 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "top1_ratio": top1_ratio_loss,
     "rank_distance": rank_distance_loss,
     "flatness_boost": flatness_boost_loss,
+    "entropy_focal": entropy_focal_loss,
+    "rank_distance_focal": rank_distance_focal_loss,
+    "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
 }
 
 
@@ -266,15 +341,14 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
         schedule = parse_loss_schedule(schedule_str)
         return ScheduledLoss(schedule, LOSS_VARIANTS)
     loss_name = getattr(args, "loss_fn", "cross_entropy")
-
-    if loss_name == "rank_distance":
+    if "rank_distance" in loss_name:
         base = getattr(args, "rank_scale", 1.0)
         scale_sched_str = getattr(args, "rank_scale_schedule", None)
         scaler = parse_value_schedule(scale_sched_str) if scale_sched_str else None
 
         def loss_fn(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
             gamma = scaler(iter_num) if scaler else base
-            return rank_distance_loss(logits, targets, iter_num=iter_num, gamma=gamma)
+            return LOSS_VARIANTS[loss_name](logits, targets, iter_num=iter_num, gamma=gamma)
 
         return loss_fn
 
