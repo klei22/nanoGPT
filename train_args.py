@@ -90,6 +90,50 @@ def parse_args():
         help="Schedule for rank_distance's scaling factor, e.g. 0:1.0,1000:2.0",
     )
 
+    # Loss hyperparameters
+    training_group.add_argument(
+        '--label_smoothing',
+        type=float,
+        default=0.1,
+        help='Smoothing factor for label_smoothing loss.',
+    )
+    training_group.add_argument(
+        '--focal_gamma',
+        type=float,
+        default=2.0,
+        help='Gamma parameter for focal-style losses.',
+    )
+    training_group.add_argument(
+        '--top1_focus_alpha',
+        type=float,
+        default=0.5,
+        help='Penalty weight for incorrect top-1 predictions in top1_focus loss.',
+    )
+    training_group.add_argument(
+        '--top1_margin',
+        type=float,
+        default=0.1,
+        help='Desired logit margin for top1_margin loss.',
+    )
+    training_group.add_argument(
+        '--entropy_beta',
+        type=float,
+        default=0.01,
+        help='Weight of entropy penalty in entropy-based losses.',
+    )
+    training_group.add_argument(
+        '--top1_ratio_beta',
+        type=float,
+        default=0.5,
+        help='Weight for ratio penalty in top1_ratio loss.',
+    )
+    training_group.add_argument(
+        '--flatness_beta',
+        type=float,
+        default=1.0,
+        help='Scaling for flatness_boost loss when predictions are flat.',
+    )
+
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
     training_group.add_argument('--sample_each_eval', default=False, action=argparse.BooleanOptionalAction, help="Produce sample even if the validation loss did not improve. Allows for testing what overtraining looks like.")

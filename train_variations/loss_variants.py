@@ -343,20 +343,68 @@ def parse_value_schedule(schedule_str: str) -> ScheduledValue:
 def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     """Return the loss function or a scheduler based on ``args``."""
     schedule_str = getattr(args, "loss_schedule", None)
+
+    base = getattr(args, "rank_scale", 1.0)
+    scale_sched_str = getattr(args, "rank_scale_schedule", None)
+    scaler = parse_value_schedule(scale_sched_str) if scale_sched_str else None
+
+    def rank_gamma(iter_num: int | None) -> float:
+        return scaler(iter_num) if scaler else base
+
+    built_losses: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
+        "cross_entropy": LOSS_VARIANTS["cross_entropy"],
+        "label_smoothing": lambda l, t, *, iter_num=None: LOSS_VARIANTS["label_smoothing"](
+            l, t, iter_num=iter_num, smoothing=getattr(args, "label_smoothing", 0.1)
+        ),
+        "focal": lambda l, t, *, iter_num=None: LOSS_VARIANTS["focal"](
+            l, t, iter_num=iter_num, gamma=getattr(args, "focal_gamma", 2.0)
+        ),
+        "top1_focus": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_focus"](
+            l, t, iter_num=iter_num, alpha=getattr(args, "top1_focus_alpha", 0.5)
+        ),
+        "top1_margin": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_margin"](
+            l, t, iter_num=iter_num, margin=getattr(args, "top1_margin", 0.1)
+        ),
+        "entropy_penalty": lambda l, t, *, iter_num=None: LOSS_VARIANTS["entropy_penalty"](
+            l, t, iter_num=iter_num, beta=getattr(args, "entropy_beta", 0.01)
+        ),
+        "top1_ratio": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_ratio"](
+            l, t, iter_num=iter_num, beta=getattr(args, "top1_ratio_beta", 0.5)
+        ),
+        "rank_distance": lambda l, t, *, iter_num=None: LOSS_VARIANTS["rank_distance"](
+            l, t, iter_num=iter_num, gamma=rank_gamma(iter_num)
+        ),
+        "flatness_boost": lambda l, t, *, iter_num=None: LOSS_VARIANTS["flatness_boost"](
+            l, t, iter_num=iter_num, beta=getattr(args, "flatness_beta", 1.0)
+        ),
+        "entropy_focal": lambda l, t, *, iter_num=None: LOSS_VARIANTS["entropy_focal"](
+            l,
+            t,
+            iter_num=iter_num,
+            gamma=getattr(args, "focal_gamma", 2.0),
+            beta=getattr(args, "entropy_beta", 0.01),
+        ),
+        "rank_distance_focal": lambda l, t, *, iter_num=None: LOSS_VARIANTS["rank_distance_focal"](
+            l,
+            t,
+            iter_num=iter_num,
+            gamma=rank_gamma(iter_num),
+            focal_gamma=getattr(args, "focal_gamma", 2.0),
+        ),
+        "entropy_rank_distance_focal": lambda l, t, *, iter_num=None: LOSS_VARIANTS["entropy_rank_distance_focal"](
+            l,
+            t,
+            iter_num=iter_num,
+            gamma=rank_gamma(iter_num),
+            focal_gamma=getattr(args, "focal_gamma", 2.0),
+            beta=getattr(args, "entropy_beta", 0.01),
+        ),
+    }
+
     if schedule_str:
         schedule = parse_loss_schedule(schedule_str)
-        return ScheduledLoss(schedule, LOSS_VARIANTS)
+        return ScheduledLoss(schedule, built_losses)
+
     loss_name = getattr(args, "loss_fn", "cross_entropy")
-    if "rank_distance" in loss_name:
-        base = getattr(args, "rank_scale", 1.0)
-        scale_sched_str = getattr(args, "rank_scale_schedule", None)
-        scaler = parse_value_schedule(scale_sched_str) if scale_sched_str else None
-
-        def loss_fn(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
-            gamma = scaler(iter_num) if scaler else base
-            return LOSS_VARIANTS[loss_name](logits, targets, iter_num=iter_num, gamma=gamma)
-
-        return loss_fn
-
-    return LOSS_VARIANTS.get(loss_name, cross_entropy_loss)
+    return built_losses.get(loss_name, LOSS_VARIANTS["cross_entropy"])
 
