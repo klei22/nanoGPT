@@ -3,15 +3,17 @@
 # Compare focal-based loss combinations for top-1 accuracy
 
 # base hyperparameters
-max_iters: [20000]
+max_iters: [10000]
 n_layer: [6]
 n_head: [6]
 n_embd: [384]
 block_size: [256]
+batch_size: [32]
 eval_interval: [500]
 dataset: ["minipile"]
 device: ["cuda"]
 dtype: ["bfloat16"]
+never_save_checkpoint: [true]
 
 # position encodings
 use_rotary_embeddings: [true]
