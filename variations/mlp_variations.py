@@ -93,13 +93,8 @@ class OriginalMLP(nn.Module):
             bias=use_down_bias,
         )
 
+        self.post_act_l2_norm = config.mlp_post_act_l2_norm
         self.cproj_scale = config.mlp_cproj_scale
-        self.cproj_row_norm = config.mlp_cproj_row_norm
-        if self.cproj_row_norm:
-            with torch.no_grad():
-                w = self.c_proj.weight.data
-                w_norm = w.norm(dim=1, keepdim=True).clamp_min(1e-6)
-                self.c_proj.weight.data = w / w_norm
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -109,6 +104,7 @@ class OriginalMLP(nn.Module):
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method, iter_num)
+
         if self.l2_norm_mlp_up:
             up_dim = 1 if self.l2_norm_mlp_up_dim == 'embed' else 0
             weight = F.normalize(self.c_fc.weight, p=2, dim=up_dim)
@@ -124,26 +120,30 @@ class OriginalMLP(nn.Module):
         # Apply offsets to the activation function
         x = self.activation_variant(x - self.activation_x_offset) - self.activation_y_offset
 
+        if self.post_act_l2_norm:
+            x = x / x.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x = x / self.cproj_scale
+
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_activation_output", x, num_bits, quant_method, iter_num)
 
-
-        # Apply fused down projection and sum the outputs
+        # Option to keep cdown proj on hypersphere
         if self.l2_norm_mlp_down:
             down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
             weight = F.normalize(self.c_proj.weight, p=2, dim=down_dim)
             x = F.linear(x, weight, self.c_proj.bias)
         else:
             x = self.c_proj(x)
+
+        # Apply fused down projection and sum the outputs
         if self.mlp_down_projs > 1:
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
             x = x.sum(dim=2)
-
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x = x / self.cproj_scale
 
         x = self.dropout(x)
 
@@ -237,14 +237,8 @@ class DualPathMLP(nn.Module):
             bias=config.mlp_down_bias
         )
 
+        self.post_act_l2_norm = config.mlp_post_act_l2_norm
         self.cproj_scale = config.mlp_cproj_scale
-        self.cproj_row_norm = config.mlp_cproj_row_norm
-        if self.cproj_row_norm:
-            with torch.no_grad():
-                for proj in (self.c_proj1, self.c_proj2):
-                    w = proj.weight.data
-                    w_norm = w.norm(dim=1, keepdim=True).clamp_min(1e-6)
-                    proj.weight.data = w / w_norm
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -269,8 +263,17 @@ class DualPathMLP(nn.Module):
 
         # First activation path - shifted right
         x1 = self.activation_variant(x - self.activation_x_offset) - self.activation_y_offset
-        down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
+
+        # Mitigate Cproj Down Spikes
+        if self.post_act_l2_norm:
+            x1 = x1 / x1.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x1 = x1 / self.cproj_scale
+
+        # normalization
         if self.l2_norm_mlp_down:
+            down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
             weight1 = F.normalize(self.c_proj1.weight, p=2, dim=down_dim)
             x1 = F.linear(x1, weight1, self.c_proj1.bias)
         else:
@@ -278,7 +281,17 @@ class DualPathMLP(nn.Module):
 
         # Second activation path - shifted left and negated input
         x2 = -self.activation_variant(-(x + self.activation_x_offset)) - self.activation_y_offset
+
+        # Mitigate Cproj Down Spikes
+        if self.post_act_l2_norm:
+            x2 = x2 / x2.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x2 = x2 / self.cproj_scale
+
+        # normalization
         if self.l2_norm_mlp_down:
+            down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
             weight2 = F.normalize(self.c_proj2.weight, p=2, dim=down_dim)
             x2 = F.linear(x2, weight2, self.c_proj2.bias)
         else:
@@ -286,9 +299,6 @@ class DualPathMLP(nn.Module):
 
         # Combine paths
         x = x1 + x2
-
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x = x / self.cproj_scale
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
@@ -396,13 +406,8 @@ class Swiglu(nn.Module):
             bias=use_down_bias,
         )
 
+        self.post_act_l2_norm = config.mlp_post_act_l2_norm
         self.cproj_scale = config.mlp_cproj_scale
-        self.cproj_row_norm = config.mlp_cproj_row_norm
-        if self.cproj_row_norm:
-            with torch.no_grad():
-                w = self.c_fc_out.weight.data
-                w_norm = w.norm(dim=1, keepdim=True).clamp_min(1e-6)
-                self.c_fc_out.weight.data = w / w_norm
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -413,8 +418,9 @@ class Swiglu(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method, iter_num)
 
-        up_dim = 1 if self.l2_norm_mlp_up_dim == 'embed' else 0
+        # normalization - cosine similarity with input
         if self.l2_norm_mlp_up:
+            up_dim = 1 if self.l2_norm_mlp_up_dim == 'embed' else 0
             weight1 = F.normalize(self.c_fc_in1.weight, p=2, dim=up_dim)
             x_in1 = F.linear(x, weight1, self.c_fc_in1.bias)
         else:
@@ -427,32 +433,41 @@ class Swiglu(nn.Module):
 
         x_in1 = self.activation_variant(x_in1 - self.activation_x_offset) - self.activation_y_offset
 
+        # Mitigate Cproj Down Spikes
+        if self.post_act_l2_norm:
+            x_in1 = x_in1 / x_in1.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x = x / self.cproj_scale
+
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x_in1 = fake_quantize_act(self, "mlp_act_activation_output", x_in1, num_bits, quant_method, iter_num)
 
+        # normalization - cosine similarity with input
         if self.l2_norm_mlp_up:
+            up_dim = 1 if self.l2_norm_mlp_up_dim == 'embed' else 0
             weight2 = F.normalize(self.c_fc_in2.weight, p=2, dim=up_dim)
             x_in2 = F.linear(x, weight2, self.c_fc_in2.bias)
         else:
             x_in2 = self.c_fc_in2(x)
+
         x_out = x_in1 * x_in2
 
-        # Apply fused down projection and sum the outputs
-        down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
+        # optional down projection normalization to keep vectors on hypersphere
         if self.l2_norm_mlp_down:
+            down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
             weight = F.normalize(self.c_fc_out.weight, p=2, dim=down_dim)
             x = F.linear(x_out, weight, self.c_fc_out.bias)
         else:
             x = self.c_fc_out(x_out)
+
+        # Apply fused down projection and sum the outputs
         if self.mlp_down_projs > 1:
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
             x = x.sum(dim=2)
-
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x = x / self.cproj_scale
 
         x = self.dropout(x)
 

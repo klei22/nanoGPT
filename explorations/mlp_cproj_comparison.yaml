@@ -1,29 +1,129 @@
 # mlp_cproj_comparison.yaml
 ---
 parameter_groups:
-  # Baseline: default down projection
-  - mlp_cproj_scale: [1.0]
-    mlp_cproj_row_norm: [false]
-  # Divide down projection by 2
-  - mlp_cproj_scale: [2.0]
-    mlp_cproj_row_norm: [false]
-  # Normalize down projection vectors
-  - mlp_cproj_scale: [1.0]
-    mlp_cproj_row_norm: [true]
+  # Baseline - mlp gelu
+  - mlp_post_act_l2_norm: [false]
+    mlp_cproj_scale: [1.0]
+    mlp_variant: ["mlp"]
+    activation_variant: ["gelu"]
+    print_model_stats: ["false-1.0-mlp-gelu.csv"]
+  # Divide down projection by 50.0
+  - mlp_post_act_l2_norm: [false]
+    mlp_cproj_scale: [50.0]
+    mlp_variant: ["mlp"]
+    activation_variant: ["gelu"]
+    print_model_stats: ["false-50.0-mlp-gelu.csv"]
+  # Only L2 Norm
+  - mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [1.0]
+    mlp_variant: ["mlp"]
+    activation_variant: ["gelu"]
+    print_model_stats: ["true-1.0-mlp-gelu.csv"]
+  # L2 norm and Scale
+  - mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [50.0]
+    mlp_variant: ["mlp"]
+    activation_variant: ["gelu"]
+    print_model_stats: ["true-50.0-mlp-gelu.csv"]
 
-mlp_variant: ["mlp"]
-activation_variant: ["relu"]
-compile: [true]
+  # Baseline - mlp squared relu
+  - mlp_post_act_l2_norm: [false]
+    mlp_cproj_scale: [1.0]
+    mlp_variant: ["mlp"]
+    activation_variant: ["squared_relu"]
+    print_model_stats: ["false-1.0-mlp-squared_relu.csv"]
+  # Divide down projection by 50.0
+  - mlp_post_act_l2_norm: [false]
+    mlp_cproj_scale: [50.0]
+    mlp_variant: ["mlp"]
+    activation_variant: ["squared_relu"]
+    print_model_stats: ["false-50.0-mlp-squared_relu.csv"]
+  # Only L2 Norm
+  - mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [1.0]
+    mlp_variant: ["mlp"]
+    activation_variant: ["squared_relu"]
+    print_model_stats: ["true-1.0-mlp-squared_relu.csv"]
+  # L2 norm and Scale
+  - mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [50.0]
+    mlp_variant: ["mlp"]
+    activation_variant: ["squared_relu"]
+    print_model_stats: ["true-50.0-mlp-squared_relu.csv"]
+
+  # Baseline - swiglu silu
+  - mlp_post_act_l2_norm: [false]
+    mlp_cproj_scale: [1.0]
+    mlp_variant: ["swiglu"]
+    activation_variant: ["silu"]
+    print_model_stats: ["false-1.0-swiglu-silu.csv"]
+  # Divide down projection by 50.0
+  - mlp_post_act_l2_norm: [false]
+    mlp_cproj_scale: [50.0]
+    mlp_variant: ["swiglu"]
+    activation_variant: ["silu"]
+    print_model_stats: ["false-50.0-swiglu-silu.csv"]
+  # Only L2 Norm
+  - mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [1.0]
+    mlp_variant: ["swiglu"]
+    activation_variant: ["silu"]
+    print_model_stats: ["true-1.0-swiglu-silu.csv"]
+  # L2 norm and Scale
+  - mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [50.0]
+    mlp_variant: ["swiglu"]
+    activation_variant: ["silu"]
+    print_model_stats: ["true-50.0-swiglu-silu.csv"]
+
+  # Baseline - swiglu squared relu
+  - mlp_post_act_l2_norm: [false]
+    mlp_cproj_scale: [1.0]
+    mlp_variant: ["swiglu"]
+    activation_variant: ["squared_relu"]
+    print_model_stats: ["false-1.0-swiglu-squared_relu.csv"]
+  # Divide down projection by 50.0
+  - mlp_post_act_l2_norm: [false]
+    mlp_cproj_scale: [50.0]
+    mlp_variant: ["swiglu"]
+    activation_variant: ["squared_relu"]
+    print_model_stats: ["false-50.0-swiglu-squared_relu.csv"]
+  # Only L2 Norm
+  - mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [1.0]
+    mlp_variant: ["swiglu"]
+    activation_variant: ["squared_relu"]
+    print_model_stats: ["true-1.0-swiglu-squared_relu.csv"]
+  # L2 norm and Scale
+  - mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [50.0]
+    mlp_variant: ["swiglu"]
+    activation_variant: ["squared_relu"]
+    print_model_stats: ["true-50.0-swiglu-squared_relu.csv"]
+
+# Modern model settings
+## position embeddings
 use_rotary_embeddings: [true]
 use_abs_pos_embeddings: [false]
+## qk norm
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+## peri ln
+use_peri_ln: [true]
 
+# Training settings
 max_iters: [10000]
-lr_decay_iters: [10000]
 eval_interval: [10000]
 eta_variant: ["iteration"]
-warmup_iters: [1000]
-decay_lr: [true]
-
 dataset: ["minipile"]
 
+# Testing Overflow
 dtype: ["float16", "bfloat16"]
+
+# Monitoring - for more than 6 layers, compute_model_stats needs to disable tensorboard logging
+compute_model_stats: [true]
+# tensorboard_log: [false]
+
+# Saving VRAM
+compile: [true]
+never_save_checkpoint: [true]
