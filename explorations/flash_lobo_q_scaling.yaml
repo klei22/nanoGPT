@@ -1,0 +1,34 @@
+# flash_lobo_q_scaling.yaml
+---
+# compare query-based flash lobo scaling vs baseline
+parameter_groups:
+  - use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+  - use_rotary_embeddings: [false]
+    use_abs_pos_embeddings: [true]
+
+# dataset
+dataset: ["minipile"]
+
+# GPT-2 size architecture
+n_layer: [12]
+n_head: [12]
+n_embd: [768]
+block_size: [1024]
+
+# training settings
+max_iters: [10000]
+eval_interval: [10000]
+device: ["cuda"]
+
+# Flash Lobo options
+use_flash_lobo: [true]
+use_flash_lobo_per_head: [true]
+use_flash_obo_const: [true, false]
+use_flash_lobo_q_matrix: [true, false]
+flash_lobo_q_activation: ["identity"]
+
+# qk norm variations
+use_qk_norm: [true, false]
+
+compile: [true]
