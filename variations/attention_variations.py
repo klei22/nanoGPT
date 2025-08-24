@@ -126,6 +126,19 @@ class CausalSelfAttention(nn.Module):
             else:
                 self.flash_lobo_log_const = nn.Parameter(torch.tensor(config.flash_lobo_log_const))  # log C  (0 → C = 1)
 
+        # Optional query-based scaling for Flash Lobo
+        self.use_flash_lobo_q_matrix = getattr(config, "use_flash_lobo_q_matrix", False)
+        act_name = getattr(config, "flash_lobo_q_activation", "identity")
+        if act_name == "identity":
+            self.flash_lobo_q_activation = lambda x: x
+        else:
+            self.flash_lobo_q_activation = getattr(F, act_name)
+        if self.use_flash_lobo_q_matrix:
+            head_dim = config.n_embd // self.n_head
+            self.flash_lobo_q_matrix = nn.Parameter(
+                torch.eye(head_dim).repeat(self.n_head, 1, 1)
+            )
+
         # Using flex attention
         self.use_flex_attn = config.use_flex_attn
 
@@ -308,12 +321,22 @@ class CausalSelfAttention(nn.Module):
                 k = torch.cat([dummy_k, k], dim=2)   # prepend → causal mask still valid
                 v = torch.cat([dummy_v, v], dim=2)
 
-                # 2-b  Bias only that column with log C
-                attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
-                if self.use_flash_lobo_per_head:
-                    attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                # 2-b  Bias only that column with log C (optionally scaled per query)
+                if self.use_flash_lobo_q_matrix:
+                    q_proj = torch.einsum('bhtd,hdf->bhtf', q, self.flash_lobo_q_matrix)
+                    q_scalar = self.flash_lobo_q_activation(q_proj.sum(dim=-1))
+                    if self.use_flash_lobo_per_head:
+                        bias_first = self.flash_lobo_log_const.view(1, self.n_head, 1) * q_scalar
+                    else:
+                        bias_first = self.flash_lobo_log_const * q_scalar
+                    attn_bias = q.new_zeros(B, self.n_head, T, k.size(2))
+                    attn_bias[..., 0] = bias_first
                 else:
-                    attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
+                    attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
+                    if self.use_flash_lobo_per_head:
+                        attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                    else:
+                        attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
 
 
             # Efficient attention using Flash Attention CUDA kernels
@@ -680,6 +703,18 @@ class InfiniteHeadAttention(nn.Module):
                 # single learnable parameter per layer
                 self.flash_lobo_log_const = nn.Parameter(torch.tensor(config.flash_lobo_log_const))  # log C  (0 → C = 1)
 
+        # Optional query-based scaling for Flash Lobo
+        self.use_flash_lobo_q_matrix = getattr(config, "use_flash_lobo_q_matrix", False)
+        act_name = getattr(config, "flash_lobo_q_activation", "identity")
+        if act_name == "identity":
+            self.flash_lobo_q_activation = lambda x: x
+        else:
+            self.flash_lobo_q_activation = getattr(F, act_name)
+        if self.use_flash_lobo_q_matrix:
+            self.flash_lobo_q_matrix = nn.Parameter(
+                torch.eye(self.n_qk_head_dim).repeat(self.n_head, 1, 1)
+            )
+
         # Set nn.Linear Types for Wk, Wq, Wv and c_proj
         self.linear_variant_q = linear_dictionary[config.linear_variant_attn]
         self.linear_variant_k = linear_dictionary[config.linear_variant_attn]
@@ -810,12 +845,22 @@ class InfiniteHeadAttention(nn.Module):
                 k = torch.cat([dummy_k, k], dim=2)   # prepend → causal mask still valid
                 v = torch.cat([dummy_v, v], dim=2)
 
-                # 2-b  Bias only that column with log C
-                attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
-                if self.use_flash_lobo_per_head:
-                    attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                # 2-b  Bias only that column with log C (optionally scaled per query)
+                if self.use_flash_lobo_q_matrix:
+                    q_proj = torch.einsum('bhtd,hdf->bhtf', q, self.flash_lobo_q_matrix)
+                    q_scalar = self.flash_lobo_q_activation(q_proj.sum(dim=-1))
+                    if self.use_flash_lobo_per_head:
+                        bias_first = self.flash_lobo_log_const.view(1, self.n_head, 1) * q_scalar
+                    else:
+                        bias_first = self.flash_lobo_log_const * q_scalar
+                    attn_bias = q.new_zeros(B, self.n_head, T, k.size(2))
+                    attn_bias[..., 0] = bias_first
                 else:
-                    attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
+                    attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
+                    if self.use_flash_lobo_per_head:
+                        attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                    else:
+                        attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
 
 
             # Efficient attention using Flash Attention CUDA kernels
