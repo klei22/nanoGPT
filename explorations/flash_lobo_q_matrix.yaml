@@ -1,0 +1,41 @@
+# flash_lobo_q_matrix.yaml
+---
+# Model size - GPT-2 configuration
+n_layer: [12]
+n_head: [12]
+n_embd: [768]
+
+# Positional embeddings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# Training settings
+block_size: [1024]
+max_iters: [20000]
+eval_interval: [20000]
+dataset: ["minipile"]
+device: ["cuda"]
+compile: [true]
+
+# Flash Lobo exploration
+use_flash_lobo: [true]
+use_flash_lobo_per_head: [true]
+flash_lobo_log_const: [0.0]
+use_flash_lobo_q_matrix: [true, false]
+use_flash_obo_const: [true, false]
+
+# qk-norm variations
+use_qk_norm: [true, false]
+use_qk_norm_scale:
+  conditions:
+    - ["use_qk_norm", true]
+  options: [true]
+
+# Attention variants and flash attention
+parameter_groups:
+  - attention_variant: ["causal"]
+    disable_flash_attention: [false]
+  - attention_variant: ["infinite"]
+    disable_flash_attention: [false]
+    n_qk_head_dim: [64]
+    n_v_head_dim: [64]
