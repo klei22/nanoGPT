@@ -1,0 +1,14 @@
+# softshrink_vs_gelu.yaml
+---
+parameter_groups:
+  - activation_variant: ["gelu"]
+  - activation_variant: ["softshrink"]
+
+mlp_variant: ["mlp"]
+compile: [true]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+dataset: ["minipile"]
+softshrink_lambda: [0.5]
