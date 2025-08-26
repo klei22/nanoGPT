@@ -1,4 +1,4 @@
-# mlp_cproj_comparison.yaml
+# explorations/mlp_cproj_comparison.yaml
 ---
 parameter_groups:
   # Baseline - mlp gelu
