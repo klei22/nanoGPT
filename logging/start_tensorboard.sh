@@ -16,7 +16,7 @@ if [ ! -z "$2" ]; then
   ULIMIT="$2"
 fi
 
-# Check if user provided a specific port
+# Check if user provided a specific log directory
 if [ ! -z "$3" ]; then
   LOG_DIRECTORY="$3"
 fi
