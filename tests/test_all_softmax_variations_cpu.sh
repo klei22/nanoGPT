@@ -16,7 +16,7 @@ softmax_variation=( \
   "exppolymax" \
   "saturatingconsmax" \
   "strongermax" \
-  "softshrink")
+  )
 
 n_layer="2"
 n_head="2"
