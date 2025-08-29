@@ -515,6 +515,8 @@ def parse_args():
             "dual_path",
             "identity",
             ]
+    
+    model_group.add_argument('--use_edgellm_asic', default=False, action=argparse.BooleanOptionalAction)
 
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
@@ -835,6 +837,12 @@ def parse_args():
     model_group.add_argument("--quantize_mlp_act_activation_input_bits", type=int, default=None, help="number of bits for activation function input quantization")
     model_group.add_argument("--quantize_mlp_act_activation_output_bits", type=int, default=None, help="number of bits for activation function output quantization")
     model_group.add_argument("--quantize_mlp_act_output_bits", type=int, default=None, help="number of bits for mlp output quantization")
+
+    ### ASIC Activations
+    model_group.add_argument("--quantize_asic_prenorm", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC input to norm")
+
+    ### Default Precisions for ASIC Activations
+    model_group.add_argument("--quantize_asic_bits", type=int, default=8, help="number of bits for asic quantization")
 
     ### Whether activations should be saved
     model_group.add_argument("--store_activations", action=argparse.BooleanOptionalAction, default=False, help="whether the activations should be saved as a buffer and updated through training")

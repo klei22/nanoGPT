@@ -175,6 +175,9 @@ class GPTConfig:
     ssm_d_state: int = 16
     ssm_io_bias: bool = True
 
+    # EdgeLLM ASIC block architecture
+    use_edgellm_asic: bool = False
+
     # MLP Options
     use_parallel_mlp: bool = False
     mlp_variant: str = "mlp"
@@ -461,6 +464,8 @@ class GPTConfig:
     quantize_mlp_act_activation_output_bits: int = None
     quantize_mlp_act_output: bool = False
     quantize_mlp_act_output_bits: int = None
+    quantize_asic_prenorm: bool = False
+    quantize_asic_bits: int = None
     store_activations: bool = False
 
     ## Linear Quantizations
