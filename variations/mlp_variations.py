@@ -493,9 +493,11 @@ class KanMLP(nn.Module):
 
 class MLP_Identity(nn.Module):
     def __init__(self, config):
-        super(Identity, self).__init__()
+        super().__init__()
+        self.activation = nn.Identity()
 
     def forward(self, x, iter_num=None):
+        x = self.activation(x)
         return x
 
 mlp_dictionary = {
