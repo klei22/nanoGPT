@@ -466,6 +466,24 @@ def parse_args():
     model_group.add_argument('--resid_gaussian_mean_init', type=float, default=0.0, help='Gaussian residual init setting, mean value.')
     model_group.add_argument('--resid_gaussian_std_init', type=float, default=0.02, help='Gaussian residual init setting, standard deviation.')
 
+    # Residual connection variant
+    resid_variants = ["add", "lerp", "slerp"]
+    model_group.add_argument('--resid_variant', type=str, default='add', choices=resid_variants,
+                             help='Residual connection strategy')
+    model_group.add_argument('--resid_lerp_alpha', type=float, default=1.0,
+                             help='Interpolation factor for lerp/slerp residuals')
+    model_group.add_argument('--resid_slerp_threshold', type=float, default=1e-7,
+                             help='Threshold for slerp to avoid small-angle instability')
+    model_group.add_argument('--resid_slerp_use_lerp_fallback', default=False,
+                             action=argparse.BooleanOptionalAction,
+                             help='Enable LERP fallback for small slerp angles')
+    model_group.add_argument('--resid_lerp_alpha_learnable', default=False,
+                             action=argparse.BooleanOptionalAction,
+                             help='Learn the residual lerp alpha parameter')
+    model_group.add_argument('--resid_slerp_threshold_learnable', default=False,
+                             action=argparse.BooleanOptionalAction,
+                             help='Learn the slerp threshold parameter')
+
 
     # NORM VARIATIONS
     norm_variations = [
