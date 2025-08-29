@@ -576,6 +576,26 @@ class ReLU2Max(nn.Module):
 
         return result
 
+
+class Gelumax(nn.Module):
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.softshrink = nn.GELU()
+        self.softshrink_attn_divisor = config.softshrink_attn_divisor
+        self.div_by_seq_len = config.div_by_seq_len
+
+    def forward(self, x):
+        result = self.softshrink(x) / self.softshrink_attn_divisor
+
+        # divide by sequence length
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
+
 class Softshrink(nn.Module):
     def __init__(self, config, dim=-1):
         super().__init__()
@@ -795,6 +815,7 @@ softmax_dictionary = {
     "relu2max": ReLU2Max,
     "sigmoidmax": SigmoidMax,
     "softshrink": Softshrink,
+    "gelumax": Gelumax,
     "softplus": Softplus,
     "squareplus": Squareplus,
     "pfla_softmax": PFLASoftmax,
