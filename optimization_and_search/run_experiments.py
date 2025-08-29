@@ -5,6 +5,7 @@ from datetime import datetime
 from itertools import product
 import argparse
 import os
+from typing import Optional
 
 import yaml
 from rich import print
@@ -219,6 +220,7 @@ def run_experiment(
     args: argparse.Namespace,
     completed: set[str],
     log_file: Path,
+    console: Optional[Console] = None,
 ) -> bool:
     """Execute one experiment combo.
 
@@ -237,19 +239,29 @@ def run_experiment(
     combo['tensorboard_run_name'] = run_name
 
     # Show parameters
-    console = Console()
+    display = console or Console()
     table = Table("Parameters", show_header=False)
     for k, v in combo.items():
         table.add_row(k, str(v))
-    console.print(table)
+    display.print(table)
 
     # Build and run
     cmd = build_command(combo)
-    print(f"Running: {' '.join(cmd)}")
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError:
-        print(f"[red]Process exited with error for run:[/] {run_name}")
+    display.print(f"Running: {' '.join(cmd)}")
+    if console:
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        )
+        for line in process.stdout:
+            display.print(line, end="")
+        ret = process.wait()
+        if ret != 0:
+            display.print(f"[red]Process exited with error for run:[/] {run_name}")
+    else:
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError:
+            display.print(f"[red]Process exited with error for run:[/] {run_name}")
 
     # Read metrics (use existing or nan on failure)
     try:
@@ -291,7 +303,9 @@ def main():
         with progress:
             task = progress.add_task("configs", total=total, completed=initial_completed)
             for combo, _ in all_runs:
-                ran = run_experiment(combo, base, args, completed, log_file)
+                ran = run_experiment(
+                    combo, base, args, completed, log_file, console=progress.console
+                )
                 if ran:
                     progress.advance(task)
     else:
