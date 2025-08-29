@@ -22,6 +22,7 @@ python3 train.py \
     --n_head 8 \
     --n_embd 512 \
     --block_size 256 \
+    --batch_size 16 \
     --bias false \
     --dtype bfloat16 \
     --quantization_warmup_iters 0 \
