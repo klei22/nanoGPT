@@ -113,6 +113,8 @@ class Trainer:
         self.latest_top1_correct = float('nan')
         self.latest_target_rank = float('nan')
         self.latest_target_left_prob = float('nan')
+        self.latest_rank_95 = float('nan')
+        self.latest_left_prob_95 = float('nan')
 
         # store overall statistics for weights and activations
         self.latest_overall_weight_stats = {
@@ -884,7 +886,7 @@ class Trainer:
             for dataset in self.args.dataset_list:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
-                top1_probs, top1_corrects, target_ranks, target_left_probs = [], [], [], []
+                top1_probs, top1_corrects, target_ranks, target_left_probs, left_inclusive_probs = [], [], [], [], []
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
@@ -909,6 +911,7 @@ class Trainer:
                             target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
                             left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1)
                             target_left_probs.append(left_prob)
+                            left_inclusive_probs.append(left_prob + target_prob)
                 out['datasets'][dataset] = {
                         'train': dataset_losses['train'].mean(),
                         'train_std': dataset_losses['train'].std(),
@@ -918,6 +921,8 @@ class Trainer:
                         'top1_correct': torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan')),
                         'target_rank': torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan')),
                         'target_left_prob': torch.cat(target_left_probs).mean() if target_left_probs else torch.tensor(float('nan')),
+                        'target_rank_95': torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan')),
+                        'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
                         }
             out['val'] = out['datasets'][self.args.dataset]['val']
             out['val_std'] = out['datasets'][self.args.dataset]['val_std']
@@ -927,6 +932,8 @@ class Trainer:
             out['top1_correct'] = out['datasets'][self.args.dataset]['top1_correct']
             out['target_rank'] = out['datasets'][self.args.dataset]['target_rank']
             out['target_left_prob'] = out['datasets'][self.args.dataset]['target_left_prob']
+            out['target_rank_95'] = out['datasets'][self.args.dataset]['target_rank_95']
+            out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
         elif self.args.training_mode == "multicontext":
             for i, dataset in enumerate(self.args.multicontext_datasets):
                 out['datasets'][dataset] = {}
@@ -974,7 +981,7 @@ class Trainer:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
-                top1_probs, top1_corrects, target_ranks, target_left_probs = [], [], [], []
+                top1_probs, top1_corrects, target_ranks, target_left_probs, left_inclusive_probs = [], [], [], [], []
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
                     with self.ctx:
@@ -997,6 +1004,7 @@ class Trainer:
                         target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
                         left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1)
                         target_left_probs.append(left_prob)
+                        left_inclusive_probs.append(left_prob + target_prob)
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
                 if split == 'val':
@@ -1004,6 +1012,8 @@ class Trainer:
                     out['top1_correct'] = torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan'))
                     out['target_rank'] = torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan'))
                     out['target_left_prob'] = torch.cat(target_left_probs).mean() if target_left_probs else torch.tensor(float('nan'))
+                    out['target_rank_95'] = torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan'))
+                    out['left_prob_95'] = torch.quantile(torch.cat(left_inclusive_probs), 0.95) if left_inclusive_probs else torch.tensor(float('nan'))
 
         # compute statistics from a single validation batch
         if self.compute_model_stats:
@@ -1192,6 +1202,8 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/avg_top1_correct", losses['top1_correct'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/avg_target_rank", losses['target_rank'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/avg_target_left_prob", losses['target_left_prob'], self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/target_rank_95", losses['target_rank_95'], self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/left_prob_95", losses['left_prob_95'], self.iter_num)
 
             if self.args.gns_type is not None:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
@@ -1390,6 +1402,8 @@ class Trainer:
                 TextColumn("[bold dark_cyan]T1C:[/bold dark_cyan]{task.fields[t1c]}"),
                 TextColumn("-- [bold dark_magenta]TR:[/bold dark_magenta]{task.fields[tr]}"),
                 TextColumn("[bold dark_magenta]TLP:[/bold dark_magenta]{task.fields[tlp]}"),
+                TextColumn("[bold dark_magenta]R95:[/bold dark_magenta]{task.fields[r95]}"),
+                TextColumn("[bold dark_magenta]P95:[/bold dark_magenta]{task.fields[p95]}"),
                 console=self.console
                 )
 
@@ -1410,6 +1424,8 @@ class Trainer:
                     t1c=f"{self.latest_top1_correct:.6f}",
                     tr=f"{self.latest_target_rank:.2f}",
                     tlp=f"{self.latest_target_left_prob:.6f}",
+                    r95=f"{self.latest_rank_95:.2f}",
+                    p95=f"{self.latest_left_prob_95:.6f}",
                     )
 
             while True:
@@ -1426,6 +1442,8 @@ class Trainer:
                     self.latest_top1_correct = losses.get('top1_correct', float('nan'))
                     self.latest_target_rank = losses.get('target_rank', float('nan'))
                     self.latest_target_left_prob = losses.get('target_left_prob', float('nan'))
+                    self.latest_rank_95 = losses.get('target_rank_95', float('nan'))
+                    self.latest_left_prob_95 = losses.get('left_prob_95', float('nan'))
 
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
@@ -1528,6 +1546,8 @@ class Trainer:
                                         f"{losses.get('top1_correct', float('nan')):.6f}",
                                         f"{losses.get('target_rank', float('nan')):.2f}",
                                         f"{losses.get('target_left_prob', float('nan')):.6f}",
+                                        f"{losses.get('target_rank_95', float('nan')):.2f}",
+                                        f"{losses.get('left_prob_95', float('nan')):.6f}",
                                         f"{self.latest_overall_weight_stats['stdev']:.6f}",
                                         f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
                                         f"{self.latest_overall_weight_stats['max']:.6f}",
@@ -1781,6 +1801,8 @@ class Trainer:
                         t1c=f"{self.latest_top1_correct:.6f}",
                         tr=f"{self.latest_target_rank:.2f}",
                         tlp=f"{self.latest_target_left_prob:.6f}",
+                        r95=f"{self.latest_rank_95:.2f}",
+                        p95=f"{self.latest_left_prob_95:.6f}",
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
