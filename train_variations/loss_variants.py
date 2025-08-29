@@ -136,6 +136,31 @@ def top1_ratio_loss(
     return ce + beta * ratio_penalty.mean()
 
 
+# def rank_distance_loss(
+#     logits: torch.Tensor,
+#     targets: torch.Tensor,
+#     *,
+#     iter_num: int | None = None,
+#     gamma: float = 1.0,
+#     focal_gamma: float = 2.0,
+# ) -> torch.Tensor:
+#     """Rank-distance scaled focal loss to emphasize hard, misranked targets."""
+#     b, t, v = logits.shape
+#     logits_flat = logits.view(-1, v)
+#     targets_flat = targets.view(-1)
+#     ce = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+#     mask = targets_flat != -1
+#     with torch.no_grad():
+#         logits_sel = logits_flat[mask]
+#         targets_sel = targets_flat[mask]
+#         target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
+#         rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1)
+#         rank_scale = (2 - rank) ** focal_gamma
+#         pt = torch.exp(-ce[mask])
+#     scaled = torch.zeros_like(ce)
+#     scaled[mask] = ce[mask] * rank_scale
+#     return scaled[mask].mean()
+
 def rank_distance_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -159,10 +184,12 @@ def rank_distance_loss(
         targets_sel = targets_flat[mask]
         target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
         rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1)
-        rank_norm = rank.float() / max(v - 1, 1)
+        rank_norm = rank.float() / max(v - 1, 1) * 10.0
         scale = 1 + gamma * rank_norm
+        # print(scale)
     scaled = torch.zeros_like(loss)
-    scaled[mask] = loss[mask] * scale
+    # scaled[mask] = loss[mask] * scale
+    scaled[mask] = loss[mask] / scale
     return scaled[mask].mean()
 
 
@@ -213,6 +240,31 @@ def entropy_focal_loss(
     entropy_mean = entropy[targets != -1].mean()
     return focal_mean + beta * entropy_mean
 
+# def rank_distance_focal_loss(
+#     logits: torch.Tensor,
+#     targets: torch.Tensor,
+#     *,
+#     iter_num: int | None = None,
+#     gamma: float = 1.0,
+#     focal_gamma: float = 2.0,
+# ) -> torch.Tensor:
+#     """Rank-distance scaled focal loss to emphasize hard, misranked targets."""
+#     b, t, v = logits.shape
+#     logits_flat = logits.view(-1, v)
+#     targets_flat = targets.view(-1)
+#     ce = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+#     mask = targets_flat != -1
+#     with torch.no_grad():
+#         logits_sel = logits_flat[mask]
+#         targets_sel = targets_flat[mask]
+#         target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
+#         rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1)
+#         rank_scale = 1 + gamma * (rank.float() / max(v - 1, 1))
+#         pt = torch.exp(-ce[mask])
+#         focal_scale = (1 - pt) ** focal_gamma
+#     scaled = torch.zeros_like(ce)
+#     scaled[mask] = ce[mask] * rank_scale * focal_scale
+#     return scaled[mask].mean()
 
 def rank_distance_focal_loss(
     logits: torch.Tensor,
@@ -234,12 +286,12 @@ def rank_distance_focal_loss(
         target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
         rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1)
         rank_scale = 1 + gamma * (rank.float() / max(v - 1, 1))
+        rank_scale = (2 - rank) ** focal_gamma
         pt = torch.exp(-ce[mask])
         focal_scale = (1 - pt) ** focal_gamma
     scaled = torch.zeros_like(ce)
     scaled[mask] = ce[mask] * rank_scale * focal_scale
     return scaled[mask].mean()
-
 
 def entropy_rank_distance_focal_loss(
     logits: torch.Tensor,
@@ -385,6 +437,13 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             beta=getattr(args, "entropy_beta", 0.01),
         ),
         "rank_distance_focal": lambda l, t, *, iter_num=None: LOSS_VARIANTS["rank_distance_focal"](
+            l,
+            t,
+            iter_num=iter_num,
+            gamma=rank_gamma(iter_num),
+            focal_gamma=getattr(args, "focal_gamma", 2.0),
+        ),
+        "rank_distance_focal_v2": lambda l, t, *, iter_num=None: LOSS_VARIANTS["rank_distance_focal"](
             l,
             t,
             iter_num=iter_num,
