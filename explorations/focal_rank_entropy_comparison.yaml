@@ -18,7 +18,7 @@ dtype: ["bfloat16"]
 use_rotary_embeddings: [true]
 use_abs_pos_embeddings: [false]
 use_qk_norm: [true]
-use_qk_norm: [true]
+use_qk_norm_scale: [true]
 use_peri_ln: [true, false]
 
 # optimizer
