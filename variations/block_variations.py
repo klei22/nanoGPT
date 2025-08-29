@@ -16,17 +16,16 @@ BlockForward = Callable[['Block', torch.Tensor, int], torch.Tensor]
 
 def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """Forward pass where attention and MLP run in parallel."""
-    if block.use_pre_ln: # pre-LN
-        x_1 = block.pre_ln(x)
-    else:
-        x_1 = x
+    x_attn = block.pre_ln_attn(x) if block.use_pre_ln_attn else x
+    x_mlp = block.pre_ln_mlp(x) if block.use_pre_ln_mlp else x
 
-    if block.use_peri_ln: # peri-LN
-        attn_out = block.out_ln_attn(block.attn(x_1, iter_num))
-        mlp_out = block.out_ln_mlp(block.mlp(x_1, iter_num))
-    else:
-        attn_out = block.attn(x_1, iter_num)
-        mlp_out = block.mlp(x_1, iter_num)
+    attn_out = block.attn(x_attn, iter_num)
+    if block.use_peri_ln_attn:
+        attn_out = block.out_ln_attn(attn_out)
+
+    mlp_out = block.mlp(x_mlp, iter_num)
+    if block.use_peri_ln_mlp:
+        mlp_out = block.out_ln_mlp(mlp_out)
 
     if block.attn_resid_scaler is not None:
         attn_out = block.attn_resid_scaler(attn_out)
@@ -35,7 +34,7 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 
     x = x + attn_out + mlp_out
 
-    if block.use_post_ln: # post-LN
+    if block.use_post_ln_attn or block.use_post_ln_mlp:
         x = block.post_ln(x)
 
     return x
@@ -45,41 +44,31 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     """Attention followed by MLP."""
 
     # Attn
-    if block.use_pre_ln: # pre-LN Attn
-        x_1 = block.pre_ln_attn(x)
-    else:
-        x_1 = x
-
-    if block.use_peri_ln: # peri-LN Attn
-        attn_out = block.out_ln_attn(block.attn(x_1, iter_num))
-    else:
-        attn_out = block.attn(x_1, iter_num)
+    x_1 = block.pre_ln_attn(x) if block.use_pre_ln_attn else x
+    attn_out = block.attn(x_1, iter_num)
+    if block.use_peri_ln_attn:
+        attn_out = block.out_ln_attn(attn_out)
 
     if block.attn_resid_scaler is not None:
         attn_out = block.attn_resid_scaler(attn_out)
 
     x = attn_out + x
 
-    if block.use_post_ln: # post-LN Attn
+    if block.use_post_ln_attn:
         x = block.post_ln_attn(x)
 
     # MLP
-    if block.use_pre_ln: # pre-LN MLP
-        x_2 = block.pre_ln_mlp(x)
-    else:
-        x_2 = x
-
-    if block.use_peri_ln: # peri-LN MLP
-        mlp_out = block.out_ln_mlp(block.mlp(x_2, iter_num))
-    else:
-        mlp_out = block.mlp(x_2, iter_num)
+    x_2 = block.pre_ln_mlp(x) if block.use_pre_ln_mlp else x
+    mlp_out = block.mlp(x_2, iter_num)
+    if block.use_peri_ln_mlp:
+        mlp_out = block.out_ln_mlp(mlp_out)
 
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
     x = mlp_out + x
 
-    if block.use_post_ln: # post-LN MLP
+    if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
 
     return x
@@ -98,28 +87,43 @@ class Block(nn.Module):
         super().__init__()
 
         norm_cls = norm_dictionary[config.norm_variant_attn]
+        self.use_pre_ln_attn = config.use_pre_ln if config.use_pre_ln_attn is None else config.use_pre_ln_attn
+        self.use_pre_ln_mlp  = config.use_pre_ln if config.use_pre_ln_mlp  is None else config.use_pre_ln_mlp
+        self.use_post_ln_attn = config.use_post_ln if config.use_post_ln_attn is None else config.use_post_ln_attn
+        self.use_post_ln_mlp  = config.use_post_ln if config.use_post_ln_mlp  is None else config.use_post_ln_mlp
+        self.use_peri_ln_attn = config.use_peri_ln if config.use_peri_ln_attn is None else config.use_peri_ln_attn
+        self.use_peri_ln_mlp  = config.use_peri_ln if config.use_peri_ln_mlp  is None else config.use_peri_ln_mlp
 
         # Pre-Norm
-        if config.use_pre_ln:
-            if config.use_parallel_mlp:
-                # parallel uses 1 less pre ln
+        if config.use_parallel_mlp:
+            if self.use_pre_ln_attn and self.use_pre_ln_mlp and config.use_pre_ln_attn is None and config.use_pre_ln_mlp is None:
                 self.pre_ln = norm_cls(config)
+                self.pre_ln_attn = self.pre_ln_mlp = self.pre_ln
             else:
+                if self.use_pre_ln_attn:
+                    self.pre_ln_attn = norm_cls(config)
+                if self.use_pre_ln_mlp:
+                    self.pre_ln_mlp = norm_cls(config)
+        else:
+            if self.use_pre_ln_attn:
                 self.pre_ln_attn = norm_cls(config)
+            if self.use_pre_ln_mlp:
                 self.pre_ln_mlp = norm_cls(config)
 
         # Post-Norm
-        if config.use_post_ln:
-            if config.use_parallel_mlp:
-                # parallel uses 1 less post ln
+        if config.use_parallel_mlp:
+            if self.use_post_ln_attn or self.use_post_ln_mlp:
                 self.post_ln = norm_cls(config)
-            else:
+        else:
+            if self.use_post_ln_attn:
                 self.post_ln_attn = norm_cls(config)
+            if self.use_post_ln_mlp:
                 self.post_ln_mlp = norm_cls(config)
 
-        # Pero-LN
-        if config.use_peri_ln:
+        # Peri-LN
+        if self.use_peri_ln_attn:
             self.out_ln_attn = norm_cls(config)
+        if self.use_peri_ln_mlp:
             self.out_ln_mlp = norm_cls(config)
 
 
