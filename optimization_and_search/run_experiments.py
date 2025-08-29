@@ -250,13 +250,17 @@ def run_experiment(
         try:
             import train
             train.main(cmd_args, console=console)
-        except Exception:
-            display.print(f"[red]Process exited with error for run:[/] {run_name}")
+        except Exception as e:
+            display.print(
+                f"[red]Process exited with an error for run:[/] {run_name} ({e})"
+            )
     else:
         try:
             subprocess.run(['python3', 'train.py', *cmd_args], check=True)
-        except subprocess.CalledProcessError:
-            display.print(f"[red]Process exited with error for run:[/] {run_name}")
+        except subprocess.CalledProcessError as e:
+            display.print(
+                f"[red]Process exited with an error for run:[/] {run_name} ({e})"
+            )
 
     # Read metrics (use existing or nan on failure)
     try:
