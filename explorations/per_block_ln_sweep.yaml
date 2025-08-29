@@ -1,0 +1,22 @@
+# per_block_ln_sweep.yaml
+---
+# base hyperparameters
+max_iters: [250]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+device: ["cuda"]
+dtype: ["bfloat16"]
+dataset: ["shakespeare_char"]
+
+softmax_variant_attn:
+  - relu2max
+  - softmax
+
+use_pre_ln_attn: [true, false]
+use_pre_ln_mlp: [true, false]
+use_peri_ln_attn: [true, false]
+use_peri_ln_mlp: [true, false]
+use_post_ln_attn: [true, false]
+use_post_ln_mlp: [true, false]
