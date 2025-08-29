@@ -16,13 +16,14 @@ popd
 ## after 45000 iterations
 python3 train.py \
     --use_edgellm_asic true \
-    --max_iters 90000 \
-    --full_quant_iteration 45000 \
+    --max_iters 20000 \
+    --full_quant_iteration 10000 \
     --dataset "$dataset" \
+    --n_layer 8 \
     --n_head 8 \
     --n_embd 512 \
     --block_size 256 \
-    --batch_size 16 \
+    --batch_size 64 \
     --bias false \
     --dtype bfloat16 \
     --quantization_warmup_iters 0 \
