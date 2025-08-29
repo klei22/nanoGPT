@@ -199,10 +199,8 @@ def append_log(log_file: Path, name: str, combo: dict, metrics: dict) -> None:
 
 
 def build_command(combo: dict) -> list[str]:
-    """
-    Construct the command-line invocation for train.py.
-    """
-    cmd = ['python3', 'train.py']
+    """Construct the command-line arguments for train.py."""
+    cmd: list[str] = []
     for k, v in combo.items():
         if isinstance(v, bool):
             cmd.append(f"--{'' if v else 'no-'}{k}")
@@ -246,20 +244,17 @@ def run_experiment(
     display.print(table)
 
     # Build and run
-    cmd = build_command(combo)
-    display.print(f"Running: {' '.join(cmd)}")
+    cmd_args = build_command(combo)
+    display.print(f"Running: train.py {' '.join(cmd_args)}")
     if console:
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-        )
-        for line in process.stdout:
-            display.print(line, end="")
-        ret = process.wait()
-        if ret != 0:
+        try:
+            import train
+            train.main(cmd_args, console=console)
+        except Exception:
             display.print(f"[red]Process exited with error for run:[/] {run_name}")
     else:
         try:
-            subprocess.run(cmd, check=True)
+            subprocess.run(['python3', 'train.py', *cmd_args], check=True)
         except subprocess.CalledProcessError:
             display.print(f"[red]Process exited with error for run:[/] {run_name}")
 

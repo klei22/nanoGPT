@@ -7,7 +7,7 @@ def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
 
-def parse_args():
+def parse_args(args_list=None):
 
     parser = argparse.ArgumentParser()
 
@@ -1075,7 +1075,7 @@ def parse_args():
     # Model Parameter Distribution
     logging_group.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction)
 
-    args = parser.parse_args()
+    args = parser.parse_args(args_list)
 
     if args.log_all_metrics:
         args.log_btc_train = True
