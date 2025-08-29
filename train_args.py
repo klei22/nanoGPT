@@ -845,9 +845,13 @@ def parse_args():
 
     ### ReLUMax Options
     model_group.add_argument("--relumax_divisor", type=float, default=256.0)
+    model_group.add_argument("--relumax_offset", type=float, default=0.0)
+    model_group.add_argument('--relumax_use_learned_offset', default=False, action=argparse.BooleanOptionalAction)
 
     ### ReLU2Max Options
     model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
+    model_group.add_argument("--relu2max_offset", type=float, default=0.0)
+    model_group.add_argument('--relu2max_use_learned_offset', default=False, action=argparse.BooleanOptionalAction)
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
