@@ -122,9 +122,9 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     if block.use_post_ln: # post-LN MLP
         x = block.post_ln_mlp(x)
 
-    x_residual = x_residual + x
+    x = x_residual + x
 
-    return x_residual
+    return x
 
 
 block_forward_variations = {
