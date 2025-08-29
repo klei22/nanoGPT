@@ -88,11 +88,12 @@ from train_args import parse_args
 
 class Trainer:
 
-    def __init__(self, args, model_group, training_group, logging_group):
+    def __init__(self, args, model_group, training_group, logging_group, console=None):
         self.args = args
         self.model_group = model_group
         self.training_group = training_group
         self.logging_group = logging_group
+        self.console = console or Console()
 
         # GNS and batch schedule
         self.gns = None
@@ -1357,7 +1358,6 @@ class Trainer:
 
         cli_settings = " ".join(sys.argv)
         cli_text = Text(f"CLI: {cli_settings}", style="chartreuse1")
-        self.console = Console()
         # Create progress bar with ETA and remaining time display
         progress = Progress(
                 TextColumn("[bold white]{task.description}"),
@@ -1777,9 +1777,9 @@ class Trainer:
                 wandb.log({"finished": True})
                 wandb.finish()
 
-def main():
-    args, model_group, training_group, logging_group = parse_args()
-    trainer = Trainer(args, model_group, training_group, logging_group)
+def main(cmd_args=None, console=None):
+    args, model_group, training_group, logging_group = parse_args(cmd_args)
+    trainer = Trainer(args, model_group, training_group, logging_group, console=console)
 
     if not args.sample_only:
         trainer.train()
