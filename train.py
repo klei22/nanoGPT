@@ -108,6 +108,12 @@ class Trainer:
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
 
+        # track latest evaluation metrics for progress bar
+        self.latest_top1_prob = float('nan')
+        self.latest_top1_correct = float('nan')
+        self.latest_target_rank = float('nan')
+        self.latest_target_left_prob = float('nan')
+
         # store overall statistics for weights and activations
         self.latest_overall_weight_stats = {
             'stdev': 0.0,
@@ -1380,6 +1386,10 @@ class Trainer:
                 TextColumn("[bold purple3]total_est:[/bold purple3]{task.fields[total_hour]}h{task.fields[total_min]}m"),
                 TextColumn("-- [bold dark_magenta]iter_latency:[/bold dark_magenta]{task.fields[iter_latency]}ms"),
                 TextColumn("[bold dark_magenta]peak_gpu_mb:[/bold dark_magenta]{task.fields[peak_gpu_mb]}MB"),
+                TextColumn("-- [bold dark_cyan]T1P:[/bold dark_cyan]{task.fields[t1p]}"),
+                TextColumn("[bold dark_cyan]T1C:[/bold dark_cyan]{task.fields[t1c]}"),
+                TextColumn("-- [bold dark_magenta]TR:[/bold dark_magenta]{task.fields[tr]}"),
+                TextColumn("[bold dark_magenta]TLP:[/bold dark_magenta]{task.fields[tlp]}"),
                 console=self.console
                 )
 
@@ -1396,6 +1406,10 @@ class Trainer:
                     best_iter=f"{self.best_iter}",
                     iter_latency=f"{self.iter_latency_avg:.1f}",
                     peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                    t1p=f"{self.latest_top1_prob:.6f}",
+                    t1c=f"{self.latest_top1_correct:.6f}",
+                    tr=f"{self.latest_target_rank:.2f}",
+                    tlp=f"{self.latest_target_left_prob:.6f}",
                     )
 
             while True:
@@ -1407,6 +1421,11 @@ class Trainer:
                 if self.iter_num % self.args.eval_interval == 0 and self.master_process:
 
                     losses = self.estimate_loss()
+
+                    self.latest_top1_prob = losses.get('top1_prob', float('nan'))
+                    self.latest_top1_correct = losses.get('top1_correct', float('nan'))
+                    self.latest_target_rank = losses.get('target_rank', float('nan'))
+                    self.latest_target_left_prob = losses.get('target_left_prob', float('nan'))
 
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
@@ -1758,6 +1777,10 @@ class Trainer:
                         best_iter=f"{self.best_iter}",
                         iter_latency=f"{self.iter_latency_avg:.1f}",
                         peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                        t1p=f"{self.latest_top1_prob:.6f}",
+                        t1c=f"{self.latest_top1_correct:.6f}",
+                        tr=f"{self.latest_target_rank:.2f}",
+                        tlp=f"{self.latest_target_left_prob:.6f}",
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
