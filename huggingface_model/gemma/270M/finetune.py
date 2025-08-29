@@ -57,7 +57,7 @@ def main(args):
     model_name = "google/gemma-3-270m"
     print(f"Loading tokenizer and model for {model_name}...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="eager") # Removed eager attn, default is better
+    model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="eager") # "eager" is the recommended setting for Gemma 270M
 
     # FIX: Set pad_token to eos_token for decoder-only models
     if tokenizer.pad_token is None:
