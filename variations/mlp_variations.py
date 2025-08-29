@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
@@ -88,6 +89,9 @@ class OriginalMLP(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
+        self.l2norm_mlp_up_proj = config.l2norm_mlp_up_proj
+        self.l2norm_mlp_down_proj = config.l2norm_mlp_down_proj
+
     def forward(self, x, iter_num=None):
 
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
@@ -95,7 +99,11 @@ class OriginalMLP(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method, iter_num)
 
-        x = self.c_fc(x)
+        if self.l2norm_mlp_up_proj:
+            weight = F.normalize(self.c_fc.weight, dim=1)
+            x = F.linear(x, weight, self.c_fc.bias)
+        else:
+            x = self.c_fc(x)
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_input_bits"]
@@ -112,7 +120,11 @@ class OriginalMLP(nn.Module):
 
 
         # Apply fused down projection and sum the outputs
-        x = self.c_proj(x)
+        if self.l2norm_mlp_down_proj:
+            weight = F.normalize(self.c_proj.weight, dim=1)
+            x = F.linear(x, weight, self.c_proj.bias)
+        else:
+            x = self.c_proj(x)
         if self.mlp_down_projs > 1:
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
@@ -206,6 +218,9 @@ class DualPathMLP(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
+        self.l2norm_mlp_up_proj = config.l2norm_mlp_up_proj
+        self.l2norm_mlp_down_proj = config.l2norm_mlp_down_proj
+
     def forward(self, x, iter_num=None):
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
@@ -213,7 +228,11 @@ class DualPathMLP(nn.Module):
             x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method, iter_num)
 
         # Common upscale projection
-        x = self.c_fc(x)
+        if self.l2norm_mlp_up_proj:
+            weight = F.normalize(self.c_fc.weight, dim=1)
+            x = F.linear(x, weight, self.c_fc.bias)
+        else:
+            x = self.c_fc(x)
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_input_bits"]
@@ -222,11 +241,19 @@ class DualPathMLP(nn.Module):
 
         # First activation path - shifted right
         x1 = self.activation_variant(x - self.activation_x_offset) - self.activation_y_offset
-        x1 = self.c_proj1(x1)
+        if self.l2norm_mlp_down_proj:
+            weight1 = F.normalize(self.c_proj1.weight, dim=1)
+            x1 = F.linear(x1, weight1, self.c_proj1.bias)
+        else:
+            x1 = self.c_proj1(x1)
 
         # Second activation path - shifted left and negated input
         x2 = -self.activation_variant(-(x + self.activation_x_offset)) - self.activation_y_offset
-        x2 = self.c_proj2(x2)
+        if self.l2norm_mlp_down_proj:
+            weight2 = F.normalize(self.c_proj2.weight, dim=1)
+            x2 = F.linear(x2, weight2, self.c_proj2.bias)
+        else:
+            x2 = self.c_proj2(x2)
 
         # Combine paths
         x = x1 + x2
@@ -333,6 +360,9 @@ class Swiglu(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
+        self.l2norm_mlp_up_proj = config.l2norm_mlp_up_proj
+        self.l2norm_mlp_down_proj = config.l2norm_mlp_down_proj
+
     def forward(self, x, iter_num=None):
 
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
@@ -340,7 +370,11 @@ class Swiglu(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method, iter_num)
 
-        x_in1 = self.c_fc_in1(x)
+        if self.l2norm_mlp_up_proj:
+            weight = F.normalize(self.c_fc_in1.weight, dim=1)
+            x_in1 = F.linear(x, weight, self.c_fc_in1.bias)
+        else:
+            x_in1 = self.c_fc_in1(x)
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_input_bits"]
@@ -354,11 +388,19 @@ class Swiglu(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x_in1 = fake_quantize_act(self, "mlp_act_activation_output", x_in1, num_bits, quant_method, iter_num)
 
-        x_in2 = self.c_fc_in2(x)
+        if self.l2norm_mlp_up_proj:
+            weight = F.normalize(self.c_fc_in2.weight, dim=1)
+            x_in2 = F.linear(x, weight, self.c_fc_in2.bias)
+        else:
+            x_in2 = self.c_fc_in2(x)
         x_out = x_in1 * x_in2
 
         # Apply fused down projection and sum the outputs
-        x = self.c_fc_out(x_out)
+        if self.l2norm_mlp_down_proj:
+            weight = F.normalize(self.c_fc_out.weight, dim=1)
+            x = F.linear(x_out, weight, self.c_fc_out.bias)
+        else:
+            x = self.c_fc_out(x_out)
         if self.mlp_down_projs > 1:
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
