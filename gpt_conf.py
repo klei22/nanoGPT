@@ -275,6 +275,10 @@ class GPTConfig:
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0
 
+    ## SoftShrink options
+    softshrink_attn_lambda: float = 0.5
+    softshrink_attn_divisor: float = 64.0
+
     ## Squareplus options
     squareplus_divisor: float = 256.0
 

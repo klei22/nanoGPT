@@ -829,6 +829,7 @@ def parse_args():
         "softmax",
         "softplus",
         "squareplus",
+        "softshrink",
         "exppolymax",
         "pfla_softmax",
         ]
@@ -910,6 +911,9 @@ def parse_args():
     model_group.add_argument('--softplus_divisor', type=float,default=100.0)
     ### SquarePlus Options
     model_group.add_argument('--squareplus_divisor', type=float,default=100.0)
+    ### SoftShrink Options
+    model_group.add_argument('--softshrink_attn_lambda', type=float, default=0.5)
+    model_group.add_argument('--softshrink_attn_divisor', type=float, default=64.0)
 
     ### Sequence Length Division https://arxiv.org/abs/2309.
     model_group.add_argument('--div_by_seq_len', default=False, action=argparse.BooleanOptionalAction)
