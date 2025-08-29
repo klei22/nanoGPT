@@ -20,6 +20,12 @@ def parse_args():
     model_group.add_argument('--mlp_up_bias', default=None, action=argparse.BooleanOptionalAction, help='Whether to use bias in MLP up projections. If None, uses global bias setting.')
     model_group.add_argument('--mlp_down_bias', default=None, action=argparse.BooleanOptionalAction, help='Whether to use bias in MLP down projections. If None, uses global bias setting.')
 
+    # Optional L2-normalization of MLP projections
+    model_group.add_argument('--l2norm_mlp_up_proj', default=False, action=argparse.BooleanOptionalAction,
+                            help='L2-normalize weights of MLP/SwiGLU up projections along the embedding dimension')
+    model_group.add_argument('--l2norm_mlp_down_proj', default=False, action=argparse.BooleanOptionalAction,
+                            help='L2-normalize weights of MLP/SwiGLU down projections along the embedding dimension')
+
     # MLP x y Offset
     model_group.add_argument('--mlp_x_offset', type=float, default=0.0, help='X-axis offset for mlp activation functions')
     model_group.add_argument('--mlp_y_offset', type=float, default=0.0, help='Y-axis offset for mlp activation functions')

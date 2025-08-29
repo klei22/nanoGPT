@@ -31,6 +31,10 @@ class GPTConfig:
     mlp_up_bias: bool | None = None  # If None, uses global bias setting
     mlp_down_bias: bool | None = None  # If None, uses global bias setting
 
+    # Optional L2-normalization of MLP projections
+    l2norm_mlp_up_proj: bool = False
+    l2norm_mlp_down_proj: bool = False
+
     # FFN offset parameters
     mlp_x_offset: float = 0.0
     mlp_y_offset: float = 0.0
