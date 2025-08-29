@@ -13,14 +13,28 @@ eval_interval: [500]
 dataset: ["minipile"]
 device: ["cuda"]
 dtype: ["bfloat16"]
-never_save_checkpoint: [true]
 
-# position encodings
+# modern architecture updates
 use_rotary_embeddings: [true]
 use_abs_pos_embeddings: [false]
+use_qk_norm: [true]
+use_qk_norm: [true]
+use_peri_ln: [true, false]
 
 # optimizer
 optimizer: ["adamw"]
+
+# MLP Confidence Vectors
+use_mlp_resid_scaling: [true]
+mlp_confidence_variant: ["zeros"]
+use_mlp_resid_const: [true]
+mlp_resid_const: [1.0]
+learn_mlp_resid_const: [true, false]
+
+# TODO Add router and linear output variations
+# TODO Add softmax_attn variations
+# TODO Add slerp/skip_connection variations
+# TODO Add L2 normalization post activation
 
 # loss variants to compare
 parameter_groups:
@@ -33,21 +47,7 @@ parameter_groups:
       - rank_distance_focal
       - entropy_rank_distance_focal
 
-# conditional knobs for rank-distance variants
-rank_scale:
-  conditions:
-    - ["loss_fn", "rank_distance"]
-    - ["loss_fn", "rank_distance_focal"]
-    - ["loss_fn", "entropy_rank_distance_focal"]
-  options: ["1.0", "2.0"]
-
-rank_scale_schedule:
-  conditions:
-    - ["loss_fn", "rank_distance"]
-    - ["loss_fn", "rank_distance_focal"]
-    - ["loss_fn", "entropy_rank_distance_focal"]
-  options: ["0:1.0,10000:2.0"]
-
-# misc
+# Misc
 compile: [true]
+never_save_checkpoint: [true]
 tensorboard_run_name: ["focal_rank_entropy_comp"]
