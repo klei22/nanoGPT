@@ -26,6 +26,7 @@ METRIC_KEYS = [
     "avg_top1_prob",
     "avg_top1_correct",
     "avg_target_rank",
+    "avg_target_left_prob",
 ]
 
 
@@ -156,7 +157,7 @@ def read_metrics(out_dir: str) -> dict:
     line = path.read_text().strip()
     parts = [p.strip() for p in line.split(',')]
 
-    casts = [float, int, int, float, float, float, float, float, float, float]
+    casts = [float, int, int, float, float, float, float, float, float, float, float]
     return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
 
 

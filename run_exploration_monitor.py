@@ -175,6 +175,7 @@ class MonitorApp(App):
             "avg_top1_prob",
             "avg_top1_correct",
             "avg_target_rank",
+            "avg_target_left_prob",
         ] + self.param_keys
         self.all_columns = base_cols.copy()
         self.columns = base_cols.copy()
@@ -225,6 +226,7 @@ class MonitorApp(App):
             "avg_top1_prob",
             "avg_top1_correct",
             "avg_target_rank",
+            "avg_target_left_prob",
         ):
             return entry.get(col_name)
         return entry.get("config", {}).get(col_name)
