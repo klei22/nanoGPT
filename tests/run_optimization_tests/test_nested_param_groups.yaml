@@ -1,0 +1,19 @@
+---
+parameter_groups:
+  - parameter_groups:
+      - use_rotary_embeddings: [true]
+        tensorboard_run_name: ["nested_rotary"]
+      - use_rotary_embeddings: [false]
+        tensorboard_run_name: ["nested_no_rotary"]
+    use_abs_pos_embeddings: [true]
+  - use_rotary_embeddings: [false]
+    use_abs_pos_embeddings: [false]
+    tensorboard_run_name: ["simple_group"]
+max_iters: [1]
+n_layer: [1]
+n_head: [1]
+n_embd: [8]
+block_size: [8]
+device: ["cpu"]
+dtype: ["bfloat16"]
+dataset: ["shakespeare_char"]

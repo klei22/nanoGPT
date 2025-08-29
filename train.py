@@ -1293,7 +1293,7 @@ class Trainer:
                 }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
-    def train(self):
+    def train(self, console=None):
         if self.args.training_mode == 'multicontext':
             self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
             current_dataset = dataset_list[0]
@@ -1317,7 +1317,7 @@ class Trainer:
 
         cli_settings = " ".join(sys.argv)
         cli_text = Text(f"CLI: {cli_settings}", style="chartreuse1")
-        self.console = Console()
+        self.console = console or Console()
         # Create progress bar with ETA and remaining time display
         progress = Progress(
                 TextColumn("[bold white]{task.description}"),
@@ -1714,12 +1714,14 @@ class Trainer:
                 wandb.log({"finished": True})
                 wandb.finish()
 
-def main():
-    args, model_group, training_group, logging_group = parse_args()
+def main(cli_args=None, console=None):
+    if cli_args is not None:
+        sys.argv = ['train.py', *cli_args]
+    args, model_group, training_group, logging_group = parse_args(cli_args)
     trainer = Trainer(args, model_group, training_group, logging_group)
 
     if not args.sample_only:
-        trainer.train()
+        trainer.train(console=console)
 
     if trainer.ddp:
         destroy_process_group()
