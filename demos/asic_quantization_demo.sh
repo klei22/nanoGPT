@@ -1,14 +1,24 @@
 #!/bin/bash
 
+dataset="minipile"
+# obtain and tokenize minipile
+pushd data/"$dataset"
+if [ ! -f "train.bin" ] || [ ! -f "val.bin" ] || [ ! -f "meta.pkl" ]; then
+  bash get_dataset.sh
+  python3 prepare.py -t input.txt --method tiktoken
+else
+  echo "train.bin val.bin and meta.pkl already found for ${dataset}"
+fi
+popd
+
 # Train a fully quantized asic model
-## on the dataset tinystories
 ## using a linear quantization scheduler, increasing to full quantization
 ## after 45000 iterations
 python3 train.py \
     --use_edgellm_asic true \
     --max_iters 90000 \
     --full_quant_iteration 45000 \
-    --dataset tiny-stories \
+    --dataset "$dataset" \
     --n_head 8 \
     --n_embd 512 \
     --block_size 256 \
@@ -35,7 +45,7 @@ python3 train.py \
 
 # Test the model's inference capabilities when holding the scales and zero points static
 python3 sample.py \
-    --out_dir quantization_tinystories/tiny_stories \
+    --out_dir quantization_"$dataset"/"$dataset" \
     --eval_only \
-    --eval_dataset="tiny-stories" \
+    --eval_dataset="$dataset" \
     --static_eval_scales
