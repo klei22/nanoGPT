@@ -10,6 +10,7 @@ import yaml
 from rich import print
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 
 # Constants
 LOG_DIR = Path("exploration_logs")
@@ -53,6 +54,14 @@ def parse_args() -> argparse.Namespace:
         '--use_timestamp', action='store_true',
         help="Prepend timestamp to run names and out_dir."
     )
+    parser.add_argument(
+        '--progress', action='store_true',
+        help="Display a rich progress bar while running experiments.",
+    )
+    parser.add_argument(
+        '--simple_log_count', action='store_true',
+        help=("Assume the exploration config has not changed and estimate the number of completed configs by counting entries in the log file."),
+    )
     return parser.parse_args()
 
 
@@ -94,26 +103,34 @@ def expand_range(val):
     return val
 
 
-def generate_combinations(config: dict) -> dict:
-    """
-    Yield all valid parameter combinations for a single config dict.
-
-    Returns:
-        Iterator of parameter-combination dicts.
-    """
-    groups = config.pop('parameter_groups', [{}])
-    base = {
-        k: (expand_range(v) if isinstance(v, dict) and 'range' in v else v)
-        for k, v in config.items()
-        if not (isinstance(v, dict) and 'conditions' in v)
-    }
-    base = {k: (v if isinstance(v, list) else [v]) for k, v in base.items()}
-    conditionals = {k: v for k, v in config.items() if isinstance(v, dict) and 'conditions' in v}
-
+def _expand_parameter_groups(cfg: dict) -> list[dict]:
+    """Recursively expand any nested ``parameter_groups`` entries."""
+    groups = cfg.get('parameter_groups')
+    base = {k: v for k, v in cfg.items() if k != 'parameter_groups'}
+    if not groups:
+        return [base]
+    expanded = []
     for grp in groups:
         merged = {**base, **grp}
-        keys = list(merged)
-        for combo in product(*(merged[k] for k in keys)):
+        expanded.extend(_expand_parameter_groups(merged))
+    return expanded
+
+
+def generate_combinations(config: dict) -> dict:
+    """Yield all valid parameter combinations for a single config dict."""
+    for cfg in _expand_parameter_groups(config):
+        base = {
+            k: (expand_range(v) if isinstance(v, dict) and 'range' in v else v)
+            for k, v in cfg.items()
+            if not (isinstance(v, dict) and 'conditions' in v)
+        }
+        base = {k: (v if isinstance(v, list) else [v]) for k, v in base.items()}
+        conditionals = {
+            k: v for k, v in cfg.items() if isinstance(v, dict) and 'conditions' in v
+        }
+
+        keys = list(base)
+        for combo in product(*(base[k] for k in keys)):
             combo_dict = dict(zip(keys, combo))
             valid = [combo_dict]
             for param, spec in conditionals.items():
@@ -199,16 +216,17 @@ def build_command(combo: dict) -> list[str]:
 def run_experiment(
     combo: dict,
     base: str,
-    args: argparse.Namespace
-) -> None:
-    """
-    Execute one experiment combo: skip if done, run train.py, record metrics.
-    """
+    args: argparse.Namespace,
+    completed: set[str],
+    log_file: Path,
+) -> bool:
+    """Execute one experiment combo.
+
+    Returns True if a new experiment was run, False if it was skipped."""
     run_name = format_run_name(combo, base, args.prefix)
-    log_file = LOG_DIR / f"{base}.yaml"
-    if run_name in completed_runs(log_file):
+    if run_name in completed:
         print(f"[yellow]Skipping already-run:[/] {run_name}")
-        return
+        return False
 
     # Prepare output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S') if args.use_timestamp else None
@@ -240,16 +258,46 @@ def run_experiment(
         metrics = {k: float("nan") for k in METRIC_KEYS}
 
     append_log(log_file, run_name, combo, metrics)
+    completed.add(run_name)
+    return True
 
 
 def main():
     args = parse_args()
     base = Path(args.config).stem
     configs = load_configurations(args.config, args.config_format)
+    log_file = LOG_DIR / f"{base}.yaml"
+    completed = completed_runs(log_file)
 
-    for cfg in configs:
-        for combo in generate_combinations(cfg):
-            run_experiment(combo, base, args)
+    if args.progress:
+        all_runs = []
+        for cfg in configs:
+            for combo in generate_combinations(cfg):
+                run_name = format_run_name(combo, base, args.prefix)
+                all_runs.append((combo, run_name))
+
+        total = len(all_runs)
+        if args.simple_log_count:
+            initial_completed = min(len(completed), total)
+        else:
+            initial_completed = sum(1 for _, name in all_runs if name in completed)
+
+        progress = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeRemainingColumn(),
+        )
+        with progress:
+            task = progress.add_task("configs", total=total, completed=initial_completed)
+            for combo, _ in all_runs:
+                ran = run_experiment(combo, base, args, completed, log_file)
+                if ran:
+                    progress.advance(task)
+    else:
+        for cfg in configs:
+            for combo in generate_combinations(cfg):
+                run_experiment(combo, base, args, completed, log_file)
 
 
 if __name__ == '__main__':
