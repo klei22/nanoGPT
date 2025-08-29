@@ -186,7 +186,6 @@ def rank_distance_loss(
         rank = (logits_sel > target_logits.unsqueeze(-1)).sum(dim=-1)
         rank_norm = rank.float() / max(v - 1, 1) * 10.0
         scale = 1 + gamma * rank_norm
-        # print(scale)
     scaled = torch.zeros_like(loss)
     # scaled[mask] = loss[mask] * scale
     scaled[mask] = loss[mask] / scale
