@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import os
+import io
 import random
 import pickle
 import shutil
@@ -1357,7 +1358,18 @@ class Trainer:
 
         cli_settings = " ".join(sys.argv)
         cli_text = Text(f"CLI: {cli_settings}", style="chartreuse1")
-        self.console = Console()
+        fd = os.environ.get("NANOGPT_PROGRESS_FD")
+        if fd is not None:
+            # Use the parent progress console so both bars render together
+            try:
+                shared_stream = io.TextIOWrapper(
+                    os.fdopen(int(fd), "wb"), encoding="utf-8", write_through=True
+                )
+                self.console = Console(file=shared_stream)
+            except Exception:
+                self.console = Console()
+        else:
+            self.console = Console()
         # Create progress bar with ETA and remaining time display
         progress = Progress(
                 TextColumn("[bold white]{task.description}"),
