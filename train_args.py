@@ -610,6 +610,7 @@ def parse_args():
             "softplus",
             "softsign",
             "softshrink",
+            "softshrink_squared",
             "squared_relu",
             "tanh",
             "identity",
