@@ -909,9 +909,9 @@ class Trainer:
                             target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
                             ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
                             target_ranks.append(ranks.float())
-                            target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                            target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
                             target_probs.append(target_prob)
-                            left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1)
+                            left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
                             target_left_probs.append(left_prob)
                             left_inclusive_probs.append(left_prob + target_prob)
                 out['datasets'][dataset] = {
@@ -1005,9 +1005,9 @@ class Trainer:
                         target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
                         ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
                         target_ranks.append(ranks.float())
-                        target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                        target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
                         target_probs.append(target_prob)
-                        left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1)
+                        left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
                         target_left_probs.append(left_prob)
                         left_inclusive_probs.append(left_prob + target_prob)
                 out[split] = losses.mean()
