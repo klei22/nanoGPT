@@ -176,6 +176,7 @@ class MonitorApp(App):
             "avg_top1_correct",
             "avg_target_rank",
             "avg_target_left_prob",
+            "avg_target_prob",
             "target_rank_95",
             "left_prob_95",
         ] + self.param_keys
@@ -229,6 +230,7 @@ class MonitorApp(App):
             "avg_top1_correct",
             "avg_target_rank",
             "avg_target_left_prob",
+            "avg_target_prob",
             "target_rank_95",
             "left_prob_95",
         ):
