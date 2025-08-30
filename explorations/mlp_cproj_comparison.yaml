@@ -4,40 +4,50 @@ parameter_groups:
   # Baseline: default down projection
   - mlp_cproj_scale: [1.0]
     tensorboard_run_name: ["default_settings"]
+    print_model_stats: ["default_settings"]
   # L2 normalize activation vectors
   - mlp_cproj_scale: [1.0]
     mlp_post_act_l2_norm: [true]
     tensorboard_run_name: ["only_post_activation_norm"]
+    print_model_stats: ["only_post_activation_norm"]
   # L2 normalize activation vectors and cproj_scale
-  - mlp_cproj_scale: [1536]
+  - mlp_cproj_scale: [50]
     mlp_post_act_l2_norm: [true]
     tensorboard_run_name: ["c-proj-scale_and_post-act-norm"]
+    print_model_stats: ["c-proj-scale_and_post-act-norm"]
   # only cproj scale
-  - mlp_cproj_scale: [1536]
+  - mlp_cproj_scale: [50]
     mlp_post_act_l2_norm: [false]
     tensorboard_run_name: ["only_cproj_scale"]
+    print_model_stats: ["only_cproj_scale"]
 
-mlp_variant: ["mlp", "swiglu"]
-activation_variant: ["relu", "squared_relu", "gelu", "silu"]
-compile: [true]
+# mlp variations
+mlp_variant: ["mlp"]
+activation_variant: ["gelu"]
+
+# Modern Model Settings
 use_rotary_embeddings: [true]
 use_abs_pos_embeddings: [false]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
 use_peri_ln: [true]
 
-warmup_iters: [500]
+# Training Variations
 max_iters: [5000]
+warmup_iters: [500]
 eval_interval: [500]
-
-n_layer: [5]
-n_embd: [320]
-n_head: [5]
-
+n_embd: [384]
+n_layer: [6]
+n_head: [6]
 block_size: [256]
 batch_size: [32]
-
-compile: [true]
-compute_model_stats: [true]
-
+dtype: ["float16"]
 dataset: ["minipile"]
 
-dtype: ["float16"]
+# Tracking
+compute_model_stats: [true]
+
+# VRAM and Memory
+compile: [true]
+never_save_checkpoint: [true]
+
