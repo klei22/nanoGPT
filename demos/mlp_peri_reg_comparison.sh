@@ -1,4 +1,3 @@
-
 #!/bin/bash
 # demos/mlp_peri_reg_comparison.sh
 
