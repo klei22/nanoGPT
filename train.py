@@ -925,7 +925,7 @@ class Trainer:
                         'target_left_prob': torch.cat(target_left_probs).mean() if target_left_probs else torch.tensor(float('nan')),
                         'target_prob': torch.cat(target_probs).mean() if target_probs else torch.tensor(float('nan')),
                         'target_rank_95': torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan')),
-                        'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
+                        'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
                         }
             out['val'] = out['datasets'][self.args.dataset]['val']
             out['val_std'] = out['datasets'][self.args.dataset]['val_std']
@@ -1019,7 +1019,7 @@ class Trainer:
                     out['target_left_prob'] = torch.cat(target_left_probs).mean() if target_left_probs else torch.tensor(float('nan'))
                     out['target_prob'] = torch.cat(target_probs).mean() if target_probs else torch.tensor(float('nan'))
                     out['target_rank_95'] = torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan'))
-                    out['left_prob_95'] = torch.quantile(torch.cat(left_inclusive_probs), 0.95) if left_inclusive_probs else torch.tensor(float('nan'))
+                    out['left_prob_95'] = torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan'))
 
         # compute statistics from a single validation batch
         if self.compute_model_stats:
