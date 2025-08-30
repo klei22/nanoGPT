@@ -37,6 +37,12 @@ class GPTConfig:
     learn_mlp_x_offset: bool = False
     learn_mlp_y_offset: bool = False
 
+    # Optional L2 normalization of MLP projections
+    l2_norm_mlp_up: bool = False
+    l2_norm_mlp_down: bool = False
+    l2_norm_mlp_up_dim: str = "embed"   # 'embed' or 'hidden'
+    l2_norm_mlp_down_dim: str = "hidden"  # 'embed' or 'hidden'
+
     ## MLA Variations
     mla_latent_dim: int | None = None   # d_c  (proj dimension of the shared latent)
     mla_rotary_dim: int       = 32      # d_r  (# rotary channels per head)

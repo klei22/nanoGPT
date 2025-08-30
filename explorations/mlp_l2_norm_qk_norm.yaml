@@ -1,0 +1,45 @@
+# mlp_l2_norm_qk_norm.yaml
+---
+# parameter_groups: L2 normalization combinations with distinct model stats output
+parameter_groups:
+  - l2_norm_mlp_up: [false]
+    l2_norm_mlp_down: [false]
+    print_model_stats_table: ["no_l2_norm_stats.csv"]
+  - l2_norm_mlp_up: [true]
+    l2_norm_mlp_down: [false]
+    print_model_stats_table: ["up_l2_norm_stats.csv"]
+  - l2_norm_mlp_up: [false]
+    l2_norm_mlp_down: [true]
+    print_model_stats_table: ["down_l2_norm_stats.csv"]
+  - l2_norm_mlp_up: [true]
+    l2_norm_mlp_down: [true]
+    print_model_stats_table: ["up_down_l2_norm_stats.csv"]
+
+# base hyperparameters
+max_iters: [250]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+device: ["cuda"]
+dtype: ["bfloat16"]
+dataset: ["shakespeare_char"]
+
+# training options
+never_save_checkpoint: [true]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+use_peri_ln: [true, false]
+compute_model_stats: [true]
+
+# ranged sweep
+seed:
+  range:
+    start: 100
+    end: 102
+    step: 1
+
+# boolean flags
+compile: [true]
