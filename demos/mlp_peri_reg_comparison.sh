@@ -25,4 +25,3 @@ metric="abs_max"
 python3 view_model_stats.py "$default" "$post_act_l2" --stats "$metric"
 python3 view_model_stats.py "$default" "$cproj_scale" --stats "$metric"
 python3 view_model_stats.py "$default" "$both" --stats "$metric"
-
