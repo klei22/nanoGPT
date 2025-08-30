@@ -344,6 +344,13 @@ class GPTConfig:
     learn_mlp_resid_const: bool = False
     resid_gaussian_mean_init: float = 0.0
     resid_gaussian_std_init: float = 0.02
+    attn_residual_combination: str = "add"
+    mlp_residual_combination: str = "add"
+    residual_slerp_eps: float = 0.0
+    attn_residual_alpha: float = 1.0
+    mlp_residual_alpha: float = 1.0
+    attn_residual_alpha_type: str = "fixed"
+    mlp_residual_alpha_type: str = "fixed"
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
