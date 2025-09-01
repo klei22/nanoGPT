@@ -26,6 +26,16 @@ def parse_args():
     model_group.add_argument('--learn_mlp_x_offset', default=False, action=argparse.BooleanOptionalAction, help='Whether to learn the x-axis offset for mlp')
     model_group.add_argument('--learn_mlp_y_offset', default=False, action=argparse.BooleanOptionalAction, help='Whether to learn the y-axis offset for mlp')
 
+    # L2 Normalization options
+    model_group.add_argument('--l2_norm_mlp_up', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize MLP up projection weights along embedding dimension')
+    model_group.add_argument('--l2_norm_mlp_down', default=False, action=argparse.BooleanOptionalAction,
+                              help='L2 normalize MLP down projection weights along embedding dimension')
+    model_group.add_argument('--l2_norm_mlp_up_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing MLP up projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_mlp_down_dim', type=str, default='hidden', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing MLP down projections: 'embed' or 'hidden'")
+
     # Export Args
     ## Factored WTE
     model_group.add_argument('--import_wte_npy', default=None, type=str, help='Path to import the embedding table as a .npy file')
