@@ -32,11 +32,12 @@ from __future__ import annotations
 
 import argparse, io, pickle
 from pathlib import Path
-from typing import Callable, List, Sequence
+from typing import Any, Callable, List, Sequence
 
 import numpy as np
 import torch, torch.nn.functional as F
 from rich.console import Console
+from rich.table import Table
 from rich.text import Text
 import tiktoken  # type: ignore
 
@@ -46,7 +47,7 @@ from model import GPT, GPTConfig
 # helpers
 ################################################################################
 
-def _ansi(text: Text) -> str:
+def _ansi(text: Any) -> str:
     buf = io.StringIO(); Console(file=buf, force_terminal=True, color_system="truecolor").print(text)
     return buf.getvalue()
 
@@ -58,6 +59,21 @@ def _colour(ids: List[int], scalars: List[float], decode: Callable[[Sequence[int
     for tid, v in zip(ids, norm):
         r = int((1 - v.item()) * 255); g = int(v.item() * 255)
         out.append(decode([tid]), style=f"bold #{r:02x}{g:02x}00")
+    return out
+
+
+def _colour_topk(
+    ids: List[int], logits: List[float], decode: Callable[[Sequence[int]], str], target: int
+) -> List[Text]:
+    vals = torch.tensor(logits, dtype=torch.float32)
+    norm = (vals - vals.min()) / (vals.max() - vals.min() + 1e-6)
+    out: List[Text] = []
+    for tid, v in zip(ids, norm):
+        r = int((1 - v.item()) * 255); g = int(v.item() * 255)
+        style = f"bold #{r:02x}{g:02x}00"
+        if tid == target:
+            style += " underline"
+        out.append(Text(decode([tid]), style=style))
     return out
 
 # byte-fallback helpers -------------------------------------------------------
@@ -102,6 +118,8 @@ def parse_args():
     p.add_argument("--window", choices=["block", "rolling"], default="block", help="Context window strategy")
     p.add_argument("--offset", type=int, default=0, help="Starting token index within the binary dataset file")
     p.add_argument("--output_file", default="dataset_color.txt")
+    p.add_argument("--view", choices=["token", "topk"], default="token", help="How to display model outputs")
+    p.add_argument("--k", type=int, default=10, help="Top-k depth for --view topk")
     return p.parse_args()
 
 
@@ -158,6 +176,7 @@ def main():
 
     ids: List[int] = []
     scalars: List[float] = []
+    rows: List[List[object]] = []
 
     while tokens_left > 0:
         # Build window
@@ -171,25 +190,50 @@ def main():
         ctx_len = logits.size(0)
         tgt_token = int(seq[-1])  # ground-truth next token
 
-        # chosen scalar
-        scalar_val = (
-            F.softmax(logits[-1], dim=-1)[tgt_token].item()
-            if args.mode == "softmax" else logits[-1, tgt_token].item()
-        )
-        ids.append(tgt_token)
-        scalars.append(scalar_val)
+        if args.view == "token":
+            scalar_val = (
+                F.softmax(logits[-1], dim=-1)[tgt_token].item()
+                if args.mode == "softmax" else logits[-1, tgt_token].item()
+            )
+            ids.append(tgt_token)
+            scalars.append(scalar_val)
+        else:
+            last_logits = logits[-1]
+            probs = F.softmax(last_logits, dim=-1)
+            topk_vals, topk_idx = torch.topk(last_logits, args.k)
+            colored = _colour_topk(topk_idx.tolist(), topk_vals.tolist(), decode, tgt_token)
+            target_logit = last_logits[tgt_token]
+            rank = int((last_logits > target_logit).sum().item()) + 1
+            target_prob = probs[tgt_token].item()
+            prob_left = probs[last_logits > target_logit].sum().item()
+            row: List[object] = [str(rank), f"{target_prob:.4f}", f"{prob_left:.4f}"]
+            row.extend(colored)
+            rows.append(row)
 
         # advance
         step = 1 if args.window == "rolling" else ctx_len
         pos += step
         tokens_left -= 1 if args.window == "rolling" else min(ctx_len, tokens_left)
 
-    coloured = _colour(ids, scalars, decode)
-    console.print(coloured)
-
-    if args.output_file:
-        Path(args.output_file).write_text(_ansi(coloured), "utf-8", errors="replace")
-        console.print(f"[cyan]Saved → {args.output_file}[/cyan]")
+    if args.view == "token":
+        coloured = _colour(ids, scalars, decode)
+        console.print(coloured)
+        if args.output_file:
+            Path(args.output_file).write_text(_ansi(coloured), "utf-8", errors="replace")
+            console.print(f"[cyan]Saved → {args.output_file}[/cyan]")
+    else:
+        table = Table()
+        table.add_column("rank")
+        table.add_column("p")
+        table.add_column("cum_p")
+        for i in range(args.k):
+            table.add_column(f"top{i+1}")
+        for r in rows:
+            table.add_row(*r)
+        console.print(table)
+        if args.output_file:
+            Path(args.output_file).write_text(_ansi(table), "utf-8", errors="replace")
+            console.print(f"[cyan]Saved → {args.output_file}[/cyan]")
 
 
 if __name__ == "__main__":
