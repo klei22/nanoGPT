@@ -37,6 +37,7 @@ from typing import Callable, List, Sequence
 import numpy as np
 import torch, torch.nn.functional as F
 from rich.console import Console
+from rich.table import Table
 from rich.text import Text
 import tiktoken  # type: ignore
 
@@ -46,8 +47,9 @@ from model import GPT, GPTConfig
 # helpers
 ################################################################################
 
-def _ansi(text: Text) -> str:
-    buf = io.StringIO(); Console(file=buf, force_terminal=True, color_system="truecolor").print(text)
+def _ansi(renderable) -> str:
+    buf = io.StringIO()
+    Console(file=buf, force_terminal=True, color_system="truecolor").print(renderable)
     return buf.getvalue()
 
 
@@ -102,6 +104,20 @@ def parse_args():
     p.add_argument("--window", choices=["block", "rolling"], default="block", help="Context window strategy")
     p.add_argument("--offset", type=int, default=0, help="Starting token index within the binary dataset file")
     p.add_argument("--output_file", default="dataset_color.txt")
+    p.add_argument("--display", choices=["token", "topk"], default="token", help="Output format")
+    p.add_argument("--topk", type=int, default=10, help="Number of top predictions to display when using topk display")
+    p.add_argument(
+        "--topk_colwidth",
+        type=int,
+        default=20,
+        help="Max characters for each top-k column; set -1 to disable clipping",
+    )
+    p.add_argument(
+        "--rank_saturation",
+        type=int,
+        default=100,
+        help="Rank value that maps to the reddest colour in rank heatmap",
+    )
     return p.parse_args()
 
 
@@ -156,13 +172,29 @@ def main():
     pos = args.offset
     tokens_left = min(args.num_tokens, len(data) - 1 - pos)
 
-    ids: List[int] = []
-    scalars: List[float] = []
+    lines: List[str] = []
+
+    if args.display == "token":
+        ids: List[int] = []
+        scalars: List[float] = []
+    else:
+        table = Table(show_header=False, box=None, pad_edge=False)
+        table.add_column("logit", justify="right", no_wrap=True)
+        table.add_column("rank", justify="right", no_wrap=True)
+        table.add_column("p_tgt", justify="right", no_wrap=True)
+        table.add_column("p_left", justify="right", no_wrap=True)
+        col_width = None if args.topk_colwidth < 0 else args.topk_colwidth
+        for _ in range(args.topk):
+            if col_width is None:
+                table.add_column(justify="center", no_wrap=True)
+            else:
+                table.add_column(justify="center", no_wrap=True, width=col_width)
 
     while tokens_left > 0:
         # Build window
         seq = data[pos : pos + block + 1]
-        if len(seq) < 2: break  # not enough tokens to predict next
+        if len(seq) < 2:
+            break  # not enough tokens to predict next
 
         ctx_tok = torch.from_numpy(seq[:-1].astype(np.int64))[None].to(args.device)
         with autocast_ctx:
@@ -171,24 +203,60 @@ def main():
         ctx_len = logits.size(0)
         tgt_token = int(seq[-1])  # ground-truth next token
 
-        # chosen scalar
-        scalar_val = (
-            F.softmax(logits[-1], dim=-1)[tgt_token].item()
-            if args.mode == "softmax" else logits[-1, tgt_token].item()
-        )
-        ids.append(tgt_token)
-        scalars.append(scalar_val)
+        if args.display == "token":
+            scalar_val = (
+                F.softmax(logits[-1], dim=-1)[tgt_token].item()
+                if args.mode == "softmax" else logits[-1, tgt_token].item()
+            )
+            ids.append(tgt_token)
+            scalars.append(scalar_val)
+        else:
+            # probabilities and rankings
+            probs = F.softmax(logits[-1], dim=-1)
+            tgt_logit = logits[-1, tgt_token].item()
+            tgt_prob = probs[tgt_token].item()
+            rank = int((logits[-1] > logits[-1, tgt_token]).sum().item()) + 1
+            prob_left = probs[logits[-1] > logits[-1, tgt_token]].sum().item()
+
+            # style numeric columns
+            rank_norm = (min(rank, args.rank_saturation) - 1) / max(args.rank_saturation - 1, 1)
+            rr = int(rank_norm * 255); rg = int((1 - rank_norm) * 255)
+            rank_text = Text(str(rank), style=f"bold #{rr:02x}{rg:02x}00")
+
+            rp = int((1 - tgt_prob) * 255); gp = int(tgt_prob * 255)
+            prob_text = Text(f"{tgt_prob:.4f}", style=f"bold #{rp:02x}{gp:02x}00")
+
+            rl = int(prob_left * 255); gl = int((1 - prob_left) * 255)
+            prob_left_text = Text(f"{prob_left:.4f}", style=f"bold #{rl:02x}{gl:02x}00")
+
+            topv, topi = logits[-1].topk(args.topk)
+            norm = (topv - topv.min()) / (topv.max() - topv.min() + 1e-6)
+            words: List[Text] = []
+            for idx, v in zip(topi.tolist(), norm.tolist()):
+                r = int((1 - v) * 255); g = int(v * 255)
+                style = f"bold #{r:02x}{g:02x}00"
+                if idx == tgt_token:
+                    style += " underline"
+                words.append(Text(decode([idx]), style=style, overflow="crop"))
+
+            row = [f"{tgt_logit:.4f}", rank_text, prob_text, prob_left_text] + words
+            table.add_row(*row)
 
         # advance
         step = 1 if args.window == "rolling" else ctx_len
         pos += step
         tokens_left -= 1 if args.window == "rolling" else min(ctx_len, tokens_left)
 
-    coloured = _colour(ids, scalars, decode)
-    console.print(coloured)
+    if args.display == "token":
+        coloured = _colour(ids, scalars, decode)
+        console.print(coloured)
+        lines.append(_ansi(coloured))
+    else:
+        console.print(table)
+        lines.append(_ansi(table))
 
     if args.output_file:
-        Path(args.output_file).write_text(_ansi(coloured), "utf-8", errors="replace")
+        Path(args.output_file).write_text("".join(lines), "utf-8", errors="replace")
         console.print(f"[cyan]Saved → {args.output_file}[/cyan]")
 
 
