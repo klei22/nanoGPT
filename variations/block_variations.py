@@ -86,7 +86,7 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
 
     # MLP Pre-LN
     if block.use_pre_ln:
-        x_mlp_in = block.pre_ln_mlp(x)
+        x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
     # MLP Operation
     mlp_out = block.mlp(x_mlp_in, iter_num)
@@ -342,7 +342,7 @@ class Block(nn.Module):
         ## Instantiate norms for Block Forward Variant
         normalization_setup_variations[variant](self, config, norm_cls)
 
-        ## Instantiate (Optional) learned residual scalers for Bloock Forward Variant
+        ## Instantiate (Optional) learned residual scalers for Block Forward Variant
         resid_scaler_setup_variations[variant](self, config)
 
         ## Instantiate Block Forward Variant Submodules
