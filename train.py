@@ -164,6 +164,9 @@ class Trainer:
             self.args.dataset = self.args.dataset_list[0]
             print(self.args.dataset)
 
+            if self.args.epochs_limit is not None:
+                raise ValueError("--epochs_limit is not supported for multidataset training")
+
         if self.args.training_mode == 'multicontext':
             self.vocab_sizes = {}
         # init optimizer and scheduler
@@ -1658,9 +1661,9 @@ class Trainer:
                     prior_dataset = current_dataset
                     tokens_trained_this_batch = self.args.batch_size * self.args.block_size
                     if self.args.dataset_list:
-                        # Update per–dataset count
+                        # Update per-dataset and total token counts
                         self.tokens_trained_dict[current_dataset] += tokens_trained_this_batch
-                        self.tokens_trained = self.tokens_trained_dict[current_dataset]
+                        self.tokens_trained += tokens_trained_this_batch
                     else:
                         self.tokens_trained += tokens_trained_this_batch
 
@@ -1826,7 +1829,11 @@ class Trainer:
                 if (
                     self.iter_num > self.args.max_iters
                     or (self.args.tokens_limit is not None and self.tokens_trained >= self.args.tokens_limit)
-                    or (self.args.epochs_limit is not None and self.current_epoch >= self.args.epochs_limit)
+                    or (
+                        self.args.epochs_limit is not None
+                        and self.args.dataset_list is None
+                        and self.current_epoch >= self.args.epochs_limit
+                    )
                 ):
                     print(self.best_val_loss, self.best_iter)
                     if self.args.only_save_checkpoint_at_end:
