@@ -23,6 +23,13 @@ METRIC_KEYS = [
     "btc_per_param",
     "peak_gpu_mb",
     "iter_latency_avg",
+    "avg_top1_prob",
+    "avg_top1_correct",
+    "avg_target_rank",
+    "avg_target_left_prob",
+    "avg_target_prob",
+    "target_rank_95",
+    "left_prob_95",
 ]
 
 
@@ -142,11 +149,10 @@ def format_run_name(combo: dict, base: str, prefix: str) -> str:
 
 def read_metrics(out_dir: str) -> dict:
     """
-    Read best_val_loss_and_iter.txt and parse five metrics.
+    Read best_val_loss_and_iter.txt and parse metrics.
 
     Returns:
-        Dict with keys: best_val_loss, best_val_iter, num_params,
-        better_than_chance, btc_per_param.
+        Dict with keys from METRIC_KEYS.
     """
     path = Path(out_dir) / METRICS_FILENAME
     if not path.exists():
@@ -154,7 +160,7 @@ def read_metrics(out_dir: str) -> dict:
     line = path.read_text().strip()
     parts = [p.strip() for p in line.split(',')]
 
-    casts = [float, int, int, float, float, float, float]
+    casts = [float, int, int, float, float, float, float, float, float, float, float, float, float, float]
     return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
 
 

@@ -10,8 +10,6 @@ parameter_groups:
   - use_ln_f_input_mixer: [true]
     ln_f_input_mixer_variant: ["router_topk"]
     ln_f_mixer_top_k: [2]
-  - use_ln_f_input_mixer: [true]
-    ln_f_input_mixer_variant: ["decoder"]
 
 # base hyperparameters
 block_size: [256]
@@ -19,14 +17,17 @@ n_layer: [12]
 n_head: [6]
 n_embd: [384]
 
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+use_peri_ln: [true, false]
+
 # training configuration
 dataset: ["minipile"]
 max_iters: 10000
-lr_decay_iters: 10000
-lr_scheduler: "cosine"
 warmup_iters: 1000
 eval_interval: 10000
 eta_variant: ["iteration"]
 
 # boolean flags
 compile: [true]
+never_save_checkpoint: [true]

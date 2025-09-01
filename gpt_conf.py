@@ -175,11 +175,16 @@ class GPTConfig:
     ssm_d_state: int = 16
     ssm_io_bias: bool = True
 
+    # EdgeLLM ASIC block architecture
+    use_edgellm_asic: bool = False
+
     # MLP Options
     use_parallel_mlp: bool = False
     mlp_variant: str = "mlp"
     mlp_expansion_factor: int = 4
     mlp_size: int = None
+    mlp_cproj_scale: float = 1.0
+    mlp_post_act_l2_norm: bool = False
 
     ## KAN Option
     kan_poly_order: int = 3
@@ -272,6 +277,10 @@ class GPTConfig:
 
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0
+
+    ## SoftShrink options
+    softshrink_attn_lambda: float = 0.5
+    softshrink_attn_divisor: float = 64.0
 
     ## Squareplus options
     squareplus_divisor: float = 256.0
@@ -449,6 +458,8 @@ class GPTConfig:
     quantize_mlp_act_activation_output_bits: int = None
     quantize_mlp_act_output: bool = False
     quantize_mlp_act_output_bits: int = None
+    quantize_asic_prenorm: bool = False
+    quantize_asic_bits: int = None
     store_activations: bool = False
 
     ## Linear Quantizations

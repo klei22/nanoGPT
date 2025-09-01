@@ -3,6 +3,8 @@ import argparse
 import math
 import re
 
+from train_variations.loss_variants import LOSS_VARIANTS
+
 def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
@@ -62,7 +64,75 @@ def parse_args():
     training_group.add_argument('--eval_cycle_window', default=5, type=int)
 
     # Loss variations
-    training_group.add_argument('--focus_on_top1_loss', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument(
+        '--loss_fn',
+        type=str,
+        default='cross_entropy',
+        choices=sorted(LOSS_VARIANTS.keys()),
+        help='Loss function to use during training.',
+    )
+    training_group.add_argument(
+        '--loss_schedule',
+        type=str,
+        default=None,
+        help='Comma-separated schedule of step:loss_fn pairs to switch loss during training.',
+    )
+    training_group.add_argument(
+        '--rank_scale',
+        type=float,
+        default=1.0,
+        help='Base scaling factor for rank_distance loss.',
+    )
+    training_group.add_argument(
+        '--rank_scale_schedule',
+        type=str,
+        default=None,
+        help="Schedule for rank_distance's scaling factor, e.g. 0:1.0,1000:2.0",
+    )
+
+    # Loss hyperparameters
+    training_group.add_argument(
+        '--label_smoothing',
+        type=float,
+        default=0.1,
+        help='Smoothing factor for label_smoothing loss.',
+    )
+    training_group.add_argument(
+        '--focal_gamma',
+        type=float,
+        default=2.0,
+        help='Gamma parameter for focal-style losses.',
+    )
+    training_group.add_argument(
+        '--top1_focus_alpha',
+        type=float,
+        default=0.5,
+        help='Penalty weight for incorrect top-1 predictions in top1_focus loss.',
+    )
+    training_group.add_argument(
+        '--top1_margin',
+        type=float,
+        default=0.1,
+        help='Desired logit margin for top1_margin loss.',
+    )
+    training_group.add_argument(
+        '--entropy_beta',
+        type=float,
+        default=0.01,
+        help='Weight of entropy penalty in entropy-based losses.',
+    )
+    training_group.add_argument(
+        '--top1_ratio_beta',
+        type=float,
+        default=0.5,
+        help='Weight for ratio penalty in top1_ratio loss.',
+    )
+    training_group.add_argument(
+        '--flatness_beta',
+        type=float,
+        default=1.0,
+        help='Scaling for flatness_boost loss when predictions are flat.',
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
@@ -175,6 +245,7 @@ def parse_args():
             "soap",
             "var_adaptive_lr",
             "lookahead",
+            "entropy_aware_adamw",
             ]
 
     training_group.add_argument("--optimizer", type=str, default="adamw",
@@ -188,6 +259,12 @@ def parse_args():
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
     training_group.add_argument("--adamw_weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer.")
+    training_group.add_argument(
+        "--entropy_lr_boost",
+        type=float,
+        default=1.0,
+        help="Coefficient for entropy_aware_adamw to scale learning rate when logits are flat.",
+    )
     # --------  ADAMW_ACT_REG --------------------------------------------------
     training_group.add_argument(
         "--activation_decay",
@@ -432,11 +509,15 @@ def parse_args():
             "dual_path",
             "identity",
             ]
+    
+    model_group.add_argument('--use_edgellm_asic', default=False, action=argparse.BooleanOptionalAction)
 
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
     model_group.add_argument("--mlp_expansion_factor", type=int, default=4, help="If MLP like variant is used, set the expansion factor for the linear transformations, default is 4.")
     model_group.add_argument("--mlp_size", type=int, default=None, help="If not None, is used instead of mlp_expansion_factor")
+    model_group.add_argument('--mlp_cproj_scale', default=1.0, type=float, help="Divide MLP down projection outputs by this value")
+    model_group.add_argument('--mlp_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction, help="L2 normalize MLP activation vectors before down projection")
 
     ## KAN Options
     model_group.add_argument("--kan_poly_order", type=int, default=3, help="Order of KAN non-linearity")
@@ -751,6 +832,12 @@ def parse_args():
     model_group.add_argument("--quantize_mlp_act_activation_output_bits", type=int, default=None, help="number of bits for activation function output quantization")
     model_group.add_argument("--quantize_mlp_act_output_bits", type=int, default=None, help="number of bits for mlp output quantization")
 
+    ### ASIC Activations
+    model_group.add_argument("--quantize_asic_prenorm", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC input to norm")
+
+    ### Default Precisions for ASIC Activations
+    model_group.add_argument("--quantize_asic_bits", type=int, default=8, help="number of bits for asic quantization")
+
     ### Whether activations should be saved
     model_group.add_argument("--store_activations", action=argparse.BooleanOptionalAction, default=False, help="whether the activations should be saved as a buffer and updated through training")
 
@@ -821,6 +908,8 @@ def parse_args():
         "softmax",
         "softplus",
         "squareplus",
+        "softshrink",
+        "gelumax",
         "exppolymax",
         "pfla_softmax",
         ]
@@ -902,6 +991,9 @@ def parse_args():
     model_group.add_argument('--softplus_divisor', type=float,default=100.0)
     ### SquarePlus Options
     model_group.add_argument('--squareplus_divisor', type=float,default=100.0)
+    ### SoftShrink Options
+    model_group.add_argument('--softshrink_attn_lambda', type=float, default=0.5)
+    model_group.add_argument('--softshrink_attn_divisor', type=float, default=64.0)
 
     ### Sequence Length Division https://arxiv.org/abs/2309.
     model_group.add_argument('--div_by_seq_len', default=False, action=argparse.BooleanOptionalAction)

@@ -93,6 +93,9 @@ class OriginalMLP(nn.Module):
             bias=use_down_bias,
         )
 
+        self.cproj_scale = config.mlp_cproj_scale
+        self.post_act_l2_norm = config.mlp_post_act_l2_norm
+
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x, iter_num=None):
@@ -101,6 +104,7 @@ class OriginalMLP(nn.Module):
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method, iter_num)
+
         if self.l2_norm_mlp_up:
             up_dim = 1 if self.l2_norm_mlp_up_dim == 'embed' else 0
             weight = F.normalize(self.c_fc.weight, p=2, dim=up_dim)
@@ -116,11 +120,16 @@ class OriginalMLP(nn.Module):
         # Apply offsets to the activation function
         x = self.activation_variant(x - self.activation_x_offset) - self.activation_y_offset
 
+        if self.post_act_l2_norm:
+            x = x / x.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_activation_output", x, num_bits, quant_method, iter_num)
 
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x = x / self.cproj_scale
 
         # Apply fused down projection and sum the outputs
         if self.l2_norm_mlp_down:
@@ -129,6 +138,7 @@ class OriginalMLP(nn.Module):
             x = F.linear(x, weight, self.c_proj.bias)
         else:
             x = self.c_proj(x)
+
         if self.mlp_down_projs > 1:
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
@@ -226,6 +236,9 @@ class DualPathMLP(nn.Module):
             bias=config.mlp_down_bias
         )
 
+        self.cproj_scale = config.mlp_cproj_scale
+        self.post_act_l2_norm = config.mlp_post_act_l2_norm
+
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x, iter_num=None):
@@ -249,6 +262,15 @@ class DualPathMLP(nn.Module):
 
         # First activation path - shifted right
         x1 = self.activation_variant(x - self.activation_x_offset) - self.activation_y_offset
+
+
+        if self.post_act_l2_norm:
+            x1 = x1 / x1.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x1 = x1 / self.cproj_scale
+
+        # pre-Normalization per vector (embed or hidden)
         down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
         if self.l2_norm_mlp_down:
             weight1 = F.normalize(self.c_proj1.weight, p=2, dim=down_dim)
@@ -258,6 +280,14 @@ class DualPathMLP(nn.Module):
 
         # Second activation path - shifted left and negated input
         x2 = -self.activation_variant(-(x + self.activation_x_offset)) - self.activation_y_offset
+
+        if self.post_act_l2_norm:
+            x2 = x2 / x2.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x2 = x2 / self.cproj_scale
+
+        # pre-Normalization per vector (embed or hidden)
         if self.l2_norm_mlp_down:
             weight2 = F.normalize(self.c_proj2.weight, p=2, dim=down_dim)
             x2 = F.linear(x2, weight2, self.c_proj2.bias)
@@ -373,6 +403,9 @@ class Swiglu(nn.Module):
             bias=use_down_bias,
         )
 
+        self.cproj_scale = config.mlp_cproj_scale
+        self.post_act_l2_norm = config.mlp_post_act_l2_norm
+
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x, iter_num=None):
@@ -396,6 +429,9 @@ class Swiglu(nn.Module):
 
         x_in1 = self.activation_variant(x_in1 - self.activation_x_offset) - self.activation_y_offset
 
+        if self.post_act_l2_norm:
+            x_in1 = x_in1 / x_in1.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
@@ -408,6 +444,17 @@ class Swiglu(nn.Module):
             x_in2 = self.c_fc_in2(x)
         x_out = x_in1 * x_in2
 
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            x_out = x_out / self.cproj_scale
+
+        # pre-Normalization per vector (embed or hidden)
+        down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
+        if self.l2_norm_mlp_down:
+            weight = F.normalize(self.c_fc_out.weight, p=2, dim=down_dim)
+            x = F.linear(x_out, weight, self.c_fc_out.bias)
+        else:
+            x = self.c_fc_out(x_out)
+
         # Apply fused down projection and sum the outputs
         down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
         if self.l2_norm_mlp_down:
@@ -415,6 +462,7 @@ class Swiglu(nn.Module):
             x = F.linear(x_out, weight, self.c_fc_out.bias)
         else:
             x = self.c_fc_out(x_out)
+
         if self.mlp_down_projs > 1:
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
@@ -444,9 +492,11 @@ class KanMLP(nn.Module):
 
 class MLP_Identity(nn.Module):
     def __init__(self, config):
-        super(Identity, self).__init__()
+        super().__init__()
+        self.activation = nn.Identity()
 
     def forward(self, x, iter_num=None):
+        x = self.activation(x)
         return x
 
 mlp_dictionary = {
