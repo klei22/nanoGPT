@@ -33,8 +33,9 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     mlp_out = block.mlp(x_in, iter_num)
 
     # Peri-LN
-    if block.use_peri_ln:
+    if block.use_peri_ln_attn:
         attn_out = block.peri_ln_attn(attn_out)
+    if block.use_peri_ln_mlp:
         mlp_out = block.peri_ln_mlp(mlp_out)
 
     # MLP and Attn Output Scaling
@@ -60,15 +61,15 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     x_attn_in = x
 
     # Attn Pre-LN
-    if block.use_pre_ln:
+    if block.use_pre_ln_attn:
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
     # Attn Operation
     attn_out = block.attn(x_attn_in, iter_num)
 
     # Attn Peri-LN
-    if block.use_peri_ln:
-        attn_out = block.out_ln_attn(attn_out)
+    if block.use_peri_ln_attn:
+        attn_out = block.peri_ln_attn(attn_out)
 
     # Attn Output Scaling
     if block.attn_resid_scaler is not None:
@@ -78,22 +79,22 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     x = attn_out + x
 
     # Attn Post-LN
-    if block.use_post_ln:
+    if block.use_post_ln_attn:
         x = block.post_ln_attn(x)
 
     # Make sure not to override skip connection
     x_mlp_in = x
 
     # MLP Pre-LN
-    if block.use_pre_ln:
+    if block.use_pre_ln_mlp:
         x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
     # MLP Operation
     mlp_out = block.mlp(x_mlp_in, iter_num)
 
     # MLP Peri-LN
-    if block.use_peri_ln:
-        mlp_out = block.out_ln_mlp(mlp_out)
+    if block.use_peri_ln_mlp:
+        mlp_out = block.peri_ln_mlp(mlp_out)
 
     # MLP Output Scaling
     if block.mlp_resid_scaler is not None:
@@ -103,7 +104,7 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     x = mlp_out + x
 
     # MLP Post-LN
-    if block.use_post_ln:
+    if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
 
     return x
@@ -129,15 +130,15 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 
     # Attn Pre-LN
     x_attn_in = x_quantized_residual
-    if block.use_pre_ln:
-        x_attn_in = block.pre_ln_attn(x_attn_in)
+    if block.use_pre_ln_attn:
+        x_attn_in = block.pre_ln_attn_attn(x_attn_in)
 
     # Attn Operation
     attn_out = block.attn(x_attn_in, iter_num)
 
     # Attn Peri-LN
-    if block.use_peri_ln:
-        attn_out = block.out_ln_attn(attn_out)
+    if block.use_peri_ln_attn:
+        attn_out = block.peri_ln_attn(attn_out)
 
     # Attn Output Scaling
     if block.attn_resid_scaler is not None:
@@ -155,15 +156,15 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     x_mlp_in = x_quantized_residual
 
     # MLP Pre-LN
-    if block.use_pre_ln:
-        x_mlp_in = block.pre_ln_mlp(x_mlp_in)
+    if block.use_pre_ln_mlp:
+        x_mlp_in = block.pre_ln_mlp_attn(x_mlp_in)
 
     # MLP Operation
     mlp_out = block.mlp(x_mlp_in, iter_num)
 
     # MLP Peri-LN
-    if block.use_peri_ln:
-        mlp_out = block.out_ln_mlp(mlp_out)
+    if block.use_peri_ln_mlp:
+        mlp_out = block.peri_ln_mlp(mlp_out)
 
     # MLP Output Scaling
     if block.mlp_resid_scaler is not None:
@@ -178,7 +179,7 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     x = (chip_output - x_quantized_residual_initial) + x
 
     # Off-Chip: MLP Post-LN
-    if block.use_post_ln:
+    if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
 
     return x
@@ -241,9 +242,9 @@ def _setup_norms_sequential(self, config, norm_cls) -> None:
 
     # Peri-LN
     if getattr(self, "use_peri_ln_attn", False):
-        self.out_ln_attn = norm_cls(config)
+        self.peri_ln_attn = norm_cls(config)
     if getattr(self, "use_peri_ln_mlp", False):
-        self.out_ln_mlp = norm_cls(config)
+        self.peri_ln_mlp = norm_cls(config)
 
     # Post-LN
     if getattr(self, "use_post_ln_attn", False):
