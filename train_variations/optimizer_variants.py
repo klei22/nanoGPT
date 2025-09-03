@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import torch
+import torch.distributed as dist
 import itertools
 from torch.optim import (ASGD, LBFGS, SGD, Adagrad, Adam, Adamax, AdamW, NAdam,
                          RAdam, RMSprop, SparseAdam)
@@ -17,6 +18,14 @@ try:
     from apollo_torch import APOLLOAdamW          # pip install apollo-torch
 except ImportError as e:                           # graceful fallback
     APOLLOAdamW = None
+
+# Muon optimiser -----------------------------------------------------------
+# Reference: Jordan et al., 2024 (https://kellerjordan.github.io/posts/muon/)
+try:
+    from train_variations.muon import MuonWithAuxAdam, SingleDeviceMuonWithAuxAdam
+except ImportError:  # optional dependency
+    MuonWithAuxAdam = None
+    SingleDeviceMuonWithAuxAdam = None
 
 # Other PyPI optimisers ---------------------------------------------------
 try:  # AdaBelief
@@ -1624,6 +1633,32 @@ def _adamod_diffgrad(param_groups, args):
     )
 
 
+def _muon(param_groups, args):
+    if MuonWithAuxAdam is None or SingleDeviceMuonWithAuxAdam is None:
+        raise ImportError("Muon optimizer is not available")
+
+    use_dist = dist.is_available() and dist.is_initialized()
+    opt_class = MuonWithAuxAdam if use_dist else SingleDeviceMuonWithAuxAdam
+
+    for group in param_groups:
+        if group.get("use_muon", False):
+            group.update(
+                lr=args.learning_rate,
+                momentum=getattr(args, "muon_momentum", 0.95),
+                weight_decay=args.weight_decay,
+                use_muon=True,
+            )
+        else:
+            group.update(
+                lr=args.learning_rate,
+                betas=(args.beta1, args.beta2),
+                eps=getattr(args, "opt_eps", 1e-8),
+                weight_decay=args.weight_decay,
+                use_muon=False,
+            )
+    return opt_class(param_groups)
+
+
 optimizer_dictionary: dict[str, callable] = {
     # From pytorch
     "sgd": _sgd,
@@ -1646,6 +1681,7 @@ optimizer_dictionary: dict[str, callable] = {
     # hybrids
     "lambdiff": _lambdiff,
     "adamod_diffgrad": _adamod_diffgrad,
+    "muon": _muon,
     # community contributed
     "lion": _lion,
     # from adabelief_pytorch

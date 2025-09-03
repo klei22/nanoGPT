@@ -332,6 +332,12 @@ class GPTConfig:
     use_post_ln: bool = False
     use_pre_ln: bool = True
     use_peri_ln: bool = False
+    use_pre_ln_attn: bool | None = None
+    use_pre_ln_mlp: bool | None = None
+    use_peri_ln_attn: bool | None = None
+    use_peri_ln_mlp: bool | None = None
+    use_post_ln_attn: bool | None = None
+    use_post_ln_mlp: bool | None = None
     use_attn_resid_scaling: bool = False
     use_mlp_resid_scaling: bool = False
     attn_confidence_variant: str = "zeros"

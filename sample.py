@@ -825,6 +825,16 @@ def custom_char_with_byte_fallback_decode(ids: list[int], itos: dict) -> str:
     flush_bytes()
     return "".join(out_parts)
 
+
+def byte_encode(text: str) -> list[int]:
+    """Encode text into raw UTF-8 byte values."""
+    return list(text.encode("utf-8"))
+
+
+def byte_decode(ids: list[int]) -> str:
+    """Decode a list of raw byte values back into text."""
+    return bytes(ids).decode("utf-8", errors="replace")
+
 def get_tokenizer_functions(meta):
     """Get encode/decode functions based on tokenizer metadata"""
     if 'tokenizer' not in meta:
@@ -839,6 +849,9 @@ def get_tokenizer_functions(meta):
         encode = lambda s: enc.encode(s, allowed_special={""})
         decode = lambda l: enc.decode(l)
         return encode, decode
+
+    if meta['tokenizer'] == 'byte':
+        return byte_encode, byte_decode
 
     if meta['tokenizer'] == 'custom_char_with_byte_fallback':
         stoi, itos = meta['stoi'], meta['itos']

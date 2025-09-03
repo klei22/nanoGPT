@@ -10,6 +10,7 @@ from tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
     CustomTokenizer,
+    ByteTokenizer,
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
@@ -191,6 +192,19 @@ class TestTokenizers(unittest.TestCase):
         for token in tokens_to_check:
             self.assertIn(token, detokenized)
 
+    def test_byte_tokenizer(self):
+        args = Namespace()
+        tokenizer = ByteTokenizer(args)
+        ids = tokenizer.tokenize(self.sample_text)
+        detokenized = tokenizer.detokenize(ids)
+
+        console.print("[input]Input:[/input]")
+        console.print(self.sample_text, style="input")
+        console.print("[output]Detokenized Output:[/output]")
+        console.print(detokenized, style="output")
+
+        self.assertEqual(self.sample_text, detokenized)
+
     def test_char_tokenizer(self):
         args = Namespace(reuse_chars=False)
         tokenizer = CharTokenizer(args, self.sample_text, None)
@@ -347,6 +361,27 @@ class TestTokenizers(unittest.TestCase):
             sum(token_counts.values()),
             len(ids),
             "Total token counts should match for CustomTokenizer."
+        )
+        for token_id in ids:
+            self.assertIn(token_id, token_counts)
+
+    def test_byte_tokenizer_counts(self):
+        args = Namespace(track_token_counts=True)
+        tokenizer = ByteTokenizer(args)
+        ids = tokenizer.tokenize(self.sample_text)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
+
+        # Print histogram
+        self._print_token_count_histogram(token_counts, itos)
+
+        self.assertEqual(
+            sum(token_counts.values()),
+            len(ids),
+            "Total token counts should match for ByteTokenizer.",
         )
         for token_id in ids:
             self.assertIn(token_id, token_counts)

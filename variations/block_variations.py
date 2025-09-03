@@ -14,29 +14,41 @@ from quantization.quantize import fake_quantize_act
 # type alias for the forward function
 BlockForward = Callable[['Block', torch.Tensor, int], torch.Tensor]
 
+# -----------------------
+# Block Forward Variations
+# -----------------------
 
 def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """Forward pass where attention and MLP run in parallel."""
-    if block.use_pre_ln: # pre-LN
-        x_1 = block.pre_ln(x)
-    else:
-        x_1 = x
 
-    if block.use_peri_ln: # peri-LN
-        attn_out = block.out_ln_attn(block.attn(x_1, iter_num))
-        mlp_out = block.out_ln_mlp(block.mlp(x_1, iter_num))
-    else:
-        attn_out = block.attn(x_1, iter_num)
-        mlp_out = block.mlp(x_1, iter_num)
+    # Make sure not to override skip connection
+    x_in = x
 
+    # Pre-LN
+    if block.use_pre_ln:
+        x_in = block.pre_ln(x_in)
+
+    # Perform Operations
+    attn_out = block.attn(x_in, iter_num)
+    mlp_out = block.mlp(x_in, iter_num)
+
+    # Peri-LN
+    if block.use_peri_ln_attn:
+        attn_out = block.peri_ln_attn(attn_out)
+    if block.use_peri_ln_mlp:
+        mlp_out = block.peri_ln_mlp(mlp_out)
+
+    # MLP and Attn Output Scaling
     if block.attn_resid_scaler is not None:
         attn_out = block.attn_resid_scaler(attn_out)
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
+    # Skip Connection
     x = x + attn_out + mlp_out
 
-    if block.use_post_ln: # post-LN
+    # Post-LN
+    if block.use_post_ln:
         x = block.post_ln(x)
 
     return x
@@ -45,42 +57,54 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """Attention followed by MLP."""
 
-    # Attn
-    if block.use_pre_ln: # pre-LN Attn
-        x_1 = block.pre_ln_attn(x)
-    else:
-        x_1 = x
+    # Make sure not to override skip connection
+    x_attn_in = x
 
-    if block.use_peri_ln: # peri-LN Attn
-        attn_out = block.out_ln_attn(block.attn(x_1, iter_num))
-    else:
-        attn_out = block.attn(x_1, iter_num)
+    # Attn Pre-LN
+    if block.use_pre_ln_attn:
+        x_attn_in = block.pre_ln_attn(x_attn_in)
 
+    # Attn Operation
+    attn_out = block.attn(x_attn_in, iter_num)
+
+    # Attn Peri-LN
+    if block.use_peri_ln_attn:
+        attn_out = block.peri_ln_attn(attn_out)
+
+    # Attn Output Scaling
     if block.attn_resid_scaler is not None:
         attn_out = block.attn_resid_scaler(attn_out)
 
+    # Attn Skip Connection
     x = attn_out + x
 
-    if block.use_post_ln: # post-LN Attn
+    # Attn Post-LN
+    if block.use_post_ln_attn:
         x = block.post_ln_attn(x)
 
-    # MLP
-    if block.use_pre_ln: # pre-LN MLP
-        x_2 = block.pre_ln_mlp(x)
-    else:
-        x_2 = x
+    # Make sure not to override skip connection
+    x_mlp_in = x
 
-    if block.use_peri_ln: # peri-LN MLP
-        mlp_out = block.out_ln_mlp(block.mlp(x_2, iter_num))
-    else:
-        mlp_out = block.mlp(x_2, iter_num)
+    # MLP Pre-LN
+    if block.use_pre_ln_mlp:
+        x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
+    # MLP Operation
+    mlp_out = block.mlp(x_mlp_in, iter_num)
+
+    # MLP Peri-LN
+    if block.use_peri_ln_mlp:
+        mlp_out = block.peri_ln_mlp(mlp_out)
+
+    # MLP Output Scaling
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
+    # MLP Skip Connection
     x = mlp_out + x
 
-    if block.use_post_ln: # post-LN MLP
+    # MLP Post-LN
+    if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
 
     return x
@@ -89,51 +113,74 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
 def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """EdgeLLM ASIC forward: Attention followed by MLP with skip connection accumulation between blocks."""
 
-    x_residual = x
+    # Separate Full Precision Residual 'x' from 'x_quantized_residual'
+    x_quantized_residual = x
 
+    # Quantize x_attn_in before pre-norm
     if block.quantization_dict["quantize_asic_prenorm"]:
         num_bits = block.quantization_dict["quantize_asic_bits"]
         quant_method = block.quantization_dict["activations_quant_method"]
-        x = fake_quantize_act(block, "asic_attn_prenorm", x, num_bits, quant_method, iter_num)
+        x_quantized_residual = fake_quantize_act(block, "asic_attn_prenorm", x_quantized_residual, num_bits, quant_method, iter_num)
 
-    # Attn
-    if block.use_pre_ln: # pre-LN Attn
-        x_1 = block.pre_ln_attn(x)
-    else:
-        x_1 = x
+    # Store Original Quantized Residual for Later
+    # Propagate only x_quantized_residual on-chip
+    x_quantized_residual_initial = x_quantized_residual
 
-    attn_out = block.attn(x_1, iter_num)
+    # On-Chip: Input Quantized Residual to Chip
 
+    # Attn Pre-LN
+    x_attn_in = x_quantized_residual
+    if block.use_pre_ln_attn:
+        x_attn_in = block.pre_ln_attn(x_attn_in)
+
+    # Attn Operation
+    attn_out = block.attn(x_attn_in, iter_num)
+
+    # Attn Peri-LN
+    if block.use_peri_ln_attn:
+        attn_out = block.peri_ln_attn(attn_out)
+
+    # Attn Output Scaling
     if block.attn_resid_scaler is not None:
         attn_out = block.attn_resid_scaler(attn_out)
 
-    x = attn_out + x
+    # Attn Skip Connection -- Note that we skip connect here to the quantized residual
+    x_quantized_residual = attn_out + x_quantized_residual
 
     if block.quantization_dict["quantize_asic_prenorm"]:
         num_bits = block.quantization_dict["quantize_asic_bits"]
         quant_method = block.quantization_dict["activations_quant_method"]
-        x = fake_quantize_act(block, "asic_mlp_prenorm", x, num_bits, quant_method, iter_num)
+        x_quantized_residual = fake_quantize_act(block, "asic_mlp_prenorm", x_quantized_residual, num_bits, quant_method, iter_num)
 
     # MLP
-    if block.use_pre_ln: # pre-LN MLP
-        x_2 = block.pre_ln_mlp(x)
-    else:
-        x_2 = x
+    x_mlp_in = x_quantized_residual
 
-    if block.use_peri_ln: # peri-LN MLP
-        mlp_out = block.out_ln_mlp(block.mlp(x_2, iter_num))
-    else:
-        mlp_out = block.mlp(x_2, iter_num)
+    # MLP Pre-LN
+    if block.use_pre_ln_mlp:
+        x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
+    # MLP Operation
+    mlp_out = block.mlp(x_mlp_in, iter_num)
+
+    # MLP Peri-LN
+    if block.use_peri_ln_mlp:
+        mlp_out = block.peri_ln_mlp(mlp_out)
+
+    # MLP Output Scaling
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
-    x = mlp_out + x
+    chip_output = mlp_out + x_quantized_residual
 
-    if block.use_post_ln: # post-LN MLP
+    # Off-Chip: Merge Quantized Residual With Full Precision Residual
+    # Note:
+    # chip_output = x_quantized_residual_initial + mlp_out + attn_out
+    # Therefore subtract initial before merging
+    x = (chip_output - x_quantized_residual_initial) + x
+
+    # Off-Chip: MLP Post-LN
+    if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
-
-    x = x_residual + x
 
     return x
 
@@ -141,7 +188,115 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 block_forward_variations = {
     "parallel_mlp": parallel_mlp_forward,
     "attn_then_mlp": attn_then_mlp_forward,
-    "edgellm_asic": edgellm_asic_forward
+    "edgellm_asic": edgellm_asic_forward,
+}
+
+
+# -----------------------
+# Normalization helpers
+# -----------------------
+
+def _resolve_unit_norm_flags(self, config) -> None:
+    """Populate per-unit norm flags from config with per-position defaults."""
+    NORM_POSITIONS = ("pre", "post", "peri")
+    BLOCK_UNITS    = ("attn", "mlp")
+
+    for unit in BLOCK_UNITS:
+        for pos in NORM_POSITIONS:
+            # granular setting and value (value may be None)
+            granular_key = f"use_{pos}_ln_{unit}"
+            granular_val = getattr(config, granular_key, None)
+
+            # general setting and value (always defined)
+            general_key  = f"use_{pos}_ln"
+            general_val  = getattr(config, general_key, False)
+
+            # Override general setting to granular setting, if a granular setting specified
+            setattr(self, granular_key, granular_val if (granular_val is not None) else general_val)
+
+
+def _setup_norms_parallel(self, config, norm_cls) -> None:
+    """Norm layout for the 'parallel_mlp' variation."""
+    # Pre-LN
+    if getattr(self, "use_pre_ln", False):
+        self.pre_ln = norm_cls(config)
+
+    # Peri-LN
+    if getattr(self, "use_peri_ln_attn", False):
+        self.peri_ln_attn = norm_cls(config)
+    if getattr(self, "use_peri_ln_mlp", False):
+        self.peri_ln_mlp = norm_cls(config)
+
+    # Post-LN
+    if getattr(self, "use_post_ln", False):
+        self.post_ln = norm_cls(config)
+
+def _setup_norms_sequential(self, config, norm_cls) -> None:
+    """Norm layout for the 'attn_then_mlp' variation."""
+
+    # Pre-Norm
+    if getattr(self, "use_pre_ln_attn", False):
+        self.pre_ln_attn = norm_cls(config)
+    if getattr(self, "use_pre_ln_mlp", False):
+        self.pre_ln_mlp = norm_cls(config)
+
+    # Peri-LN
+    if getattr(self, "use_peri_ln_attn", False):
+        self.peri_ln_attn = norm_cls(config)
+    if getattr(self, "use_peri_ln_mlp", False):
+        self.peri_ln_mlp = norm_cls(config)
+
+    # Post-LN
+    if getattr(self, "use_post_ln_attn", False):
+        self.post_ln_attn = norm_cls(config)
+    if getattr(self, "use_post_ln_mlp", False):
+        self.post_ln_mlp = norm_cls(config)
+
+
+normalization_setup_variations = {
+    "parallel_mlp": _setup_norms_parallel,
+    "attn_then_mlp": _setup_norms_sequential,
+    "edgellm_asic": _setup_norms_sequential,
+}
+
+
+# -----------------------
+# Residual scaler helpers
+# -----------------------
+
+def _setup_resid_scalers_parallel(self, config) -> None:
+    """Residual scalers for 'parallel_mlp' variation (per-branch)."""
+    self.attn_resid_scaler = None
+    self.mlp_resid_scaler  = None
+
+    if getattr(config, "use_attn_resid_scaling", False):
+        cls = learned_confidence_dictionary[config.attn_confidence_variant]
+        self.attn_resid_scaler = cls(config, prefix="attn")
+
+    if getattr(config, "use_mlp_resid_scaling", False):
+        cls = learned_confidence_dictionary[config.mlp_confidence_variant]
+        self.mlp_resid_scaler = cls(config, prefix="mlp")
+
+
+def _setup_resid_scalers_sequential(self, config) -> None:
+    """Residual scalers for 'attn_then_mlp' variation (per-branch)."""
+    # Kept identical to parallel; separated for future flexibility.
+    self.attn_resid_scaler = None
+    self.mlp_resid_scaler  = None
+
+    if getattr(config, "use_attn_resid_scaling", False):
+        cls = learned_confidence_dictionary[config.attn_confidence_variant]
+        self.attn_resid_scaler = cls(config, prefix="attn")
+
+    if getattr(config, "use_mlp_resid_scaling", False):
+        cls = learned_confidence_dictionary[config.mlp_confidence_variant]
+        self.mlp_resid_scaler = cls(config, prefix="mlp")
+
+
+resid_scaler_setup_variations = {
+    "parallel_mlp": _setup_resid_scalers_parallel,
+    "attn_then_mlp": _setup_resid_scalers_sequential,
+    "edgellm_asic": _setup_resid_scalers_sequential,
 }
 
 
@@ -151,60 +306,26 @@ class Block(nn.Module):
     def __init__(self, config, mlp=None, attn=None):
         super().__init__()
 
+        # Choose norm class for attention/MLP blocks
         norm_cls = norm_dictionary[config.norm_variant_attn]
 
-        # Pre-Norm
-        if config.use_pre_ln:
-            if config.use_parallel_mlp:
-                # parallel uses 1 less pre ln
-                self.pre_ln = norm_cls(config)
-            else:
-                self.pre_ln_attn = norm_cls(config)
-                self.pre_ln_mlp = norm_cls(config)
+        # Resolve per-unit norm flags from config (pre/post/peri × attn/mlp)
+        _resolve_unit_norm_flags(self, config)
 
-        # Post-Norm
-        if config.use_post_ln:
-            if config.use_parallel_mlp:
-                # parallel uses 1 less post ln
-                self.post_ln = norm_cls(config)
-            else:
-                self.post_ln_attn = norm_cls(config)
-                self.post_ln_mlp = norm_cls(config)
+        # Aggregate flags (if referenced elsewhere)
+        self.use_pre_ln  = getattr(config, "use_pre_ln",  False)
+        self.use_post_ln = getattr(config, "use_post_ln", False)
+        self.use_peri_ln = getattr(config, "use_peri_ln", False)
 
-        # Pero-LN
-        if config.use_peri_ln:
-            self.out_ln_attn = norm_cls(config)
-            self.out_ln_mlp = norm_cls(config)
-
-
-        self.use_pre_ln  = config.use_pre_ln
-        self.use_post_ln = config.use_post_ln
-        self.use_peri_ln = config.use_peri_ln
-
-        self.use_parallel_mlp = config.use_parallel_mlp
-        self.use_edgellm_asic = config.use_edgellm_asic
-
-        self.use_gradient_checkpointing = config.use_gradient_checkpointing
-
-        if config.use_attn_resid_scaling:
-            cls = learned_confidence_dictionary[config.attn_confidence_variant]
-            self.attn_resid_scaler = cls(config, prefix="attn")
-        else:
-            self.attn_resid_scaler = None
-        if config.use_mlp_resid_scaling:
-            cls = learned_confidence_dictionary[config.mlp_confidence_variant]
-            self.mlp_resid_scaler = cls(config, prefix="mlp")
-        else:
-            self.mlp_resid_scaler = None
+        # Forward variation choice
+        self.use_parallel_mlp = getattr(config, "use_parallel_mlp", False)
+        self.use_edgellm_asic = getattr(config, "use_edgellm_asic", False)
 
         if self.use_parallel_mlp:
             variant = "parallel_mlp"
         elif self.use_edgellm_asic:
             variant = "edgellm_asic"
-        else:
-            variant = "attn_then_mlp"
-
-        if self.use_edgellm_asic:
+            # Special Quantization Setup
             self.quantization_dict = {}
             self.quantization_dict["quantize_asic_prenorm"] = config.quantize_asic_prenorm
             self.quantization_dict["quantize_asic_bits"] = config.quantize_asic_bits
@@ -213,9 +334,19 @@ class Block(nn.Module):
             self.eval_interval = config.eval_interval
             self.start_quant_level = config.start_quant_level
             self.quant_scheduler = config.quant_scheduler
+        else:
+            variant = "attn_then_mlp"
 
+        # Set Block Forward Variant
         self.block_forward = block_forward_variations[variant]
 
+        ## Instantiate norms for Block Forward Variant
+        normalization_setup_variations[variant](self, config, norm_cls)
+
+        ## Instantiate (Optional) learned residual scalers for Block Forward Variant
+        resid_scaler_setup_variations[variant](self, config)
+
+        ## Instantiate Block Forward Variant Submodules
         if attn is None:
             self.attn = attention_dictionary[config.attention_variant](config)
         else:
@@ -225,6 +356,9 @@ class Block(nn.Module):
             self.mlp = get_mlp_instance(config)
         else:
             self.mlp = mlp
+
+        # Gradient checkpointing
+        self.use_gradient_checkpointing = getattr(config, "use_gradient_checkpointing", False)
 
     def forward(self, x: torch.Tensor, iter_num: int):
         if self.use_gradient_checkpointing and x.requires_grad:

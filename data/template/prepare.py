@@ -7,6 +7,7 @@ from tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
     CustomTokenizer,
+    ByteTokenizer,
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
@@ -26,7 +27,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "custom_char_byte_fallback", "json_byte_fallback"],
+                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback"],
                        default="tiktoken", help="Tokenization method")
 
     # SentencePiece arguments
@@ -90,6 +91,8 @@ def main():
         tokenizer = TiktokenTokenizer(args)
     elif args.method == "custom":
         tokenizer = CustomTokenizer(args)
+    elif args.method == "byte":
+        tokenizer = ByteTokenizer(args)
     elif args.method == "char":
         tokenizer = CharTokenizer(args, train_data, val_data)
     elif args.method == "custom_char_byte_fallback":
