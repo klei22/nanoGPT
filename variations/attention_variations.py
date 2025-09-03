@@ -108,9 +108,10 @@ class CausalSelfAttention(nn.Module):
         self.window_size = config.window_size
         print(f"sliding window size: {self.window_size}")
 
-        # qk_norm
+        # qk_norm and v_norm
         self.use_qk_norm = config.use_qk_norm
         self.use_qk_norm_scale = config.use_qk_norm_scale
+        self.use_v_norm = config.use_v_norm
 
         # Flash Lobo
         self.use_flash_lobo = config.use_flash_lobo
@@ -287,6 +288,9 @@ class CausalSelfAttention(nn.Module):
         if self.use_qk_norm:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
             k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+
+        if self.use_v_norm:
+            v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -660,6 +664,7 @@ class InfiniteHeadAttention(nn.Module):
         # QK Norm
         self.use_qk_norm        = config.use_qk_norm
         self.use_qk_norm_scale  = config.use_qk_norm_scale
+        self.use_v_norm         = config.use_v_norm
 
         # Flash Lobo
         self.use_flash_lobo          = config.use_flash_lobo
@@ -768,6 +773,9 @@ class InfiniteHeadAttention(nn.Module):
         if self.use_qk_norm:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
             k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+
+        if self.use_v_norm:
+            v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
 
         y = None
         att = None

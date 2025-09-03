@@ -167,6 +167,7 @@ class GPTConfig:
     # QK Norm Options
     use_qk_norm: bool = False
     use_qk_norm_scale: bool = False
+    use_v_norm: bool = False
 
     ## SSM - Attention Varient (same as Hymba)
     ssm_mamba_expand: int = 2
