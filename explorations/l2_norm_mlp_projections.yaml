@@ -1,4 +1,4 @@
-# l2_norm_mlp_projections.yaml
+# explorations/l2_norm_mlp_projections.yaml
 ---
 parameter_groups:
   - l2_norm_mlp_up: [false]

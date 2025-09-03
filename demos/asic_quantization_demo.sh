@@ -13,9 +13,10 @@ popd
 
 # Train a fully quantized asic model
 ## using a linear quantization scheduler, increasing to full quantization
-## after 45000 iterations
+## after 10000 iterations
 python3 train.py \
-    --use_edgellm_asic true \
+    --out_dir asic_quant \
+    --use_edgellm_asic \
     --max_iters 20000 \
     --full_quant_iteration 10000 \
     --dataset "$dataset" \
@@ -24,13 +25,13 @@ python3 train.py \
     --n_embd 512 \
     --block_size 256 \
     --batch_size 64 \
-    --bias false \
+    --no-bias \
     --dtype bfloat16 \
     --quantization_warmup_iters 0 \
-    --use_pre_ln true \
-    --quantize_attn_act true \
-    --quantize_mlp_act true \
-    --quantize_asic_prenorm true \
+    --use_pre_ln \
+    --quantize_attn_act \
+    --quantize_mlp_act \
+    --quantize_asic_prenorm \
     --linear_variant_attn quantized_linear \
     --linear_variant_mlp quantized_linear \
     --quantize_linear_method symmetric_quant \
@@ -43,11 +44,10 @@ python3 train.py \
     --learning_rate 0.75e-3 \
     --quant_scheduler linear \
     --max_sample_tokens 100 \
-    --sample_each_eval true
+    --sample_each_eval
 
 # Test the model's inference capabilities when holding the scales and zero points static
 python3 sample.py \
-    --out_dir quantization_"$dataset"/"$dataset" \
+    --out_dir asic_quant \
     --eval_only \
     --eval_dataset="$dataset" \
-    --static_eval_scales

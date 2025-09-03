@@ -48,8 +48,6 @@ from utils.model_stats import (
 
 from sample import (
     sample_with_existing_model,
-    custom_char_with_byte_fallback_encode as ccwb_encode,
-    custom_char_with_byte_fallback_decode as ccwb_decode,
     get_tokenizer_functions,
 )
 
@@ -425,20 +423,28 @@ class Trainer:
 
 
     def create_optimizer(self):
-        param_groups = [
-            {"params": self.model.parameters(), "lr": self.args.learning_rate}
-        ]
-
         optimizer_key = self.args.optimizer
 
-        # obtain builder, and ensure optimizer is in list
+        if optimizer_key == "muon":
+            named = list(self.model.named_parameters())
+            exclude = ("embed", "wte", "wpe", "lm_head")
+            hidden = [p for n, p in named if p.ndim >= 2 and all(e not in n for e in exclude)]
+            other = [p for n, p in named if not (p.ndim >= 2 and all(e not in n for e in exclude))]
+            param_groups = [
+                {"params": other, "use_muon": False},
+                {"params": hidden, "use_muon": True},
+            ]
+        else:
+            param_groups = [
+                {"params": self.model.parameters(), "lr": self.args.learning_rate}
+            ]
+
         try:
             optimizer_builder = optimizer_dictionary[optimizer_key]
         except KeyError:
             raise ValueError(f"Unknown optimizer '{optimizer_key}'. "
                              f"Available: {list(optimizer_dictionary)}")
 
-        # return torch.optim.Optimizer instance
         optimizer = optimizer_builder(param_groups, self.args)
 
         return optimizer
@@ -487,8 +493,9 @@ class Trainer:
                 else:
                     print("Using default character-level tokenizer")
 
-                if 'stoi' in meta and 'itos' in meta:
+                if 'stoi' in meta:
                     self.stoi = meta['stoi']
+                if 'itos' in meta:
                     self.itos = meta['itos']
             else:
                 sys.exit("Error: meta.pkl not found")
@@ -708,10 +715,10 @@ class Trainer:
 
         def get_transitioned_probs():
             initial_probs = np.array(self.args.dataset_sampling_probs)
-            if self.args.final_dataset_sampling_probs:
+            if self.args.dataset_sampling_probs_final:
                 step_ratio = self.iter_num / self.args.max_iters
                 final_probs = np.array(self.args.dataset_sampling_probs_final)
-                return interpolate_probs(initial_probs, final_probs, self.args.transition_method, step_ratio)
+                return interpolate_probs(initial_probs, final_probs, self.args.dataset_sampling_probs_transition_method, step_ratio)
             return initial_probs
 
         if self.args.training_mode == 'multicontext':
