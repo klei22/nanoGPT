@@ -1,6 +1,7 @@
 # sample.py
 import argparse
 import json
+import math
 import os
 import pickle
 import time
@@ -11,17 +12,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Union
 
+import io
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
 import tiktoken
-import io
-from rich import print
-from rich.text import Text
-from rich.console import Console
-from torch.nn import functional as F
 from collections import OrderedDict
+from rich import print
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+from torch.nn import functional as F
 
 from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
@@ -68,9 +70,13 @@ def parse_args():
 
 
     # Output Confidence
-    parser.add_argument('--colorize_mode', type=str, default='minmax', choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product',  'all'],
-                        help="Mode to colorize text: 'minmax' (default), 'softmax', or 'softmax_top_k' for softmax only over the top k vals. "
-                        "Requires --colorize_output (enabled by default).")
+    parser.add_argument('--colorize_mode', type=str, default='minmax',
+                        choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'all'],
+                        help="Mode to colorize text: 'minmax' (default), 'softmax', 'softmax_top_k' for softmax over top-k values,"
+                             " 'rank', 'dot_product', or 'topk' to display a prediction table. "
+                             "Requires --colorize_output (enabled by default).")
+    parser.add_argument('--colorize_topk', type=int, default=10,
+                        help="Number of top predictions to display when colorize_mode='topk'")
     parser.add_argument('--colorize_output', default=False, action=argparse.BooleanOptionalAction,
                     help="Colorize tokens based on their predicted probabilities. Default = True. "
                     "Disable with --no-colorize-output.")
@@ -131,21 +137,15 @@ def parse_args():
 
 
 
-def convert_rich_text_to_ansi(rich_text: Text) -> str:
-    # 1) Create an in-memory buffer
+def convert_rich_renderable_to_ansi(renderable) -> str:
+    """Convert any Rich renderable (Text, Table, etc.) into an ANSI string."""
     buffer = io.StringIO()
-
-    # 2) Create a Console that writes into the buffer, forcing ANSI output
     temp_console = Console(
         file=buffer,
-        force_terminal=True,        # force Rich to generate ANSI codes
-        color_system="truecolor"    # or "standard"/"256" if you prefer
+        force_terminal=True,
+        color_system="truecolor",
     )
-
-    # 3) Print Rich Text to the temp_console
-    temp_console.print(rich_text)
-
-    # 4) Extract the ANSI-encoded string
+    temp_console.print(renderable)
     return buffer.getvalue()
 
 def append_to_sample_file(sample_file, output_line, start_token, k_tag, iter_num=None, best_val_loss=None, run_name=None):
@@ -169,9 +169,9 @@ def append_to_sample_file(sample_file, output_line, start_token, k_tag, iter_num
 
         header += '---------------\n'
 
-        # If it's a Rich Text object, convert it to an ANSI string
-        if isinstance(output_line, Text):
-            output_line = convert_rich_text_to_ansi(output_line)
+        # If it's a Rich renderable, convert it to an ANSI string
+        if not isinstance(output_line, str):
+            output_line = convert_rich_renderable_to_ansi(output_line)
 
         file.write(header + output_line + '\n\n')
 
@@ -220,6 +220,74 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
         g = int(color_val * 255)
         text.append(token_str, style=f"bold #{r:02x}{g:02x}00")
     return text
+
+
+def _escape_ws(text: str) -> str:
+    return text.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
+def _topk_table(
+    token_ids: List[int],
+    rows: List[torch.Tensor],
+    decode: Callable[[Sequence[int]], str],
+    k: int,
+    max_token_chars: int = 20,
+    escape_ws: bool = True,
+) -> Table:
+    """Return a Rich table showing top-k predictions for each token."""
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column("target", no_wrap=True)
+    table.add_column("xent", justify="right", no_wrap=True)
+    table.add_column("rank", justify="right", no_wrap=True)
+    table.add_column("p_tgt", justify="right", no_wrap=True)
+    table.add_column("p_left", justify="right", no_wrap=True)
+    for _ in range(k):
+        table.add_column(justify="center", no_wrap=True)
+
+    for tid, row in zip(token_ids, rows):
+        probs = F.softmax(row, dim=-1)
+        tgt_prob = probs[tid].item()
+        rank = int((row > row[tid]).sum().item()) + 1
+        prob_left = probs[row > row[tid]].sum().item()
+        ce = -math.log(tgt_prob + 1e-12)
+
+        topv, topi = row.topk(k)
+        norm = (topv - topv.min()) / (topv.max() - topv.min() + 1e-6)
+        words: List[Text] = []
+        for idx, v in zip(topi.tolist(), norm.tolist()):
+            r = int((1 - v) * 255); g = int(v * 255)
+            style = f"#{r:02x}{g:02x}00"
+            token = decode([idx])
+            if max_token_chars >= 0:
+                token = token[:max_token_chars]
+            if escape_ws:
+                token = _escape_ws(token)
+            if idx == tid:
+                words.append(Text(token, style="bold cyan"))
+            else:
+                words.append(Text(token, style=style))
+
+        rank_norm = 1 - (min(rank, 100) - 1) / 99
+        r = int((1 - rank_norm) * 255); g = int(rank_norm * 255)
+        rank_text = Text(str(rank), style=f"bold #{r:02x}{g:02x}00")
+
+        v = tgt_prob
+        r = int((1 - v) * 255); g = int(v * 255)
+        p_tgt_text = Text(f"{tgt_prob:.4f}", style=f"bold #{r:02x}{g:02x}00")
+
+        v = 1 - prob_left
+        r = int((1 - v) * 255); g = int(v * 255)
+        p_left_text = Text(f"{prob_left:.4f}", style=f"bold #{r:02x}{g:02x}00")
+
+        target_word = decode([tid])
+        if max_token_chars >= 0:
+            target_word = target_word[:max_token_chars]
+        if escape_ws:
+            target_word = _escape_ws(target_word)
+
+        table.add_row(Text(target_word, style="bold cyan"), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text, *words)
+
+    return table
 
 def save_chart(probs, idx, decode, step, out_dir, last_k_tokens, chart_type, selected_token, top_k_value, args):
     """
@@ -404,7 +472,7 @@ def sample_with_existing_model(
     args=None,
     # ── visual / logging flags ────────────────────────────────────────────
     colorize_output: bool = False,
-    colorize_mode: str = "minmax",         # "rank" & "all" supported
+    colorize_mode: str = "minmax",         # "rank", "topk" & "all" supported
     token_boundary: Optional[str] = None,
     show_heatmaps: bool = False,
     chart_type: str = "heatmap",
@@ -428,7 +496,7 @@ def sample_with_existing_model(
         • None  – no truncation.
         • list  – run once per k in the list (duplicates filtered).
     colorize_mode :
-        "minmax" | "softmax" | "softmax_top_k" | "dot_product" | **"rank"** | "all"
+        "minmax" | "softmax" | "softmax_top_k" | "dot_product" | "rank" | "topk" | "all"
     writer : torch.utils.tensorboard.SummaryWriter | None
         When provided, dataset metrics for each top-k sample will be logged to TensorBoard.
     """
@@ -450,7 +518,7 @@ def sample_with_existing_model(
     console = Console()
     model.eval()
 
-    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank"]
+    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank", "topk"]
     modes_to_apply = valid_modes if colorize_mode == "all" else [colorize_mode]
 
 
@@ -663,18 +731,22 @@ def sample_with_existing_model(
                         data_for_color = dot_product_values
 
                     if data_for_color is not None:
-                         coloured = colorize_text(              # type: ignore
-                             tokens_for_color,
-                             data_for_color,
-                             decode,
-                             colorize_mode=cm,
-                         )
+                        coloured = colorize_text(              # type: ignore
+                            tokens_for_color,
+                            data_for_color,
+                            decode,
+                            colorize_mode=cm,
+                        )
                     elif cm == "rank":
-                         coloured = _colorize_rank(
-                             tokens_for_color, ranks_list, decode, current_k
-                         )
+                        coloured = _colorize_rank(
+                            tokens_for_color, ranks_list, decode, current_k
+                        )
+                    elif cm == "topk":
+                        coloured = _topk_table(
+                            tokens_for_color, full_rows, decode, args.colorize_topk
+                        )
                     else:
-                        continue # Should not happen if data_for_color is None
+                        continue  # Should not happen if data_for_color is None
 
 
                     fgcolor="bold light_slate_blue"

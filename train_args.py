@@ -418,7 +418,11 @@ def parse_args():
     training_group.add_argument('--interactive', default=False, action=argparse.BooleanOptionalAction, help="Enable interactive generation at the end of training (similar to sample.py --interactive).")
     training_group.add_argument('--stop_string', type=str, default='~W', help="String to stop generation and allow user input (used when --interactive).")
     training_group.add_argument('--colorize_output', default=True, action=argparse.BooleanOptionalAction, help="Colorize tokens based on predicted probabilities.")
-    training_group.add_argument('--colorize_mode', type=str, default='minmax', choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'all'], help="Colorization mode for tokens (see sample.py).")
+    training_group.add_argument('--colorize_mode', type=str, default='minmax',
+                                choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'all'],
+                                help="Colorization mode for tokens (see sample.py).")
+    training_group.add_argument('--colorize_topk', type=int, default=10,
+                                help="Number of top predictions to display when colorize_mode='topk'.")
     training_group.add_argument('--show_heatmaps', type=bool, default=False, action=argparse.BooleanOptionalAction, help="Show heatmaps (or bar charts) of top-k token probabilities.")
     training_group.add_argument('--show_minmax_chart', type=bool, default=False, action=argparse.BooleanOptionalAction, help="show timeseries of raw logit values")
     training_group.add_argument('--chart_type', type=str, default='heatmap', choices=['heatmap', 'barchart'], help="Type of chart to display if --show_heatmaps is set.")
