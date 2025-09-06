@@ -189,6 +189,10 @@ def main():
         table.add_column("rank", justify="right", no_wrap=True)
         table.add_column("p_tgt", justify="right", no_wrap=True)
         table.add_column("p_left", justify="right", no_wrap=True)
+        table.add_column("t0", justify="right", no_wrap=True)
+        for i in range(model.config.n_layer):
+            table.add_column(f"a{i+1}", justify="right", no_wrap=True)
+            table.add_column(f"m{i+1}", justify="right", no_wrap=True)
         for _ in range(args.topk):
             table.add_column(justify="center", no_wrap=True)
 
@@ -207,11 +211,64 @@ def main():
             break  # not enough tokens to predict next
 
         ctx_tok = torch.from_numpy(seq[:-1].astype(np.int64))[None].to(args.device)
+
+        activations = {"t0": None, "attn": [], "mlp": []}
+        handles = []
+        if args.display != "token":
+            def t0_hook(module, inp, out):
+                activations["t0"] = out[0, -1, :].detach()
+
+            handles.append(model.transformer.drop.register_forward_hook(t0_hook))
+
+            for blk in model.transformer.h:
+                def make_attn_hook(blk):
+                    def hook(module, inp, out):
+                        outp = out
+                        if getattr(blk, "use_peri_ln_attn", False):
+                            outp = blk.peri_ln_attn(outp)
+                        if getattr(blk, "attn_resid_scaler", None):
+                            outp = blk.attn_resid_scaler(outp)
+                        activations["attn"].append(outp[0, -1, :].detach())
+                    return hook
+
+                def make_mlp_hook(blk):
+                    def hook(module, inp, out):
+                        outp = out
+                        if getattr(blk, "use_peri_ln_mlp", False):
+                            outp = blk.peri_ln_mlp(outp)
+                        if getattr(blk, "mlp_resid_scaler", None):
+                            outp = blk.mlp_resid_scaler(outp)
+                        activations["mlp"].append(outp[0, -1, :].detach())
+                    return hook
+
+                handles.append(blk.attn.register_forward_hook(make_attn_hook(blk)))
+                handles.append(blk.mlp.register_forward_hook(make_mlp_hook(blk)))
+
         with autocast_ctx:
             logits, _ = model(ctx_tok)
+
+        for h in handles:
+            h.remove()
+
         logits = logits.squeeze(0)  # (ctx_len, vocab)
         ctx_len = logits.size(0)
         tgt_token = int(seq[-1])  # ground-truth next token
+
+        layer_vals: List[float] = []
+        if activations["t0"] is not None:
+            correct_vec = model.lm_head.weight[tgt_token].detach()
+            layer_vals.append(torch.dot(activations["t0"].float(), correct_vec.float()).item())
+            for a, m in zip(activations["attn"], activations["mlp"]):
+                layer_vals.append(torch.dot(a.float(), correct_vec.float()).item())
+                layer_vals.append(torch.dot(m.float(), correct_vec.float()).item())
+
+        layer_texts: List[Text] = []
+        if layer_vals:
+            lv = torch.tensor(layer_vals)
+            lv_norm = (lv - lv.min()) / (lv.max() - lv.min() + 1e-6)
+            for v, n in zip(lv.tolist(), lv_norm.tolist()):
+                r = int((1 - n) * 255); g = int(n * 255)
+                layer_texts.append(Text(f"{v:.2f}", style=f"bold #{r:02x}{g:02x}00"))
 
         probs = F.softmax(logits[-1], dim=-1)
         tgt_prob = probs[tgt_token].item()
@@ -281,7 +338,7 @@ def main():
             if args.bold_target:
                 target_style = f"bold {target_style}" if target_style else "bold"
 
-            row = [Text(target_word, style=target_style), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text] + words
+            row = [Text(target_word, style=target_style), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text] + layer_texts + words
             table.add_row(*row)
 
         # advance
