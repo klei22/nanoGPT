@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import argparse, io, pickle, math
 from pathlib import Path
-from typing import Callable, List, Sequence
+from typing import Callable, List, Sequence, Dict
 
 import numpy as np
 import torch, torch.nn.functional as F
@@ -158,6 +158,22 @@ def main():
     if args.block_size:
         model.update_block_size(args.block_size)
 
+    # --- activation hooks ----------------------------------------------------------
+    act_names = ["t0"]
+    for i in range(1, model.config.n_layer + 1):
+        act_names.extend([f"a{i}", f"m{i}"])
+    activations: Dict[str, torch.Tensor] = {}
+
+    def save_activation(name: str):
+        def hook(_module, _inp, out):
+            activations[name] = out.detach()
+        return hook
+
+    model.transformer.drop.register_forward_hook(save_activation("t0"))
+    for i, block in enumerate(model.transformer.h, 1):
+        block.attn.register_forward_hook(save_activation(f"a{i}"))
+        block.mlp.register_forward_hook(save_activation(f"m{i}"))
+
     # --- tokenizer ------------------------------------------------------------------
     encode, decode = load_tok(Path("data") / args.dataset / "meta.pkl")
 
@@ -189,6 +205,8 @@ def main():
         table.add_column("rank", justify="right", no_wrap=True)
         table.add_column("p_tgt", justify="right", no_wrap=True)
         table.add_column("p_left", justify="right", no_wrap=True)
+        for name in act_names:
+            table.add_column(name, justify="right", no_wrap=True)
         for _ in range(args.topk):
             table.add_column(justify="center", no_wrap=True)
 
@@ -206,6 +224,7 @@ def main():
         if len(seq) < 2:
             break  # not enough tokens to predict next
 
+        activations.clear()
         ctx_tok = torch.from_numpy(seq[:-1].astype(np.int64))[None].to(args.device)
         with autocast_ctx:
             logits, _ = model(ctx_tok)
@@ -281,7 +300,23 @@ def main():
             if args.bold_target:
                 target_style = f"bold {target_style}" if target_style else "bold"
 
-            row = [Text(target_word, style=target_style), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text] + words
+            target_emb = model.transformer.wte.weight[tgt_token].to(torch.float32)
+            dots: List[float] = []
+            for name in act_names:
+                vec = activations[name][0, -1].to(torch.float32)
+                dots.append(torch.dot(vec, target_emb).item())
+            vals = torch.tensor(dots)
+            norm_vals = (vals - vals.min()) / (vals.max() - vals.min() + 1e-6)
+            best_idx = int(vals.argmax().item())
+            act_texts: List[Text] = []
+            for i, (d, v) in enumerate(zip(dots, norm_vals.tolist())):
+                r = int((1 - v) * 255); g = int(v * 255)
+                style = f"#{r:02x}{g:02x}00"
+                if i == best_idx:
+                    style = f"bold {style}"
+                act_texts.append(Text(f"{d:.2f}", style=style))
+
+            row = [Text(target_word, style=target_style), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text] + act_texts + words
             table.add_row(*row)
 
         # advance
