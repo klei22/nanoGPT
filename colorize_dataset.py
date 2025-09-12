@@ -275,7 +275,7 @@ def main():
         for h in handles:
             h.remove()
 
-        if args.activation_view != "none" and "resid" in args.components and activations["t0"] is not None:
+        if args.activation_view != "none" and activations["t0"] is not None:
             resid = activations["t0"].float().clone()
             for a, m in zip(activations["attn"], activations["mlp"]):
                 resid = resid + a.float()
@@ -302,6 +302,24 @@ def main():
                     if "resid" in args.components:
                         yield activations["mr"][i]
 
+            def iter_vecs_with_prev():
+                if "wte" in args.components:
+                    prev = activations["t0"]
+                    yield activations["t0"], prev
+                for i in range(model.config.n_layer):
+                    if "attn" in args.components:
+                        prev = activations["mr"][i - 1] if i > 0 else activations["t0"]
+                        yield activations["attn"][i], prev
+                    if "resid" in args.components:
+                        prev = activations["mr"][i - 1] if i > 0 else activations["t0"]
+                        yield activations["ar"][i], prev
+                    if "mlp" in args.components:
+                        prev = activations["ar"][i]
+                        yield activations["mlp"][i], prev
+                    if "resid" in args.components:
+                        prev = activations["ar"][i]
+                        yield activations["mr"][i], prev
+
             if args.activation_view == "target":
                 correct_vec = model.lm_head.weight[tgt_token].detach()
                 layer_vals = [torch.dot(v.float(), correct_vec.float()).item() for v in iter_vecs()]
@@ -325,19 +343,28 @@ def main():
                 emb = model.lm_head.weight.detach()
                 toks: List[int] = []
                 ranks: List[int] = []
-                for vec in iter_vecs():
+                overlaps: List[float] = []
+                for vec, prev in iter_vecs_with_prev():
                     tok = torch.argmax(emb @ vec.float()).item()
                     toks.append(tok)
                     ranks.append(int((logits[-1] > logits[-1, tok]).sum().item()) + 1)
-                for tok_id, rnk in zip(toks, ranks):
+                    ov = torch.dot(prev.float(), emb[tok].float())
+                    ov = ov / (prev.norm().item() * emb[tok].norm().item() + 1e-6)
+                    overlaps.append(ov.item())
+                for tok_id, rnk, ov in zip(toks, ranks, overlaps):
                     token = decode([tok_id])
                     if args.max_token_chars >= 0:
                         token = token[: args.max_token_chars]
                     if args.escape_whitespace:
                         token = _escape_ws(token)
                     rank_norm = 1 - (min(rnk, args.rank_red) - 1) / max(args.rank_red - 1, 1)
-                    r = int((1 - rank_norm) * 255); g = int(rank_norm * 255)
-                    layer_texts.append(Text(f"{token}:{rnk}", style=f"bold #{r:02x}{g:02x}00"))
+                    rr = int((1 - rank_norm) * 255); gr = int(rank_norm * 255)
+                    ov_norm = (ov + 1) / 2
+                    rw = int((1 - ov_norm) * 255); gw = int(ov_norm * 255)
+                    txt = Text()
+                    txt.append(token, style=f"bold #{rw:02x}{gw:02x}00")
+                    txt.append(f":{rnk}", style=f"bold #{rr:02x}{gr:02x}00")
+                    layer_texts.append(txt)
 
         probs = F.softmax(logits[-1], dim=-1)
         tgt_prob = probs[tgt_token].item()
