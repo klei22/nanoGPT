@@ -543,11 +543,11 @@ def parse_args():
     model_group.add_argument('--shared_attn_seq', default=1, type=int, help="Sequence length for cyclic sharing of attention layers")
 
     ## Learned Confidence Residual Scaling
-    confidence_variants = ["zeros", "ones", "gaussian"]
+    confidence_variants = ["zeros", "ones", "gaussian", "matrix"]
 
     ### Attn scaling
     model_group.add_argument('--use_attn_resid_scaling', default=False, action=argparse.BooleanOptionalAction, help='Apply learned confidence scaling to attention outputs')
-    model_group.add_argument('--attn_confidence_variant', type=str, default='zeros', choices=confidence_variants, help='Initialization for attention residual scaling vector')
+    model_group.add_argument('--attn_confidence_variant', type=str, default='zeros', choices=confidence_variants, help='Variant for attention residual scaling parameter')
 
     model_group.add_argument('--use_attn_resid_const', default=False, action=argparse.BooleanOptionalAction, help='Add constant term to attention residual scaling dot product')
     model_group.add_argument('--attn_resid_const', type=float, default=0.0, help='Constant added to attention residual scaling dot product')
@@ -555,7 +555,7 @@ def parse_args():
 
     ### MLP scaling
     model_group.add_argument('--use_mlp_resid_scaling', default=False, action=argparse.BooleanOptionalAction, help='Apply learned confidence scaling to MLP outputs')
-    model_group.add_argument('--mlp_confidence_variant', type=str, default='zeros', choices=confidence_variants, help='Initialization for MLP residual scaling vector')
+    model_group.add_argument('--mlp_confidence_variant', type=str, default='zeros', choices=confidence_variants, help='Variant for MLP residual scaling parameter')
 
     model_group.add_argument('--use_mlp_resid_const', default=False, action=argparse.BooleanOptionalAction, help='Add constant term to MLP residual scaling dot product')
     model_group.add_argument('--mlp_resid_const', type=float, default=0.0, help='Constant added to MLP residual scaling dot product')

@@ -32,6 +32,31 @@ class BaseLearnedConfidence(nn.Module):
         return x * scale
 
 
+class BaseMatrixLearnedConfidence(nn.Module):
+    """Applies a learned matrix product followed by a sum to scale inputs."""
+
+    def __init__(self, config, prefix: str, init_fn):
+        super().__init__()
+        self.matrix = nn.Parameter(init_fn(config.n_embd, config.n_embd))
+        use_const = getattr(config, f"use_{prefix}_resid_const", False)
+        const_val = getattr(config, f"{prefix}_resid_const", 0.0)
+        learn_const = getattr(config, f"learn_{prefix}_resid_const", False)
+        if use_const:
+            const_tensor = torch.tensor(const_val)
+            if learn_const:
+                self.const = nn.Parameter(const_tensor)
+            else:
+                self.register_buffer("const", const_tensor)
+        else:
+            self.const = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        scale = (x @ self.matrix).sum(dim=-1, keepdim=True)
+        if self.const is not None:
+            scale = scale + self.const
+        return x * scale
+
+
 class ZerosLearnedConfidence(BaseLearnedConfidence):
     def __init__(self, config, prefix: str):
         super().__init__(config, prefix, lambda dim: torch.zeros(dim))
@@ -57,8 +82,14 @@ class GaussianLearnedConfidence(BaseLearnedConfidence):
         )
 
 
+class MatrixLearnedConfidence(BaseMatrixLearnedConfidence):
+    def __init__(self, config, prefix: str):
+        super().__init__(config, prefix, lambda d1, d2: torch.zeros(d1, d2))
+
+
 learned_confidence_dictionary = {
     "zeros": ZerosLearnedConfidence,
     "ones": OnesLearnedConfidence,
     "gaussian": GaussianLearnedConfidence,
+    "matrix": MatrixLearnedConfidence,
 }
