@@ -277,6 +277,34 @@ class ByteTokenizer(Tokenizer):
         return bytes(ids).decode('utf-8', errors='replace')
 
 
+class FileByteTokenizer(Tokenizer):
+    """Tokenizer for raw binary files."""
+
+    def __init__(self, args):
+        super().__init__(args)
+
+    def tokenize(self, data):
+        if not isinstance(data, (bytes, bytearray)):
+            raise TypeError("FileByteTokenizer expects bytes input")
+        ids = list(data)
+        for token_id in ids:
+            self.record_token(token_id)
+        meta = {
+            "vocab_size": 256,
+            "tokenizer": "file_byte",
+            "itos": {i: bytes([i]) for i in range(256)},
+        }
+        self.finalize_meta(meta)
+        return ids
+
+    def detokenize(self, ids):
+        return bytes(ids)
+
+    def detokenize_to_file(self, ids, output_file):
+        with open(output_file, "wb") as f:
+            f.write(self.detokenize(ids))
+
+
 class CharTokenizer(Tokenizer):
     def __init__(self, args, train_data, val_data):
         super().__init__(args)

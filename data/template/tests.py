@@ -11,6 +11,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     ByteTokenizer,
+    FileByteTokenizer,
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
@@ -162,6 +163,24 @@ class TestTokenizers(unittest.TestCase):
         console.print(detokenized, style="output")
 
         self.assertEqual(self.sample_text, detokenized)
+
+    def test_file_byte_tokenizer(self):
+        args = Namespace()
+        tokenizer = FileByteTokenizer(args)
+        data = bytes([0, 1, 2, 3, 255])
+        ids = tokenizer.tokenize(data)
+        detok = tokenizer.detokenize(ids)
+
+        self.assertEqual(detok, data)
+
+        trimmed_ids = ids[:3]
+        out_file = "trimmed.bin"
+        tokenizer.detokenize_to_file(trimmed_ids, out_file)
+        with open(out_file, "rb") as f:
+            trimmed_bytes = f.read()
+        self.assertEqual(trimmed_bytes, data[:3])
+        if os.path.exists(out_file):
+            os.remove(out_file)
 
     def test_tiktoken_tokenizer(self):
         args = Namespace(tiktoken_encoding='gpt2')
@@ -383,6 +402,18 @@ class TestTokenizers(unittest.TestCase):
             len(ids),
             "Total token counts should match for ByteTokenizer.",
         )
+        for token_id in ids:
+            self.assertIn(token_id, token_counts)
+
+    def test_file_byte_tokenizer_counts(self):
+        args = Namespace(track_token_counts=True)
+        tokenizer = FileByteTokenizer(args)
+        data = bytes([0, 1, 2, 3, 255])
+        ids = tokenizer.tokenize(data)
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+        self.assertEqual(sum(token_counts.values()), len(ids))
         for token_id in ids:
             self.assertIn(token_id, token_counts)
 

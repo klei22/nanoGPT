@@ -925,6 +925,13 @@ def get_tokenizer_functions(meta):
     if meta['tokenizer'] == 'byte':
         return byte_encode, byte_decode
 
+    if meta['tokenizer'] == 'file_byte':
+        def encode(text: str) -> list[int]:
+            return list(text.encode('utf-8'))
+        def decode(ids: list[int]) -> str:
+            return ''.join(f'{b:02x}' for b in ids)
+        return encode, decode
+
     if meta['tokenizer'] == 'custom_char_with_byte_fallback':
         stoi, itos = meta['stoi'], meta['itos']
         encode = lambda s: custom_char_with_byte_fallback_encode(s, stoi)

@@ -8,6 +8,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     ByteTokenizer,
+    FileByteTokenizer,
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
@@ -27,7 +28,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback"],
+                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "file_byte", "custom_char_byte_fallback", "json_byte_fallback"],
                        default="tiktoken", help="Tokenization method")
 
     # SentencePiece arguments
@@ -68,21 +69,33 @@ def save_tokens(ids, output_file, dtype):
 def main():
     args = parse_arguments()
 
-    # Load training data
-    with open(args.train_input, 'r') as f:
-        train_data = f.read()
-
-    # Handle validation data based on mode
-    if args.val_input:
-        # Direct train/val files mode
-        with open(args.val_input, 'r') as f:
-            val_data = f.read()
+    if args.method == "file_byte":
+        with open(args.train_input, 'rb') as f:
+            train_data = f.read()
+        if args.val_input:
+            with open(args.val_input, 'rb') as f:
+                val_data = f.read()
+        else:
+            n = len(train_data)
+            train_data, val_data = train_data[:int(n * args.percentage_train)], train_data[int(n * args.percentage_train):]
+            if args.percentage_train == 1.0:
+                val_data = None
     else:
-        # Automatic splitting mode
-        n = len(train_data)
-        train_data, val_data = train_data[:int(n * args.percentage_train)], train_data[int(n * args.percentage_train):]
-        if args.percentage_train == 1.0:
-            val_data = None
+        # Load training data as text
+        with open(args.train_input, 'r') as f:
+            train_data = f.read()
+
+        # Handle validation data based on mode
+        if args.val_input:
+            # Direct train/val files mode
+            with open(args.val_input, 'r') as f:
+                val_data = f.read()
+        else:
+            # Automatic splitting mode
+            n = len(train_data)
+            train_data, val_data = train_data[:int(n * args.percentage_train)], train_data[int(n * args.percentage_train):]
+            if args.percentage_train == 1.0:
+                val_data = None
 
     # Initialize tokenizer based on method
     if args.method == "sentencepiece":
@@ -93,6 +106,8 @@ def main():
         tokenizer = CustomTokenizer(args)
     elif args.method == "byte":
         tokenizer = ByteTokenizer(args)
+    elif args.method == "file_byte":
+        tokenizer = FileByteTokenizer(args)
     elif args.method == "char":
         tokenizer = CharTokenizer(args, train_data, val_data)
     elif args.method == "custom_char_byte_fallback":
