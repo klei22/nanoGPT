@@ -45,14 +45,16 @@ use_pre_ln: [true]
 use_peri_ln: [true]
 use_post_ln: [false]
 
-# base hyperparameters
-max_iters: [10000]
+# Base hyperparameters
 n_layer: [6]
 n_head: [6]
 n_embd: [384]
 block_size: [256]
-device: ["cuda"]
+
+# Training Settings
+max_iters: [10000]
 dtype: ["float16"]
+device: ["cuda"]
 dataset: ["minipile"]
 
 # Optimizer
@@ -60,6 +62,13 @@ optimizer: ["adamw", "muon"]
 
 # Loss
 loss_fn: ["cross_entropy"]
+
+# Random Seed Range
+seed:
+  range:
+    start: 1
+    end: 3
+    step: 1
 
 # VRAM and Memory Saving
 compile: [true]
