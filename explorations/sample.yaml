@@ -1,44 +1,68 @@
 # sample.yaml
 ---
+
 # parameter_groups: define sets of overrides to apply on top of base params
 parameter_groups:
-  - use_rotary_embeddings: [true]
-    use_abs_pos_embeddings: [true]
-  - use_rotary_embeddings: [false]
-    use_abs_pos_embeddings: [true]
+  # No Flash Lobo
+  - use_flash_lobo: [false]
+  # Flash Lobo
+  - use_flash_lobo: [true]
+    use_flash_lobo_per_head: [true]
+    flash_lobo_log_const: [0.0, 1.0]
+
+# Position Encoding
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# MLP
+activation_variant: ["gelu", "squared_relu"]
+
+# Activation Norms
+norm_variant_attn: ["rmsnorm"]
+norm_variant_output: ["rmsnorm"]
+
+## Attn Activation Norms
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+
+## Attn Weight Norms
+### TODO
+
+## MLP Activation Norms
+mlp_post_act_l2_norm: [true]
+mlp_cproj_scale: [50.0]
+
+
+## MLP Weight Norms
+l2_norm_mlp_up: [true]
+l2_norm_mlp_down: [true]
+l2_norm_mlp_up_dim: ["embed"]
+l2_norm_mlp_down_dim: ["embed"]
+
+
+# Architecture
+use_pre_ln: [true]
+use_peri_ln: [true]
+use_post_ln: [false]
 
 # base hyperparameters
-max_iters: [250]
+max_iters: [10000]
 n_layer: [6]
 n_head: [6]
 n_embd: [384]
 block_size: [256]
 device: ["cuda"]
-dtype: ["bfloat16"]
-dataset: ["shakespeare_char"]
+dtype: ["float16"]
+dataset: ["minipile"]
 
-# ranged sweep
-seed:
-  range:
-    start: 100
-    end: 102
-    step: 1
+# Optimizer
+optimizer: ["adamw", "muon"]
 
-# conditional options
-consmax_initial_beta:
-  conditions:
-    - ["softmax_variant_attn", "consmax"]
-  options: ["2.5", "5.0", "10.0"]
+# Loss
+loss_fn: ["cross_entropy"]
 
-softmax_variant_attn:
-  - softmax
-  - polymax
-  - consmax
-
-# boolean flags
+# VRAM and Memory Saving
 compile: [true]
-use_post_ln: [true, false]
-
-# tensorboard run name
-tensorboard_run_name: ["full_feature_demo"]
+use_gradient_checkpointing: [false]
+never_save_checkpoint: [true]
 
