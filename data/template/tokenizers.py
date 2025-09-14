@@ -256,6 +256,36 @@ class CustomTokenizer(Tokenizer):
     def detokenize(self, ids):
         return ''.join([self.itos[id] for id in ids])
 
+class FileByteTokenizer(Tokenizer):
+    """Tokenizer for binary files that operates directly on bytes."""
+
+    def __init__(self, args):
+        super().__init__(args)
+
+    def tokenize(self, data):
+        if isinstance(data, str):
+            raise TypeError("FileByteTokenizer expects bytes, not str")
+        ids = list(data)
+        for token_id in ids:
+            self.record_token(token_id)
+        meta = {
+            "vocab_size": 256,
+            "tokenizer": "file_byte",
+            "itos": {i: bytes([i]) for i in range(256)},
+        }
+        self.finalize_meta(meta)
+        return ids
+
+    def detokenize(self, ids):
+        # Use latin-1 for a direct byte-to-unicode mapping
+        return bytes(ids).decode('latin-1')
+
+    @staticmethod
+    def save_to_file(ids, path):
+        """Write token IDs back to a binary file."""
+        with open(path, 'wb') as f:
+            f.write(bytes(ids))
+
 class ByteTokenizer(Tokenizer):
     def __init__(self, args):
         super().__init__(args)

@@ -11,6 +11,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     ByteTokenizer,
+    FileByteTokenizer,
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
@@ -162,6 +163,25 @@ class TestTokenizers(unittest.TestCase):
         console.print(detokenized, style="output")
 
         self.assertEqual(self.sample_text, detokenized)
+
+    def test_file_byte_tokenizer_and_file_output(self):
+        sample_bytes = b"\x00\x01\x02hello\xff"
+        args = Namespace()
+        tokenizer = FileByteTokenizer(args)
+        ids = tokenizer.tokenize(sample_bytes)
+        self.assertEqual(ids, list(sample_bytes))
+
+        # Trim and save to file
+        trimmed = ids[:4]
+        out_file = "trimmed.bin"
+        FileByteTokenizer.save_to_file(trimmed, out_file)
+        with open(out_file, 'rb') as f:
+            content = f.read()
+        self.assertEqual(content, sample_bytes[:4])
+        detok = tokenizer.detokenize(trimmed)
+        self.assertEqual(detok.encode('latin-1'), content)
+        if os.path.exists(out_file):
+            os.remove(out_file)
 
     def test_tiktoken_tokenizer(self):
         args = Namespace(tiktoken_encoding='gpt2')
