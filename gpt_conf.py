@@ -101,6 +101,8 @@ class GPTConfig:
     use_flash_lobo_per_head: bool = False
     use_flash_obo_const: bool = False
     flash_lobo_log_const: float = 0.0
+    use_flash_lobo_q_matrix: bool = False
+    flash_lobo_q_activation: str = "identity"
 
     # Steering Vectors
     ## Where to intercept
