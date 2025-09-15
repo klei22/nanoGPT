@@ -23,5 +23,6 @@ python train.py --device=cpu --out_dir $OUT_DIR --dataset file_byte_demo --batch
 # Sample from the model and recover generated files
 python sample.py --out_dir $OUT_DIR --num_samples 1 --max_new_tokens 100 --start "" --file_output_dir $DATA_DIR/generated
 
-echo "Generated files:" 
+echo "Generated files:"
 ls $DATA_DIR/generated
+

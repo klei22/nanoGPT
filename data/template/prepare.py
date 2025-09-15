@@ -69,6 +69,11 @@ def save_tokens(ids, output_file, dtype):
 def main():
     args = parse_arguments()
 
+    # directory where meta.pkl and other dataset artifacts will be stored
+    meta_dir = os.path.dirname(args.train_output) or "."
+    os.makedirs(meta_dir, exist_ok=True)
+    args.meta_output_dir = meta_dir
+
     # Load training data (binary mode for file_byte tokenizer)
     read_mode = 'rb' if args.method == 'file_byte' else 'r'
 
@@ -136,7 +141,8 @@ def main():
         val_ids = tokenizer.tokenize(val_data) if val_data is not None else None
 
     # Determine dtype based on vocabulary size from meta.pkl
-    with open("meta.pkl", "rb") as f:
+    meta_path = os.path.join(meta_dir, "meta.pkl")
+    with open(meta_path, "rb") as f:
         meta = pickle.load(f)
     vocab_size = meta["vocab_size"]
     dtype = np.uint32 if vocab_size > 65535 else np.uint16
@@ -150,7 +156,7 @@ def main():
     if args.method == "tiktoken" and args.additional_tokens_file:
         with open(args.additional_tokens_file, 'r') as f:
             additional_tokens = json.load(f)
-        with open("meta.pkl", "rb") as f:
+        with open(meta_path, "rb") as f:
             meta = pickle.load(f)
         meta.update({
             "has_additional_tokens": True,
@@ -158,7 +164,7 @@ def main():
             "tokenizer": "tiktoken",
             "tiktoken_encoding": args.tiktoken_encoding
         })
-        with open("meta.pkl", "wb") as f:
+        with open(meta_path, "wb") as f:
             pickle.dump(meta, f)
 
 if __name__ == "__main__":
