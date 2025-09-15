@@ -1,55 +1,82 @@
-# residual_combination_sweep.yaml
+# explorations/residual_combination_sweep.yaml
 ---
 parameter_groups:
-  - attn_residual_combination: ["add"]
-    mlp_residual_combination: ["add"]
-    tensorboard_run_name: ["attn_add_mlp_add"]
-    print_model_stats_table: ["attn_add_mlp_add.csv"]
-  - attn_residual_combination: ["add"]
-    mlp_residual_combination: ["lerp"]
-    tensorboard_run_name: ["attn_add_mlp_lerp"]
-    print_model_stats_table: ["attn_add_mlp_lerp.csv"]
-  - attn_residual_combination: ["add"]
-    mlp_residual_combination: ["slerp"]
-    tensorboard_run_name: ["attn_add_mlp_slerp"]
-    print_model_stats_table: ["attn_add_mlp_slerp.csv"]
-  - attn_residual_combination: ["lerp"]
-    mlp_residual_combination: ["add"]
-    tensorboard_run_name: ["attn_lerp_mlp_add"]
-    print_model_stats_table: ["attn_lerp_mlp_add.csv"]
-  - attn_residual_combination: ["lerp"]
-    mlp_residual_combination: ["lerp"]
-    tensorboard_run_name: ["attn_lerp_mlp_lerp"]
-    print_model_stats_table: ["attn_lerp_mlp_lerp.csv"]
-  - attn_residual_combination: ["lerp"]
-    mlp_residual_combination: ["slerp"]
-    tensorboard_run_name: ["attn_lerp_mlp_slerp"]
-    print_model_stats_table: ["attn_lerp_mlp_slerp.csv"]
-  - attn_residual_combination: ["slerp"]
-    mlp_residual_combination: ["add"]
-    tensorboard_run_name: ["attn_slerp_mlp_add"]
-    print_model_stats_table: ["attn_slerp_mlp_add.csv"]
-  - attn_residual_combination: ["slerp"]
-    mlp_residual_combination: ["lerp"]
-    tensorboard_run_name: ["attn_slerp_mlp_lerp"]
-    print_model_stats_table: ["attn_slerp_mlp_lerp.csv"]
-  - attn_residual_combination: ["slerp"]
-    mlp_residual_combination: ["slerp"]
-    tensorboard_run_name: ["attn_slerp_mlp_slerp"]
-    print_model_stats_table: ["attn_slerp_mlp_slerp.csv"]
+  # Add
+  - mlp_residual_combination: ["add"]
+    attn_residual_combination: ["add"]
+    mlp_residual_alpha_type: ["fixed"]
+    attn_residual_alpha_type: ["fixed"]
 
-max_iters: [250]
+  - mlp_residual_combination: ["add"]
+    attn_residual_combination: ["add"]
+    mlp_residual_alpha_type: ["learned"]
+    attn_residual_alpha_type: ["learned"]
+
+  - mlp_residual_combination: ["add"]
+    attn_residual_combination: ["add"]
+    mlp_residual_alpha_type: ["dot"]
+    attn_residual_alpha_type: ["dot"]
+
+  # Slerp
+  - mlp_residual_combination: ["slerp"]
+    attn_residual_combination: ["slerp"]
+    mlp_residual_alpha_type: ["fixed"]
+    attn_residual_alpha_type: ["fixed"]
+
+  - mlp_residual_combination: ["slerp"]
+    attn_residual_combination: ["slerp"]
+    mlp_residual_alpha_type: ["learned"]
+    attn_residual_alpha_type: ["learned"]
+
+  - mlp_residual_combination: ["slerp"]
+    attn_residual_combination: ["slerp"]
+    mlp_residual_alpha_type: ["dot"]
+    attn_residual_alpha_type: ["dot"]
+
+  # Lerp
+  - mlp_residual_combination: ["lerp"]
+    attn_residual_combination: ["lerp"]
+    mlp_residual_alpha_type: ["fixed"]
+    attn_residual_alpha_type: ["fixed"]
+
+  - mlp_residual_combination: ["lerp"]
+    attn_residual_combination: ["lerp"]
+    mlp_residual_alpha_type: ["learned"]
+    attn_residual_alpha_type: ["learned"]
+
+  - mlp_residual_combination: ["lerp"]
+    attn_residual_combination: ["lerp"]
+    mlp_residual_alpha_type: ["dot"]
+    attn_residual_alpha_type: ["dot"]
+
+attn_residual_alpha: [0.05]
+mlp_residual_alpha: [0.05]
+
+# QK Norm
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+
+# Peri Norm
+use_peri_ln: [true, false]
+
+# Embeddings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# Attn Variations
+softmax_variant_attn: ["softmax", "relu2max"]
+
+max_iters: [5000]
+eval_interval: [5000]
+eta_variant: ["iteration"]
 n_layer: [6]
 n_head: [6]
 n_embd: [384]
 block_size: [256]
 device: ["cuda"]
 dtype: ["bfloat16"]
-dataset: ["shakespeare_char"]
+dataset: ["minipile"]
 
-# residual alpha strategies
-attn_residual_alpha_type: ["fixed", "learned", "dot"]
-mlp_residual_alpha_type: ["fixed", "learned", "dot"]
-
-compute_model_stats: [true]
+# Memory
+compute_model_stats: [false]
 compile: [true]
