@@ -1091,6 +1091,14 @@ def parse_args():
     model_group.add_argument("--lpe_mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
     # Optimizer args
     training_group.add_argument('--max_iters', default=3500, type=int)
+    training_group.add_argument('--tokens_limit', default=None, type=int,
+                                help='If set, stop training after this many tokens have been processed')
+    training_group.add_argument(
+        '--epochs_limit',
+        default=None,
+        type=float,
+        help='If set, stop training after this many epochs (unsupported with multidataset training)',
+    )
     training_group.add_argument('--weight_decay', default=1e-1, type=float)
     training_group.add_argument('--beta1', default=0.9, type=float)
     training_group.add_argument('--beta2', default=0.99, type=float)
