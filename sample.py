@@ -770,6 +770,15 @@ def sample_with_existing_model(
                 console.print(f"[bold cyan]--- {k_tag} ---[/bold cyan]")
                 console.print("[bold green]" + plain_text + "[/bold green]")
 
+            if load_meta and meta.get('tokenizer') == 'file_byte' and args.file_output_dir:
+                tokens_full = x[0].tolist()
+                FileByteTokenizer.tokens_to_files(
+                    tokens_full,
+                    args.file_output_dir,
+                    meta['start_file_token'],
+                    meta['end_file_token'],
+                )
+
             # ---------- always store plain text once ------------------------
             if sample_file:
                 append_to_sample_file(                         # type: ignore
