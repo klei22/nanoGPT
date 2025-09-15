@@ -562,9 +562,9 @@ def parse_args():
                              help='Residual combination method for MLP block')
     model_group.add_argument('--residual_slerp_eps', type=float, default=0.0,
                              help='Threshold below which LERP is used instead of SLERP (0 disables)')
-    model_group.add_argument('--attn_residual_alpha', type=float, default=1.0,
+    model_group.add_argument('--attn_residual_alpha', type=float, default=0.05,
                              help='Initial alpha for attention residual combination')
-    model_group.add_argument('--mlp_residual_alpha', type=float, default=1.0,
+    model_group.add_argument('--mlp_residual_alpha', type=float, default=0.05,
                              help='Initial alpha for MLP residual combination')
     model_group.add_argument('--attn_residual_alpha_type', type=str, default='fixed',
                              choices=['fixed', 'learned', 'dot'],
