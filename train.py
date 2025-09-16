@@ -393,6 +393,9 @@ class Trainer:
 
         self.raw_model = self.model.module if self.ddp else self.model
 
+        if hasattr(self.loss_fn, "set_model"):
+            self.loss_fn.set_model(self.raw_model)
+
         timestamp_prefix = time.strftime("%Y%m%d-%H%M%S")
         if self.args.timestamp:
             timestamp_prefix = self.args.timestamp

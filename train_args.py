@@ -133,6 +133,18 @@ def parse_args():
         default=1.0,
         help='Scaling for flatness_boost loss when predictions are flat.',
     )
+    training_group.add_argument(
+        '--bit_loss_weight',
+        type=float,
+        default=1e-6,
+        help='Weight of the bit-usage penalty in bit_balanced_cross_entropy.',
+    )
+    training_group.add_argument(
+        '--bit_loss_normalize',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Normalize the bit penalty by parameter count in bit_balanced_cross_entropy.',
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
@@ -749,7 +761,15 @@ def parse_args():
     model_group.add_argument("--ssm_io_bias",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="adds biases for nn.linear() of both in_proj and out_proj")
 
     # LINEAR VARIATIONS
-    linear_variants = ["linear", "bitlinear", "bitlinear_1p58", "bitlinear_optimized", "kan","quantized_linear"]
+    linear_variants = [
+        "linear",
+        "bitlinear",
+        "bitlinear_1p58",
+        "bitlinear_optimized",
+        "kan",
+        "quantized_linear",
+        "adaptive_bit_linear",
+    ]
     model_group.add_argument("--linear_variant_attn", type=str, default="linear", choices=linear_variants)
     model_group.add_argument("--linear_variant_q", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_q in attention (takes precedence over linear_variant_attn)")
     model_group.add_argument("--linear_variant_k", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_k in attention (takes precedence over linear_variant_attn)")
@@ -761,6 +781,37 @@ def parse_args():
     ## Linear Weight Initialization Options
     model_group.add_argument( "--linear_mean_init", type=float, default=0.0)
     model_group.add_argument( "--linear_std_init", type=float, default=0.02)
+
+    model_group.add_argument(
+        "--adaptive_linear_init_bits",
+        type=float,
+        default=8.0,
+        help="Initial bit-width for adaptive_bit_linear projections.",
+    )
+    model_group.add_argument(
+        "--adaptive_linear_min_bits",
+        type=float,
+        default=1.0,
+        help="Minimum bit-width permitted in adaptive_bit_linear layers.",
+    )
+    model_group.add_argument(
+        "--adaptive_linear_max_bits",
+        type=float,
+        default=8.0,
+        help="Maximum bit-width permitted in adaptive_bit_linear layers.",
+    )
+    model_group.add_argument(
+        "--adaptive_linear_activation_bits",
+        type=float,
+        default=8.0,
+        help="Activation bit-width used when quantizing inputs in adaptive_bit_linear layers.",
+    )
+    model_group.add_argument(
+        "--adaptive_linear_quantize_input",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Whether adaptive_bit_linear layers fake-quantize their activations.",
+    )
 
     ## Embedding Weight Initialization Options
     embedding_init_variations = [

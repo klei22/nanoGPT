@@ -19,6 +19,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from utils.bit_usage import compute_total_bit_usage
+
 
 # ---------------------------------------------------------------------------
 # Individual loss implementations
@@ -27,6 +29,34 @@ import torch.nn.functional as F
 def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
     """Standard cross-entropy loss used by the original codebase."""
     return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+
+
+class BitBalancedCrossEntropy:
+    """Cross entropy augmented with a bit-usage penalty."""
+
+    def __init__(self, bit_penalty: float = 0.0, normalize_by_params: bool = False) -> None:
+        self.bit_penalty = bit_penalty
+        self.normalize_by_params = normalize_by_params
+        self.model: torch.nn.Module | None = None
+
+    def set_model(self, model: torch.nn.Module) -> None:
+        self.model = model
+
+    def _bit_term(self) -> torch.Tensor:
+        assert self.model is not None, "Model reference must be set before computing bit penalty."
+        total_bits = compute_total_bit_usage(self.model)
+        if self.normalize_by_params:
+            param_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            if param_count > 0:
+                total_bits = total_bits / param_count
+        return total_bits
+
+    def __call__(self, logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
+        base = cross_entropy_loss(logits, targets, iter_num=iter_num)
+        if self.model is None or self.bit_penalty == 0.0:
+            return base
+        penalty = self._bit_term()
+        return base + self.bit_penalty * penalty
 
 
 def label_smoothing_loss(
@@ -325,6 +355,7 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "entropy_focal": entropy_focal_loss,
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
+    "bit_balanced_cross_entropy": BitBalancedCrossEntropy(),
 }
 
 
@@ -371,6 +402,11 @@ class ScheduledLoss:
                 else:
                     break
         return self.loss_dict[name](logits, targets, iter_num=iter_num)
+
+    def set_model(self, model: torch.nn.Module) -> None:
+        for loss in self.loss_dict.values():
+            if hasattr(loss, "set_model"):
+                loss.set_model(model)
 
 
 def parse_loss_schedule(schedule_str: str) -> List[Tuple[int, str]]:
@@ -456,6 +492,10 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             gamma=rank_gamma(iter_num),
             focal_gamma=getattr(args, "focal_gamma", 2.0),
             beta=getattr(args, "entropy_beta", 0.01),
+        ),
+        "bit_balanced_cross_entropy": BitBalancedCrossEntropy(
+            bit_penalty=getattr(args, "bit_loss_weight", 0.0),
+            normalize_by_params=getattr(args, "bit_loss_normalize", False),
         ),
     }
 
