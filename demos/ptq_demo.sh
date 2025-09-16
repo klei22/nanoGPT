@@ -1,76 +1,76 @@
 #!/bin/bash
 # demos/ptq_demo.sh
 
-# 1. Prepare minipile dataset
-pushd data/minipile
-if [ ! -f "train.bin" ] || [ ! -f "val.bin" ] || [ ! -f "meta.pkl" ]; then
-  bash get_dataset.sh
-  python3 prepare.py -t input.txt --method tiktoken
-else
-  echo "train.bin val.bin and meta.pkl already found for minipile"
-fi
-popd
+# 1. Prepare shakespeare_char dataset
+bash data/shakespeare_char/get_dataset.sh
 
-# 2. Train a larger model on minipile
+QUANT="${1:-5}"
+
+# 2. Train a larger model on shakespeare_char
 out_dir="out_ptq_demo"
-run_name_before="ptq_fp32"
+out_dir_after="out_ptq_demo_${QUANT}"
+run_name_before="ptq_fp16"
+run_name_after="ptq_int${QUANT}"
 python3 train.py \
-  --dataset minipile \
+  --dataset shakespeare_char \
   --out_dir "$out_dir" \
   --n_layer 6 \
   --n_head 6 \
   --n_embd 384 \
+  --use_rotary_embeddings \
+  --no-use_abs_pos_embeddings \
+  --use_qk_norm \
+  --use_qk_norm_scale \
+  --use_peri_ln \
   --block_size 256 \
-  --max_iters 10000 \
-  --log_interval 10 \
-  --tensorboard_run_name "$run_name_before"
-
-# 3. Compute model stats before quantization
-python3 train.py \
-  --dataset minipile \
-  --out_dir "$out_dir" \
-  --eval_only \
+  --max_iters 1000 \
+  --compile \
   --compute_model_stats \
   --print_model_stats_table "${run_name_before}.csv" \
   --tensorboard_run_name "$run_name_before"
 
-# 4. Report validation loss before quantization
-python3 sample.py \
-  --out_dir "$out_dir" \
-  --eval_only \
-  --eval_dataset minipile
-
-# 5. Sample from the original model
+# 3. Sample from the original model
 python3 sample.py \
   --out_dir "$out_dir" \
   --num_samples 1 \
-  --max_new_tokens 50 \
-  --start "Hello" \
+  --max_new_tokens 256 \
+  --colorize_output \
+  --start "To be " \
   --sample_file before_ptq.txt
 
-# 6. Apply fake PTQ (8-bit uniform)
-python3 quantizations/ptq/fake_quantize_ckpt.py "$out_dir" --num_bits 8 --out_dir "${out_dir}_ptq"
+# 4. Apply fake PTQ (quant-level-bit uniform)
+python3 quantizations/ptq/fake_quantize_ckpt.py \
+  "$out_dir" \
+  --num_bits "${QUANT}" \
+  --out_dir "${out_dir_after}"
 
-# 7. Compute model stats after quantization
-run_name_after="ptq_int8"
+# 5. Compute model stats after quantization
 python3 train.py \
-  --dataset minipile \
-  --out_dir "${out_dir}_ptq" \
-  --eval_only \
+  --dataset shakespeare_char \
+  --out_dir "${out_dir_after}" \
+  --init_from resume \
+  --n_layer 6 \
+  --n_head 6 \
+  --n_embd 384 \
+  --use_rotary_embeddings \
+  --no-use_abs_pos_embeddings \
+  --max_sample_tokens 256 \
+  --use_qk_norm \
+  --use_qk_norm_scale \
+  --use_peri_ln \
+  --block_size 256 \
+  --max_iters 1000 \
+  --compile \
   --compute_model_stats \
   --print_model_stats_table "${run_name_after}.csv" \
-  --tensorboard_run_name "$run_name_after"
+  --tensorboard_run_name "${run_name_after}"
 
-# 8. Report validation loss after quantization
+# 6. Sample from the quantized model
 python3 sample.py \
-  --out_dir "${out_dir}_ptq" \
-  --eval_only \
-  --eval_dataset minipile
-
-# 9. Sample from the quantized model
-python3 sample.py \
-  --out_dir "${out_dir}_ptq" \
+  --out_dir "${out_dir_after}" \
   --num_samples 1 \
-  --max_new_tokens 50 \
-  --start "Hello" \
-  --sample_file after_ptq.txt
+  --max_new_tokens 256 \
+  --colorize_output \
+  --start "To be " \
+  --sample_file "after_ptq${QUANT}".txt
+
