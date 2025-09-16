@@ -62,8 +62,11 @@ composition.
    bit-width bounds.
 2. Enable the loss with `--loss_fn bit_balanced_cross_entropy` and choose a
    penalty weight such as `--bit_loss_weight 1e-5`.
-3. Monitor bit statistics by calling `collect_bit_usage(model)` during
-   evaluation or logging if you need detailed per-layer telemetry.
+3. When TensorBoard logging is enabled (`--tensorboard_log`) the trainer will
+   emit aggregate metrics under each dataset namespace, including the current
+   total bit budget and the contribution of the bit-penalty term to the overall
+   loss. For more granular inspection you can still call
+   `collect_bit_usage(model)` during evaluation or logging.
 
 The exploration template
 [`explorations/bit_balanced_vs_cross_entropy.yaml`](../../explorations/bit_balanced_vs_cross_entropy.yaml)

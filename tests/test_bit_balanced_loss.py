@@ -3,7 +3,7 @@ import unittest
 import torch
 import torch.nn as nn
 
-from train_variations.loss_variants import BitBalancedCrossEntropy
+from train_variations.loss_variants import BitBalancedCrossEntropy, ScheduledLoss
 from utils.bit_usage import compute_total_bit_usage
 from variations.linear_variations import linear_dictionary
 
@@ -56,6 +56,49 @@ class BitBalancedLossTest(unittest.TestCase):
         model.zero_grad()
         combined.backward()
         self.assertIsNotNone(model.layer.bit_param.grad)
+
+        stats = loss_fn.bit_statistics()
+        self.assertIsNotNone(stats)
+        assert stats is not None  # for mypy/static type hints
+        self.assertIn("total_bits", stats)
+        self.assertGreater(stats["total_bits"], 0.0)
+        self.assertIsNotNone(stats["normalized_bits"])
+        self.assertAlmostEqual(
+            stats["bit_penalty_term"], stats["normalized_bits"] * loss_fn.bit_penalty
+        )
+
+    def test_bit_statistics_available_without_penalty_weight(self):
+        model = TinyBitNet()
+        loss_fn = BitBalancedCrossEntropy(bit_penalty=0.0)
+        loss_fn.set_model(model)
+        inputs = torch.randn(1, 4)
+        logits = model(inputs)
+        targets = torch.tensor([2])
+        _ = loss_fn(logits, targets)
+        stats = loss_fn.bit_statistics()
+        self.assertIsNotNone(stats)
+        assert stats is not None
+        self.assertGreater(stats["total_bits"], 0.0)
+        self.assertEqual(stats["bit_penalty_term"], 0.0)
+
+    def test_scheduled_loss_forwards_bit_statistics(self):
+        model = TinyBitNet()
+        base_loss = BitBalancedCrossEntropy(bit_penalty=1e-4)
+        schedule = ScheduledLoss(
+            [(0, "bit")],
+            {
+                "bit": base_loss,
+            },
+        )
+        schedule.set_model(model)
+        inputs = torch.randn(1, 4)
+        logits = model(inputs)
+        targets = torch.tensor([1])
+        _ = schedule(logits, targets, iter_num=0)
+        stats = schedule.bit_statistics()
+        self.assertIsNotNone(stats)
+        assert stats is not None
+        self.assertGreater(stats["total_bits"], 0.0)
 
 
 if __name__ == "__main__":
