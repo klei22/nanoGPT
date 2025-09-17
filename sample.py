@@ -762,7 +762,7 @@ def calculate_validation_loss(model, val_data, block_size, eval_iters, device, d
             X, Y = get_batch(val_data,  block_size, device)
             with torch.amp.autocast(device_type=device, dtype=dtype):
                 start = time.perf_counter()
-                logits, loss = model(X, Y, dataset_idx=dataset_idx)
+                logits, loss = model(X, Y)
                 end = time.perf_counter()
                 total_time += (end - start)
             losses.append(loss.item())
@@ -1094,7 +1094,7 @@ def main():
             with ctx:
                 block_size = args.block_size if args.block_size else model.config.block_size
                 idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
-                logits, _ = model(idx_cond, dataset_idx=dataset_idx)
+                logits, _ = model(idx_cond)
         print(f"Obtained vector saved to {args.save_avg_vector}")
 
     if args.interactive:
