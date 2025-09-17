@@ -51,13 +51,7 @@ from sample import (
     get_tokenizer_functions,
 )
 
-from rich.progress import (
-        Progress,
-        TextColumn,
-        BarColumn,
-        TimeRemainingColumn,
-        TaskProgressColumn,
-)
+from rich.progress import Progress
 
 
 # GNS Related
@@ -83,6 +77,7 @@ from model import GPT, GPTConfig
 import tiktoken
 
 from train_args import parse_args
+from train_progress_settings import ProgressDisplayManager
 
 class Trainer:
 
@@ -1400,29 +1395,21 @@ class Trainer:
         cli_settings = " ".join(sys.argv)
         cli_text = Text(f"CLI: {cli_settings}", style="chartreuse1")
         self.console = Console()
-        # Create progress bar with ETA and remaining time display
+        self.progress_display_manager = ProgressDisplayManager(
+                self.console,
+                enable_hotkeys=self.master_process,
+        )
         progress = Progress(
-                TextColumn("[bold white]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(compact=False),
-                TextColumn("-- [bold dark_cyan]BestIter:[/bold dark_cyan]{task.fields[best_iter]} [bold dark_cyan]BestValLoss:[/bold dark_cyan]{task.fields[best_val_loss]}"),
-                TextColumn("-- [bold purple3]ETA:[/bold purple3]{task.fields[eta]}"),
-                TextColumn("[bold purple3]Remaining:[/bold purple3]{task.fields[hour]}h{task.fields[min]}m"),
-                TextColumn("[bold purple3]total_est:[/bold purple3]{task.fields[total_hour]}h{task.fields[total_min]}m"),
-                TextColumn("-- [bold dark_magenta]iter_latency:[/bold dark_magenta]{task.fields[iter_latency]}ms"),
-                TextColumn("[bold dark_magenta]peak_gpu_mb:[/bold dark_magenta]{task.fields[peak_gpu_mb]}MB"),
-                TextColumn("-- [bold dark_cyan]T1P:[/bold dark_cyan]{task.fields[t1p]}"),
-                TextColumn("[bold dark_cyan]T1C:[/bold dark_cyan]{task.fields[t1c]}"),
-                TextColumn("-- [bold dark_magenta]TR:[/bold dark_magenta]{task.fields[tr]}"),
-                TextColumn("[bold dark_magenta]TP:[/bold dark_magenta]{task.fields[tp]}"),
-                TextColumn("[bold dark_magenta]TLP:[/bold dark_magenta]{task.fields[tlp]}"),
-                TextColumn("[bold dark_magenta]R95:[/bold dark_magenta]{task.fields[r95]}"),
-                TextColumn("[bold dark_magenta]P95:[/bold dark_magenta]{task.fields[p95]}"),
-                console=self.console
-                )
+                *self.progress_display_manager.build_current_columns(),
+                console=self.console,
+        )
+        controls_renderable = self.progress_display_manager.build_controls_text()
 
-        with Live(Group(progress.get_renderable(), cli_text), console=self.console, refresh_per_second=10) as live:
+        with Live(
+                Group(progress.get_renderable(), controls_renderable, cli_text),
+                console=self.console,
+                refresh_per_second=10,
+        ) as live:
             task_id = progress.add_task(
                     "[green]Training...",
                     total=((self.args.max_iters - self.iter_num) + self.evaluations_remaining * self.args.eval_iters),
@@ -1445,6 +1432,12 @@ class Trainer:
                     )
 
             while True:
+                if self.progress_display_manager.poll():
+                    progress.columns = self.progress_display_manager.build_current_columns()
+                    controls_renderable = self.progress_display_manager.build_controls_text()
+                    live.update(Group(progress.get_renderable(), controls_renderable, cli_text))
+                    progress.refresh()
+
                 if self.scheduler is not None:
                     self.lr = self.get_lr(self.iter_num)
                 for param_group in self.optimizer.param_groups:
@@ -1823,7 +1816,7 @@ class Trainer:
                         r95=f"{self.latest_rank_95:.2f}",
                         p95=f"{self.latest_left_prob_95:.6f}",
                         )
-                live.update(Group(progress.get_renderable(), cli_text))
+                live.update(Group(progress.get_renderable(), controls_renderable, cli_text))
 
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
@@ -1851,6 +1844,8 @@ class Trainer:
                 import wandb
                 wandb.log({"finished": True})
                 wandb.finish()
+
+        self.progress_display_manager.close()
 
 def main():
     args, model_group, training_group, logging_group = parse_args()
