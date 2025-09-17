@@ -49,17 +49,7 @@ python3 train.py \
   --dataset shakespeare_char \
   --out_dir "${out_dir_after}" \
   --init_from resume \
-  --n_layer 6 \
-  --n_head 6 \
-  --n_embd 384 \
-  --use_rotary_embeddings \
-  --no-use_abs_pos_embeddings \
-  --max_sample_tokens 256 \
-  --use_qk_norm \
-  --use_qk_norm_scale \
-  --use_peri_ln \
-  --block_size 256 \
-  --max_iters 1000 \
+  --eval_only \
   --compile \
   --compute_model_stats \
   --print_model_stats_table "${run_name_after}.csv" \
