@@ -45,6 +45,7 @@ from utils.model_stats import (
     compute_activation_stats,
     print_model_stats_table,
 )
+from utils.progress_display import ProgressDisplayManager
 
 from sample import (
     sample_with_existing_model,
@@ -1398,419 +1399,25 @@ class Trainer:
                 graph_y_labels.append(f"Layer {layer} Head {head}")
 
         cli_settings = " ".join(sys.argv)
-        cli_text = Text(f"CLI: {cli_settings}", style="chartreuse1")
         self.console = Console()
-        # Create progress bar with ETA and remaining time display
-        progress = Progress(
-                TextColumn("[bold white]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(compact=False),
-                TextColumn("-- [bold dark_cyan]BestIter:[/bold dark_cyan]{task.fields[best_iter]} [bold dark_cyan]BestValLoss:[/bold dark_cyan]{task.fields[best_val_loss]}"),
-                TextColumn("-- [bold purple3]ETA:[/bold purple3]{task.fields[eta]}"),
-                TextColumn("[bold purple3]Remaining:[/bold purple3]{task.fields[hour]}h{task.fields[min]}m"),
-                TextColumn("[bold purple3]total_est:[/bold purple3]{task.fields[total_hour]}h{task.fields[total_min]}m"),
-                TextColumn("-- [bold dark_magenta]iter_latency:[/bold dark_magenta]{task.fields[iter_latency]}ms"),
-                TextColumn("[bold dark_magenta]peak_gpu_mb:[/bold dark_magenta]{task.fields[peak_gpu_mb]}MB"),
-                TextColumn("-- [bold dark_cyan]T1P:[/bold dark_cyan]{task.fields[t1p]}"),
-                TextColumn("[bold dark_cyan]T1C:[/bold dark_cyan]{task.fields[t1c]}"),
-                TextColumn("-- [bold dark_magenta]TR:[/bold dark_magenta]{task.fields[tr]}"),
-                TextColumn("[bold dark_magenta]TP:[/bold dark_magenta]{task.fields[tp]}"),
-                TextColumn("[bold dark_magenta]TLP:[/bold dark_magenta]{task.fields[tlp]}"),
-                TextColumn("[bold dark_magenta]R95:[/bold dark_magenta]{task.fields[r95]}"),
-                TextColumn("[bold dark_magenta]P95:[/bold dark_magenta]{task.fields[p95]}"),
-                console=self.console
+        progress_display = ProgressDisplayManager(self.console)
+        progress_display.start()
+        cli_text = Text(
+                f"CLI: {cli_settings}\n{progress_display.help_message()}",
+                style="chartreuse1",
                 )
+        progress = progress_display.progress
 
-        with Live(Group(progress.get_renderable(), cli_text), console=self.console, refresh_per_second=10) as live:
-            task_id = progress.add_task(
-                    "[green]Training...",
-                    total=((self.args.max_iters - self.iter_num) + self.evaluations_remaining * self.args.eval_iters),
-                    eta=self.formatted_completion_eta,
-                    total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
-                    total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
-                    hour=f"{int((self.time_remaining_ms // (1000*3600)) % 24):02d}",
-                    min=f"{int((self.time_remaining_ms // 60000) % 60):02d}",
-                    best_val_loss=f"{self.best_val_loss:.3f}",
-                    best_iter=f"{self.best_iter}",
-                    iter_latency=f"{self.iter_latency_avg:.1f}",
-                    peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
-                    t1p=f"{self.latest_top1_prob:.6f}",
-                    t1c=f"{self.latest_top1_correct:.6f}",
-                    tr=f"{self.latest_target_rank:.2f}",
-                    tp=f"{self.latest_target_prob:.6f}",
-                    tlp=f"{self.latest_target_left_prob:.6f}",
-                    r95=f"{self.latest_rank_95:.2f}",
-                    p95=f"{self.latest_left_prob_95:.6f}",
-                    )
-
-            while True:
-                if self.scheduler is not None:
-                    self.lr = self.get_lr(self.iter_num)
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = self.lr
-
-                if self.iter_num % self.args.eval_interval == 0 and self.master_process:
-
-                    losses = self.estimate_loss()
-
-                    self.latest_top1_prob = losses.get('top1_prob', float('nan'))
-                    self.latest_top1_correct = losses.get('top1_correct', float('nan'))
-                    self.latest_target_rank = losses.get('target_rank', float('nan'))
-                    self.latest_target_prob = losses.get('target_prob', float('nan'))
-                    self.latest_target_left_prob = losses.get('target_left_prob', float('nan'))
-                    self.latest_rank_95 = losses.get('target_rank_95', float('nan'))
-                    self.latest_left_prob_95 = losses.get('left_prob_95', float('nan'))
-
-                    if self.args.gns_type is not None:
-                        self.gns = self.gns_ema.get_gns()
-
-
-                    if self.device_type == 'cuda':
-                        self.peak_gpu_usage = max(
-                                self.peak_gpu_usage,
-                                max_memory_allocated(self.device)
-                                )
-
-                    self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
-                    if self.args.dataset_list is not None:
-                        # Print loss for each dataset if multiple datasets are used
-                        for dataset, dataset_losses in losses['datasets'].items():
-                            better_than_chance = self.model_args['vocab_size'] / math.exp(dataset_losses['val'].item())
-                            log_message=f"step {self.iter_num}: "
-                            log_message+=f"{dataset:<20s}"
-                            log_message+=f", {self.model.num_param}"
-                            log_message+=f", train loss {dataset_losses['train']:.4f}"
-                            log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
-                            log_message+=f", btc_val_set {better_than_chance:.2e}"
-                            log_message+=f", btc_val_per_param {(better_than_chance/self.model.num_param):.2e}"
-                            log_message+=f", val loss {dataset_losses['val']:.4f}"
-                            log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
-                            if self.args.gns_type is not None:
-                                log_message+=f", gns {self.gns:.2f}"
-                            log_message+=f", lr {self.lr:.4f}"
-                            log_message+=f", tokens_trained {self.tokens_trained_dict[dataset]:.2e}"
-                            self.console.print(log_message)
-                            self.log_metrics(dataset_losses, running_mfu, self.epochs_trained_dict[dataset], self.tokens_trained_dict[dataset], dataset, better_than_chance)
-                    elif self.args.multicontext_datasets is not None:
-                        # Print loss for each dataset if multiple datasets are used
-                        # print(losses['datasets'])
-                        # for dataset, dataset_losses in losses['datasets'].items():
-                            #     print(dataset, dataset_losses)
-                        for dataset, dataset_losses in losses['datasets'].items():
-                            log_message=f"step {self.iter_num}: "
-                            log_message+=f"{dataset:<20s}"
-                            log_message+=f", train loss {dataset_losses['train']:.4f}"
-                            log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
-                            log_message+=f", val loss {dataset_losses['val']:.4f}"
-                            log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
-                            if self.args.gns_type is not None:
-                                log_message+=f", gns {self.gns:.2f}"
-                            log_message+=f", lr {self.lr:.4f}"
-                            log_message+=f", tokens_trained {self.tokens_trained:.2e}"
-                            self.console.print(log_message)
-                            better_than_chance = self.vocab_sizes[dataset] / math.exp(dataset_losses['val'].item())
-                            self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained, dataset, better_than_chance)
-                    else:
-                        # Default behavior for a single dataset
-                        better_than_chance = self.model_args['vocab_size'] / math.exp(losses['val'].item())
-                        log_message=f"step {self.iter_num}:"
-                        log_message+=f", {self.model.num_param}"
-                        log_message+=f", train loss {losses['train']:.4f}"
-                        log_message+=f", train_stdev {losses['train_std']:.4f}"
-                        log_message+=f", btc_val {better_than_chance:.2e}"
-                        log_message+=f", btc_val_per_param {(better_than_chance/self.model.num_param):.2e}"
-                        log_message+=f", val loss {losses['val']:.4f}"
-                        log_message+=f", val_stdev {losses['val_std']:.4f}"
-                        if self.args.gns_type is not None:
-                            log_message+=f", gns {self.gns:.2f}"
-                        log_message+=f", batch_size {self.args.batch_size}"
-                        log_message+=f", lr {self.lr:.4f}"
-                        self.console.print(log_message)
-                        self.log_metrics(losses, running_mfu, current_epoch, self.tokens_trained, current_dataset, better_than_chance)
-
-                    if math.isnan(losses["val"]):
-                        # If val loss is nan, then exit.
-                        with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
-                            print("Exiting with nan")
-                            file.write(str(self.iter_num))
-
-                    if (not self.args.never_save_checkpoint and 
-                        self.args.save_major_ckpt_interval is not None):
-                        if self.iter_num % self.args.save_major_ckpt_interval == 0:
-                            major_ckpt_name = str(self.iter_num) +'.pt'
-                            # Save major checkpoint
-                            self.save_checkpoint(major_ckpt_name)
-                            print(f"Saved major checkpoint to {self.args.out_dir}/{major_ckpt_name}")
-
-                    if losses['val'] < self.best_val_loss or self.args.always_save_checkpoint:
-                        if losses['val'] < self.best_val_loss:
-                            self.best_val_loss = losses['val']
-                            self.best_iter = self.iter_num
-                            # Save best validation loss
-                            peak_mb = self.peak_gpu_usage / (1024 ** 2)
-                            with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                                chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
-                                metrics = [
-                                        f"{self.best_val_loss.item()}",
-                                        f"{self.iter_num}",
-                                        f"{self.model.num_param}",
-                                        f"{chance_ratio:.3e}",
-                                        f"{chance_ratio/self.model.num_param:.3e}",
-                                        f"{peak_mb:.1f}",
-                                        f"{self.iter_latency_avg:.1f}",
-                                        f"{losses.get('top1_prob', float('nan')):.6f}",
-                                        f"{losses.get('top1_correct', float('nan')):.6f}",
-                                        f"{losses.get('target_rank', float('nan')):.2f}",
-                                        f"{losses.get('target_left_prob', float('nan')):.6f}",
-                                        f"{losses.get('target_prob', float('nan')):.6f}",
-                                        f"{losses.get('target_rank_95', float('nan')):.2f}",
-                                        f"{losses.get('left_prob_95', float('nan')):.6f}",
-                                        f"{self.latest_overall_weight_stats['stdev']:.6f}",
-                                        f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
-                                        f"{self.latest_overall_weight_stats['max']:.6f}",
-                                        f"{self.latest_overall_weight_stats['min']:.6f}",
-                                        f"{self.latest_overall_weight_stats['abs_max']:.6f}",
-                                        f"{self.latest_overall_activation_stats['stdev']:.6f}",
-                                        f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
-                                        f"{self.latest_overall_activation_stats['max']:.6f}",
-                                        f"{self.latest_overall_activation_stats['min']:.6f}",
-                                        f"{self.latest_overall_activation_stats['abs_max']:.6f}",
-                                ]
-                                best_loss_file.write(", ".join(metrics) + "\n")
-                            # Reset early exit counter
-                            num_steps_with_worse_loss = 0
-                        if self.iter_num > 0 and not self.args.never_save_checkpoint:
-                            print(f"saving checkpoint to {self.args.out_dir}")
-                            # Save checkpoint
-                            self.save_checkpoint('ckpt.pt')
-
-                        # Sample
-                        if self.args.max_sample_tokens:
-                            live.stop()
-                            self.sample_and_print()
-                            live.start()
-                        # export embedding table to npy file
-                        if self.args.export_wte_npy:
-                            self.raw_model.export_wte(self.args.export_wte_npy)
-                        # export scale matrices to npz file
-                        if self.args.export_scale_matrices_npz:
-                            self.raw_model.export_scale_matrices(self.args.export_scale_matrices_npz)
-                    else:
-                        if self.args.sample_each_eval:
-                            # Try model inference (e.g. exploring inference from overfitting)
-                            if self.args.max_sample_tokens:
-                                live.stop()
-                                self.sample_and_print()
-                                live.start()
-                        if self.args.export_wte_each_eval:
-                            # export wte table to npy file
-                            if self.args.export_wte_npy:
-                                self.raw_model.export_wte(self.args.export_wte_npy)
-                        if self.args.export_scale_matrices_each_eval:
-                            # export scale matrices to npz file
-                            if self.args.export_scale_matrices_npz:
-                                self.raw_model.export_scale_matrices(self.args.export_scale_matrices_npz)
-
-                    if self.args.patience is not None and num_steps_with_worse_loss >= self.args.patience:
-                        print(f"Early Stopping: loss has not decreased in {self.args.patience + 1} steps")
-                        break
-                    if losses['val'] > self.best_val_loss:
-                        num_steps_with_worse_loss += 1
-
-                if self.args.eval_only:
-                    break
-
-
-                for micro_step in range(self.args.gradient_accumulation_steps):
-                    if self.ddp:
-                        self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
-
-                    with self.ctx:
-                        if self.args.training_mode == 'multicontext':
-                            total_loss = 0
-                            logits, training_losses = self.model(
-                                None,
-                                token_dict=self.X_dict,
-                                target_dict=self.Y_dict,
-                                iter_num=self.iter_num,
-                                loss_fn=self.loss_fn,
-                            )
-
-                            # For multicontext training let loss = first dataset loss
-                            # loss = training_losses[0]
-                            loss = sum(training_losses) / len(training_losses)
-                        else:
-                            idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(
-                                self.X,
-                                targets=self.Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
-                            )
-
-                        if hasattr(self.optimizer, "set_entropy"):
-                            with torch.no_grad():
-                                probs = torch.softmax(logits, dim=-1)
-                                ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
-                                ent = ent / math.log(logits.size(-1))
-                            self.optimizer.set_entropy(float(ent))
-
-                        loss = loss / self.args.gradient_accumulation_steps
-
-                    prior_dataset = current_dataset
-                    tokens_trained_this_batch = self.args.batch_size * self.args.block_size
-                    if self.args.dataset_list:
-                        # Update per–dataset count
-                        self.tokens_trained_dict[current_dataset] += tokens_trained_this_batch
-                        self.tokens_trained = self.tokens_trained_dict[current_dataset]
-                    else:
-                        self.tokens_trained += tokens_trained_this_batch
-
-                    # Compute epoch for logging:
-                        if self.args.dataset_list:
-                            current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
-                            self.epochs_trained_dict[current_dataset] = current_epoch
-                        else:
-                            current_epoch = self.tokens_trained / self.dataset_size_tokens
-
-                    self.scaler.scale(loss).backward()
-
-                    # measure grad norms
-                    self.get_gradient_stats()
-
-                    if self.args.training_mode == 'multicontext':
-                        self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
-                        current_dataset = dataset_list[0]
-                    else:
-                        self.X, self.Y, current_dataset = self.get_batch('train')
-
-                    if self.args.gns_type is not None:
-                        approx_gns_results = gather_hook_results(self.model)
-                        self.gns_ema.update(*gns_utils.gnsify(approx_gns_results, self.args.batch_size, ddp=self.ddp))
-
-
-
-                if self.args.grad_clip != 0.0:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
-
-                if isinstance(self.optimizer, ActRegularizedAdamW):
-                    stat_key = getattr(self.args, "activation_stat", "stdev")
-                    self.optimizer.set_activation_stat(
-                            self.latest_overall_activation_stats.get(stat_key, 0.0)
-                            )
-
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                if self.scheduler:
-                    if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                        self.scheduler.step(losses["val"])
-                    else:
-                        self.scheduler.step()
-
-                self.optimizer.zero_grad(set_to_none=True)
-
-                t1 = time.time()
-                dt = t1 - t0
-                t0 = t1
-                self.total_training_time_ms = (t1 - t_start) * 1000.0
-
-                # Estimate ETA
-                eta_update: ETAUpdate = self.eta.update(
-                        iter_num=self.iter_num,
-                        now=t1,
-                        dt=dt,
-                        is_eval_boundary=(self.iter_num % self.args.eval_interval == 0),
-                        )
-
-                progress_advance = eta_update.progress_advance
-                self.iter_latency_avg = eta_update.iter_latency_avg
-                self.time_remaining_ms = eta_update.time_remaining_ms
-                self.formatted_completion_eta = eta_update.formatted_completion_eta
-
-
-
-                self.iter_num += 1
-                local_iter_num += 1
-
-                if self.iter_num % self.args.log_interval == 0 and self.master_process:
-                    lossf = loss.item() * self.args.gradient_accumulation_steps
-                    if local_iter_num >= 5:
-                        mfu = self.raw_model.estimate_mfu(self.args.batch_size * self.args.gradient_accumulation_steps, dt)
-                        running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-
-
-                    # training _loss section
-                    log_message= f"iter {self.iter_num}"
-                    log_message+= f", {dt*1000:.2f} ms"
-                    log_message+= f", {self.model.num_param}"
-                    if self.args.multicontext_datasets:
-                        for i, mc_dataset in enumerate(self.args.multicontext_datasets):
-                            self.mc_btc_train[mc_dataset] = self.vocab_sizes[mc_dataset] / math.exp(training_losses[i].item())
-                            log_message+= f", {self.underscore_abbr(mc_dataset)}"
-                            if self.args.log_btc_train:
-                                log_message+= f" btc {self.mc_btc_train[mc_dataset]:.4f}"
-                            log_message+= f", {self.underscore_abbr(mc_dataset)}"
-                            log_message+= f" loss {training_losses[i].item():.4f}"
-                    else:
-                        better_than_chance = self.model_args['vocab_size'] / math.exp(lossf)
-                        log_message+= f", loss {lossf:.4f}"
-                        if self.args.log_btc_train:
-                            log_message+=f", btc_train {better_than_chance:.2e}"
-                        if self.args.log_btc_per_param:
-                            log_message+=f", btc_train_per_param {(better_than_chance/self.model.num_param):.2e}"
-
-                    if self.args.dataset_list:
-                        log_message+= f", epoch {self.epochs_trained_dict[prior_dataset]:2.2f}"
-                        log_message+= f", tokens_trained {self.tokens_trained_dict[prior_dataset]:.2e}"
-                        log_message+= f", dataset: {prior_dataset}"
-                    else:
-                        log_message+= f", epoch {current_epoch:6.2f}"
-                        log_message+= f", tokens_trained {self.tokens_trained:.2e}"
-                    log_message+= f", mfu {running_mfu*100:.2f}%"
-                    if self.args.gns_type is not None:
-                        self.gns = self.gns_ema.get_gns()
-                        log_message+= f", gns {self.gns:.2f}"
-                    log_message+= f", batch_size {self.args.batch_size}"
-                    log_message+= f", lr {self.lr:.4f}"
-                    if self.args.log_grad_norm:
-                        log_message+= f", grad_norm {self.grad_norm:2f}"
-                    if self.args.log_grad_std:
-                        log_message+= f", grad_std {self.grad_std:.2f}"
-
-                    self.console.print(log_message)
-
-                    if math.isnan(lossf):
-                        # If training loss is nan, then exit.
-                        with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
-                            file.write(str(self.iter_num))
-                            sys.exit("Exiting training loss is NaN")
-
-                    self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
-                    if self.args.dataset_list:
-                        self.log_metrics_non_validation(lossf, running_mfu, self.epochs_trained_dict[prior_dataset], self.tokens_trained_dict[prior_dataset], prior_dataset, better_than_chance)
-                    if self.args.multicontext_datasets:
-                        for i, mc_dataset in enumerate(self.args.multicontext_datasets):
-                            self.log_metrics_non_validation(training_losses[i].item(), running_mfu, current_epoch, self.tokens_trained, mc_dataset, self.mc_btc_train[mc_dataset])
-                    else:
-                        self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset, better_than_chance)
-
-                if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
-                    create_statistics(self, graph_y_labels)
-
-
-                # Update progress bar
-                self.total_time_est_ms = self.total_training_time_ms + self.time_remaining_ms
-                progress.update(
-                        task_id,
-                        advance=progress_advance,
+        try:
+            with Live(Group(progress.get_renderable(), cli_text), console=self.console, refresh_per_second=10) as live:
+                task_id = progress.add_task(
+                        "[green]Training...",
+                        total=((self.args.max_iters - self.iter_num) + self.evaluations_remaining * self.args.eval_iters),
                         eta=self.formatted_completion_eta,
                         total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
                         total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
-                        hour=f"{int((self.time_remaining_ms // 3_600_000) % 24):02d}",
-                        min=f"{int((self.time_remaining_ms // 60_000) % 60):02d}",
+                        hour=f"{int((self.time_remaining_ms // (1000*3600)) % 24):02d}",
+                        min=f"{int((self.time_remaining_ms // 60000) % 60):02d}",
                         best_val_loss=f"{self.best_val_loss:.3f}",
                         best_iter=f"{self.best_iter}",
                         iter_latency=f"{self.iter_latency_avg:.1f}",
@@ -1822,24 +1429,407 @@ class Trainer:
                         tlp=f"{self.latest_target_left_prob:.6f}",
                         r95=f"{self.latest_rank_95:.2f}",
                         p95=f"{self.latest_left_prob_95:.6f}",
+                        display_mode=progress_display.current_mode,
                         )
-                live.update(Group(progress.get_renderable(), cli_text))
-
-                # End of training actions
-                if self.iter_num > self.args.max_iters:
-                    print(self.best_val_loss, self.best_iter)
-                    if self.args.only_save_checkpoint_at_end:
-                        if not self.args.never_save_checkpoint:
-                            self.save_checkpoint('ckpt.pt')
-                            print(f"Saved checkpoint to {self.args.out_dir}")
-
-                        # Sample if set
-                        if self.args.max_sample_tokens:
-                            live.stop()
-                            self.sample_and_print()
-                            live.start()
-                    break
-
+    
+                while True:
+                    if self.scheduler is not None:
+                        self.lr = self.get_lr(self.iter_num)
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = self.lr
+    
+                    if self.iter_num % self.args.eval_interval == 0 and self.master_process:
+    
+                        losses = self.estimate_loss()
+    
+                        self.latest_top1_prob = losses.get('top1_prob', float('nan'))
+                        self.latest_top1_correct = losses.get('top1_correct', float('nan'))
+                        self.latest_target_rank = losses.get('target_rank', float('nan'))
+                        self.latest_target_prob = losses.get('target_prob', float('nan'))
+                        self.latest_target_left_prob = losses.get('target_left_prob', float('nan'))
+                        self.latest_rank_95 = losses.get('target_rank_95', float('nan'))
+                        self.latest_left_prob_95 = losses.get('left_prob_95', float('nan'))
+    
+                        if self.args.gns_type is not None:
+                            self.gns = self.gns_ema.get_gns()
+    
+    
+                        if self.device_type == 'cuda':
+                            self.peak_gpu_usage = max(
+                                    self.peak_gpu_usage,
+                                    max_memory_allocated(self.device)
+                                    )
+    
+                        self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
+                        if self.args.dataset_list is not None:
+                            # Print loss for each dataset if multiple datasets are used
+                            for dataset, dataset_losses in losses['datasets'].items():
+                                better_than_chance = self.model_args['vocab_size'] / math.exp(dataset_losses['val'].item())
+                                log_message=f"step {self.iter_num}: "
+                                log_message+=f"{dataset:<20s}"
+                                log_message+=f", {self.model.num_param}"
+                                log_message+=f", train loss {dataset_losses['train']:.4f}"
+                                log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
+                                log_message+=f", btc_val_set {better_than_chance:.2e}"
+                                log_message+=f", btc_val_per_param {(better_than_chance/self.model.num_param):.2e}"
+                                log_message+=f", val loss {dataset_losses['val']:.4f}"
+                                log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
+                                if self.args.gns_type is not None:
+                                    log_message+=f", gns {self.gns:.2f}"
+                                log_message+=f", lr {self.lr:.4f}"
+                                log_message+=f", tokens_trained {self.tokens_trained_dict[dataset]:.2e}"
+                                self.console.print(log_message)
+                                self.log_metrics(dataset_losses, running_mfu, self.epochs_trained_dict[dataset], self.tokens_trained_dict[dataset], dataset, better_than_chance)
+                        elif self.args.multicontext_datasets is not None:
+                            # Print loss for each dataset if multiple datasets are used
+                            # print(losses['datasets'])
+                            # for dataset, dataset_losses in losses['datasets'].items():
+                                #     print(dataset, dataset_losses)
+                            for dataset, dataset_losses in losses['datasets'].items():
+                                log_message=f"step {self.iter_num}: "
+                                log_message+=f"{dataset:<20s}"
+                                log_message+=f", train loss {dataset_losses['train']:.4f}"
+                                log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
+                                log_message+=f", val loss {dataset_losses['val']:.4f}"
+                                log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
+                                if self.args.gns_type is not None:
+                                    log_message+=f", gns {self.gns:.2f}"
+                                log_message+=f", lr {self.lr:.4f}"
+                                log_message+=f", tokens_trained {self.tokens_trained:.2e}"
+                                self.console.print(log_message)
+                                better_than_chance = self.vocab_sizes[dataset] / math.exp(dataset_losses['val'].item())
+                                self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained, dataset, better_than_chance)
+                        else:
+                            # Default behavior for a single dataset
+                            better_than_chance = self.model_args['vocab_size'] / math.exp(losses['val'].item())
+                            log_message=f"step {self.iter_num}:"
+                            log_message+=f", {self.model.num_param}"
+                            log_message+=f", train loss {losses['train']:.4f}"
+                            log_message+=f", train_stdev {losses['train_std']:.4f}"
+                            log_message+=f", btc_val {better_than_chance:.2e}"
+                            log_message+=f", btc_val_per_param {(better_than_chance/self.model.num_param):.2e}"
+                            log_message+=f", val loss {losses['val']:.4f}"
+                            log_message+=f", val_stdev {losses['val_std']:.4f}"
+                            if self.args.gns_type is not None:
+                                log_message+=f", gns {self.gns:.2f}"
+                            log_message+=f", batch_size {self.args.batch_size}"
+                            log_message+=f", lr {self.lr:.4f}"
+                            self.console.print(log_message)
+                            self.log_metrics(losses, running_mfu, current_epoch, self.tokens_trained, current_dataset, better_than_chance)
+    
+                        if math.isnan(losses["val"]):
+                            # If val loss is nan, then exit.
+                            with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
+                                print("Exiting with nan")
+                                file.write(str(self.iter_num))
+    
+                        if (not self.args.never_save_checkpoint and 
+                            self.args.save_major_ckpt_interval is not None):
+                            if self.iter_num % self.args.save_major_ckpt_interval == 0:
+                                major_ckpt_name = str(self.iter_num) +'.pt'
+                                # Save major checkpoint
+                                self.save_checkpoint(major_ckpt_name)
+                                print(f"Saved major checkpoint to {self.args.out_dir}/{major_ckpt_name}")
+    
+                        if losses['val'] < self.best_val_loss or self.args.always_save_checkpoint:
+                            if losses['val'] < self.best_val_loss:
+                                self.best_val_loss = losses['val']
+                                self.best_iter = self.iter_num
+                                # Save best validation loss
+                                peak_mb = self.peak_gpu_usage / (1024 ** 2)
+                                with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
+                                    chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
+                                    metrics = [
+                                            f"{self.best_val_loss.item()}",
+                                            f"{self.iter_num}",
+                                            f"{self.model.num_param}",
+                                            f"{chance_ratio:.3e}",
+                                            f"{chance_ratio/self.model.num_param:.3e}",
+                                            f"{peak_mb:.1f}",
+                                            f"{self.iter_latency_avg:.1f}",
+                                            f"{losses.get('top1_prob', float('nan')):.6f}",
+                                            f"{losses.get('top1_correct', float('nan')):.6f}",
+                                            f"{losses.get('target_rank', float('nan')):.2f}",
+                                            f"{losses.get('target_left_prob', float('nan')):.6f}",
+                                            f"{losses.get('target_prob', float('nan')):.6f}",
+                                            f"{losses.get('target_rank_95', float('nan')):.2f}",
+                                            f"{losses.get('left_prob_95', float('nan')):.6f}",
+                                            f"{self.latest_overall_weight_stats['stdev']:.6f}",
+                                            f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
+                                            f"{self.latest_overall_weight_stats['max']:.6f}",
+                                            f"{self.latest_overall_weight_stats['min']:.6f}",
+                                            f"{self.latest_overall_weight_stats['abs_max']:.6f}",
+                                            f"{self.latest_overall_activation_stats['stdev']:.6f}",
+                                            f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
+                                            f"{self.latest_overall_activation_stats['max']:.6f}",
+                                            f"{self.latest_overall_activation_stats['min']:.6f}",
+                                            f"{self.latest_overall_activation_stats['abs_max']:.6f}",
+                                    ]
+                                    best_loss_file.write(", ".join(metrics) + "\n")
+                                # Reset early exit counter
+                                num_steps_with_worse_loss = 0
+                            if self.iter_num > 0 and not self.args.never_save_checkpoint:
+                                print(f"saving checkpoint to {self.args.out_dir}")
+                                # Save checkpoint
+                                self.save_checkpoint('ckpt.pt')
+    
+                            # Sample
+                            if self.args.max_sample_tokens:
+                                live.stop()
+                                self.sample_and_print()
+                                live.start()
+                            # export embedding table to npy file
+                            if self.args.export_wte_npy:
+                                self.raw_model.export_wte(self.args.export_wte_npy)
+                            # export scale matrices to npz file
+                            if self.args.export_scale_matrices_npz:
+                                self.raw_model.export_scale_matrices(self.args.export_scale_matrices_npz)
+                        else:
+                            if self.args.sample_each_eval:
+                                # Try model inference (e.g. exploring inference from overfitting)
+                                if self.args.max_sample_tokens:
+                                    live.stop()
+                                    self.sample_and_print()
+                                    live.start()
+                            if self.args.export_wte_each_eval:
+                                # export wte table to npy file
+                                if self.args.export_wte_npy:
+                                    self.raw_model.export_wte(self.args.export_wte_npy)
+                            if self.args.export_scale_matrices_each_eval:
+                                # export scale matrices to npz file
+                                if self.args.export_scale_matrices_npz:
+                                    self.raw_model.export_scale_matrices(self.args.export_scale_matrices_npz)
+    
+                        if self.args.patience is not None and num_steps_with_worse_loss >= self.args.patience:
+                            print(f"Early Stopping: loss has not decreased in {self.args.patience + 1} steps")
+                            break
+                        if losses['val'] > self.best_val_loss:
+                            num_steps_with_worse_loss += 1
+    
+                    if self.args.eval_only:
+                        break
+    
+    
+                    for micro_step in range(self.args.gradient_accumulation_steps):
+                        if self.ddp:
+                            self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
+    
+                        with self.ctx:
+                            if self.args.training_mode == 'multicontext':
+                                total_loss = 0
+                                logits, training_losses = self.model(
+                                    None,
+                                    token_dict=self.X_dict,
+                                    target_dict=self.Y_dict,
+                                    iter_num=self.iter_num,
+                                    loss_fn=self.loss_fn,
+                                )
+    
+                                # For multicontext training let loss = first dataset loss
+                                # loss = training_losses[0]
+                                loss = sum(training_losses) / len(training_losses)
+                            else:
+                                idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
+                                logits, loss = self.model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
+    
+                            if hasattr(self.optimizer, "set_entropy"):
+                                with torch.no_grad():
+                                    probs = torch.softmax(logits, dim=-1)
+                                    ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
+                                    ent = ent / math.log(logits.size(-1))
+                                self.optimizer.set_entropy(float(ent))
+    
+                            loss = loss / self.args.gradient_accumulation_steps
+    
+                        prior_dataset = current_dataset
+                        tokens_trained_this_batch = self.args.batch_size * self.args.block_size
+                        if self.args.dataset_list:
+                            # Update per–dataset count
+                            self.tokens_trained_dict[current_dataset] += tokens_trained_this_batch
+                            self.tokens_trained = self.tokens_trained_dict[current_dataset]
+                        else:
+                            self.tokens_trained += tokens_trained_this_batch
+    
+                        # Compute epoch for logging:
+                            if self.args.dataset_list:
+                                current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                                self.epochs_trained_dict[current_dataset] = current_epoch
+                            else:
+                                current_epoch = self.tokens_trained / self.dataset_size_tokens
+    
+                        self.scaler.scale(loss).backward()
+    
+                        # measure grad norms
+                        self.get_gradient_stats()
+    
+                        if self.args.training_mode == 'multicontext':
+                            self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
+                            current_dataset = dataset_list[0]
+                        else:
+                            self.X, self.Y, current_dataset = self.get_batch('train')
+    
+                        if self.args.gns_type is not None:
+                            approx_gns_results = gather_hook_results(self.model)
+                            self.gns_ema.update(*gns_utils.gnsify(approx_gns_results, self.args.batch_size, ddp=self.ddp))
+    
+    
+    
+                    if self.args.grad_clip != 0.0:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
+    
+                    if isinstance(self.optimizer, ActRegularizedAdamW):
+                        stat_key = getattr(self.args, "activation_stat", "stdev")
+                        self.optimizer.set_activation_stat(
+                                self.latest_overall_activation_stats.get(stat_key, 0.0)
+                                )
+    
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    if self.scheduler:
+                        if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                            self.scheduler.step(losses["val"])
+                        else:
+                            self.scheduler.step()
+    
+                    self.optimizer.zero_grad(set_to_none=True)
+    
+                    t1 = time.time()
+                    dt = t1 - t0
+                    t0 = t1
+                    self.total_training_time_ms = (t1 - t_start) * 1000.0
+    
+                    # Estimate ETA
+                    eta_update: ETAUpdate = self.eta.update(
+                            iter_num=self.iter_num,
+                            now=t1,
+                            dt=dt,
+                            is_eval_boundary=(self.iter_num % self.args.eval_interval == 0),
+                            )
+    
+                    progress_advance = eta_update.progress_advance
+                    self.iter_latency_avg = eta_update.iter_latency_avg
+                    self.time_remaining_ms = eta_update.time_remaining_ms
+                    self.formatted_completion_eta = eta_update.formatted_completion_eta
+    
+    
+    
+                    self.iter_num += 1
+                    local_iter_num += 1
+    
+                    if self.iter_num % self.args.log_interval == 0 and self.master_process:
+                        lossf = loss.item() * self.args.gradient_accumulation_steps
+                        if local_iter_num >= 5:
+                            mfu = self.raw_model.estimate_mfu(self.args.batch_size * self.args.gradient_accumulation_steps, dt)
+                            running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
+    
+    
+                        # training _loss section
+                        log_message= f"iter {self.iter_num}"
+                        log_message+= f", {dt*1000:.2f} ms"
+                        log_message+= f", {self.model.num_param}"
+                        if self.args.multicontext_datasets:
+                            for i, mc_dataset in enumerate(self.args.multicontext_datasets):
+                                self.mc_btc_train[mc_dataset] = self.vocab_sizes[mc_dataset] / math.exp(training_losses[i].item())
+                                log_message+= f", {self.underscore_abbr(mc_dataset)}"
+                                if self.args.log_btc_train:
+                                    log_message+= f" btc {self.mc_btc_train[mc_dataset]:.4f}"
+                                log_message+= f", {self.underscore_abbr(mc_dataset)}"
+                                log_message+= f" loss {training_losses[i].item():.4f}"
+                        else:
+                            better_than_chance = self.model_args['vocab_size'] / math.exp(lossf)
+                            log_message+= f", loss {lossf:.4f}"
+                            if self.args.log_btc_train:
+                                log_message+=f", btc_train {better_than_chance:.2e}"
+                            if self.args.log_btc_per_param:
+                                log_message+=f", btc_train_per_param {(better_than_chance/self.model.num_param):.2e}"
+    
+                        if self.args.dataset_list:
+                            log_message+= f", epoch {self.epochs_trained_dict[prior_dataset]:2.2f}"
+                            log_message+= f", tokens_trained {self.tokens_trained_dict[prior_dataset]:.2e}"
+                            log_message+= f", dataset: {prior_dataset}"
+                        else:
+                            log_message+= f", epoch {current_epoch:6.2f}"
+                            log_message+= f", tokens_trained {self.tokens_trained:.2e}"
+                        log_message+= f", mfu {running_mfu*100:.2f}%"
+                        if self.args.gns_type is not None:
+                            self.gns = self.gns_ema.get_gns()
+                            log_message+= f", gns {self.gns:.2f}"
+                        log_message+= f", batch_size {self.args.batch_size}"
+                        log_message+= f", lr {self.lr:.4f}"
+                        if self.args.log_grad_norm:
+                            log_message+= f", grad_norm {self.grad_norm:2f}"
+                        if self.args.log_grad_std:
+                            log_message+= f", grad_std {self.grad_std:.2f}"
+    
+                        self.console.print(log_message)
+    
+                        if math.isnan(lossf):
+                            # If training loss is nan, then exit.
+                            with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
+                                file.write(str(self.iter_num))
+                                sys.exit("Exiting training loss is NaN")
+    
+                        self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
+                        if self.args.dataset_list:
+                            self.log_metrics_non_validation(lossf, running_mfu, self.epochs_trained_dict[prior_dataset], self.tokens_trained_dict[prior_dataset], prior_dataset, better_than_chance)
+                        if self.args.multicontext_datasets:
+                            for i, mc_dataset in enumerate(self.args.multicontext_datasets):
+                                self.log_metrics_non_validation(training_losses[i].item(), running_mfu, current_epoch, self.tokens_trained, mc_dataset, self.mc_btc_train[mc_dataset])
+                        else:
+                            self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset, better_than_chance)
+    
+                    if self.args.create_statistics and local_iter_num % self.args.softmax_io_log_interval == 0:
+                        create_statistics(self, graph_y_labels)
+    
+    
+                    # Update progress bar
+                    progress_display.poll()
+                    self.total_time_est_ms = self.total_training_time_ms + self.time_remaining_ms
+                    progress.update(
+                            task_id,
+                            advance=progress_advance,
+                            eta=self.formatted_completion_eta,
+                            total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
+                            total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
+                            hour=f"{int((self.time_remaining_ms // 3_600_000) % 24):02d}",
+                            min=f"{int((self.time_remaining_ms // 60_000) % 60):02d}",
+                            best_val_loss=f"{self.best_val_loss:.3f}",
+                            best_iter=f"{self.best_iter}",
+                            iter_latency=f"{self.iter_latency_avg:.1f}",
+                            peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                            t1p=f"{self.latest_top1_prob:.6f}",
+                            t1c=f"{self.latest_top1_correct:.6f}",
+                            tr=f"{self.latest_target_rank:.2f}",
+                            tp=f"{self.latest_target_prob:.6f}",
+                            tlp=f"{self.latest_target_left_prob:.6f}",
+                            r95=f"{self.latest_rank_95:.2f}",
+                            p95=f"{self.latest_left_prob_95:.6f}",
+                            display_mode=progress_display.current_mode,
+                            )
+                    live.update(Group(progress.get_renderable(), cli_text))
+        
+                    # End of training actions
+                    if self.iter_num > self.args.max_iters:
+                        print(self.best_val_loss, self.best_iter)
+                        if self.args.only_save_checkpoint_at_end:
+                            if not self.args.never_save_checkpoint:
+                                self.save_checkpoint('ckpt.pt')
+                                print(f"Saved checkpoint to {self.args.out_dir}")
+    
+                            # Sample if set
+                            if self.args.max_sample_tokens:
+                                live.stop()
+                                self.sample_and_print()
+                                live.start()
+                        break
+    
             if self.args.plot_statistics:
                 plot_statistics(self.args, self.stats, graph_y_labels)
 
@@ -1851,6 +1841,8 @@ class Trainer:
                 import wandb
                 wandb.log({"finished": True})
                 wandb.finish()
+        finally:
+            progress_display.stop()
 
 def main():
     args, model_group, training_group, logging_group = parse_args()
