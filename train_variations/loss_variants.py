@@ -312,6 +312,77 @@ def entropy_rank_distance_focal_loss(
     return loss + beta * entropy[mask].mean()
 
 
+# ---------------------------------------------------------------------------
+# Cosine-similarity based losses
+# ---------------------------------------------------------------------------
+
+def _cosine_to_target(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """Compute cosine similarity between predicted distribution and one-hot target."""
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+    mask = targets_flat != -1
+    if not mask.any():
+        return torch.tensor([], device=logits.device)
+    probs = torch.softmax(logits_flat[mask], dim=-1)
+    one_hot = F.one_hot(targets_flat[mask], num_classes=logits.size(-1)).float()
+    return F.cosine_similarity(probs, one_hot, dim=-1)
+
+
+def cosine_similarity_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+) -> torch.Tensor:
+    """Minimise ``1 - cos_sim`` between probs and one-hot target."""
+    cos_sim = _cosine_to_target(logits, targets)
+    if cos_sim.numel() == 0:
+        return torch.tensor(0.0, device=logits.device)
+    return (1 - cos_sim).mean()
+
+
+def cosine_mse_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+) -> torch.Tensor:
+    """Squared error on cosine similarity to encourage alignment."""
+    cos_sim = _cosine_to_target(logits, targets)
+    if cos_sim.numel() == 0:
+        return torch.tensor(0.0, device=logits.device)
+    return F.mse_loss(cos_sim, torch.ones_like(cos_sim))
+
+
+def cosine_huber_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    delta: float = 1.0,
+) -> torch.Tensor:
+    """Huber loss on cosine similarity toward ``1``."""
+    cos_sim = _cosine_to_target(logits, targets)
+    if cos_sim.numel() == 0:
+        return torch.tensor(0.0, device=logits.device)
+    target = torch.ones_like(cos_sim)
+    return F.huber_loss(cos_sim, target, delta=delta)
+
+
+def cosine_log_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Negative log of cosine similarity to the target."""
+    cos_sim = _cosine_to_target(logits, targets)
+    if cos_sim.numel() == 0:
+        return torch.tensor(0.0, device=logits.device)
+    return -torch.log(cos_sim + eps).mean()
+
+
 LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
     "cross_entropy": cross_entropy_loss,
     "label_smoothing": label_smoothing_loss,
@@ -325,6 +396,10 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "entropy_focal": entropy_focal_loss,
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
+    "cosine": cosine_similarity_loss,
+    "cosine_mse": cosine_mse_loss,
+    "cosine_huber": cosine_huber_loss,
+    "cosine_log": cosine_log_loss,
 }
 
 
@@ -482,6 +557,21 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             gamma=rank_gamma(iter_num),
             focal_gamma=focal_gamma(iter_num),
             beta=getattr(args, "entropy_beta", 0.01),
+        ),
+        "cosine": lambda l, t, *, iter_num=None: LOSS_VARIANTS["cosine"](
+            l, t, iter_num=iter_num
+        ),
+        "cosine_mse": lambda l, t, *, iter_num=None: LOSS_VARIANTS["cosine_mse"](
+            l, t, iter_num=iter_num
+        ),
+        "cosine_huber": lambda l, t, *, iter_num=None: LOSS_VARIANTS["cosine_huber"](
+            l,
+            t,
+            iter_num=iter_num,
+            delta=getattr(args, "cosine_huber_delta", 1.0),
+        ),
+        "cosine_log": lambda l, t, *, iter_num=None: LOSS_VARIANTS["cosine_log"](
+            l, t, iter_num=iter_num
         ),
     }
 

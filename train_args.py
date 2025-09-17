@@ -153,6 +153,12 @@ def parse_args():
         default=1.0,
         help='Scaling for flatness_boost loss when predictions are flat.',
     )
+    training_group.add_argument(
+        '--cosine_huber_delta',
+        type=float,
+        default=1.0,
+        help='Delta parameter for cosine_huber loss.',
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
