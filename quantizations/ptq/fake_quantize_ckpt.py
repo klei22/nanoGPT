@@ -4,6 +4,7 @@ import json
 import math
 import os
 import shutil
+import sys
 import textwrap
 from collections import Counter
 from collections.abc import MutableMapping
@@ -23,6 +24,17 @@ if _RICH_SPEC:
     _RICH_CONSOLE = Console(highlight=False)
 else:
     _RICH_CONSOLE = None
+
+_TEXTUAL_SPEC = importlib.util.find_spec("textual")
+if _TEXTUAL_SPEC:
+    from textual.app import App, ComposeResult
+    from textual.binding import Binding
+    from textual.containers import Horizontal, Vertical
+    from textual.screen import Screen
+    from textual.widgets import Button, DataTable, Footer, Header, Input, Static
+    from textual import on
+else:
+    App = ComposeResult = Binding = None  # type: ignore[assignment]
 
 
 def parse_args():
@@ -308,25 +320,19 @@ def _resolve_entry(
     return matches[0], None
 
 
-def _interactive_instruction_text(min_bits: int, max_bits: Optional[int]) -> str:
+def _format_allowed_bits_text(min_bits: int, max_bits: Optional[int]) -> str:
     if max_bits is None:
         if min_bits <= 0:
-            allowed_line = (
-                "Allowed bit-widths: 0 (keep float32) or any positive integer"
-            )
-        else:
-            allowed_line = (
-                f"Allowed bit-widths: {min_bits}+ (use 0 to keep float32)"
-            )
+            return "Allowed bit-widths: 0 (keep float32) or any positive integer"
+        return f"Allowed bit-widths: {min_bits}+ (use 0 to keep float32)"
     else:
         if min_bits <= 0:
-            allowed_line = (
-                f"Allowed bit-widths: 0 (keep float32) or 1-{max_bits}"
-            )
-        else:
-            allowed_line = (
-                f"Allowed bit-widths: {min_bits}-{max_bits} (use 0 to keep float32)"
-            )
+            return f"Allowed bit-widths: 0 (keep float32) or 1-{max_bits}"
+        return f"Allowed bit-widths: {min_bits}-{max_bits} (use 0 to keep float32)"
+ 
+
+def _legacy_instruction_text(min_bits: int, max_bits: Optional[int]) -> str:
+    allowed_line = _format_allowed_bits_text(min_bits, max_bits)
 
     return textwrap.dedent(
         f"""
@@ -343,7 +349,7 @@ def _interactive_instruction_text(min_bits: int, max_bits: Optional[int]) -> str
     ).strip()
 
 
-def _render_tensor_table(
+def _legacy_render_tensor_table(
     entries: List[TensorConfigEntry],
     page: int,
     page_size: int,
@@ -443,7 +449,7 @@ def _render_tensor_table(
         print(status_message)
 
 
-def interactive_select_tensor_bits(
+def _legacy_cli_select_tensor_bits(
     entries: List[TensorConfigEntry],
     min_bits: int,
     max_bits: Optional[int],
@@ -458,7 +464,7 @@ def interactive_select_tensor_bits(
     page_size = max(page_size, 1)
     total_pages = max(1, math.ceil(len(entries) / page_size))
     page = 0
-    instructions = _interactive_instruction_text(min_bits, max_bits)
+    instructions = _legacy_instruction_text(min_bits, max_bits)
     status_message = ""
     status_style = "cyan"
 
@@ -467,7 +473,7 @@ def interactive_select_tensor_bits(
         status_message = message
         status_style = style
 
-    _render_tensor_table(
+    _legacy_render_tensor_table(
         entries, page, page_size, total_pages, instructions, status_message, status_style
     )
 
@@ -482,7 +488,7 @@ def interactive_select_tensor_bits(
 
         if not raw:
             set_status("", "cyan")
-            _render_tensor_table(
+            _legacy_render_tensor_table(
                 entries,
                 page,
                 page_size,
@@ -607,7 +613,7 @@ def interactive_select_tensor_bits(
         else:
             set_status(f"Unknown command: {command}", "red")
 
-        _render_tensor_table(
+        _legacy_render_tensor_table(
             entries,
             page,
             page_size,
@@ -623,6 +629,530 @@ def interactive_select_tensor_bits(
         print("Interactive configuration complete.")
 
     return {entry.name: entry.bits for entry in entries}
+
+
+if _TEXTUAL_SPEC:
+
+    class _InputPromptScreen(Screen[str | None]):
+        def __init__(
+            self,
+            prompt: str,
+            placeholder: str = "",
+            initial: str = "",
+            confirm_label: str = "Apply",
+        ) -> None:
+            super().__init__()
+            self.prompt = prompt
+            self.placeholder = placeholder
+            self.initial = initial
+            self.confirm_label = confirm_label
+
+        def compose(self) -> ComposeResult:  # type: ignore[override]
+            yield Static(self.prompt, id="prompt-message")
+            yield Input(
+                value=self.initial,
+                placeholder=self.placeholder,
+                id="prompt-input",
+            )
+            with Horizontal(id="prompt-buttons"):
+                yield Button(self.confirm_label, id="prompt-confirm")
+                yield Button("Cancel", id="prompt-cancel")
+
+        def on_mount(self) -> None:  # type: ignore[override]
+            self.query_one("#prompt-input", Input).focus()
+
+        @on(Input.Submitted, "#prompt-input")
+        def _handle_submit(self, event: Input.Submitted) -> None:
+            self.dismiss(event.value.strip())
+
+        @on(Button.Pressed, "#prompt-confirm")
+        def _handle_confirm(self) -> None:
+            value = self.query_one("#prompt-input", Input).value.strip()
+            self.dismiss(value)
+
+        @on(Button.Pressed, "#prompt-cancel")
+        def _handle_cancel(self) -> None:
+            self.dismiss(None)
+
+
+    class TensorBitwidthApp(App):
+        CSS = """
+        #layout {
+            height: 1fr;
+            width: 100%;
+        }
+        DataTable#tensor-table {
+            height: 1fr;
+            margin: 1 0;
+        }
+        #instructions {
+            padding: 1 2;
+        }
+        #summary, #status {
+            padding: 0 2;
+        }
+        #button-row {
+            padding: 0 2;
+            height: auto;
+        }
+        #button-row Button {
+            margin-right: 1;
+        }
+        """
+
+        BINDINGS = [
+            Binding("ctrl+s", "accept", "Apply"),
+            Binding("escape", "cancel", "Cancel", show=False),
+            Binding("ctrl+c", "cancel", "Cancel", show=False),
+            Binding("enter", "edit_bits", "Edit"),
+            Binding("[", "decrease_bits", "Decrease"),
+            Binding("]", "increase_bits", "Increase"),
+            Binding("0", "set_fp32", "Keep fp32"),
+            Binding("d", "reset_selected", "Reset Selected"),
+            Binding("r", "reset_all", "Reset All"),
+            Binding("a", "set_all", "Set All"),
+            Binding("/", "search", "Search"),
+            Binding("f", "focus_table", "Focus Table", show=False),
+        ]
+
+        def __init__(
+            self,
+            entries: List[TensorConfigEntry],
+            min_bits: int,
+            max_bits: Optional[int],
+        ) -> None:
+            super().__init__()
+            self.entries = entries
+            self.min_bits = min_bits
+            self.max_bits = max_bits
+            self.selected_index: int = 0
+            self.result: Optional[Dict[str, int]] = None
+            self.cancelled: bool = True
+            self._table: Optional[DataTable] = None
+            self._instructions: Optional[Static] = None
+            self._summary: Optional[Static] = None
+            self._status: Optional[Static] = None
+
+        def compose(self) -> ComposeResult:  # type: ignore[override]
+            yield Header(show_clock=False)
+            with Vertical(id="layout"):
+                yield Static("", id="instructions")
+                yield DataTable(id="tensor-table", zebra_stripes=True)
+                yield Static("", id="summary")
+                with Horizontal(id="button-row"):
+                    yield Button("Edit Selected", id="btn-edit")
+                    yield Button("Set All…", id="btn-all")
+                    yield Button("Reset Selected", id="btn-reset")
+                    yield Button("Reset All", id="btn-reset-all")
+                yield Static("", id="status")
+            yield Footer()
+
+        def on_mount(self) -> None:  # type: ignore[override]
+            self._table = self.query_one("#tensor-table", DataTable)
+            self._instructions = self.query_one("#instructions", Static)
+            self._summary = self.query_one("#summary", Static)
+            self._status = self.query_one("#status", Static)
+            if self._instructions is not None:
+                self._instructions.update(self._instructions_text())
+            if self._table is not None:
+                self._table.cursor_type = "row"
+                self._table.focus()
+            self._build_table()
+            self._update_summary()
+            if self.entries:
+                self._set_status(
+                    "Use ↑/↓ to choose a tensor. Press Enter to edit.",
+                    "cyan",
+                )
+            else:
+                self._set_status("No tensors available for configuration.", "yellow")
+
+        def _instructions_text(self) -> str:
+            allowed = _format_allowed_bits_text(self.min_bits, self.max_bits)
+            return textwrap.dedent(
+                f"""
+                Keyboard shortcuts:
+                  ↑/↓ : Move selection
+                  Enter : Edit bit-width for the selected tensor
+                  ]/[ : Increase/decrease bit-width
+                  0 : Keep tensor as fp32 (skip quantization)
+                  d : Reset selected tensor to the default bit-width
+                  r : Reset all tensors to their default bit-widths
+                  a : Apply a bit-width to all tensors
+                  / : Search tensor names (substring match)
+                  Ctrl+S : Apply selections and exit
+                  Esc : Cancel without applying changes
+                {allowed}
+                """
+            ).strip()
+
+        def _build_table(self) -> None:
+            if self._table is None:
+                return
+            selected = self.selected_index
+            self._table.clear(columns=True)
+            self._table.add_column("#", key="idx")
+            self._table.add_column("Tensor", key="tensor")
+            self._table.add_column("Shape", key="shape")
+            self._table.add_column("DType", key="dtype")
+            self._table.add_column("Elements", key="elements")
+            self._table.add_column("Current", key="current")
+            self._table.add_column("Default", key="default")
+            for idx, entry in enumerate(self.entries):
+                self._table.add_row(
+                    str(idx + 1),
+                    entry.name,
+                    _format_shape(entry.shape),
+                    entry.dtype,
+                    f"{entry.numel:,}",
+                    self._format_current_bits(entry),
+                    self._format_default_bits(entry),
+                    key=str(idx),
+                )
+            if self.entries:
+                self.selected_index = max(0, min(selected, len(self.entries) - 1))
+                self._table.cursor_coordinate = (self.selected_index, 0)
+                self._table.scroll_to_row(self.selected_index)
+
+        def _format_current_bits(self, entry: TensorConfigEntry) -> str:
+            label = _format_bits_label(entry.bits)
+            if entry.bits <= 0:
+                return "fp32 (skip)"
+            if entry.bits != entry.default_bits:
+                return f"{label} (custom)"
+            return label
+
+        def _format_default_bits(self, entry: TensorConfigEntry) -> str:
+            label = _format_bits_label(entry.default_bits)
+            if entry.default_bits <= 0:
+                return "fp32 (skip)"
+            return label
+
+        def _set_status(self, message: str, style: str = "") -> None:
+            if self._status is None:
+                return
+            if not message:
+                self._status.update("")
+                return
+            if style:
+                self._status.update(f"[{style}]{message}[/{style}]")
+            else:
+                self._status.update(message)
+
+        def _update_summary(self) -> None:
+            if self._summary is None:
+                return
+            total = len(self.entries)
+            if total == 0:
+                self._summary.update("No tensors available.")
+                return
+            quantized = sum(1 for entry in self.entries if entry.bits > 0)
+            skipped = total - quantized
+            parts = [
+                f"Total tensors: {total}",
+                f"Quantized: {quantized}",
+                f"Kept fp32: {skipped}",
+            ]
+            bit_counts = Counter(entry.bits for entry in self.entries if entry.bits > 0)
+            if bit_counts:
+                distribution = ", ".join(
+                    f"{bits}-bit × {count}" for bits, count in sorted(bit_counts.items())
+                )
+                parts.append(f"Distribution: {distribution}")
+            self._summary.update(" | ".join(parts))
+
+        def _current_selection(self) -> Optional[int]:
+            if not self.entries:
+                return None
+            return max(0, min(self.selected_index, len(self.entries) - 1))
+
+        def _select_row(self, index: int) -> None:
+            if not self.entries:
+                return
+            self.selected_index = max(0, min(index, len(self.entries) - 1))
+            if self._table is not None:
+                self._table.cursor_coordinate = (self.selected_index, 0)
+                self._table.scroll_to_row(self.selected_index)
+                self._table.focus()
+
+        def _validate_bits(self, bits: int) -> int:
+            if bits < 0:
+                raise ValueError("Bit-width must be non-negative.")
+            if bits == 0:
+                return 0
+            if bits < self.min_bits:
+                raise ValueError(
+                    f"Bit-width must be at least {self.min_bits} or 0 for fp32."
+                )
+            if self.max_bits is not None and bits > self.max_bits:
+                raise ValueError(f"Bit-width must be at most {self.max_bits}.")
+            return bits
+
+        def _apply_bits(self, index: int, bits: int) -> None:
+            try:
+                validated = self._validate_bits(bits)
+            except ValueError as exc:
+                self._set_status(str(exc), "red")
+                return
+            entry = self.entries[index]
+            if entry.bits == validated:
+                self._set_status(
+                    f"{entry.name} already {_format_bits_label(validated)}.",
+                    "yellow",
+                )
+                return
+            entry.bits = validated
+            self._build_table()
+            self._update_summary()
+            label = _format_bits_label(validated)
+            if validated <= 0:
+                self._set_status(f"{entry.name} will remain as {label}.", "green")
+            else:
+                self._set_status(f"Set {entry.name} to {label}.", "green")
+
+        async def _prompt_text(
+            self,
+            message: str,
+            *,
+            placeholder: str = "",
+            initial: str = "",
+            allow_empty: bool = False,
+            cancel_message: Optional[str] = None,
+        ) -> Optional[str]:
+            prompt = _InputPromptScreen(
+                message,
+                placeholder=placeholder,
+                initial=initial,
+            )
+            result = await self.push_screen_wait(prompt)
+            if result is None:
+                if cancel_message:
+                    self._set_status(cancel_message, "yellow")
+                return None
+            value = result.strip()
+            if not value and not allow_empty:
+                self._set_status("Value cannot be empty.", "red")
+                return None
+            return value
+
+        async def _prompt_bits(
+            self,
+            message: str,
+            *,
+            initial_bits: Optional[int] = None,
+        ) -> Optional[int]:
+            initial_text = ""
+            if initial_bits is not None:
+                initial_text = (
+                    _format_bits_label(initial_bits)
+                    if initial_bits > 0
+                    else "fp32"
+                )
+            response = await self._prompt_text(
+                message,
+                placeholder=_format_allowed_bits_text(self.min_bits, self.max_bits),
+                initial=initial_text,
+                cancel_message="Input canceled.",
+            )
+            if response is None:
+                return None
+            try:
+                bits = _parse_bits_value(response)
+            except ValueError as exc:
+                self._set_status(str(exc), "red")
+                return None
+            try:
+                return self._validate_bits(bits)
+            except ValueError as exc:
+                self._set_status(str(exc), "red")
+                return None
+
+        async def action_edit_bits(self) -> None:
+            index = self._current_selection()
+            if index is None:
+                self._set_status("Select a tensor to modify.", "yellow")
+                return
+            entry = self.entries[index]
+            bits = await self._prompt_bits(
+                f"Set bit-width for '{entry.name}':",
+                initial_bits=entry.bits,
+            )
+            if bits is None:
+                return
+            self._apply_bits(index, bits)
+
+        def action_increase_bits(self) -> None:
+            index = self._current_selection()
+            if index is None:
+                self._set_status("Select a tensor to modify.", "yellow")
+                return
+            entry = self.entries[index]
+            current = entry.bits
+            if current <= 0:
+                candidate = max(self.min_bits, 1)
+            else:
+                candidate = current + 1
+            if self.max_bits is not None and candidate > self.max_bits:
+                if current >= self.max_bits:
+                    self._set_status("Already at maximum bit-width.", "yellow")
+                    return
+                candidate = self.max_bits
+            self._apply_bits(index, candidate)
+
+        def action_decrease_bits(self) -> None:
+            index = self._current_selection()
+            if index is None:
+                self._set_status("Select a tensor to modify.", "yellow")
+                return
+            entry = self.entries[index]
+            current = entry.bits
+            if current <= 0:
+                self._set_status("Tensor already kept as fp32.", "yellow")
+                return
+            candidate = current - 1
+            if candidate < self.min_bits:
+                candidate = 0
+            self._apply_bits(index, candidate)
+
+        def action_set_fp32(self) -> None:
+            index = self._current_selection()
+            if index is None:
+                self._set_status("Select a tensor first.", "yellow")
+                return
+            self._apply_bits(index, 0)
+
+        def action_reset_selected(self) -> None:
+            index = self._current_selection()
+            if index is None:
+                self._set_status("Select a tensor to reset.", "yellow")
+                return
+            entry = self.entries[index]
+            entry.bits = entry.default_bits
+            self._build_table()
+            self._update_summary()
+            self._set_status(
+                f"Reset {entry.name} to {_format_bits_label(entry.default_bits)}.",
+                "green",
+            )
+
+        def action_reset_all(self) -> None:
+            if not self.entries:
+                self._set_status("No tensors to reset.", "yellow")
+                return
+            for entry in self.entries:
+                entry.bits = entry.default_bits
+            self._build_table()
+            self._update_summary()
+            self._set_status("Reset all tensors to their default bit-widths.", "green")
+
+        async def action_set_all(self) -> None:
+            if not self.entries:
+                self._set_status("No tensors to configure.", "yellow")
+                return
+            bits = await self._prompt_bits("Apply bit-width to all tensors:")
+            if bits is None:
+                return
+            for entry in self.entries:
+                entry.bits = bits
+            self._build_table()
+            self._update_summary()
+            label = _format_bits_label(bits)
+            self._set_status(
+                f"Applied {label} to {len(self.entries)} tensor(s).",
+                "green",
+            )
+
+        async def action_search(self) -> None:
+            if not self.entries:
+                self._set_status("No tensors to search.", "yellow")
+                return
+            query = await self._prompt_text(
+                "Search tensor names (substring match):",
+                placeholder="Enter part of a tensor name",
+                cancel_message="Search canceled.",
+            )
+            if query is None:
+                return
+            lowered = query.lower()
+            for idx, entry in enumerate(self.entries):
+                if lowered in entry.name.lower():
+                    self._select_row(idx)
+                    self._set_status(
+                        f"Selected tensor '{entry.name}'.",
+                        "green",
+                    )
+                    return
+            self._set_status(f"No tensor matching '{query}'.", "red")
+
+        def action_focus_table(self) -> None:
+            if self._table is not None:
+                self._table.focus()
+
+        def action_accept(self) -> None:
+            self.cancelled = False
+            self.result = {entry.name: entry.bits for entry in self.entries}
+            self.exit()
+
+        def action_cancel(self) -> None:
+            self.cancelled = True
+            self.exit()
+
+        @on(DataTable.RowHighlighted, "#tensor-table")
+        def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+            self.selected_index = event.cursor_row
+
+        @on(Button.Pressed, "#btn-edit")
+        async def _on_edit_button(self, _: Button.Pressed) -> None:
+            await self.action_edit_bits()
+
+        @on(Button.Pressed, "#btn-all")
+        async def _on_all_button(self, _: Button.Pressed) -> None:
+            await self.action_set_all()
+
+        @on(Button.Pressed, "#btn-reset")
+        def _on_reset_button(self, _: Button.Pressed) -> None:
+            self.action_reset_selected()
+
+        @on(Button.Pressed, "#btn-reset-all")
+        def _on_reset_all_button(self, _: Button.Pressed) -> None:
+            self.action_reset_all()
+
+
+def interactive_select_tensor_bits(
+    entries: List[TensorConfigEntry],
+    min_bits: int,
+    max_bits: Optional[int],
+    page_size: int,
+) -> Dict[str, int]:
+    if not entries:
+        _print_warning(
+            "No floating-point tensors were found for interactive configuration.",
+        )
+        return {}
+
+    use_textual = bool(_TEXTUAL_SPEC) and sys.stdin.isatty() and sys.stdout.isatty()
+
+    if use_textual:
+        app = TensorBitwidthApp(entries, min_bits, max_bits)
+        try:
+            app.run()
+        except KeyboardInterrupt as exc:  # pragma: no cover - user interrupt
+            raise SystemExit("Interactive configuration canceled by user.") from exc
+        if app.cancelled:
+            raise SystemExit("Interactive configuration canceled by user.")
+        if app.result is not None:
+            return app.result
+        return {entry.name: entry.bits for entry in entries}
+
+    if _TEXTUAL_SPEC and not use_textual:
+        _print_warning(
+            "Interactive TUI requires a TTY; falling back to the legacy CLI interface.",
+        )
+    elif not _TEXTUAL_SPEC:
+        _print_warning(
+            "The 'textual' package is not installed; falling back to the legacy CLI interface.",
+        )
+    return _legacy_cli_select_tensor_bits(entries, min_bits, max_bits, page_size)
 
 
 def _fake_quant_symmetric(tensor: torch.Tensor, num_bits: int) -> torch.Tensor:
