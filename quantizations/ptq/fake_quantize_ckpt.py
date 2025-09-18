@@ -1009,7 +1009,8 @@ if _TEXTUAL_AVAILABLE:
             self._pending_targets = [entry.name]
             self._pending_label = entry.name
             self._msg(
-                f"Type a new bit-width for {entry.name}, then press Enter (Esc to cancel)."
+                "Type a new bit-width for "
+                f"{entry.name} (use f for fp32), then press Enter (Esc to cancel)."
             )
 
         def _start_bulk_digits(self, names: List[str], label: str) -> None:
@@ -1026,7 +1027,7 @@ if _TEXTUAL_AVAILABLE:
             self._pending_label = label
             self._msg(
                 f"{len(unique_names)} tensor(s) selected ({label}). "
-                "Type the new bit-width and press Enter (Esc to cancel)."
+                "Type the new bit-width (use f for fp32) and press Enter (Esc to cancel)."
             )
 
         def _start_all_digits(self) -> None:
@@ -1065,14 +1066,18 @@ if _TEXTUAL_AVAILABLE:
                 self._cancel_digit_mode(clear_highlight=was_bulk)
                 self._msg("Bit entry cancelled.")
                 return
-            try:
-                bits = int(bits_text)
-            except ValueError:
-                was_bulk = self._digit_mode == "bulk"
-                self._cancel_digit_mode(clear_highlight=was_bulk)
-                self._msg("Bit-width must be an integer.")
-                self.bell()
-                return
+            lowered = bits_text.lower()
+            if lowered == "f":
+                bits = 0
+            else:
+                try:
+                    bits = int(bits_text)
+                except ValueError:
+                    was_bulk = self._digit_mode == "bulk"
+                    self._cancel_digit_mode(clear_highlight=was_bulk)
+                    self._msg("Bit-width must be an integer or 'f' for fp32.")
+                    self.bell()
+                    return
             new_bits = self._clamp_bits(bits)
             total = len(self._pending_targets)
             changes: List[tuple[str, int, int]] = []
@@ -1223,13 +1228,22 @@ if _TEXTUAL_AVAILABLE:
                         self._digit_buffer.pop()
                         if self._digit_buffer:
                             preview = "".join(self._digit_buffer)
-                            self._msg(f"Pending bit-width: {preview}")
+                            if preview.lower() == "f":
+                                self._msg("Pending bit-width: fp32")
+                            else:
+                                self._msg(f"Pending bit-width: {preview}")
                         else:
                             self._msg("Cleared pending digits.")
                     else:
                         self.bell()
                     return
+                if key.lower() == "f":
+                    self._digit_buffer = ["f"]
+                    self._msg("Pending bit-width: fp32")
+                    return
                 if key.isdigit():
+                    if self._digit_buffer == ["f"]:
+                        self._digit_buffer.clear()
                     self._digit_buffer.append(key)
                     preview = "".join(self._digit_buffer)
                     self._msg(f"Pending bit-width: {preview}")
