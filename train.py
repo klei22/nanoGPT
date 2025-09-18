@@ -1529,6 +1529,9 @@ class Trainer:
                         self.console.print(log_message)
                         self.log_metrics(losses, running_mfu, current_epoch, self.tokens_trained, current_dataset, better_than_chance)
 
+                    if self.args.eval_only:
+                        self._write_eval_summary(losses)
+
                     if math.isnan(losses["val"]):
                         # If val loss is nan, then exit.
                         with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
@@ -1851,6 +1854,66 @@ class Trainer:
                 import wandb
                 wandb.log({"finished": True})
                 wandb.finish()
+
+    def _write_eval_summary(self, losses):
+        if not self.master_process:
+            return
+
+        out_dir = getattr(self.args, "out_dir", None)
+        if not out_dir:
+            return
+
+        os.makedirs(out_dir, exist_ok=True)
+
+        def _convert_value(value):
+            if isinstance(value, torch.Tensor):
+                value = value.detach()
+                if value.numel() == 1:
+                    return float(value.item())
+                return value.cpu().tolist()
+            if isinstance(value, (float, int)):
+                return float(value)
+            return value
+
+        summary = {}
+        for key in (
+            "train",
+            "train_std",
+            "val",
+            "val_std",
+            "top1_prob",
+            "top1_correct",
+            "target_rank",
+            "target_left_prob",
+            "target_prob",
+            "target_rank_95",
+            "left_prob_95",
+        ):
+            if key in losses:
+                summary[key] = _convert_value(losses[key])
+
+        datasets = losses.get('datasets')
+        if isinstance(datasets, dict) and datasets:
+            summary['datasets'] = {}
+            for dataset_name, metrics in datasets.items():
+                summary['datasets'][dataset_name] = {
+                    metric_name: _convert_value(metric_value)
+                    for metric_name, metric_value in metrics.items()
+                }
+
+        eval_path = os.path.join(out_dir, "eval_loss.txt")
+        with open(eval_path, "w", encoding="utf-8") as eval_file:
+            json.dump(summary, eval_file, indent=2, sort_keys=True)
+            eval_file.write("\n")
+
+        message = f"Saved evaluation metrics to {eval_path}"
+        if hasattr(self, "console"):
+            try:
+                self.console.print(message)
+            except Exception:
+                print(message)
+        else:
+            print(message)
 
 def main():
     args, model_group, training_group, logging_group = parse_args()
