@@ -50,14 +50,12 @@ else
 fi
 
 echo "=== Step 3: Evaluate the baseline (fp32) checkpoint ==="
-python3 train.py \
-  --dataset shakespeare_char \
+python3 sample.py \
   --out_dir "$OUT_DIR" \
-  --block_size "$BLOCK_SIZE" \
-  --batch_size "$BATCH_SIZE" \
   --init_from resume \
   --eval_only \
-  --eval_iters "$EVAL_ITERS"
+  --eval_iters "$EVAL_ITERS" \
+  --eval_dataset shakespeare_char
 
 step=4
 for bit in "${BITS[@]}"; do
@@ -77,14 +75,12 @@ for bit in "${BITS[@]}"; do
   step=$((step + 1))
 
   echo "=== Step ${step}: Evaluate the ${bit}-bit checkpoint ==="
-  python3 train.py \
-    --dataset shakespeare_char \
+  python3 sample.py \
     --out_dir "$QUANT_OUT_DIR" \
-    --block_size "$BLOCK_SIZE" \
-    --batch_size "$BATCH_SIZE" \
     --init_from resume \
     --eval_only \
-    --eval_iters "$EVAL_ITERS"
+    --eval_iters "$EVAL_ITERS" \
+    --eval_dataset shakespeare_char
 
   step=$((step + 1))
 done

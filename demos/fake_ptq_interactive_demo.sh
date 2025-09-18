@@ -37,14 +37,12 @@ python3 train.py \
   --always_save_checkpoint
 
 echo "=== Step 3: Evaluate the baseline checkpoint ==="
-python3 train.py \
-  --dataset shakespeare_char \
+python3 sample.py \
   --out_dir "$OUT_DIR" \
-  --block_size 128 \
-  --batch_size 64 \
   --init_from resume \
   --eval_only \
-  --eval_iters 200
+  --eval_iters 200 \
+  --eval_dataset shakespeare_char
 
 LAST_PLAN_PATH="$OUT_DIR/$LAST_PLAN_BASENAME"
 TUI_DEFAULT_ARGS=()
@@ -74,11 +72,9 @@ if [ -f "$LAST_PLAN_PATH" ]; then
 fi
 
 echo "=== Step 5: Evaluate the quantized checkpoint ==="
-python3 train.py \
-  --dataset shakespeare_char \
+python3 sample.py \
   --out_dir "$QUANTIZED_OUT_DIR" \
-  --block_size 128 \
-  --batch_size 64 \
   --init_from resume \
   --eval_only \
-  --eval_iters 200
+  --eval_iters 200 \
+  --eval_dataset shakespeare_char
