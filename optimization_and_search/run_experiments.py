@@ -5,6 +5,7 @@ from datetime import datetime
 from itertools import product
 import argparse
 import os
+import copy
 
 import yaml
 from rich import print
@@ -116,15 +117,17 @@ def _substitute_run_name(obj, run_name: str):
 def generate_combinations(config: dict):
     """Yield all valid parameter combinations for a config dict.
 
-    Supports arbitrarily nested ``parameter_groups``.
+    Supports arbitrarily nested ``parameter_groups`` and re-usable
+    ``named_parameter_groups`` that can be referenced inside any group.
     """
+
     def _expand_base_and_conditionals(cfg: dict):
         # Split plain parameters (base) from conditional specs
         base = {
             k: (expand_range(v) if isinstance(v, dict) and 'range' in v else v)
             for k, v in cfg.items()
             if not (isinstance(v, dict) and 'conditions' in v)
-               and k != 'parameter_groups'
+               and k not in ('parameter_groups', 'named_parameter_groups')
         }
         # Ensure each base value is iterable for cartesian product
         base = {k: (v if isinstance(v, list) else [v]) for k, v in base.items()}
@@ -166,18 +169,99 @@ def generate_combinations(config: dict):
             valid = next_valid
         return valid
 
-    def recurse(cfg: dict):
+    def _resolve_named_group(name: str, named_groups: dict) -> dict:
+        if name not in named_groups:
+            raise KeyError(f"Named parameter group '{name}' is not defined.")
+        group_value = named_groups[name]
+        if not isinstance(group_value, dict):
+            raise TypeError(
+                f"Named parameter group '{name}' must be a mapping, got {type(group_value).__name__}."
+            )
+        return copy.deepcopy(group_value)
+
+    def _expand_group_variations(group_cfg: dict, named_groups: dict) -> list[dict]:
+        if not isinstance(group_cfg, dict):
+            raise TypeError(
+                "Entries inside 'parameter_groups' must be mappings to merge with the base configuration."
+            )
+
+        variations = group_cfg.get('group_variations')
+        if not variations:
+            return [group_cfg]
+
+        if not isinstance(variations, list):
+            variations = [variations]
+
+        base_overlay = {k: v for k, v in group_cfg.items() if k != 'group_variations'}
+        expanded: list[dict] = []
+        for variant in variations:
+            if isinstance(variant, str):
+                variant_cfg = _resolve_named_group(variant, named_groups)
+            elif isinstance(variant, dict):
+                if 'named_group' in variant:
+                    variant_cfg = _resolve_named_group(variant['named_group'], named_groups)
+                    overrides = {k: v for k, v in variant.items() if k != 'named_group'}
+                    variant_cfg.update(overrides)
+                elif 'named_groups' in variant:
+                    names = variant['named_groups']
+                    if not isinstance(names, (list, tuple)):
+                        raise TypeError(
+                            "'named_groups' must be a list of group names when used inside 'group_variations'."
+                        )
+                    variant_cfg = {}
+                    for group_name in names:
+                        variant_cfg.update(_resolve_named_group(group_name, named_groups))
+                    overrides = {
+                        k: v for k, v in variant.items() if k != 'named_groups'
+                    }
+                    variant_cfg.update(overrides)
+                else:
+                    variant_cfg = variant
+            else:
+                raise TypeError(
+                    "Each entry under 'group_variations' must be either a mapping or the name of a"
+                    " named parameter group."
+                )
+
+            if not isinstance(variant_cfg, dict):
+                raise TypeError(
+                    "Resolved parameter group variations must be mappings in order to merge with the base configuration."
+                )
+
+            expanded.append({**base_overlay, **variant_cfg})
+
+        return expanded
+
+    def recurse(cfg: dict, active_named_groups: dict):
+        local_named = cfg.get('named_parameter_groups')
+        if local_named:
+            if not isinstance(local_named, dict):
+                raise TypeError(
+                    "'named_parameter_groups' entries must be mappings of names to parameter dictionaries."
+                )
+            named_groups = {**active_named_groups, **local_named}
+        else:
+            named_groups = active_named_groups
+
         groups = cfg.get('parameter_groups')
         if groups:
             # Coerce to list to handle both single dict and list-of-dicts
             groups_list = groups if isinstance(groups, list) else [groups]
-            base_cfg = {k: v for k, v in cfg.items() if k != 'parameter_groups'}
+            base_cfg = {
+                k: v
+                for k, v in cfg.items()
+                if k not in ('parameter_groups', 'named_parameter_groups')
+            }
             for grp in groups_list:
-                merged = {**base_cfg, **grp}
-                yield from recurse(merged)
+                for expanded in _expand_group_variations(grp, named_groups):
+                    merged = {**base_cfg, **expanded}
+                    yield from recurse(merged, named_groups)
             return
 
-        base, conditionals = _expand_base_and_conditionals(cfg)
+        cfg_without_named = {
+            k: v for k, v in cfg.items() if k != 'named_parameter_groups'
+        }
+        base, conditionals = _expand_base_and_conditionals(cfg_without_named)
         keys = list(base)
         # itertools.product with zero iterables yields one empty tuple, which is what we want
         for combo in product(*(base[k] for k in keys)):
@@ -185,8 +269,8 @@ def generate_combinations(config: dict):
             for final in _apply_conditionals(combo_dict, conditionals):
                 yield final
 
-    # Work on a shallow copy to avoid mutating caller's dict
-    yield from recurse(dict(config))
+    # Work on a deep copy to avoid mutating caller's dict or named group definitions
+    yield from recurse(copy.deepcopy(config), {})
 
 
 def format_run_name(combo: dict, base: str, prefix: str) -> str:
