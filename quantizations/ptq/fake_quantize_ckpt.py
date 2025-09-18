@@ -738,8 +738,10 @@ if _TEXTUAL_AVAILABLE:
         }
         PromptScreen Container#buttons {
             layout: horizontal;
-            gap: 1;
             padding-top: 1;
+        }
+        PromptScreen Container#buttons Button#cancel {
+            margin-left: 1;
         }
         """
 
