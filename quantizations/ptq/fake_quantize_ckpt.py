@@ -31,14 +31,14 @@ _TEXTUAL_AVAILABLE = False
 _TEXTUAL_SPEC = importlib.util.find_spec("textual")
 if _TEXTUAL_SPEC:
     try:
-        from textual import events, on
+        from textual import events, on, work
         from textual.app import App, ComposeResult
         from textual.containers import Container
         from textual.screen import Screen
         from textual.widgets import Button, DataTable, Footer, Header, Input, Label
     except Exception:  # pragma: no cover - import guard for optional dependency
         _TEXTUAL_SPEC = None
-        App = ComposeResult = Container = Screen = Button = DataTable = Footer = Header = Input = Label = None  # type: ignore[assignment]
+        App = ComposeResult = Container = Screen = Button = DataTable = Footer = Header = Input = Label = events = on = work = None  # type: ignore[assignment]
     else:
         _TEXTUAL_AVAILABLE = True
 
@@ -676,11 +676,12 @@ if _TEXTUAL_AVAILABLE:
             f"""[b]Hotkeys[/b]:
   • Arrow keys / Tab move between cells
   • Enter or b starts editing the selected tensor; type digits then press Enter
-  • + / - adjust the selected tensor one bit at a time
+  • k increases and j decreases the selected tensor one bit at a time
   • f toggles float32 for the current tensor
   • a selects every tensor for a bulk update
-  • / matches tensors by regular expression for a bulk update
+  • g matches tensors by regular expression for a bulk update
   • r resets the highlighted tensor; R resets all tensors
+  • p shows this command reference in the notification tray
   • Esc cancels the current entry or clears bulk selection highlights
   • Ctrl+Z / Ctrl+Y undo or redo recent changes
   • Ctrl+S applies the configuration, Ctrl+C cancels the session
@@ -750,6 +751,16 @@ if _TEXTUAL_AVAILABLE:
             ("ctrl+c", "cancel", "Cancel"),
             ("ctrl+z", "undo", "Undo"),
             ("ctrl+y", "redo", "Redo"),
+            ("enter", "noop", "Edit tensor"),
+            ("b", "noop", "Edit tensor"),
+            ("k", "noop", "Bit +1"),
+            ("j", "noop", "Bit -1"),
+            ("f", "noop", "Toggle fp32"),
+            ("a", "noop", "Set all"),
+            ("g", "noop", "Regex bulk"),
+            ("r", "noop", "Reset tensor"),
+            ("R", "noop", "Reset all"),
+            ("p", "noop", "Commands"),
         ]
 
         def __init__(
@@ -787,7 +798,7 @@ if _TEXTUAL_AVAILABLE:
         def on_mount(self) -> None:
             self.table = self.query_one(DataTable)
             self.title = "Fake PTQ Bit-width Planner"
-            self.sub_title = "Use ? for help."
+            self.sub_title = "Arrows move • Enter edits • j/k adjust • p commands"
             if self.table is not None:
                 self.table.cursor_type = "cell"
                 try:
@@ -795,7 +806,7 @@ if _TEXTUAL_AVAILABLE:
                 except Exception:
                     pass
             self.refresh_table(preserve_cursor=False)
-            self._msg("Use the arrow keys to highlight a tensor. Press ? for help.")
+            self._msg("Use the arrow keys to highlight a tensor. Press p for commands.")
 
         def refresh_table(self, preserve_cursor: bool = True) -> None:
             if not self.table:
@@ -866,7 +877,7 @@ if _TEXTUAL_AVAILABLE:
             changed = sum(entry.bits != entry.default_bits for entry in self.entries)
             if changed:
                 summary += f" • {changed} tensor(s) modified"
-            summary += " • Ctrl+S to apply, Ctrl+C to cancel, ? for help"
+            summary += " • Ctrl+S to apply, Ctrl+C to cancel, p for commands"
             self.sub_title = summary
 
         def _current_entry(self) -> Optional[TensorConfigEntry]:
@@ -1101,7 +1112,11 @@ if _TEXTUAL_AVAILABLE:
                     self._msg(message)
             self._cancel_digit_mode()
 
-        async def _start_regex_prompt(self) -> None:
+        @work(exclusive=True)
+        async def _regex_prompt_worker(self) -> None:
+            await self._run_regex_prompt()
+
+        async def _run_regex_prompt(self) -> None:
             if not self.entries:
                 self._msg("No tensors available for selection.")
                 return
@@ -1175,8 +1190,14 @@ if _TEXTUAL_AVAILABLE:
             else:
                 self._msg("Redo performed.")
 
-        def action_show_help(self) -> None:
+        def action_noop(self) -> None:
+            """Placeholder for footer bindings that are handled elsewhere."""
+
+        def action_show_commands(self) -> None:
             self._msg(self.help_text, timeout=8.0)
+
+        def action_show_help(self) -> None:
+            self.action_show_commands()
 
         def _msg(self, text: str, timeout: float = 3.0) -> None:
             try:
@@ -1216,44 +1237,48 @@ if _TEXTUAL_AVAILABLE:
                 self.bell()
                 return
 
-            if key == "ctrl+s":
+            lower = key.lower()
+
+            if lower == "ctrl+s":
                 self.action_confirm()
                 return
-            if key == "ctrl+c":
+            if lower == "ctrl+c":
                 self.action_cancel()
                 return
-            if key == "ctrl+z":
+            if lower == "ctrl+z":
                 self.action_undo()
                 return
-            if key == "ctrl+y":
+            if lower == "ctrl+y":
                 self.action_redo()
                 return
             if key == "?":
                 self.action_show_help()
                 return
-            if key == "escape":
+            if lower == "p":
+                self.action_show_commands()
+                return
+            if lower == "escape":
                 if self._highlight_matches:
                     self._clear_highlight()
                 return
 
             entry = self._current_entry()
-            if key in {"+", "="}:
+            if lower == "k":
                 if entry:
                     self._nudge_entry(entry, 1)
                 return
-            if key in {"-", "_"}:
+            if lower == "j":
                 if entry:
                     self._nudge_entry(entry, -1)
                 return
-            if key == "enter":
+            if lower == "enter":
                 if entry:
                     self._start_single_digit(entry)
                 return
-            if key == "/":
-                await self._start_regex_prompt()
+            if lower == "g":
+                self._regex_prompt_worker()
                 return
 
-            lower = key.lower()
             if lower == "b":
                 if entry:
                     self._start_single_digit(entry)
