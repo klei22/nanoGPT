@@ -3,6 +3,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -32,10 +33,10 @@ if _TEXTUAL_SPEC:
     try:
         from textual.app import App, ComposeResult
         from textual.containers import Container
-        from textual.widgets import DataTable, Footer, Header, Input, Static
+        from textual.widgets import DataTable, Footer, Header, Static
     except Exception:  # pragma: no cover - import guard for optional dependency
         _TEXTUAL_SPEC = None
-        App = ComposeResult = DataTable = Footer = Header = Input = Static = None  # type: ignore[assignment]
+        App = ComposeResult = DataTable = Footer = Header = Static = None  # type: ignore[assignment]
     else:
         _TEXTUAL_AVAILABLE = True
 
@@ -649,6 +650,11 @@ def _legacy_interactive_select_tensor_bits(
 
 if _TEXTUAL_AVAILABLE:
 
+    @dataclass
+    class _HistoryEntry:
+        description: str
+        changes: List[Tuple[str, int, int]]
+
     def _textual_instruction_text(min_bits: int, max_bits: Optional[int]) -> str:
         if max_bits is None:
             if min_bits <= 0:
@@ -656,9 +662,7 @@ if _TEXTUAL_AVAILABLE:
                     "Allowed bit-widths: 0 (keep float32) or any positive integer."
                 )
             else:
-                allowed_line = (
-                    f"Allowed bit-widths: {min_bits}+ (use 0 to keep float32)."
-                )
+                allowed_line = f"Allowed bit-widths: {min_bits}+ (use 0 to keep float32)."
         else:
             if min_bits <= 0:
                 allowed_line = (
@@ -670,20 +674,20 @@ if _TEXTUAL_AVAILABLE:
                 )
 
         instructions = textwrap.dedent(
-            f"""[b]Keyboard shortcuts[/b]:
-  • ↑/↓/PgUp/PgDn to move between tensors
-  • Enter fills a set command for the selected tensor; : focuses the command box
-  • + / - adjust the selected tensor, f toggles float32
-  • r resets the selection, R resets every tensor
-  • Ctrl+S applies changes, Ctrl+C cancels the session
+            f"""[b]Navigation[/b]:
+  • Arrow keys / PgUp / PgDn move between tensors and columns
+  • Enter or b edits the highlighted tensor cell
+  • + / - adjust the highlighted tensor
+  • f toggles float32 for the highlighted tensor
+  • r resets the highlighted tensor; R resets all tensors
 
-[b]Commands[/b]:
-  set <index|name> <bits>   — assign a bit-width to a tensor
-  all <bits>                — update every tensor at once
-  reset [<index|name>]      — reset one tensor or all tensors
-  done / apply              — accept the configuration
-  quit / cancel             — abort the operation
-  help                      — show these instructions again
+[b]Bulk editing[/b]:
+  • / prompts for a regex, highlights matches, then type digits + Enter to update all matches
+  • Ctrl+Z / Ctrl+Y undo and redo (last 10 actions)
+
+[b]Session[/b]:
+  • Ctrl+S applies changes, Ctrl+C cancels
+  • ? shows this help text
 {allowed_line}
 """
         ).strip()
@@ -706,49 +710,21 @@ if _TEXTUAL_AVAILABLE:
             height: 1fr;
         }
 
-        #instructions {
-            padding-top: 1;
-            color: yellow;
-        }
-
         #summary {
             padding-top: 1;
             color: cyan;
+        }
+
+        #instructions {
+            padding-top: 1;
+            color: yellow;
         }
 
         #status {
             padding-top: 1;
             min-height: 1;
         }
-
-        #command-row {
-            layout: horizontal;
-            padding-top: 1;
-        }
-
-        #command-label {
-            width: 11;
-            color: magenta;
-        }
-
-        #command-input {
-            width: 1fr;
-        }
         """
-
-        BINDINGS = [
-            ("enter", "prepare_set", "Set selected"),
-            (":", "focus_command", "Command box"),
-            ("a", "prepare_all", "Set all"),
-            ("+", "increase", "Increase"),
-            ("-", "decrease", "Decrease"),
-            ("f", "toggle_float", "Toggle float32"),
-            ("r", "reset_selected", "Reset selected"),
-            ("R", "reset_all", "Reset all"),
-            ("ctrl+s", "confirm", "Apply"),
-            ("ctrl+c", "cancel", "Cancel"),
-            ("escape", "focus_table", "Focus table"),
-        ]
 
         def __init__(
             self,
@@ -769,24 +745,38 @@ if _TEXTUAL_AVAILABLE:
             }
             self.cancelled = False
             self._result: Optional[Dict[str, int]] = None
+            self._table: Optional[DataTable] = None
+            self._column_keys: List[str] = [
+                "index",
+                "tensor",
+                "shape",
+                "dtype",
+                "elements",
+                "current",
+                "default",
+            ]
+            self._highlighted: set[str] = set()
+            self._history: List[_HistoryEntry] = []
+            self._history_index = 0
+            self._mode: str = "normal"
+            self._digit_buffer: str = ""
+            self._regex_buffer: str = ""
+            self._bit_target: Optional[str] = None
+            self._bulk_targets: List[TensorConfigEntry] = []
 
         def compose(self) -> ComposeResult:
-            yield Header(show_clock=False)
+            yield Header(show_clock=True)
             with Container(id="layout"):
-                yield DataTable(id="tensor-table")
-                yield Static(self.instructions_text, id="instructions")
+                yield DataTable(id="table", zebra_stripes=True)
                 yield Static("", id="summary")
+                yield Static(self.instructions_text, id="instructions")
                 yield Static("", id="status")
-                with Container(id="command-row"):
-                    yield Static("Command:", id="command-label")
-                    yield Input(
-                        placeholder="Commands: set 5 4 | all 6 | done | help",
-                        id="command-input",
-                    )
             yield Footer()
 
         def on_mount(self) -> None:
             table = self.query_one(DataTable)
+            self._table = table
+            table.clear(columns=True)
             table.add_column("#", key="index", width=6)
             table.add_column("Tensor", key="tensor")
             table.add_column("Shape", key="shape")
@@ -807,19 +797,28 @@ if _TEXTUAL_AVAILABLE:
                     key=entry.name,
                 )
 
-            table.cursor_type = "row"
+            table.cursor_type = "cell"
             table.zebra_stripes = True
             try:
-                table.styles.height = max(self.page_size, 1) + 6
+                table.styles.height = max(self.page_size, 1) + 4
             except Exception:
                 pass
 
-            table.focus()
+            if self.entries:
+                current_idx = self._column_keys.index("current")
+                try:
+                    table.move_cursor(row=0, column=current_idx, scroll=True)
+                except Exception:
+                    pass
+
             self._update_summary()
-            self.set_status(
-                "Use the arrow keys to highlight a tensor. Press Enter to edit it.",
-                "cyan",
-            )
+            if self.entries:
+                self.set_status(
+                    "Use the arrow keys to highlight a tensor. Press Enter or b to edit it.",
+                    "cyan",
+                )
+            else:
+                self.set_status("No tensors available for configuration.", "yellow")
 
         def set_status(self, message: str, style: str = "cyan") -> None:
             status = self.query_one("#status", Static)
@@ -828,22 +827,48 @@ if _TEXTUAL_AVAILABLE:
             else:
                 status.update("")
 
+        def _msg(self, message: str, timeout: float = 2.0) -> None:
+            try:
+                self.notify(message, timeout=timeout)
+            except AttributeError:
+                self.bell()
+
         def _selected_entry(self) -> Optional[TensorConfigEntry]:
-            table = self.query_one(DataTable)
-            row_key = table.cursor_row
+            if self._table is None:
+                return None
+            row_key = self._table.cursor_row
             if row_key is None:
                 return None
             key_value = getattr(row_key, "value", row_key)
             return self._entries_by_name.get(str(key_value))
 
-        def _focus_entry(self, entry: TensorConfigEntry) -> None:
-            table = self.query_one(DataTable)
-            index = self._index_by_name.get(entry.name)
-            if index is not None:
-                try:
-                    table.move_cursor(row=index - 1, scroll=True)
-                except Exception:
-                    pass
+        def _cursor_column_key(self) -> Optional[str]:
+            if self._table is None:
+                return None
+            coord = self._table.cursor_coordinate
+            if coord is None:
+                return None
+            column_index = getattr(coord, "column", None)
+            if column_index is None:
+                return None
+            if 0 <= column_index < len(self._column_keys):
+                return self._column_keys[column_index]
+            return None
+
+        def _focus_current_column(self) -> None:
+            if self._table is None:
+                return
+            coord = self._table.cursor_coordinate
+            if coord is None:
+                return
+            row_index = getattr(coord, "row", None)
+            if row_index is None:
+                return
+            current_idx = self._column_keys.index("current")
+            try:
+                self._table.move_cursor(row=row_index, column=current_idx, scroll=True)
+            except Exception:
+                pass
 
         def _min_quant_bits(self) -> int:
             return self.min_bits if self.min_bits > 0 else 1
@@ -866,8 +891,19 @@ if _TEXTUAL_AVAILABLE:
             return label
 
         def _update_row(self, entry: TensorConfigEntry) -> None:
-            table = self.query_one(DataTable)
-            table.update_cell(entry.name, "current", self._format_current(entry))
+            if self._table is None:
+                return
+            try:
+                self._table.update_cell(entry.name, "current", self._format_current(entry))
+            except Exception:
+                pass
+            tensor_label = entry.name
+            if entry.name in self._highlighted:
+                tensor_label = f"[reverse]{tensor_label}[/reverse]"
+            try:
+                self._table.update_cell(entry.name, "tensor", tensor_label)
+            except Exception:
+                pass
 
         def _update_summary(self) -> None:
             summary = self.query_one("#summary", Static)
@@ -885,56 +921,258 @@ if _TEXTUAL_AVAILABLE:
                 message += f" • {changed} tensor(s) modified"
             summary.update(message)
 
-        def focus_table(self) -> None:
-            table = self.query_one(DataTable)
-            table.focus()
-            try:
-                table.action_select_cursor()
-            except Exception:
-                pass
+        def _set_highlight(self, names: set[str]) -> None:
+            self._highlighted = names
+            if self._table is None:
+                return
+            for entry in self.entries:
+                label = entry.name
+                if entry.name in names:
+                    label = f"[reverse]{label}[/reverse]"
+                try:
+                    self._table.update_cell(entry.name, "tensor", label)
+                except Exception:
+                    pass
 
-        def action_focus_table(self) -> None:
-            self.focus_table()
+        def _push_history(self, description: str, changes: List[Tuple[str, int, int]]) -> None:
+            if not changes:
+                return
+            if self._history_index < len(self._history):
+                self._history = self._history[: self._history_index]
+            self._history.append(_HistoryEntry(description, changes))
+            if len(self._history) > 10:
+                excess = len(self._history) - 10
+                self._history = self._history[excess:]
+                self._history_index = len(self._history)
+            else:
+                self._history_index = len(self._history)
 
-        def action_focus_command(self) -> None:
-            command_input = self.query_one("#command-input", Input)
-            command_input.focus()
-            self.set_status("Type a command and press Enter to apply it.", "cyan")
+        def _apply_entry_updates(
+            self,
+            updates: List[Tuple[TensorConfigEntry, int]],
+            description: str,
+        ) -> bool:
+            changes: List[Tuple[str, int, int]] = []
+            for entry, target_bits in updates:
+                new_bits = self._clamp_bits(target_bits)
+                if new_bits == entry.bits:
+                    continue
+                changes.append((entry.name, entry.bits, new_bits))
+                entry.bits = new_bits
+                self._update_row(entry)
+            if not changes:
+                return False
+            self._update_summary()
+            self._push_history(description, changes)
+            self._msg(description)
+            return True
 
-        def action_prepare_set(self) -> None:
+        def _start_bit_entry(self) -> None:
             entry = self._selected_entry()
             if entry is None:
-                self.set_status("Select a tensor first to edit its bit-width.", "yellow")
+                self.set_status("Select a tensor to edit its bit-width.", "yellow")
+                self.bell()
                 return
-            command_input = self.query_one("#command-input", Input)
-            index = self._index_by_name.get(entry.name, 0)
-            command_input.value = f"set {index} "
-            command_input.cursor_position = len(command_input.value)
-            command_input.focus()
+            if self._cursor_column_key() != "current":
+                self._focus_current_column()
+            self._mode = "bit-entry"
+            self._digit_buffer = ""
+            self._bit_target = entry.name
+            self._update_bit_entry_prompt()
+
+        def _update_bit_entry_prompt(self) -> None:
+            if self._mode == "bit-entry":
+                entry = self._entries_by_name.get(self._bit_target or "")
+                if entry is None:
+                    return
+                digits = self._digit_buffer or "…"
+                self.set_status(
+                    f"Type a bit-width for {entry.name} and press Enter (Esc to cancel). [{digits}]",
+                    "magenta",
+                )
+            elif self._mode == "bulk-bit":
+                digits = self._digit_buffer or "…"
+                count = len(self._bulk_targets)
+                self.set_status(
+                    f"{count} tensor(s) highlighted. Type a bit-width and press Enter. [{digits}]",
+                    "magenta",
+                )
+
+        def _cancel_bit_entry(self) -> None:
+            if self._mode == "bit-entry":
+                self._mode = "normal"
+                self._digit_buffer = ""
+                self._bit_target = None
+                self.set_status("Bit edit cancelled.", "yellow")
+            elif self._mode == "bulk-bit":
+                self._enter_normal_mode()
+                self.set_status("Bulk edit cancelled.", "yellow")
+
+        def _commit_bit_entry(self) -> None:
+            if not self._digit_buffer:
+                self.set_status("Enter a bit-width before pressing Enter.", "yellow")
+                self.bell()
+                return
+            try:
+                bits = int(self._digit_buffer)
+            except ValueError:
+                self.set_status("Bit-width must be an integer value.", "red")
+                self.bell()
+                return
+            error = self._validate_bits(bits)
+            if error:
+                self.set_status(error, "red")
+                self.bell()
+                return
+            label = _format_bits_label(bits)
+            if self._mode == "bit-entry":
+                if not self._bit_target:
+                    self._cancel_bit_entry()
+                    return
+                entry = self._entries_by_name.get(self._bit_target)
+                if entry is None:
+                    self._cancel_bit_entry()
+                    return
+                description = f"{entry.name} → {label}"
+                applied = self._apply_entry_updates([(entry, bits)], description)
+                self._mode = "normal"
+                self._digit_buffer = ""
+                self._bit_target = None
+                if applied:
+                    style = "green"
+                    if bits <= 0:
+                        self.set_status(f"Set {entry.name} to float32.", style)
+                    else:
+                        self.set_status(f"Set {entry.name} to {label}.", style)
+                else:
+                    self.set_status("No change applied.", "yellow")
+            elif self._mode == "bulk-bit":
+                targets = list(self._bulk_targets)
+                count = len(targets)
+                description = f"Regex update ({count} tensors) → {label}"
+                applied = self._apply_entry_updates([(entry, bits) for entry in targets], description)
+                self._enter_normal_mode()
+                if applied:
+                    self.set_status(
+                        f"Applied {label} to {count} tensor(s).",
+                        "green",
+                    )
+                else:
+                    self.set_status("No bit-widths were changed.", "yellow")
+
+        def _handle_bit_entry_key(self, event: events.Key) -> None:
+            key = event.key
+            char = event.character or ""
+            if key == "escape":
+                self._cancel_bit_entry()
+                event.stop()
+                return
+            if key == "enter":
+                self._commit_bit_entry()
+                event.stop()
+                return
+            if key == "backspace":
+                if self._digit_buffer:
+                    self._digit_buffer = self._digit_buffer[:-1]
+                    self._update_bit_entry_prompt()
+                else:
+                    self.bell()
+                event.stop()
+                return
+            if len(char) == 1 and char.isdigit():
+                self._digit_buffer += char
+                self._update_bit_entry_prompt()
+                event.stop()
+                return
+            event.stop()
+
+        def _start_regex_mode(self) -> None:
+            if not self.entries:
+                self.set_status("No tensors available to match.", "yellow")
+                self.bell()
+                return
+            self._mode = "regex"
+            self._regex_buffer = ""
+            self._digit_buffer = ""
+            self._bit_target = None
+            self._bulk_targets = []
+            self._set_highlight(set())
             self.set_status(
-                f"Enter a bit-width for {entry.name} and press Enter to apply.", "cyan"
+                "Regex selection: type a pattern and press Enter (Esc to cancel).",
+                "magenta",
             )
 
-        def action_prepare_all(self) -> None:
-            command_input = self.query_one("#command-input", Input)
-            command_input.value = "all "
-            command_input.cursor_position = len(command_input.value)
-            command_input.focus()
+        def _update_regex_prompt(self) -> None:
             self.set_status(
-                "Enter a bit-width to apply to all tensors, then press Enter.",
-                "cyan",
+                f"Regex selection: /{self._regex_buffer}",
+                "magenta",
             )
 
-        def action_increase(self) -> None:
-            self._adjust_selected(1)
+        def _finish_regex_input(self) -> None:
+            try:
+                pattern = re.compile(self._regex_buffer)
+            except re.error as exc:
+                self.set_status(f"Invalid regex: {exc}", "red")
+                self.bell()
+                return
+            matches = [entry for entry in self.entries if pattern.search(entry.name)]
+            if not matches:
+                self._set_highlight(set())
+                self.set_status(
+                    f"No tensors matched /{pattern.pattern}/. Type another pattern or press Esc.",
+                    "yellow",
+                )
+                return
+            self._bulk_targets = matches
+            self._set_highlight({entry.name for entry in matches})
+            self._mode = "bulk-bit"
+            self._digit_buffer = ""
+            self._update_bit_entry_prompt()
+            self._msg(f"Matched {len(matches)} tensor(s) with /{pattern.pattern}/")
 
-        def action_decrease(self) -> None:
-            self._adjust_selected(-1)
+        def _cancel_regex_mode(self) -> None:
+            self._enter_normal_mode()
+            self.set_status("Regex selection cancelled.", "yellow")
+
+        def _handle_regex_key(self, event: events.Key) -> None:
+            key = event.key
+            char = event.character or ""
+            if key == "escape":
+                self._cancel_regex_mode()
+                event.stop()
+                return
+            if key == "enter":
+                self._finish_regex_input()
+                event.stop()
+                return
+            if key == "backspace":
+                if self._regex_buffer:
+                    self._regex_buffer = self._regex_buffer[:-1]
+                    self._update_regex_prompt()
+                else:
+                    self.bell()
+                event.stop()
+                return
+            if len(char) == 1:
+                self._regex_buffer += char
+                self._update_regex_prompt()
+                event.stop()
+                return
+            event.stop()
+
+        def _enter_normal_mode(self) -> None:
+            self._mode = "normal"
+            self._digit_buffer = ""
+            self._regex_buffer = ""
+            self._bit_target = None
+            self._bulk_targets = []
+            self._set_highlight(set())
 
         def _adjust_selected(self, delta: int) -> None:
             entry = self._selected_entry()
             if entry is None:
                 self.set_status("Select a tensor before adjusting bit-widths.", "yellow")
+                self.bell()
                 return
             current = entry.bits
             if delta > 0:
@@ -946,12 +1184,12 @@ if _TEXTUAL_AVAILABLE:
             else:
                 if current <= 0:
                     self.set_status(f"{entry.name} is already float32.", "yellow")
+                    self.bell()
                     return
                 new_bits = current + delta
                 if new_bits <= 0:
                     new_bits = 0
                 new_bits = self._clamp_bits(new_bits)
-
             if new_bits == current:
                 if self.max_bits is not None and current >= self.max_bits and delta > 0:
                     self.set_status(
@@ -962,71 +1200,49 @@ if _TEXTUAL_AVAILABLE:
                     self.set_status(f"{entry.name} is already float32.", "yellow")
                 else:
                     self.set_status("No change applied.", "yellow")
+                self.bell()
                 return
+            label = _format_bits_label(new_bits)
+            if self._apply_entry_updates([(entry, new_bits)], f"{entry.name} → {label}"):
+                if new_bits <= 0:
+                    self.set_status(f"Set {entry.name} to float32.", "green")
+                else:
+                    self.set_status(f"Set {entry.name} to {label}.", "green")
 
-            entry.bits = new_bits
-            self._update_row(entry)
-            self._update_summary()
-            if new_bits <= 0:
-                self.set_status(f"Set {entry.name} to float32.", "green")
-            else:
-                self.set_status(
-                    f"Set {entry.name} to {_format_bits_label(new_bits)}.", "green"
-                )
-
-        def action_toggle_float(self) -> None:
+        def _toggle_float(self) -> None:
             entry = self._selected_entry()
             if entry is None:
                 self.set_status("Select a tensor before toggling float32.", "yellow")
+                self.bell()
                 return
             if entry.bits <= 0:
                 new_bits = self._clamp_bits(self._min_quant_bits())
-                entry.bits = new_bits
-                self._update_row(entry)
-                self._update_summary()
-                self.set_status(
-                    f"Quantized {entry.name} at {_format_bits_label(new_bits)}.",
-                    "green",
-                )
+                label = _format_bits_label(new_bits)
+                if self._apply_entry_updates([(entry, new_bits)], f"{entry.name} → {label}"):
+                    self.set_status(f"Quantized {entry.name} at {label}.", "green")
             else:
-                entry.bits = 0
-                self._update_row(entry)
-                self._update_summary()
-                self.set_status(f"Set {entry.name} to float32.", "green")
+                if self._apply_entry_updates([(entry, 0)], f"{entry.name} → fp32"):
+                    self.set_status(f"Set {entry.name} to float32.", "green")
 
-        def action_reset_selected(self) -> None:
+        def _reset_selected(self) -> None:
             entry = self._selected_entry()
             if entry is None:
                 self.set_status("Select a tensor to reset it to the default.", "yellow")
+                self.bell()
                 return
-            entry.bits = entry.default_bits
-            self._update_row(entry)
-            self._update_summary()
-            self.set_status(
-                f"Reset {entry.name} to {_format_bits_label(entry.default_bits)}.",
-                "green",
-            )
+            label = _format_bits_label(entry.default_bits)
+            if self._apply_entry_updates([(entry, entry.default_bits)], f"{entry.name} → {label}"):
+                self.set_status(
+                    f"Reset {entry.name} to {label}.",
+                    "green",
+                )
 
-        def action_reset_all(self) -> None:
-            for entry in self.entries:
-                entry.bits = entry.default_bits
-                self._update_row(entry)
-            self._update_summary()
-            self.set_status("Reset all tensors to their default bit-widths.", "green")
-
-        def action_confirm(self) -> None:
-            self._result = {entry.name: entry.bits for entry in self.entries}
-            self.exit(result=self._result)
-
-        def action_cancel(self) -> None:
-            self.cancelled = True
-            self.exit(result=None)
-
-        def _apply_bits_to_all(self, bits: int) -> None:
-            for entry in self.entries:
-                entry.bits = bits
-                self._update_row(entry)
-            self._update_summary()
+        def _reset_all(self) -> None:
+            updates = [(entry, entry.default_bits) for entry in self.entries]
+            if self._apply_entry_updates(updates, "Reset all tensors"):
+                self.set_status("Reset all tensors to their default bit-widths.", "green")
+            else:
+                self.set_status("All tensors were already at their defaults.", "yellow")
 
         def _validate_bits(self, bits: int) -> Optional[str]:
             if bits < 0:
@@ -1037,152 +1253,100 @@ if _TEXTUAL_AVAILABLE:
                 return f"Bit-width must be at most {self.max_bits} for quantized tensors."
             return None
 
-        def on_input_submitted(self, event: Input.Submitted) -> None:
-            raw = event.value.strip()
-            event.input.value = ""
-            if not raw:
-                if self.is_running:
-                    self.focus_table()
+        def _undo(self) -> None:
+            if self._history_index == 0:
+                self.set_status("Nothing to undo.", "yellow")
+                self.bell()
                 return
-            self._handle_command(raw)
-            if self.is_running and not self.cancelled:
-                self.focus_table()
-
-        def _handle_command(self, raw: str) -> None:
-            parts = raw.split()
-            if not parts:
-                self.set_status("", "cyan")
-                return
-
-            command = parts[0].lower()
-            table = self.query_one(DataTable)
-
-            if command in {"done", "apply"}:
-                self.action_confirm()
-                return
-
-            if command in {"quit", "cancel", "exit"}:
-                self.action_cancel()
-                return
-
-            if command in {"next", "n"}:
-                table.action_cursor_down()
-                entry = self._selected_entry()
-                if entry is not None:
-                    self.set_status(f"Selected {entry.name}.", "cyan")
-                else:
-                    self.set_status("Moved selection.", "cyan")
-                return
-
-            if command in {"prev", "p"}:
-                table.action_cursor_up()
-                entry = self._selected_entry()
-                if entry is not None:
-                    self.set_status(f"Selected {entry.name}.", "cyan")
-                else:
-                    self.set_status("Moved selection.", "cyan")
-                return
-
-            if command in {"page", "goto"}:
-                if len(parts) < 2:
-                    self.set_status("Usage: page <number>", "red")
-                    return
-                try:
-                    index = int(parts[1])
-                except ValueError:
-                    self.set_status("Page number must be an integer.", "red")
-                    return
-                if index < 1 or index > len(self.entries):
-                    self.set_status("Index out of range.", "red")
-                    return
-                try:
-                    table.move_cursor(row=index - 1, scroll=True)
-                except Exception:
-                    pass
-                entry = self._selected_entry()
-                if entry is not None:
-                    self.set_status(f"Selected {entry.name}.", "cyan")
-                return
-
-            if command == "set":
-                if len(parts) < 3:
-                    self.set_status("Usage: set <index|name> <bits>", "red")
-                    return
-                target = parts[1]
-                bits_str = parts[2]
-                try:
-                    bits = _parse_bits_value(bits_str)
-                except ValueError as exc:
-                    self.set_status(str(exc), "red")
-                    return
-                error = self._validate_bits(bits)
-                if error:
-                    self.set_status(error, "red")
-                    return
-                entry, error_text = _resolve_entry(self.entries, target)
+            self._history_index -= 1
+            history_entry = self._history[self._history_index]
+            for name, old_bits, _ in reversed(history_entry.changes):
+                entry = self._entries_by_name.get(name)
                 if entry is None:
-                    self.set_status(error_text or "Unknown tensor.", "red")
-                    return
-                entry.bits = bits
+                    continue
+                entry.bits = old_bits
                 self._update_row(entry)
-                self._update_summary()
-                self._focus_entry(entry)
-                self.set_status(
-                    f"Set {entry.name} to {_format_bits_label(bits)}.", "green"
-                )
-                return
+            self._update_summary()
+            self._msg(f"Undo: {history_entry.description}")
+            self.set_status(f"Undo: {history_entry.description}", "magenta")
 
-            if command == "all":
-                if len(parts) < 2:
-                    self.set_status("Usage: all <bits>", "red")
-                    return
-                try:
-                    bits = _parse_bits_value(parts[1])
-                except ValueError as exc:
-                    self.set_status(str(exc), "red")
-                    return
-                error = self._validate_bits(bits)
-                if error:
-                    self.set_status(error, "red")
-                    return
-                self._apply_bits_to_all(bits)
-                self.set_status(
-                    f"Applied {_format_bits_label(bits)} to {len(self.entries)} tensor(s).",
-                    "green",
-                )
+        def _redo(self) -> None:
+            if self._history_index >= len(self._history):
+                self.set_status("Nothing to redo.", "yellow")
+                self.bell()
                 return
-
-            if command == "reset":
-                if len(parts) == 1:
-                    for entry in self.entries:
-                        entry.bits = entry.default_bits
-                        self._update_row(entry)
-                    self._update_summary()
-                    self.set_status(
-                        "Reset all tensors to their default bit-widths.", "green"
-                    )
-                    return
-                target = parts[1]
-                entry, error_text = _resolve_entry(self.entries, target)
+            history_entry = self._history[self._history_index]
+            self._history_index += 1
+            for name, _, new_bits in history_entry.changes:
+                entry = self._entries_by_name.get(name)
                 if entry is None:
-                    self.set_status(error_text or "Unknown tensor.", "red")
-                    return
-                entry.bits = entry.default_bits
+                    continue
+                entry.bits = new_bits
                 self._update_row(entry)
-                self._update_summary()
-                self._focus_entry(entry)
-                self.set_status(
-                    f"Reset {entry.name} to {_format_bits_label(entry.default_bits)}.",
-                    "green",
-                )
+            self._update_summary()
+            self._msg(f"Redo: {history_entry.description}")
+            self.set_status(f"Redo: {history_entry.description}", "magenta")
+
+        def _confirm(self) -> None:
+            self._result = {entry.name: entry.bits for entry in self.entries}
+            self.exit(result=self._result)
+
+        def _cancel(self) -> None:
+            self.cancelled = True
+            self.exit(result=None)
+
+        def _show_help(self) -> None:
+            self._msg(self.instructions_text, timeout=8.0)
+            self.set_status("Hotkeys help shown in notification.", "cyan")
+
+        async def on_key(self, event: events.Key) -> None:
+            if self._table is None:
+                return
+            if self._mode in {"bit-entry", "bulk-bit"}:
+                self._handle_bit_entry_key(event)
+                return
+            if self._mode == "regex":
+                self._handle_regex_key(event)
                 return
 
-            if command in {"help", "?"}:
-                self.set_status(self.instructions_text, "cyan")
-                return
+            key = event.key
 
-            self.set_status(f"Unknown command: {command}", "red")
-
+            if key == "ctrl+s":
+                self._confirm()
+                event.stop()
+            elif key == "ctrl+c":
+                self._cancel()
+                event.stop()
+            elif key == "ctrl+z":
+                self._undo()
+                event.stop()
+            elif key == "ctrl+y":
+                self._redo()
+                event.stop()
+            elif key == "?":
+                self._show_help()
+                event.stop()
+            elif key == "/":
+                self._start_regex_mode()
+                event.stop()
+            elif key in {"enter", "b"}:
+                self._start_bit_entry()
+                event.stop()
+            elif key == "+":
+                self._adjust_selected(1)
+                event.stop()
+            elif key == "-":
+                self._adjust_selected(-1)
+                event.stop()
+            elif key == "f":
+                self._toggle_float()
+                event.stop()
+            elif key == "r":
+                self._reset_selected()
+                event.stop()
+            elif key in {"R", "shift+r"}:
+                self._reset_all()
+                event.stop()
 
 else:  # pragma: no cover - textual is optional at runtime
     TensorBitwidthApp = None  # type: ignore[assignment]
