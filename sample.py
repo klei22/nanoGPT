@@ -9,7 +9,7 @@ from datetime import datetime
 
 # from __future__ import annotations
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Union
+from typing import Callable, Dict, List, Optional, Sequence, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -728,6 +728,75 @@ def save_args(args, out_dir):
         json.dump(vars(args), f, indent=4)
 
 
+def write_eval_summary(
+    out_dir: Union[str, os.PathLike[str], None],
+    summary: Dict[str, object],
+    *,
+    extra_dirs: Optional[Sequence[Union[str, os.PathLike[str]]]] = None,
+) -> None:
+    if not summary:
+        return
+
+    def _convert(value):
+        if isinstance(value, torch.Tensor):
+            value = value.detach()
+            if value.numel() == 1:
+                return float(value.item())
+            return value.cpu().tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (float, int)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (list, tuple)):
+            return [_convert(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _convert(v) for k, v in value.items()}
+        return value
+
+    destinations: List[str] = []
+    if out_dir:
+        destinations.append(os.fspath(out_dir))
+    if extra_dirs:
+        for path in extra_dirs:
+            if path:
+                destinations.append(os.fspath(path))
+
+    if not destinations:
+        return
+
+    serializable = {
+        key: _convert(value)
+        for key, value in summary.items()
+        if value is not None
+    }
+
+    saved_paths: List[str] = []
+    seen_dirs: set[str] = set()
+    for directory in destinations:
+        normalized = os.path.normpath(directory)
+        if normalized in seen_dirs:
+            continue
+        seen_dirs.add(normalized)
+        os.makedirs(normalized, exist_ok=True)
+        eval_path = os.path.join(normalized, "eval_loss.txt")
+        with open(eval_path, "w", encoding="utf-8") as eval_file:
+            json.dump(serializable, eval_file, indent=2, sort_keys=True)
+            eval_file.write("\n")
+        saved_paths.append(eval_path)
+
+    if saved_paths:
+        if len(saved_paths) == 1:
+            print(f"Saved evaluation metrics to {saved_paths[0]}")
+        else:
+            print("Saved evaluation metrics to:")
+            for path in saved_paths:
+                print(f"  {path}")
+
+
 #TODO: Rename to reflect general purpose
 def save_quantized_data(state_dict, out_file):
     to_save = OrderedDict()
@@ -753,11 +822,11 @@ def get_batch(data, block_size, device):
     y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + block_size]).astype(np.int64)) for i in ix])
     return x.to(device), y.to(device)
 
-def calculate_validation_loss(model, val_data, block_size, eval_iters, device, dtype):
+def calculate_validation_loss(model, val_data, block_size, eval_iters, device, dtype, dataset_idx: Optional[int] = None):
     model.eval()
-    losses = []
+    losses: List[float] = []
+    total_time = 0.0
     with torch.no_grad():
-        total_time = 0
         for _ in range(eval_iters):
             X, Y = get_batch(val_data,  block_size, device)
             with torch.amp.autocast(device_type=device, dtype=dtype):
@@ -765,9 +834,22 @@ def calculate_validation_loss(model, val_data, block_size, eval_iters, device, d
                 logits, loss = model(X, Y, dataset_idx=dataset_idx)
                 end = time.perf_counter()
                 total_time += (end - start)
-            losses.append(loss.item())
-    print(f"Elapsed time: {total_time} seconds")
-    return np.mean(losses)
+            losses.append(float(loss.item()))
+
+    if losses:
+        mean_loss = float(np.mean(losses))
+        std_loss = float(np.std(losses)) if len(losses) > 1 else 0.0
+    else:
+        mean_loss = float("nan")
+        std_loss = float("nan")
+
+    return {
+        "val": mean_loss,
+        "val_std": std_loss,
+        "eval_iters": int(eval_iters),
+        "num_batches": len(losses),
+        "elapsed_time_s": float(total_time),
+    }
 
 def custom_char_with_byte_fallback_encode(text: str, stoi: dict) -> list[int]:
     """Encode ``text`` using a byte-level vocabulary with optional custom tokens.
@@ -1074,15 +1156,46 @@ def main():
 
     if args.eval_only:
         print("Running in eval_only mode...")
-        # Load the validation dataset
-        print(model.config.block_size)
-        val_data = load_validation_data(model.config.block_size,
-                                        args.eval_dataset)
-        # Calculate validation loss
-        val_loss = calculate_validation_loss(model, val_data,
-                                             model.config.block_size,
-                                             args.eval_iters, args.device, ptdtype)
+        dataset_name = args.eval_dataset
+        if dataset_name is None and args.init_from == 'resume':
+            dataset_name = (
+                checkpoint.get('config', {}).get('dataset')
+                if isinstance(checkpoint, dict)
+                else None
+            )
+        if dataset_name is None:
+            raise ValueError(
+                "--eval_dataset must be provided when running in eval_only mode"
+            )
+
+        print(f"Using validation dataset: {dataset_name}")
+        print(f"Model block size: {model.config.block_size}")
+        val_data = load_validation_data(model.config.block_size, dataset_name)
+        metrics = calculate_validation_loss(
+            model,
+            val_data,
+            model.config.block_size,
+            args.eval_iters,
+            args.device,
+            ptdtype,
+        )
+
+        val_loss = metrics.get("val", float("nan"))
         print(f"Validation Loss: {val_loss:.4f}")
+        if metrics.get("elapsed_time_s") is not None:
+            print(f"Elapsed time: {metrics['elapsed_time_s']:.4f} seconds")
+
+        summary: Dict[str, object] = dict(metrics)
+        summary.setdefault("eval_dataset", dataset_name)
+        summary.setdefault("timestamp", timestamp)
+        summary.setdefault("out_dir", args.out_dir)
+        summary.setdefault("init_from", args.init_from)
+
+        write_eval_summary(
+            args.out_dir,
+            summary,
+            extra_dirs=[out_dir],
+        )
         return
 
     x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
