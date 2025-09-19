@@ -169,6 +169,7 @@ class MonitorApp(App):
         base_cols = [
             "best_val_loss",
             "best_val_iter",
+            "best_val_tokens",
             "num_params",
             "peak_gpu_mb",
             "iter_latency_avg",
@@ -224,6 +225,7 @@ class MonitorApp(App):
         if col_name in (
             "best_val_loss",
             "best_val_iter",
+            "best_val_tokens",
             "num_params",
             "peak_gpu_mb",
             "iter_latency_avg",

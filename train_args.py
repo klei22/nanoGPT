@@ -569,6 +569,54 @@ def parse_args():
     model_group.add_argument('--resid_gaussian_mean_init', type=float, default=0.0, help='Gaussian residual init setting, mean value.')
     model_group.add_argument('--resid_gaussian_std_init', type=float, default=0.02, help='Gaussian residual init setting, standard deviation.')
 
+    # Residual combination options
+    model_group.add_argument(
+        '--attn_residual_combination',
+        type=str,
+        default='add',
+        choices=['add', 'lerp', 'slerp'],
+        help='Residual combination method for attention block'
+    )
+    model_group.add_argument(
+        '--mlp_residual_combination',
+        type=str,
+        default='add',
+        choices=['add', 'lerp', 'slerp'],
+        help='Residual combination method for MLP block'
+    )
+    model_group.add_argument(
+        '--residual_slerp_eps',
+        type=float,
+        default=0.0,
+        help='Threshold below which LERP is used instead of SLERP; 0 means no fallback to LERP (SLERP is always used)'
+    )
+    model_group.add_argument(
+        '--attn_residual_alpha',
+        type=float,
+        default=0.05,
+        help='Alpha parameter for attention residual LERP/SLERP'
+    )
+    model_group.add_argument(
+        '--mlp_residual_alpha',
+        type=float,
+        default=0.05,
+        help='Alpha parameter for MLP residual LERP/SLERP'
+    )
+    model_group.add_argument(
+        '--attn_residual_alpha_type',
+        type=str,
+        default='fixed',
+        choices=['fixed', 'learned', 'dot'],
+        help='Alpha mode for attention residual combination'
+    )
+    model_group.add_argument(
+        '--mlp_residual_alpha_type',
+        type=str,
+        default='fixed',
+        choices=['fixed', 'learned', 'dot'],
+        help='Alpha mode for MLP residual combination'
+    )
+
 
     # NORM VARIATIONS
     norm_variations = [

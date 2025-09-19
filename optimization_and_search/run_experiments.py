@@ -18,6 +18,7 @@ METRICS_FILENAME = "best_val_loss_and_iter.txt"
 METRIC_KEYS = [
     "best_val_loss",
     "best_val_iter",
+    "best_val_tokens",
     "num_params",
     "better_than_chance",
     "btc_per_param",
@@ -212,7 +213,7 @@ def read_metrics(out_dir: str) -> dict:
     line = path.read_text().strip()
     parts = [p.strip() for p in line.split(',')]
 
-    casts = [float, int, int, float, float, float, float, float, float, float, float, float, float, float, float]
+    casts = [float, int, int, int, float, float, float, float, float, float, float, float, float, float, float, float]
     return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
 
 
