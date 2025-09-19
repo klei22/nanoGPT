@@ -122,18 +122,45 @@ try:
 except ImportError:
     print("matplotlib is not installed; skipping plot generation.")
 else:
-    bits = [item[0] for item in results]
-    losses = [item[1] for item in results]
-    labels = [item[2] for item in results]
+    baseline = next((item for item in results if item[2].lower() == "fp32"), None)
+    quantized = [item for item in results if item is not baseline]
+
+    bits = [item[0] for item in quantized]
+    losses = [item[1] for item in quantized]
+    tick_positions = []
+    tick_labels = []
+    if baseline is not None:
+        tick_positions.append(baseline[0])
+        tick_labels.append(baseline[2])
+    tick_positions.extend(bits)
+    tick_labels.extend(item[2] for item in quantized)
 
     plt.figure(figsize=(8, 4.5))
-    plt.plot(bits, losses, marker="o")
+    line_handle = None
+    if bits:
+        (line_handle,) = plt.plot(bits, losses, marker="o", label="Quantized checkpoints")
+    baseline_handle = None
+    if baseline is not None:
+        baseline_handle = plt.axhline(
+            baseline[1], linestyle="--", color="tab:orange", label=f"{baseline[2]} loss"
+        )
     plt.gca().invert_xaxis()
-    plt.xticks(bits, labels)
+    if tick_positions:
+        plt.xticks(tick_positions, tick_labels)
     plt.xlabel("Uniform weight bit-width")
     plt.ylabel("Validation loss")
     plt.title("Validation loss vs quantization bit-width")
     plt.grid(True, linestyle="--", alpha=0.4)
+    legend_handles = []
+    legend_labels = []
+    if line_handle is not None:
+        legend_handles.append(line_handle)
+        legend_labels.append("Quantized checkpoints")
+    if baseline_handle is not None:
+        legend_handles.append(baseline_handle)
+        legend_labels.append(f"{baseline[2]} loss")
+    if legend_handles:
+        plt.legend(legend_handles, legend_labels)
     plt.tight_layout()
 
     plot_path = os.path.join(sweep_root, "uniform_quantization_eval.png")
