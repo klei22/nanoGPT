@@ -12,6 +12,8 @@ import json
 class Tokenizer:
     def __init__(self, args):
         self.args = args
+        # directory where meta.pkl should be written, default current directory
+        self.meta_output_dir = getattr(args, "meta_output_dir", ".")
         self.token_counts = defaultdict(int) if getattr(args, "track_token_counts", False) else None
 
     def tokenize(self, data):
@@ -21,7 +23,8 @@ class Tokenizer:
         raise NotImplementedError("Detokenize method must be implemented by subclasses.")
 
     def save_meta(self, meta):
-        with open("meta.pkl", "wb") as f:
+        os.makedirs(self.meta_output_dir, exist_ok=True)
+        with open(os.path.join(self.meta_output_dir, "meta.pkl"), "wb") as f:
             pickle.dump(meta, f)
 
     def record_token(self, token_id):
@@ -34,8 +37,8 @@ class Tokenizer:
         self.save_meta(meta)
 
     @staticmethod
-    def get_key_from_meta(keyname):
-        meta_path = 'meta.pkl'
+    def get_key_from_meta(keyname, meta_output_dir="."):
+        meta_path = os.path.join(meta_output_dir, 'meta.pkl')
         if os.path.exists(meta_path):
             with open(meta_path, 'rb') as f:
                 meta = pickle.load(f)
@@ -256,6 +259,78 @@ class CustomTokenizer(Tokenizer):
     def detokenize(self, ids):
         return ''.join([self.itos[id] for id in ids])
 
+class FileByteTokenizer(Tokenizer):
+    """Tokenizer for binary files that operates directly on bytes."""
+
+    START_FILE = 256
+    END_FILE = 257
+
+    def __init__(self, args):
+        super().__init__(args)
+
+    def tokenize(self, data):
+        if isinstance(data, str):
+            raise TypeError("FileByteTokenizer expects bytes or list of bytes")
+
+        ids = []
+
+        def _add_file(file_bytes):
+            ids.append(self.START_FILE)
+            ids.extend(list(file_bytes))
+            ids.append(self.END_FILE)
+
+        if isinstance(data, (bytes, bytearray)):
+            _add_file(data)
+        elif isinstance(data, list):
+            for file_bytes in data:
+                _add_file(file_bytes)
+        else:
+            raise TypeError("Unsupported data type for FileByteTokenizer")
+
+        for token_id in ids:
+            self.record_token(token_id)
+
+        itos = {i: bytes([i]) for i in range(256)}
+        itos[self.START_FILE] = b'<SOF>'
+        itos[self.END_FILE] = b'<EOF>'
+
+        meta = {
+            "vocab_size": 258,
+            "tokenizer": "file_byte",
+            "start_file_token": self.START_FILE,
+            "end_file_token": self.END_FILE,
+            "itos": itos,
+        }
+        self.finalize_meta(meta)
+        return ids
+
+    def detokenize(self, ids):
+        content = [i for i in ids if i not in (self.START_FILE, self.END_FILE)]
+        return bytes(content).decode('latin-1')
+
+    @staticmethod
+    def save_to_file(ids, path):
+        """Write token IDs back to a binary file."""
+        with open(path, 'wb') as f:
+            f.write(bytes(ids))
+
+    @staticmethod
+    def tokens_to_files(ids, out_dir, start_token, end_token):
+        os.makedirs(out_dir, exist_ok=True)
+        current = []
+        file_idx = 0
+        for token in ids:
+            if token == start_token:
+                current = []
+            elif token == end_token:
+                if current:
+                    with open(os.path.join(out_dir, f"sample_{file_idx}.bin"), 'wb') as f:
+                        f.write(bytes(current))
+                    file_idx += 1
+                current = []
+            else:
+                current.append(token)
+
 class ByteTokenizer(Tokenizer):
     def __init__(self, args):
         super().__init__(args)
@@ -282,7 +357,7 @@ class CharTokenizer(Tokenizer):
         super().__init__(args)
         self.reuse_chars = args.reuse_chars
         if self.reuse_chars:
-            self.chars = self.get_key_from_meta('chars')
+            self.chars = self.get_key_from_meta('chars', self.meta_output_dir)
             if self.chars is None:
                 raise ValueError("No chars found in meta.pkl. Cannot reuse chars.")
         else:

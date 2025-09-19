@@ -8,6 +8,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     ByteTokenizer,
+    FileByteTokenizer,
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
@@ -27,7 +28,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback"],
+                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "file_byte", "custom_char_byte_fallback", "json_byte_fallback"],
                        default="tiktoken", help="Tokenization method")
 
     # SentencePiece arguments
@@ -68,17 +69,39 @@ def save_tokens(ids, output_file, dtype):
 def main():
     args = parse_arguments()
 
-    # Load training data
-    with open(args.train_input, 'r') as f:
-        train_data = f.read()
+    # directory where meta.pkl and other dataset artifacts will be stored
+    meta_dir = os.path.dirname(args.train_output) or "."
+    os.makedirs(meta_dir, exist_ok=True)
+    args.meta_output_dir = meta_dir
+
+    # Load training data (binary mode for file_byte tokenizer)
+    read_mode = 'rb' if args.method == 'file_byte' else 'r'
+
+    def read_folder(path):
+        files = [os.path.join(path, f) for f in sorted(os.listdir(path)) if os.path.isfile(os.path.join(path, f))]
+        contents = []
+        for fp in files:
+            with open(fp, 'rb') as fh:
+                contents.append(fh.read())
+        return contents
+
+    if args.method == 'file_byte' and os.path.isdir(args.train_input):
+        train_data = read_folder(args.train_input)
+    else:
+        with open(args.train_input, read_mode) as f:
+            train_data = f.read()
 
     # Handle validation data based on mode
     if args.val_input:
-        # Direct train/val files mode
-        with open(args.val_input, 'r') as f:
-            val_data = f.read()
+        if args.method == 'file_byte' and os.path.isdir(args.val_input):
+            val_data = read_folder(args.val_input)
+        else:
+            with open(args.val_input, read_mode) as f:
+                val_data = f.read()
     else:
-        # Automatic splitting mode
+        val_data = None
+
+    if args.val_input is None and not isinstance(train_data, list):
         n = len(train_data)
         train_data, val_data = train_data[:int(n * args.percentage_train)], train_data[int(n * args.percentage_train):]
         if args.percentage_train == 1.0:
@@ -93,6 +116,8 @@ def main():
         tokenizer = CustomTokenizer(args)
     elif args.method == "byte":
         tokenizer = ByteTokenizer(args)
+    elif args.method == "file_byte":
+        tokenizer = FileByteTokenizer(args)
     elif args.method == "char":
         tokenizer = CharTokenizer(args, train_data, val_data)
     elif args.method == "custom_char_byte_fallback":
@@ -103,11 +128,21 @@ def main():
         raise ValueError(f"Unknown tokenization method: {args.method}")
 
     # Tokenize data
-    train_ids = tokenizer.tokenize(train_data)
-    val_ids = tokenizer.tokenize(val_data) if val_data is not None else None
+    if args.method == 'file_byte' and isinstance(train_data, list):
+        train_ids = tokenizer.tokenize(train_data)
+        val_ids = tokenizer.tokenize(val_data) if isinstance(val_data, list) else None
+        if val_ids is None and args.percentage_train < 1.0:
+            n = len(train_ids)
+            split = int(n * args.percentage_train)
+            val_ids = train_ids[split:]
+            train_ids = train_ids[:split]
+    else:
+        train_ids = tokenizer.tokenize(train_data)
+        val_ids = tokenizer.tokenize(val_data) if val_data is not None else None
 
     # Determine dtype based on vocabulary size from meta.pkl
-    with open("meta.pkl", "rb") as f:
+    meta_path = os.path.join(meta_dir, "meta.pkl")
+    with open(meta_path, "rb") as f:
         meta = pickle.load(f)
     vocab_size = meta["vocab_size"]
     dtype = np.uint32 if vocab_size > 65535 else np.uint16
@@ -121,7 +156,7 @@ def main():
     if args.method == "tiktoken" and args.additional_tokens_file:
         with open(args.additional_tokens_file, 'r') as f:
             additional_tokens = json.load(f)
-        with open("meta.pkl", "rb") as f:
+        with open(meta_path, "rb") as f:
             meta = pickle.load(f)
         meta.update({
             "has_additional_tokens": True,
@@ -129,7 +164,7 @@ def main():
             "tokenizer": "tiktoken",
             "tiktoken_encoding": args.tiktoken_encoding
         })
-        with open("meta.pkl", "wb") as f:
+        with open(meta_path, "wb") as f:
             pickle.dump(meta, f)
 
 if __name__ == "__main__":

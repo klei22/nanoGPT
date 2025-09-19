@@ -11,6 +11,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     ByteTokenizer,
+    FileByteTokenizer,
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
@@ -162,6 +163,50 @@ class TestTokenizers(unittest.TestCase):
         console.print(detokenized, style="output")
 
         self.assertEqual(self.sample_text, detokenized)
+
+    def test_file_byte_tokenizer_and_file_output(self):
+        sample_bytes = b"\x00\x01\x02hello\xff"
+        args = Namespace()
+        tokenizer = FileByteTokenizer(args)
+        ids = tokenizer.tokenize(sample_bytes)
+        expected = [tokenizer.START_FILE] + list(sample_bytes) + [tokenizer.END_FILE]
+        self.assertEqual(ids, expected)
+
+        # Trim and save to file
+        trimmed = ids[1:5]
+        out_file = "trimmed.bin"
+        FileByteTokenizer.save_to_file(trimmed, out_file)
+        with open(out_file, 'rb') as f:
+            content = f.read()
+        self.assertEqual(content, sample_bytes[:4])
+        detok = tokenizer.detokenize(ids)
+        self.assertEqual(detok.encode('latin-1'), sample_bytes)
+        if os.path.exists(out_file):
+            os.remove(out_file)
+
+        # Folder tokenization and reconstruction
+        folder = "tmp_files"
+        os.makedirs(folder, exist_ok=True)
+        file1 = os.path.join(folder, "a.bin")
+        file2 = os.path.join(folder, "b.bin")
+        with open(file1, 'wb') as f:
+            f.write(b"abc")
+        with open(file2, 'wb') as f:
+            f.write(b"de")
+        ids = tokenizer.tokenize([b"abc", b"de"])
+        out_dir = "recovered"
+        FileByteTokenizer.tokens_to_files(ids, out_dir, tokenizer.START_FILE, tokenizer.END_FILE)
+        with open(os.path.join(out_dir, "sample_0.bin"), 'rb') as f:
+            self.assertEqual(f.read(), b"abc")
+        with open(os.path.join(out_dir, "sample_1.bin"), 'rb') as f:
+            self.assertEqual(f.read(), b"de")
+        # Cleanup
+        for path in [file1, file2]:
+            os.remove(path)
+        os.rmdir(folder)
+        for path in [os.path.join(out_dir, f"sample_{i}.bin") for i in range(2)]:
+            os.remove(path)
+        os.rmdir(out_dir)
 
     def test_tiktoken_tokenizer(self):
         args = Namespace(tiktoken_encoding='gpt2')
