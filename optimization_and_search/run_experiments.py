@@ -253,9 +253,19 @@ def generate_combinations(config: dict):
                 if k not in ('parameter_groups', 'named_parameter_groups')
             }
             for grp in groups_list:
-                for expanded in _expand_group_variations(grp, named_groups):
+                if 'named_parameter_groups' in grp:
+                    grp_named = grp['named_parameter_groups']
+                    if not isinstance(grp_named, dict):
+                        raise TypeError(
+                            "'named_parameter_groups' entries must be mappings of names to parameter dictionaries."
+                        )
+                    effective_named_groups = {**named_groups, **grp_named}
+                else:
+                    effective_named_groups = named_groups
+
+                for expanded in _expand_group_variations(grp, effective_named_groups):
                     merged = {**base_cfg, **expanded}
-                    yield from recurse(merged, named_groups)
+                    yield from recurse(merged, effective_named_groups)
             return
 
         cfg_without_named = {
