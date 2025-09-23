@@ -147,31 +147,34 @@ class GPT(nn.Module):
 
         self.config = config
 
-        config.numerical_mlp_hidden_dim = 64
-        config.numerical_multicontext = True
+        # ---- Numerical multi-context (optional) -----------------
+        # Backwards-compatible defaults: feature is OFF unless enabled.
+        self.numerical_multicontext = getattr(config, "numerical_multicontext", False)
+        self.numerical_mlp_hidden_dim = getattr(config, "numerical_mlp_hidden_dim", 64)
+        self._num_mc_contexts = len(getattr(config, "vocab_sizes", []))
 
         # For numerical_multicontext, define per-index MLPs
-        if config.numerical_multicontext:
+        if self.numerical_multicontext:
             self.numerical_embeddings = nn.ModuleDict()
             for i in range(len(config.vocab_sizes)):
                 self.numerical_embeddings[str(i)] = nn.Sequential(
-                    nn.Linear(1, config.numerical_mlp_hidden_dim),
+                    nn.Linear(1, self.numerical_mlp_hidden_dim),
                     nn.ReLU(),
-                    nn.Linear(config.numerical_mlp_hidden_dim, config.numerical_mlp_hidden_dim),
+                    nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim),
                     nn.ReLU(),
-                    nn.Linear(config.numerical_mlp_hidden_dim, config.n_embd)
+                    nn.Linear(self.numerical_mlp_hidden_dim, config.n_embd)
                 )
 
         # Optional regression output heads
-        if config.numerical_multicontext:
+        if self.numerical_multicontext:
             self.output_mlp = nn.ModuleDict()
             for i in range(len(config.vocab_sizes)):
                 self.output_mlp[str(i)] = nn.Sequential(
-                    nn.Linear(config.n_embd, config.numerical_mlp_hidden_dim),
+                    nn.Linear(config.n_embd, self.numerical_mlp_hidden_dim),
                     nn.ReLU(),
-                    nn.Linear(config.numerical_mlp_hidden_dim, config.numerical_mlp_hidden_dim),
+                    nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim),
                     nn.ReLU(),
-                    nn.Linear(config.numerical_mlp_hidden_dim, 1)  # Output is scalar
+                    nn.Linear(self.numerical_mlp_hidden_dim, 1)  # Output is scalar
                 )
 
         # Final-logit softcapping
@@ -451,6 +454,19 @@ class GPT(nn.Module):
             # Add all of the input tokens
             for i, tokens in enumerate(token_list):
                 if self.config.numerical_multicontext:
+                    # Lazily create heads if vocab_sizes wasn't provided at init.
+                    if str(i) not in self.numerical_embeddings:
+                        self.numerical_embeddings[str(i)] = nn.Sequential(
+                            nn.Linear(1, self.numerical_mlp_hidden_dim), nn.ReLU(),
+                            nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim), nn.ReLU(),
+                            nn.Linear(self.numerical_mlp_hidden_dim, self.config.n_embd)
+                        )
+                    if str(i) not in self.output_mlp:
+                        self.output_mlp[str(i)] = nn.Sequential(
+                            nn.Linear(self.config.n_embd, self.numerical_mlp_hidden_dim), nn.ReLU(),
+                            nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim), nn.ReLU(),
+                            nn.Linear(self.numerical_mlp_hidden_dim, 1)
+                        )
                     # Convert token indices to float16 for numerical representation
                     numeric_input = tokens.half().unsqueeze(-1)  # (B,T,1)
                     mlp = self.numerical_embeddings[str(i)]
@@ -529,7 +545,7 @@ class GPT(nn.Module):
 
             # 5. Compute separate logits
             logits = []
-            losses = []
+            losses = None
             if self.config.numerical_multicontext:
                 for i in range(len(token_list)):
                     # Use MLP per context index for regression
@@ -537,18 +553,20 @@ class GPT(nn.Module):
                     pred = out_mlp(x).squeeze(-1)  # Shape: (B, T)
                     logits.append(pred)
 
-                    if target_list is not None:
-                        # Convert token index to float
+                if target_list is not None:
+                    losses = []
+                    # Convert token index to float
+                    for i in range(len(token_list)):
                         target_float = target_list[i].float()
                         mask = (target_list[i] != -1)  # Ignore padding
 
                         if mask.sum() == 0:
                             # All targets are masked
-                            losses.append(torch.tensor(0.0, device=pred.device))
+                            losses.append(torch.tensor(0.0, device=logits[i].device))
                         else:
                             # Huber loss on valid entries
                             loss_i = F.huber_loss(
-                                pred[mask],
+                                logits[i][mask],
                                 target_float[mask],
                                 delta=1.0,
                                 reduction="mean"
@@ -580,9 +598,10 @@ class GPT(nn.Module):
                         losses.append(loss_i)
 
                 else:
-                    # only forward lm head on very last position in inference mode
+                    last_pos_logits = []
                     for i in range(len(token_list)):
-                        logits.append(self.transformer[f'lm_head_{i}'](x[:, [-1], :]))
+                        last_pos_logits.append(self.transformer[f'lm_head_{i}'](x[:, [-1], :]))
+                    logits = last_pos_logits
                     losses = None
 
             return logits, losses
