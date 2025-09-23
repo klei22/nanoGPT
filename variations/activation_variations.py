@@ -1,6 +1,7 @@
 # variations/activation_variations.py
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # Custom Activation Variations
 class SquaredReLU(nn.Module):
@@ -310,6 +311,33 @@ class Softshrink_Config(nn.Module):
     def forward(self, x):
         return self.activation(x)
 
+
+class SoftshrinkTanh_Config(nn.Module):
+    def __init__(self, config=None):
+        super().__init__()
+        self.lambd = getattr(config, "softshrink_lambda", 0.5) if config is not None else 0.5
+
+    def forward(self, x):
+        return x - self.lambd * torch.tanh(x / self.lambd)
+
+
+class SoftshrinkSoftplus_Config(nn.Module):
+    def __init__(self, config=None):
+        super().__init__()
+        self.lambd = getattr(config, "softshrink_lambda", 0.5) if config is not None else 0.5
+
+    def forward(self, x):
+        return torch.sign(x) * F.softplus(torch.abs(x) - self.lambd)
+
+
+class SoftshrinkSqrt_Config(nn.Module):
+    def __init__(self, config=None):
+        super().__init__()
+        self.lambd = getattr(config, "softshrink_lambda", 0.5) if config is not None else 0.5
+
+    def forward(self, x):
+        return torch.sign(x) * (torch.sqrt(x * x + self.lambd * self.lambd) - self.lambd)
+
 class Tanh_Config(ActivationWrapper):
     def __init__(self, config=None):
         super().__init__(nn.Tanh, config)
@@ -341,6 +369,9 @@ activation_dictionary = {
     "softplus": Softplus_Config,
     "softsign": Softsign_Config,
     "softshrink": Softshrink_Config,
+    "softshrink_tanh": SoftshrinkTanh_Config,
+    "softshrink_softplus": SoftshrinkSoftplus_Config,
+    "softshrink_sqrt": SoftshrinkSqrt_Config,
     "squared_relu": SquaredReLU,
     "tanh": Tanh_Config,
     "identity": Identity_Config,
