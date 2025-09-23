@@ -29,10 +29,8 @@ class CausalSelfAttention(nn.Module):
         self.start_quant_level = config.start_quant_level
         self.quant_scheduler = config.quant_scheduler
 
-        if (config.n_kv_group is None):
+        if config.n_kv_group is None:
             config.n_kv_group = config.n_head
-        else:
-            assert config.n_embd % config.n_kv_group == 0
 
         self.quantization_attn_dict = {}
         self.quantization_attn_dict["activations_quant_method"] = config.activations_quant_method
@@ -56,8 +54,6 @@ class CausalSelfAttention(nn.Module):
         self.linear_variant_attn_proj = linear_dictionary[set_variant(config.linear_variant_attn_proj, config.linear_variant_attn)]
 
         # key, query, value projections for all heads, but in a batch
-        self.c_attn_q = self.linear_variant_q(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_q_method"], self.quantization_attn_dict["quantize_linear_attn_q_bits"], bias=config.bias)
-
         self.n_head = config.n_head
         if config.n_kv_group is None:
             self.n_kv_group = config.n_head
@@ -65,10 +61,43 @@ class CausalSelfAttention(nn.Module):
             assert config.n_head % config.n_kv_group == 0
             self.n_kv_group = config.n_kv_group
 
-        self.kv_dim = (config.n_embd // config.n_head) * self.n_kv_group
-        self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.bias)
-        self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
-        self.c_proj = self.linear_variant_attn_proj(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_proj_method"], self.quantization_attn_dict["quantize_linear_attn_proj_bits"], bias=config.bias)
+        head_dim = config.n_embd // self.n_head
+        self.head_dim = head_dim
+        self.q_dim = head_dim * self.n_head
+        self.kv_dim = head_dim * self.n_kv_group
+
+        self.c_attn_q = self.linear_variant_q(
+            config.n_embd,
+            self.q_dim,
+            config,
+            self.quantization_attn_dict["quantize_linear_attn_q_method"],
+            self.quantization_attn_dict["quantize_linear_attn_q_bits"],
+            bias=config.bias,
+        )
+        self.c_attn_k = self.linear_variant_k(
+            config.n_embd,
+            self.kv_dim,
+            config,
+            self.quantization_attn_dict["quantize_linear_attn_k_method"],
+            self.quantization_attn_dict["quantize_linear_attn_k_bits"],
+            bias=config.bias,
+        )
+        self.c_attn_v = self.linear_variant_v(
+            config.n_embd,
+            self.kv_dim,
+            config,
+            self.quantization_attn_dict["quantize_linear_attn_v_method"],
+            self.quantization_attn_dict["quantize_linear_attn_v_bits"],
+            bias=config.bias,
+        )
+        self.c_proj = self.linear_variant_attn_proj(
+            self.q_dim,
+            config.n_embd,
+            config,
+            self.quantization_attn_dict["quantize_linear_attn_proj_method"],
+            self.quantization_attn_dict["quantize_linear_attn_proj_bits"],
+            bias=config.bias,
+        )
 
         # Regularization
         self.attn_dropout = nn.Dropout(config.dropout)
@@ -98,11 +127,15 @@ class CausalSelfAttention(nn.Module):
             # Note: size is the size of the head dimension
             if config.rope_variant == "soap":
                 self.sym_rot_num_angles = config.sym_rot_num_angles
-                self.rotary_emb_q = SymmetricalOverlapAngularPositions(config, size=config.n_embd // self.n_head, num_angles=self.sym_rot_num_angles)
-                self.rotary_emb_k = SymmetricalOverlapAngularPositions(config, size=config.n_embd // self.n_head, num_angles=self.sym_rot_num_angles)
+                self.rotary_emb_q = SymmetricalOverlapAngularPositions(
+                    config, size=self.head_dim, num_angles=self.sym_rot_num_angles
+                )
+                self.rotary_emb_k = SymmetricalOverlapAngularPositions(
+                    config, size=self.head_dim, num_angles=self.sym_rot_num_angles
+                )
             elif config.rope_variant == "rope":
-                self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
-                self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
+                self.rotary_emb_q = RotaryEmbedding(config, size=self.head_dim)
+                self.rotary_emb_k = RotaryEmbedding(config, size=self.head_dim)
 
         # Sliding window size
         self.window_size = config.window_size
@@ -126,6 +159,18 @@ class CausalSelfAttention(nn.Module):
                 )
             else:
                 self.flash_lobo_log_const = nn.Parameter(torch.tensor(config.flash_lobo_log_const))  # log C  (0 → C = 1)
+
+        # Optional query-based scaling for Flash Lobo
+        self.use_flash_lobo_q_matrix = getattr(config, "use_flash_lobo_q_matrix", False)
+        act_name = getattr(config, "flash_lobo_q_activation", "identity")
+        if act_name == "identity":
+            self.flash_lobo_q_activation = lambda x: x
+        else:
+            self.flash_lobo_q_activation = getattr(F, act_name)
+        if self.use_flash_lobo_q_matrix:
+            self.flash_lobo_q_matrix = nn.Parameter(
+                torch.eye(self.head_dim).repeat(self.n_head, 1, 1)
+            )
 
         # Using flex attention
         self.use_flex_attn = config.use_flex_attn
@@ -151,11 +196,15 @@ class CausalSelfAttention(nn.Module):
             # Note: size is the size of the head dimension
             if config.rope_variant == "soap":
                 self.sym_rot_num_angles = config.sym_rot_num_angles
-                self.rotary_emb_q = SymmetricalOverlapAngularPositions(config, size=config.n_embd // self.n_head, num_angles=self.sym_rot_num_angles)
-                self.rotary_emb_k = SymmetricalOverlapAngularPositions(config, size=config.n_embd // self.n_head, num_angles=self.sym_rot_num_angles)
+                self.rotary_emb_q = SymmetricalOverlapAngularPositions(
+                    config, size=self.head_dim, num_angles=self.sym_rot_num_angles
+                )
+                self.rotary_emb_k = SymmetricalOverlapAngularPositions(
+                    config, size=self.head_dim, num_angles=self.sym_rot_num_angles
+                )
             elif config.rope_variant == "rope":
-                self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
-                self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
+                self.rotary_emb_q = RotaryEmbedding(config, size=self.head_dim)
+                self.rotary_emb_k = RotaryEmbedding(config, size=self.head_dim)
 
         # qk norm factor
         if self.use_qk_norm_scale:
@@ -274,9 +323,9 @@ class CausalSelfAttention(nn.Module):
                 k = k * gate_kv
                 v = v * gate_kv
 
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
-        k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
-        v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_h, T, hs)
+        k = k.view(B, T, self.n_kv_group, self.head_dim).transpose(1, 2)  # (B, n_kv, T, hs)
+        v = v.view(B, T, self.n_kv_group, self.head_dim).transpose(1, 2)  # (B, n_kv, T, hs)
 
         # rotate q and k before evaluating with the heads
         if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
@@ -312,12 +361,22 @@ class CausalSelfAttention(nn.Module):
                 k = torch.cat([dummy_k, k], dim=2)   # prepend → causal mask still valid
                 v = torch.cat([dummy_v, v], dim=2)
 
-                # 2-b  Bias only that column with log C
-                attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
-                if self.use_flash_lobo_per_head:
-                    attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                # 2-b  Bias only that column with log C (optionally scaled per query)
+                if self.use_flash_lobo_q_matrix:
+                    q_proj = torch.einsum('bhtd,hdf->bhtf', q, self.flash_lobo_q_matrix)
+                    q_scalar = self.flash_lobo_q_activation(q_proj.sum(dim=-1))
+                    if self.use_flash_lobo_per_head:
+                        bias_first = self.flash_lobo_log_const.view(1, self.n_head, 1) * q_scalar
+                    else:
+                        bias_first = self.flash_lobo_log_const * q_scalar
+                    attn_bias = q.new_zeros(B, self.n_head, T, k.size(2))
+                    attn_bias[..., 0] = bias_first
                 else:
-                    attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
+                    attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
+                    if self.use_flash_lobo_per_head:
+                        attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                    else:
+                        attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
 
 
             # Efficient attention using Flash Attention CUDA kernels
@@ -408,7 +467,7 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_pv_mult_output", y, num_bits, quant_method, iter_num)
 
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().view(B, T, self.q_dim)  # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
@@ -646,10 +705,9 @@ class InfiniteHeadAttention(nn.Module):
         self.n_head = config.n_head
 
         # group query attention and fallback
-        if (config.n_kv_group is None):
+        if config.n_kv_group is None:
             self.n_kv_group = config.n_head
         else:
-            assert config.n_embd % config.n_kv_group == 0
             self.n_kv_group = config.n_kv_group
 
         self.n_embd = config.n_embd
@@ -684,6 +742,18 @@ class InfiniteHeadAttention(nn.Module):
             else:
                 # single learnable parameter per layer
                 self.flash_lobo_log_const = nn.Parameter(torch.tensor(config.flash_lobo_log_const))  # log C  (0 → C = 1)
+
+        # Optional query-based scaling for Flash Lobo
+        self.use_flash_lobo_q_matrix = getattr(config, "use_flash_lobo_q_matrix", False)
+        act_name = getattr(config, "flash_lobo_q_activation", "identity")
+        if act_name == "identity":
+            self.flash_lobo_q_activation = lambda x: x
+        else:
+            self.flash_lobo_q_activation = getattr(F, act_name)
+        if self.use_flash_lobo_q_matrix:
+            self.flash_lobo_q_matrix = nn.Parameter(
+                torch.eye(self.n_qk_head_dim).repeat(self.n_head, 1, 1)
+            )
 
         # Set nn.Linear Types for Wk, Wq, Wv and c_proj
         self.linear_variant_q = linear_dictionary[config.linear_variant_attn]
@@ -818,12 +888,22 @@ class InfiniteHeadAttention(nn.Module):
                 k = torch.cat([dummy_k, k], dim=2)   # prepend → causal mask still valid
                 v = torch.cat([dummy_v, v], dim=2)
 
-                # 2-b  Bias only that column with log C
-                attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
-                if self.use_flash_lobo_per_head:
-                    attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                # 2-b  Bias only that column with log C (optionally scaled per query)
+                if self.use_flash_lobo_q_matrix:
+                    q_proj = torch.einsum('bhtd,hdf->bhtf', q, self.flash_lobo_q_matrix)
+                    q_scalar = self.flash_lobo_q_activation(q_proj.sum(dim=-1))
+                    if self.use_flash_lobo_per_head:
+                        bias_first = self.flash_lobo_log_const.view(1, self.n_head, 1) * q_scalar
+                    else:
+                        bias_first = self.flash_lobo_log_const * q_scalar
+                    attn_bias = q.new_zeros(B, self.n_head, T, k.size(2))
+                    attn_bias[..., 0] = bias_first
                 else:
-                    attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
+                    attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
+                    if self.use_flash_lobo_per_head:
+                        attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                    else:
+                        attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
 
 
             # Efficient attention using Flash Attention CUDA kernels
