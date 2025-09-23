@@ -27,7 +27,7 @@ class GPTConfig:
 
     # For multicontext training
     multicontext: bool = False
-    vocab_sizes: List[int] = field(default_factory=lambda: []) # Used in place of vocab
+    vocab_sizes: List[int] | None = field(default_factory=lambda: []) # Used in place of vocab
 
     # MLP bias configuration
     mlp_up_bias: bool | None = None  # If None, uses global bias setting

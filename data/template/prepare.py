@@ -27,7 +27,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "custom_char_byte_fallback", "json_byte_fallback", "sinewave"],
+                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "sinewave"],
                        default="tiktoken", help="Tokenization method")
 
     # Sine wave tokenizer parameters
