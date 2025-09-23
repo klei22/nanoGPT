@@ -32,6 +32,7 @@ from variations.model_variations import model_variation_dictionary
 import lm_eval
 from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
 from benchmarks import run_all
+from data.template.tokenizers import FileByteTokenizer
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
@@ -48,6 +49,7 @@ def parse_args():
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Torch data type for inference")
     parser.add_argument('--compile', action=argparse.BooleanOptionalAction, help="Compile the model (requires PyTorch 2.0)")
     parser.add_argument('--sample_file', type=str, default=None, help="Output file for inference")
+    parser.add_argument('--file_output_dir', type=str, default=None, help="Directory to save generated files when using file_byte tokenizer")
     parser.add_argument('--interactive', action=argparse.BooleanOptionalAction, help="Enable interactive generation")
     parser.add_argument('--stop_strings', nargs='+', type=str, default=['~W'], help="One or more strings to stop generation and allow user input. ""E.g. --stop_strings \"\n\n\" \".\"")
     parser.add_argument('--last_k_tokens', type=int, default=10, help="Number of last tokens to display in heatmaps")
@@ -768,6 +770,15 @@ def sample_with_existing_model(
                 console.print(f"[bold cyan]--- {k_tag} ---[/bold cyan]")
                 console.print("[bold green]" + plain_text + "[/bold green]")
 
+            if load_meta and meta.get('tokenizer') == 'file_byte' and args.file_output_dir:
+                tokens_full = x[0].tolist()
+                FileByteTokenizer.tokens_to_files(
+                    tokens_full,
+                    args.file_output_dir,
+                    meta['start_file_token'],
+                    meta['end_file_token'],
+                )
+
             # ---------- always store plain text once ------------------------
             if sample_file:
                 append_to_sample_file(                         # type: ignore
@@ -1006,6 +1017,15 @@ def get_tokenizer_functions(meta):
 
     if meta['tokenizer'] == 'byte':
         return byte_encode, byte_decode
+
+    if meta['tokenizer'] == 'file_byte':
+        start_token = meta['start_file_token']
+        def encode(s: str):
+            b = s.encode('latin-1')
+            return [start_token] + list(b)
+        def decode(ids: list[int]):
+            return bytes([i for i in ids if i != start_token and i != meta['end_file_token']]).decode('latin-1', errors='replace')
+        return encode, decode
 
     if meta['tokenizer'] == 'custom_char_with_byte_fallback':
         stoi, itos = meta['stoi'], meta['itos']
@@ -1404,6 +1424,16 @@ def main():
                     key_color="bold light_slate_blue"
                     text_color="bold cyan"
                     print(f"\n[{key_color}]{key}:[/{key_color}]\n[{text_color}]{text}[/{text_color}]")
+
+                    if meta.get('tokenizer') == 'file_byte' and args.file_output_dir:
+                        tokens_full = token_dict[key][0].tolist()
+                        FileByteTokenizer.tokens_to_files(
+                            tokens_full,
+                            args.file_output_dir,
+                            meta['start_file_token'],
+                            meta['end_file_token'],
+                        )
+
                 print("---------------")
 
                 if args.sample_file:
