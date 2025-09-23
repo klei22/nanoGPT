@@ -3,7 +3,7 @@
 
 python train.py \
   --training_mode multicontext \
-  --dataset sinewave/s1 \
+  --dataset sinewave/s_1 \
   --multicontext \
   --multicontext_datasets sinewave/s_1 sinewave/s_2 \
   --numerical_multicontext \
