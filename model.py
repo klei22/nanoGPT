@@ -161,6 +161,12 @@ class GPT(nn.Module):
                     word_embd = nn.Embedding(config.vocab_size, config.n_embd)
                     self.transformer['wte'] = word_embd
 
+        # Provide embedding table to attention variants that require it
+        if 'wte' in self.transformer:
+            emb_table = self.transformer['wte'].weight
+            for attn in shared_attn_array:
+                if hasattr(attn, 'embedding_table') and attn.embedding_table is None:
+                    attn.embedding_table = emb_table
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])

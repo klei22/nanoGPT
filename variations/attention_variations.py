@@ -13,6 +13,7 @@ from variations.position_encoding_variations import (
     FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
 from variations.softmax_variations import softmax_dictionary
 from variations.triadic_modulation_variations import mod_fn_dict
+from variations.router_variations import router_dictionary
 # Mamba related imports
 # if torch.cuda.is_available():
 #     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -894,6 +895,134 @@ class InfiniteHeadAttention(nn.Module):
         return y
 
 ##############################################################################
+#  QueryEmbeddingMoAAttention
+#  --------------------------------------------------------------
+#  Combines a shared set of attention heads with a mixture-of-attention (MoA)
+#  branch that attends directly over the token embedding matrix. During
+#  inference the expensive query × embedding projection can be precomputed into
+#  a lookup table for fast retrieval.
+##############################################################################
+
+
+class QueryEmbeddingMoAAttention(nn.Module):
+    """Shared heads plus embedding-based MoA heads."""
+
+    def __init__(self, config, embedding_table=None, fire_pos_enc=None):
+        super().__init__()
+
+        self.n_moa = getattr(config, "n_moa_head", 0)
+        self.n_shared = getattr(config, "n_shared_head", config.n_head - self.n_moa)
+        assert self.n_shared + self.n_moa == config.n_head, "n_head must equal shared+moa"
+
+        self.n_embd = config.n_embd
+        self.shared_qk_dim = getattr(
+            config,
+            "n_shared_qk_head_dim",
+            getattr(config, "n_qk_head_dim", self.n_embd // max(self.n_shared, 1)),
+        )
+        self.shared_v_dim = getattr(
+            config,
+            "n_shared_v_head_dim",
+            getattr(config, "n_v_head_dim", self.n_embd // max(self.n_shared, 1)),
+        )
+        self.moa_qk_dim = getattr(config, "n_moa_qk_head_dim", self.n_embd)
+        self.moa_v_dim = getattr(config, "n_moa_v_head_dim", self.shared_v_dim)
+        self.use_concat_heads = config.use_concat_heads
+
+        if self.n_shared > 0:
+            self.c_attn_q = nn.Linear(self.n_embd, self.n_shared * self.shared_qk_dim, bias=config.bias)
+            self.c_attn_k = nn.Linear(self.n_embd, self.n_shared * self.shared_qk_dim, bias=config.bias)
+            self.c_attn_v = nn.Linear(self.n_embd, self.n_shared * self.shared_v_dim, bias=config.bias)
+
+        # MoA branch
+        self.embedding_table = embedding_table
+        if self.n_moa > 0:
+            self.c_attn_q_moa = nn.Linear(self.n_embd, self.n_moa * self.moa_qk_dim, bias=config.bias)
+            self.router = router_dictionary[getattr(config, "moa_router_variant", "moa_topk")](config)
+            self.k_proj = (
+                nn.Linear(self.n_embd, self.moa_qk_dim, bias=False)
+                if self.moa_qk_dim != self.n_embd
+                else nn.Identity()
+            )
+            self.v_proj = (
+                nn.Linear(self.n_embd, self.moa_v_dim, bias=False)
+                if self.moa_v_dim != self.n_embd
+                else nn.Identity()
+            )
+            self.moa_out_proj = (
+                nn.Linear(self.moa_v_dim, self.shared_v_dim, bias=False)
+                if self.moa_v_dim != self.shared_v_dim
+                else nn.Identity()
+            )
+            self.lookup_weight = None
+            self.lookup_bias = None
+
+        total_v_dim = (self.n_shared + self.n_moa) * self.shared_v_dim
+        proj_in = total_v_dim if self.use_concat_heads else self.shared_v_dim
+        self.c_proj = nn.Linear(proj_in, self.n_embd, bias=config.bias)
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+
+        self.register_buffer(
+            "bias",
+            torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size),
+        )
+
+    def precompute_lookup(self):
+        if self.n_moa == 0:
+            return
+        if self.embedding_table is None:
+            raise ValueError("embedding_table is not set for MoA lookup precomputation")
+        emb_k = self.k_proj(self.embedding_table)
+        weight = self.c_attn_q_moa.weight.view(self.n_moa, self.moa_qk_dim, self.n_embd).transpose(1, 2)
+        bias = self.c_attn_q_moa.bias.view(self.n_moa, self.moa_qk_dim)
+        self.lookup_weight = torch.einsum("hed,vd->hev", weight, emb_k)
+        self.lookup_bias = torch.einsum("hd,vd->hv", bias, emb_k)
+
+    def forward(self, x, iter_num=None):
+        B, T, _ = x.size()
+
+        outputs = []
+        if self.n_shared > 0:
+            q = self.c_attn_q(x).view(B, T, self.n_shared, self.shared_qk_dim).transpose(1, 2)
+            k = self.c_attn_k(x).view(B, T, self.n_shared, self.shared_qk_dim).transpose(1, 2)
+            v = self.c_attn_v(x).view(B, T, self.n_shared, self.shared_v_dim).transpose(1, 2)
+
+            att = (q @ k.transpose(-2, -1)) / math.sqrt(self.shared_qk_dim)
+            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y_shared = att @ v  # (B, n_shared, T, shared_v_dim)
+            outputs.append(y_shared)
+
+        if self.n_moa > 0:
+            if self.embedding_table is None:
+                raise ValueError("embedding_table is not set for MoA attention")
+            emb_k = self.k_proj(self.embedding_table)
+            emb_v = self.v_proj(self.embedding_table)
+            gate, _ = self.router(x)  # (B, T, n_moa)
+            if self.lookup_weight is None:
+                q_moa = self.c_attn_q_moa(x).view(B, T, self.n_moa, self.moa_qk_dim)
+                logits = torch.einsum("bthd,vd->bthv", q_moa, emb_k)
+            else:
+                logits = torch.einsum("bte,hev->bthv", x, self.lookup_weight) + self.lookup_bias
+            att_moa = F.softmax(logits / math.sqrt(self.moa_qk_dim), dim=-1)
+            y_moa = torch.einsum("bthv,vd->bthd", att_moa, emb_v)
+            y_moa = y_moa * gate.unsqueeze(-1)
+            y_moa = self.moa_out_proj(y_moa)
+            y_moa = y_moa.transpose(1, 2)
+            outputs.append(y_moa)
+
+        if self.use_concat_heads:
+            y = torch.cat(outputs, dim=1).transpose(1, 2).contiguous().view(B, T, -1)
+        else:
+            y = sum(o.sum(dim=1) for o in outputs)
+
+        y = self.c_proj(y)
+        y = self.resid_dropout(y)
+        return y
+
+##############################################################################
 #  Multi-head Latent Attention (MLA) – DeepSeek-V2 implementation
 #  - low-rank joint compression of K & V (latent_kv_dim)
 #  - optional low-rank compression of Q (we keep full Q for simplicity)
@@ -1119,6 +1248,7 @@ attention_dictionary = {
     # "ssm": MambaBlock,
     "identity": AttnIdentity,
     "infinite": InfiniteHeadAttention,
+    "moa_embedding": QueryEmbeddingMoAAttention,
     "mla": MultiHeadLatentAttention,
     "co4": Co4Attention,
 }
