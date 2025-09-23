@@ -1,11 +1,24 @@
 # sample.yaml
 ---
-# parameter_groups: define sets of overrides to apply on top of base params
+# Named parameter groups can be referenced inside later parameter_groups entries
+# to avoid repeating common overrides.
+named_parameter_groups:
+  rotary_and_abs:
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [true]
+  abs_pos_only:
+    use_rotary_embeddings: [false]
+    use_abs_pos_embeddings: [true]
+
+# parameter_groups: define sets of overrides to apply on top of base params.
+# The group below reuses the named groups above and mixes in additional
+# hyperparameters so each variation shares the same learning rate sweep.
 parameter_groups:
-  - use_rotary_embeddings: [true]
-    use_abs_pos_embeddings: [true]
-  - use_rotary_embeddings: [false]
-    use_abs_pos_embeddings: [true]
+  - group_variations:
+      - rotary_and_abs
+      - { named_group: abs_pos_only, compile: [false] }
+      - { use_rotary_embeddings: [true], use_abs_pos_embeddings: [false] }
+    learning_rate: [0.0003, 0.0001]
 
 # base hyperparameters
 max_iters: [250]
