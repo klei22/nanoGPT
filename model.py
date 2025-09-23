@@ -37,6 +37,7 @@ from variations.position_encoding_variations import QuantizedEmbedding, RotaryEm
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
+from variations.output_vector_variants import output_vector_variant_dict
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -156,29 +157,20 @@ class GPT(nn.Module):
         # For numerical_multicontext, define per-index MLPs
         if self.numerical_multicontext:
             self.numerical_embeddings = nn.ModuleDict()
-            for i in range(len(config.vocab_sizes)):
-                self.numerical_embeddings[str(i)] = nn.Sequential(
-                    nn.Linear(1, self.numerical_mlp_hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(self.numerical_mlp_hidden_dim, config.n_embd)
-                )
-
-        # Optional regression output heads
-        if self.numerical_multicontext:
             self.output_mlp = nn.ModuleDict()
             for i in range(len(config.vocab_sizes)):
-                self.output_mlp[str(i)] = nn.Sequential(
-                    nn.Linear(config.n_embd, self.numerical_mlp_hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(self.numerical_mlp_hidden_dim, 1)  # Output is scalar
-                )
+                key = str(i)
+                self.numerical_embeddings[key] = self._build_numerical_embedding()
+                self.output_mlp[key] = self._build_numerical_output_head()
 
         # Final-logit softcapping
         self.final_logit_softcapping = config.final_logit_softcapping
+
+        # Optionally mix outputs of all blocks before final layer norm
+        self.use_ln_f_input_mixer = config.use_ln_f_input_mixer
+        if self.use_ln_f_input_mixer:
+            variant_cls = output_vector_variant_dict[config.ln_f_input_mixer_variant]
+            self.ln_f_mixer = variant_cls(config)
 
         # Use the new SharedParamGroupCreator for MLP and Attn layers
         spg_creator = SharedParamGroupCreator(config)
@@ -230,7 +222,7 @@ class GPT(nn.Module):
                 self.transformer['wte'] = word_embd
             else:
                 #TODO: currently multicontext is in own category, add support later for WTE factorization
-                if config.multicontext:
+                if config.multicontext or config.multidataset_wte:
                     for i, vocab_size in enumerate(self.config.vocab_sizes):
                         embedding_layer = nn.Embedding(vocab_size, config.n_embd)
                         self.transformer[f'wte_{i}'] = embedding_layer
@@ -261,7 +253,7 @@ class GPT(nn.Module):
             self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
         else:
             #TODO: currently multicontext is in own category, add support later for WTE factorization
-            if config.multicontext:
+            if config.multicontext or config.multidataset_wte:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
@@ -289,7 +281,7 @@ class GPT(nn.Module):
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         if self.wte_weight_tying:
-            if config.multicontext:
+            if config.multicontext or config.multidataset_wte:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
@@ -311,6 +303,43 @@ class GPT(nn.Module):
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+    def _build_numerical_embedding(self):
+        return nn.Sequential(
+            nn.Linear(1, self.numerical_mlp_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.numerical_mlp_hidden_dim, self.config.n_embd)
+        )
+
+    def _build_numerical_output_head(self):
+        return nn.Sequential(
+            nn.Linear(self.config.n_embd, self.numerical_mlp_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.numerical_mlp_hidden_dim, 1)
+        )
+
+    def _ensure_numerical_modules(self, index, device):
+        if not self.numerical_multicontext:
+            return
+
+        if not hasattr(self, "numerical_embeddings"):
+            self.numerical_embeddings = nn.ModuleDict()
+        if not hasattr(self, "output_mlp"):
+            self.output_mlp = nn.ModuleDict()
+
+        key = str(index)
+        if key not in self.numerical_embeddings:
+            self.numerical_embeddings[key] = self._build_numerical_embedding()
+        if key not in self.output_mlp:
+            self.output_mlp[key] = self._build_numerical_output_head()
+
+        # Ensure modules are on the proper device
+        self.numerical_embeddings[key] = self.numerical_embeddings[key].to(device)
+        self.output_mlp[key] = self.output_mlp[key].to(device)
 
     def get_num_params(self, non_embedding=True):
         """
@@ -438,7 +467,7 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None):
+    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -454,23 +483,9 @@ class GPT(nn.Module):
             # Add all of the input tokens
             for i, tokens in enumerate(token_list):
                 if self.config.numerical_multicontext:
-                    # Lazily create heads if vocab_sizes wasn't provided at init.
-                    if str(i) not in self.numerical_embeddings:
-                        self.numerical_embeddings[str(i)] = nn.Sequential(
-                            nn.Linear(1, self.numerical_mlp_hidden_dim), nn.ReLU(),
-                            nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim), nn.ReLU(),
-                            nn.Linear(self.numerical_mlp_hidden_dim, self.config.n_embd)
-                        )
-                    if str(i) not in self.output_mlp:
-                        self.output_mlp[str(i)] = nn.Sequential(
-                            nn.Linear(self.config.n_embd, self.numerical_mlp_hidden_dim), nn.ReLU(),
-                            nn.Linear(self.numerical_mlp_hidden_dim, self.numerical_mlp_hidden_dim), nn.ReLU(),
-                            nn.Linear(self.numerical_mlp_hidden_dim, 1)
-                        )
-                    # Convert token indices to float16 for numerical representation
-                    numeric_input = tokens.half().unsqueeze(-1)  # (B,T,1)
-                    mlp = self.numerical_embeddings[str(i)]
-                    token_repr = mlp(numeric_input)  # (B,T,E)
+                    self._ensure_numerical_modules(i, tokens.device)
+                    numeric_input = tokens.to(dtype=torch.float32).unsqueeze(-1)  # (B, T, 1)
+                    token_repr = self.numerical_embeddings[str(i)](numeric_input)
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
 
@@ -507,6 +522,9 @@ class GPT(nn.Module):
             if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
                 x = self.lsv_matrix(x)
 
+            if self.use_ln_f_input_mixer:
+                layer_outputs = [x]
+
             layer_idx = 1
             mlp_res = None
             for block in self.transformer.h:
@@ -534,7 +552,13 @@ class GPT(nn.Module):
                         and layer_idx == self.config.obtain_vector_at_layer_idx):
                     x = self.obtain_vector_from_layer_output(x)
 
+                if self.use_ln_f_input_mixer:
+                    layer_outputs.append(x)
+
                 layer_idx += 1
+
+            if self.use_ln_f_input_mixer:
+                x = self.ln_f_mixer(layer_outputs)
 
             # 3. Final layer norm
             x = self.transformer.ln_f(x)
@@ -548,60 +572,58 @@ class GPT(nn.Module):
             losses = None
             if self.config.numerical_multicontext:
                 for i in range(len(token_list)):
-                    # Use MLP per context index for regression
-                    out_mlp = self.output_mlp[str(i)]
-                    pred = out_mlp(x).squeeze(-1)  # Shape: (B, T)
+                    self._ensure_numerical_modules(i, x.device)
+                    pred = self.output_mlp[str(i)](x).squeeze(-1)
                     logits.append(pred)
 
                 if target_list is not None:
                     losses = []
-                    # Convert token index to float
                     for i in range(len(token_list)):
-                        target_float = target_list[i].float()
-                        mask = (target_list[i] != -1)  # Ignore padding
-
-                        if mask.sum() == 0:
-                            # All targets are masked
-                            losses.append(torch.tensor(0.0, device=logits[i].device))
+                        if loss_fn is None:
+                            target_float = target_list[i].float()
+                            mask = target_list[i] != -1
+                            if mask.any():
+                                loss_i = F.huber_loss(
+                                    logits[i][mask],
+                                    target_float[mask],
+                                    delta=1.0,
+                                    reduction="mean"
+                                )
+                            else:
+                                loss_i = logits[i].new_tensor(0.0)
                         else:
-                            # Huber loss on valid entries
-                            loss_i = F.huber_loss(
-                                logits[i][mask],
-                                target_float[mask],
-                                delta=1.0,
-                                reduction="mean"
-                            )
-                            losses.append(loss_i)
+                            loss_i = loss_fn(logits[i], target_list[i], iter_num=iter_num)
+                        losses.append(loss_i)
             else:
-                for i in range(len(token_list)):
-                    logits.append(self.transformer[f'lm_head_{i}'](x))
-
-                # Soft‑cap **each** logits tensor (training & inference)
-                if self.config.final_logit_softcapping is not None:
-                    logits = [
-                        torch.tanh(logit_var / self.config.final_logit_softcapping) *
-                        self.config.final_logit_softcapping
-                        for logit_var in logits
-                    ]
-
-                # 6. Compute losses if targets are provided
-                # If we only want the last token, adapt the slices as you prefer
                 if target_list is not None:
-                    # If we do want to compute losses for each context
+                    for i in range(len(token_list)):
+                        logit_var = self.transformer[f'lm_head_{i}'](x)
+                        if self.config.final_logit_softcapping is not None:
+                            logit_var = torch.tanh(
+                                logit_var / self.config.final_logit_softcapping
+                            ) * self.config.final_logit_softcapping
+                        logits.append(logit_var)
+
                     losses = []
                     for i in range(len(token_list)):
-                        loss_i = F.cross_entropy(
-                            logits[i].view(-1, logits[i].size(-1)),
-                            target_list[i].view(-1),
-                            ignore_index=-1
-                        )
+                        if loss_fn is None:
+                            loss_i = F.cross_entropy(
+                                logits[i].view(-1, logits[i].size(-1)),
+                                target_list[i].view(-1),
+                                ignore_index=-1
+                            )
+                        else:
+                            loss_i = loss_fn(logits[i], target_list[i], iter_num=iter_num)
                         losses.append(loss_i)
-
                 else:
-                    last_pos_logits = []
                     for i in range(len(token_list)):
-                        last_pos_logits.append(self.transformer[f'lm_head_{i}'](x[:, [-1], :]))
-                    logits = last_pos_logits
+                        logit_var = self.transformer[f'lm_head_{i}'](x[:, [-1], :])
+                        if self.config.final_logit_softcapping is not None:
+                            logit_var = torch.tanh(
+                                logit_var / self.config.final_logit_softcapping
+                            ) * self.config.final_logit_softcapping
+                        logits.append(logit_var)
+
                     losses = None
 
             return logits, losses
@@ -612,7 +634,10 @@ class GPT(nn.Module):
             # assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
             # forward the GPT model itself
-            tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+            if self.config.multidataset_wte and dataset_idx is not None:
+                tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
+            else:
+                tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
             x = None
 
             if self.config.use_embedding_scale:
@@ -648,6 +673,9 @@ class GPT(nn.Module):
             if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
                 x = self.lsv_matrix(x)
 
+            if self.use_ln_f_input_mixer:
+                layer_outputs = [x]
+
             layer_idx = 1
             mlp_res = None
             for block in self.transformer.h:
@@ -678,7 +706,13 @@ class GPT(nn.Module):
                     print(layer_idx, self.config.obtain_vector_at_layer_idx)
                     x = self.obtain_vector_from_layer_output(x)
 
+                if self.use_ln_f_input_mixer:
+                    layer_outputs.append(x)
+
                 layer_idx +=1
+
+            if self.use_ln_f_input_mixer:
+                x = self.ln_f_mixer(layer_outputs)
 
             x = self.transformer.ln_f(x)
 
@@ -688,22 +722,27 @@ class GPT(nn.Module):
 
             if targets is not None:
                 # if we are given some desired targets also calculate the loss
-                logits = self.lm_head(x)
+                if self.config.multidataset_wte and dataset_idx is not None:
+                    logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+                else:
+                    logits = self.lm_head(x)
 
                 if self.config.final_logit_softcapping is not None:
-                    logits = logits / self.config.final_logit_softcapping
-                    logits = torch.tanh(logits)
-                    logits = logits * self.config.final_logit_softcapping
+                    logits = torch.tanh(logits / self.config.final_logit_softcapping) * self.config.final_logit_softcapping
 
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+                if loss_fn is None:
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+                else:
+                    loss = loss_fn(logits, targets, iter_num=iter_num)
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
-                logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+                if self.config.multidataset_wte and dataset_idx is not None:
+                    logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
+                else:
+                    logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
 
                 if self.config.final_logit_softcapping is not None:
-                    logits = logits / self.config.final_logit_softcapping
-                    logits = torch.tanh(logits)
-                    logits = logits * self.config.final_logit_softcapping
+                    logits = torch.tanh(logits / self.config.final_logit_softcapping) * self.config.final_logit_softcapping
 
                 loss = None
 
@@ -712,7 +751,7 @@ class GPT(nn.Module):
     #  LATENT-CHAINING
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def embed_tokens(self, idx):
+    def embed_tokens(self, idx, dataset_idx=None):
         """
         Return the (B,T,E) tensor right *after* token embeddings,
         factor-scale-up, positional embedding and dropout.  Exactly the
@@ -720,7 +759,10 @@ class GPT(nn.Module):
         `forward()`.  Used by train_recurrent.py for the FIRST step.
         """
         device = idx.device
-        tok_emb = self.transformer.wte(idx)
+        if self.config.multidataset_wte and dataset_idx is not None:
+            tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
+        else:
+            tok_emb = self.transformer.wte(idx)
         if self.n_embd_wte:
             tok_emb = self.transformer.scale_up(tok_emb)
         if self.config.use_embedding_scale:
@@ -731,7 +773,7 @@ class GPT(nn.Module):
             tok_emb = tok_emb + self.transformer.wpe(pos)
         return self.transformer.drop(tok_emb)
 
-    def forward_embedded(self, x_emb, iter_num=None, return_hidden=False):
+    def forward_embedded(self, x_emb, iter_num=None, return_hidden=False, dataset_idx=None):
         """
         Complete forward pass **starting from an already-embedded tensor**
         `x_emb` of shape (B,T,E).  Returns (`logits`, `loss`) identical to
@@ -748,19 +790,30 @@ class GPT(nn.Module):
         if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
             x = self.lsv_matrix(x)
 
+        if self.use_ln_f_input_mixer:
+            layer_outputs = [x]
+
         mlp_res = None
         layer_idx = 1
         for block in self.transformer.h:
             x, mlp_res = block(x, iter_num, mlp_res=mlp_res)
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
+            if self.use_ln_f_input_mixer:
+                layer_outputs.append(x)
             layer_idx += 1
+
+        if self.use_ln_f_input_mixer:
+            x = self.ln_f_mixer(layer_outputs)
 
         x = self.transformer.ln_f(x)
         if self.n_embd_wte:
             x = F.linear(x, self.transformer.scale_down.weight.t())
 
-        logits = self.lm_head(x)
+        if self.config.multidataset_wte and dataset_idx is not None:
+            logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+        else:
+            logits = self.lm_head(x)
         if self.final_logit_softcapping is not None:
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping
