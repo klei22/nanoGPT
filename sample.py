@@ -4,6 +4,7 @@ import json
 import math
 import os
 import pickle
+import re
 import time
 from contextlib import nullcontext
 from datetime import datetime
@@ -997,6 +998,32 @@ def get_tokenizer_functions(meta):
         encode = lambda s: [stoi[c] for c in s]
         decode = lambda l: ''.join([itos[i] for i in l])
         return encode, decode
+
+    if meta['tokenizer'] == "sinewave":
+        default_value = 64
+
+        def encode_fn(s: str) -> list[int]:
+            # Accept comma, whitespace, or newline-separated integers.
+            pieces = [piece for piece in re.split(r"[\s,]+", s) if piece]
+            values: list[int] = []
+            for piece in pieces:
+                try:
+                    value = int(piece)
+                except ValueError as exc:  # pragma: no cover - defensive guard
+                    raise ValueError(
+                        f"Invalid sinewave token '{piece}'. Provide comma-separated integers."
+                    ) from exc
+                values.append(max(0, min(255, value)))
+
+            if not values:
+                values.append(default_value)
+
+            return values
+
+        def decode_fn(values):
+            return ','.join(str(int(v)) for v in values)
+
+        return encode_fn, decode_fn
 
     if meta['tokenizer'] == 'tiktoken':
         enc = tiktoken.get_encoding(meta['tiktoken_encoding'])

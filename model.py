@@ -92,6 +92,35 @@ class GPT(nn.Module):
 
         self.config = config
 
+        self.uses_numerical_multicontext = bool(config.numerical_multicontext)
+        if self.uses_numerical_multicontext:
+            if not config.multicontext:
+                raise ValueError("numerical_multicontext requires multicontext mode")
+            if config.n_embd_wte:
+                raise ValueError("numerical_multicontext does not support factored embeddings")
+            if not config.vocab_sizes:
+                raise ValueError("numerical_multicontext requires vocab_sizes to be provided")
+
+            hidden_dim = config.numerical_mlp_hidden_dim
+            self.numerical_embeddings = nn.ModuleDict()
+            self.numerical_output_mlps = nn.ModuleDict()
+            for idx in range(len(config.vocab_sizes)):
+                key = str(idx)
+                self.numerical_embeddings[key] = nn.Sequential(
+                    nn.Linear(1, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, config.n_embd),
+                )
+                self.numerical_output_mlps[key] = nn.Sequential(
+                    nn.Linear(config.n_embd, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, 1),
+                )
+
         # Final-logit softcapping
         self.final_logit_softcapping = config.final_logit_softcapping
 
@@ -151,7 +180,7 @@ class GPT(nn.Module):
                 self.transformer['wte'] = word_embd
             else:
                 #TODO: currently multicontext is in own category, add support later for WTE factorization
-                if config.multicontext or config.multidataset_wte:
+                if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                     for i, vocab_size in enumerate(self.config.vocab_sizes):
                         embedding_layer = nn.Embedding(vocab_size, config.n_embd)
                         self.transformer[f'wte_{i}'] = embedding_layer
@@ -182,7 +211,7 @@ class GPT(nn.Module):
             self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
         else:
             #TODO: currently multicontext is in own category, add support later for WTE factorization
-            if config.multicontext or config.multidataset_wte:
+            if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
@@ -210,7 +239,7 @@ class GPT(nn.Module):
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         if self.wte_weight_tying:
-            if config.multicontext or config.multidataset_wte:
+            if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
@@ -374,10 +403,14 @@ class GPT(nn.Module):
 
             # Add all of the input tokens
             for i, tokens in enumerate(token_list):
-                if i == 0:
-                    x = self.transformer[f'wte_{i}'](tokens)
+                if self.uses_numerical_multicontext:
+                    module = self.numerical_embeddings[str(i)]
+                    numeric_tokens = tokens.to(module[0].weight.dtype).unsqueeze(-1)
+                    token_repr = module(numeric_tokens)
                 else:
-                    x += self.transformer[f'wte_{i}'](tokens)
+                    token_repr = self.transformer[f'wte_{i}'](tokens)
+
+                x = token_repr if x is None else x + token_repr
 
             if self.config.use_embedding_scale:
                 x = x * self.embedding_scale
@@ -455,40 +488,58 @@ class GPT(nn.Module):
                 x = F.linear(x, self.transformer.scale_down.weight.t())
 
             # 5. Compute separate logits
-            logits = []
-            for i in range(len(token_list)):
-                logits.append(self.transformer[f'lm_head_{i}'](x))
+            if self.uses_numerical_multicontext:
+                logits = [self.numerical_output_mlps[str(i)](x) for i in range(len(token_list))]
 
-            # Soft‑cap **each** logits tensor (training & inference)
-            if self.config.final_logit_softcapping is not None:
-                logits = [
-                    torch.tanh(logit_var / self.config.final_logit_softcapping) *
-                    self.config.final_logit_softcapping
-                    for logit_var in logits
-                ]
-
-            # 6. Compute losses if targets are provided
-            # If we only want the last token, adapt the slices as you prefer
-            losses = None
-            if target_list is not None:
-                # If we do want to compute losses for each context
-                losses = []
-                for i in range(len(token_list)):
-                    if loss_fn is None:
-                        loss_i = F.cross_entropy(
-                            logits[i].view(-1, logits[i].size(-1)),
-                            target_list[i].view(-1),
-                            ignore_index=-1
-                        )
-                    else:
-                        loss_i = loss_fn(logits[i], target_list[i], iter_num=iter_num)
-                    losses.append(loss_i)
-
+                if target_list is not None:
+                    losses = []
+                    for i, preds in enumerate(logits):
+                        targets = target_list[i].to(preds.dtype)
+                        mask = target_list[i] != -1
+                        if mask.any():
+                            loss_i = F.huber_loss(
+                                preds.squeeze(-1)[mask],
+                                targets[mask],
+                                delta=1.0,
+                                reduction="mean",
+                            )
+                        else:
+                            loss_i = torch.zeros((), device=preds.device, dtype=preds.dtype)
+                        losses.append(loss_i)
+                else:
+                    logits = [pred[:, [-1], :] for pred in logits]
+                    losses = None
             else:
-                # only forward lm head on very last position in inference mode
-                for i in range(len(token_list)):
-                    logits.append(self.transformer[f'lm_head_{i}'](x[:, [-1], :]))
-                losses = None
+                logits = [self.transformer[f'lm_head_{i}'](x) for i in range(len(token_list))]
+
+                # Soft‑cap **each** logits tensor (training & inference)
+                if self.config.final_logit_softcapping is not None:
+                    logits = [
+                        torch.tanh(logit_var / self.config.final_logit_softcapping) *
+                        self.config.final_logit_softcapping
+                        for logit_var in logits
+                    ]
+
+                # 6. Compute losses if targets are provided
+                # If we only want the last token, adapt the slices as you prefer
+                if target_list is not None:
+                    # If we do want to compute losses for each context
+                    losses = []
+                    for i in range(len(token_list)):
+                        if loss_fn is None:
+                            loss_i = F.cross_entropy(
+                                logits[i].view(-1, logits[i].size(-1)),
+                                target_list[i].view(-1),
+                                ignore_index=-1
+                            )
+                        else:
+                            loss_i = loss_fn(logits[i], target_list[i], iter_num=iter_num)
+                        losses.append(loss_i)
+
+                else:
+                    # only forward lm head on very last position in inference mode
+                    logits = [logit[:, [-1], :] for logit in logits]
+                    losses = None
 
             return logits, losses
 
@@ -751,6 +802,43 @@ class GPT(nn.Module):
         # Save the vector to file
         np.save(self.config.obtain_vector_file, result_vector)
         print(f"Updated avg vector saved to {self.config.obtain_vector_file}")
+
+    @staticmethod
+    def _fp16bits_to_fp32(bits: torch.Tensor) -> torch.Tensor:
+        """Convert IEEE-754 half-precision bit patterns to float32 tensors."""
+
+        b = bits.to(torch.int32)
+
+        sign = (b >> 15) & 0x1
+        exponent = (b >> 10) & 0x1F
+        mantissa = b & 0x3FF
+
+        sign_f = torch.where(sign == 0, 1.0, -1.0).to(torch.float32)
+
+        subnormal = (exponent == 0) & (mantissa != 0)
+        normal = (exponent > 0) & (exponent < 0x1F)
+        special = exponent == 0x1F
+
+        out = torch.zeros_like(sign_f, dtype=torch.float32)
+
+        if subnormal.any():
+            man = mantissa[subnormal].to(torch.float32)
+            out[subnormal] = sign_f[subnormal] * torch.pow(2.0, -14) * (man / 1024.0)
+
+        if normal.any():
+            man = mantissa[normal].to(torch.float32)
+            exp = exponent[normal].to(torch.float32)
+            out[normal] = sign_f[normal] * torch.pow(2.0, exp - 15.0) * (1.0 + man / 1024.0)
+
+        if special.any():
+            man = mantissa[special]
+            out[special] = torch.where(
+                man == 0,
+                sign_f[special] * torch.tensor(float("inf"), device=bits.device),
+                torch.tensor(float("nan"), device=bits.device),
+            )
+
+        return out
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
