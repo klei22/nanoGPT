@@ -7,6 +7,8 @@ import tiktoken
 from tqdm import tqdm
 from collections import defaultdict
 import json
+import math
+import numpy as np
 
 
 class Tokenizer:
@@ -571,4 +573,33 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
             out_pieces.append(all_bytes.decode('utf-8', errors='replace'))
 
         return ''.join(out_pieces)
+
+
+class SineWaveTokenizer:
+    """Generate a deterministic sequence of sine wave samples."""
+
+    def __init__(self, args):
+        self.period = args.sine_period
+        self.points_per_period = args.sine_points_per_period
+        self.num_periods = args.sine_num_periods
+        self.amplitude = args.sine_amplitude
+        self.max_val = 255
+
+    def generate_wave(self):
+        total_points = self.num_periods * self.points_per_period
+        values = []
+        for i in range(total_points):
+            x = (i * 2 * math.pi) / self.points_per_period
+            y = 64 + self.amplitude * math.sin(x * self.period)
+            y_clamped = int(max(0, min(self.max_val, round(y))))
+            values.append(y_clamped)
+        return values
+
+    def tokenize(self, data=None):
+        # `data` is unused; generation is parameter driven.
+        return self.generate_wave()
+
+    def detokenize(self, ids):
+        array = np.asarray(ids, dtype=np.int64)
+        return ','.join(map(str, array.tolist()))
 
