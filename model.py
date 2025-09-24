@@ -152,13 +152,22 @@ class GPT(nn.Module):
         # Backwards-compatible defaults: feature is OFF unless enabled.
         self.numerical_multicontext = getattr(config, "numerical_multicontext", False)
         self.numerical_mlp_hidden_dim = getattr(config, "numerical_mlp_hidden_dim", 64)
-        self._num_mc_contexts = len(getattr(config, "vocab_sizes", []))
+
+        # CLI wiring sometimes forwards ``vocab_sizes=None`` which would otherwise
+        # override the dataclass default list and break ``len`` calls below.  Treat
+        # a ``None`` value as "no vocab sizes provided" for standard single-dataset
+        # training.
+        raw_vocab_sizes = getattr(config, "vocab_sizes", None)
+        if raw_vocab_sizes is None:
+            raw_vocab_sizes = []
+        self.config.vocab_sizes = raw_vocab_sizes
+        self._num_mc_contexts = len(raw_vocab_sizes)
 
         # For numerical_multicontext, define per-index MLPs
         if self.numerical_multicontext:
             self.numerical_embeddings = nn.ModuleDict()
             self.output_mlp = nn.ModuleDict()
-            for i in range(len(config.vocab_sizes)):
+            for i in range(self._num_mc_contexts):
                 key = str(i)
                 self.numerical_embeddings[key] = self._build_numerical_embedding()
                 self.output_mlp[key] = self._build_numerical_output_head()
