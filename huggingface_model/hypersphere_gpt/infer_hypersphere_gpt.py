@@ -1,9 +1,17 @@
 import argparse
+import sys
+from pathlib import Path
 
 import torch
 
-from .modeling_hypersphere_gpt import HypersphereGPTForCausalLM
-from .tokenizer import TiktokenTokenizer
+if __package__ is None or __package__ == "":  # pragma: no cover - runtime convenience
+    PACKAGE_ROOT = Path(__file__).resolve().parent
+    sys.path.append(str(PACKAGE_ROOT.parent))
+    from hypersphere_gpt.modeling_hypersphere_gpt import HypersphereGPTForCausalLM  # type: ignore
+    from hypersphere_gpt.tokenizer import TiktokenTokenizer  # type: ignore
+else:
+    from .modeling_hypersphere_gpt import HypersphereGPTForCausalLM
+    from .tokenizer import TiktokenTokenizer
 
 
 def main() -> None:

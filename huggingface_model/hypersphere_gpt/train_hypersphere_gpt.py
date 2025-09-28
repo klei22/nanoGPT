@@ -1,5 +1,7 @@
 import argparse
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List
 
 import torch
@@ -7,9 +9,16 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 from transformers import Trainer, TrainingArguments
 
-from .config import HypersphereGPTConfig
-from .modeling_hypersphere_gpt import HypersphereGPTForCausalLM
-from .tokenizer import TiktokenTokenizer
+if __package__ is None or __package__ == "":  # pragma: no cover - runtime convenience
+    PACKAGE_ROOT = Path(__file__).resolve().parent
+    sys.path.append(str(PACKAGE_ROOT.parent))
+    from hypersphere_gpt.config import HypersphereGPTConfig  # type: ignore
+    from hypersphere_gpt.modeling_hypersphere_gpt import HypersphereGPTForCausalLM  # type: ignore
+    from hypersphere_gpt.tokenizer import TiktokenTokenizer  # type: ignore
+else:
+    from .config import HypersphereGPTConfig
+    from .modeling_hypersphere_gpt import HypersphereGPTForCausalLM
+    from .tokenizer import TiktokenTokenizer
 
 
 @dataclass

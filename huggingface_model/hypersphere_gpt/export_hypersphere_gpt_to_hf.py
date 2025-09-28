@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from transformers import GenerationConfig, GPT2TokenizerFast
 
-from .modeling_hypersphere_gpt import HypersphereGPTForCausalLM
+if __package__ is None or __package__ == "":  # pragma: no cover - runtime convenience
+    PACKAGE_ROOT = Path(__file__).resolve().parent
+    sys.path.append(str(PACKAGE_ROOT.parent))
+    from hypersphere_gpt.modeling_hypersphere_gpt import HypersphereGPTForCausalLM  # type: ignore
+else:
+    from .modeling_hypersphere_gpt import HypersphereGPTForCausalLM
 
 
 def parse_args() -> argparse.Namespace:

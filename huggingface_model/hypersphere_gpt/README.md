@@ -30,6 +30,10 @@ The hero configuration (~124M parameters) is wired into
 `train_hypersphere_gpt.py`. A minimal launch that trains with RMSNorm and saves a
 checkpoint every 200 steps looks like:
 
+> **Tip:** The helper scripts can be executed either as modules (for example,
+> `python -m huggingface_model.hypersphere_gpt.train_hypersphere_gpt`) or as
+> stand-alone files from the repository root as shown below.
+
 ```bash
 python huggingface_model/hypersphere_gpt/train_hypersphere_gpt.py \
   --output_dir runs/hypersphere-gpt-rmsnorm \
