@@ -12,7 +12,7 @@ from transformers.modeling_outputs import (
 from transformers.modeling_utils import PreTrainedModel
 
 from .config import HypersphereGPTConfig
-from variations.norm_variations import HyperSphereNorm
+from variations.norm_variations import HyperSphereNorm, LayerNorm, RMSNorm, pRMSNorm
 from variations.position_encoding_variations import RotaryEmbedding
 
 
@@ -59,6 +59,19 @@ class HypersphereGPTPreTrainedModel(PreTrainedModel):
             nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
+
+
+def _build_norm_layer(config: HypersphereGPTConfig) -> nn.Module:
+    norm_type = config.norm_type
+    if norm_type == "layernorm":
+        return LayerNorm(config)
+    if norm_type == "rmsnorm":
+        return RMSNorm(config)
+    if norm_type in {"hypersphere", "hypersphere_learned_radius"}:
+        return HyperSphereNorm(config)
+    if norm_type == "prmsnorm":
+        return pRMSNorm(config)
+    raise ValueError(f"Unsupported norm_type '{norm_type}'")
 
 
 class HypersphereSelfAttention(nn.Module):
@@ -175,13 +188,17 @@ class HypersphereMLP(nn.Module):
 class HypersphereBlock(nn.Module):
     def __init__(self, config: HypersphereGPTConfig) -> None:
         super().__init__()
-        self.pre_attn_norm = HyperSphereNorm(config)
+        self.pre_attn_norm = _build_norm_layer(config)
         self.attn = HypersphereSelfAttention(config)
-        self.peri_attn_norm = HyperSphereNorm(config) if config.use_peri_ln_attn else nn.Identity()
+        self.peri_attn_norm = (
+            _build_norm_layer(config) if config.use_peri_ln_attn else nn.Identity()
+        )
 
-        self.pre_mlp_norm = HyperSphereNorm(config)
+        self.pre_mlp_norm = _build_norm_layer(config)
         self.mlp = HypersphereMLP(config)
-        self.peri_mlp_norm = HyperSphereNorm(config) if config.use_peri_ln_mlp else nn.Identity()
+        self.peri_mlp_norm = (
+            _build_norm_layer(config) if config.use_peri_ln_mlp else nn.Identity()
+        )
 
     def forward(
         self,
@@ -211,7 +228,7 @@ class HypersphereGPTModel(HypersphereGPTPreTrainedModel):
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.drop = nn.Dropout(config.dropout)
         self.h = nn.ModuleList([HypersphereBlock(config) for _ in range(config.n_layer)])
-        self.ln_f = HyperSphereNorm(config)
+        self.ln_f = _build_norm_layer(config)
         self.gradient_checkpointing = False
         self.post_init()
 

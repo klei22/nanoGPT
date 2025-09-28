@@ -74,6 +74,31 @@ def main() -> None:
     parser.add_argument("--save_steps", type=int, default=200, help="Save checkpoint every n steps")
     parser.add_argument("--logging_steps", type=int, default=50, help="Logging interval")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument(
+        "--norm_type",
+        type=str,
+        default="hypersphere",
+        choices=[
+            "layernorm",
+            "rmsnorm",
+            "hypersphere",
+            "hypersphere_learned_radius",
+            "prmsnorm",
+        ],
+        help="Normalization strategy to use across the network",
+    )
+    parser.add_argument(
+        "--prmsnorm_pct",
+        type=float,
+        default=0.5,
+        help="Fraction of channels used for pRMSNorm (only used when norm_type=prmsnorm)",
+    )
+    parser.add_argument(
+        "--hsnorm_radius",
+        type=float,
+        default=None,
+        help="Optional fixed radius for HyperSphereNorm variants",
+    )
     args = parser.parse_args()
 
     tokenizer = TiktokenTokenizer()
@@ -87,6 +112,9 @@ def main() -> None:
         use_rotary_embeddings=True,
         use_peri_ln_attn=True,
         use_peri_ln_mlp=True,
+        norm_type=args.norm_type,
+        prmsnorm_pct=args.prmsnorm_pct,
+        hsnorm_radius=args.hsnorm_radius,
     )
 
     model = HypersphereGPTForCausalLM(config)

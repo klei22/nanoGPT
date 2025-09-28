@@ -15,6 +15,8 @@ class HypersphereGPTConfig(PretrainedConfig):
         block_size: int = 2048,
         dropout: float = 0.0,
         layer_norm_epsilon: float = 1e-5,
+        norm_type: str = "hypersphere",
+        prmsnorm_pct: float = 0.5,
         initializer_range: float = 0.02,
         use_qk_norm: bool = True,
         use_qk_norm_scale: bool = True,
@@ -44,6 +46,23 @@ class HypersphereGPTConfig(PretrainedConfig):
         self.block_size = block_size
         self.dropout = dropout
         self.layer_norm_epsilon = layer_norm_epsilon
+        norm_type = norm_type.lower()
+        valid_norms = {
+            "layernorm",
+            "rmsnorm",
+            "hypersphere",
+            "hypersphere_learned_radius",
+            "prmsnorm",
+        }
+        if norm_type not in valid_norms:
+            raise ValueError(
+                f"Unsupported norm_type '{norm_type}'. Expected one of: {sorted(valid_norms)}"
+            )
+        self.norm_type = norm_type
+        if self.norm_type == "prmsnorm":
+            if not (0.0 < prmsnorm_pct <= 1.0):
+                raise ValueError("prmsnorm_pct must be in the interval (0, 1].")
+        self.prmsnorm_pct = prmsnorm_pct
         self.initializer_range = initializer_range
         self.use_qk_norm = use_qk_norm
         self.use_qk_norm_scale = use_qk_norm_scale
@@ -51,7 +70,9 @@ class HypersphereGPTConfig(PretrainedConfig):
         self.rope_length = rope_length
         self.hsnorm_gain = hsnorm_gain
         self.hsnorm_radius = hsnorm_radius
-        self.hsnorm_radius_learning = hsnorm_radius_learning
+        self.hsnorm_radius_learning = hsnorm_radius_learning or (
+            self.norm_type == "hypersphere_learned_radius"
+        )
         self.use_peri_ln_attn = use_peri_ln_attn
         self.use_peri_ln_mlp = use_peri_ln_mlp
         self.bias = bias
