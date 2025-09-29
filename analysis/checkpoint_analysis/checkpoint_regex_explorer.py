@@ -4,6 +4,7 @@ import argparse
 import math
 import re
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -22,6 +23,35 @@ if str(REPO_ROOT) not in sys.path:
 from model import GPTConfig, GPT
 
 
+ANGLE_METRIC_KEYS: List[Tuple[str, str]] = [
+    ("angle_min", "Min angle (deg)"),
+    ("angle_mean", "Mean angle (deg)"),
+    ("angle_q05", "5% angle (deg)"),
+    ("angle_q25", "Q1 angle (deg)"),
+    ("angle_median", "Median angle (deg)"),
+    ("angle_q75", "Q3 angle (deg)"),
+    ("angle_q95", "95% angle (deg)"),
+]
+
+COSINE_METRIC_KEYS: List[Tuple[str, str]] = [
+    ("cos_min", "Min cosine sim"),
+    ("cos_mean", "Mean cosine sim"),
+    ("cos_q05", "5% cosine sim"),
+    ("cos_q25", "Q1 cosine sim"),
+    ("cos_median", "Median cosine sim"),
+    ("cos_q75", "Q3 cosine sim"),
+    ("cos_q95", "95% cosine sim"),
+]
+
+METRIC_DISPLAY: Dict[str, str] = {
+    key: label for key, label in [*ANGLE_METRIC_KEYS, *COSINE_METRIC_KEYS]
+}
+
+METRIC_CATEGORY: Dict[str, str] = {
+    key: "angle" if key.startswith("angle_") else "cosine"
+    for key in METRIC_DISPLAY
+}
+
 @dataclass
 class L2NormStats:
     """Summary statistics for directional L2 norms of a tensor."""
@@ -36,6 +66,30 @@ class L2NormStats:
     mean: float
     std: float
     kurtosis: float
+    histogram_path: Optional[Path]
+
+
+@dataclass
+class DirectionalMetricStats:
+    """Summary statistics for pairwise directional angle/cosine metrics."""
+
+    parameter: str
+    axis: int
+    axis_size: int
+    tensor_shape: Tuple[int, ...]
+    metric: str
+    metric_label: str
+    category: str
+    num_vectors: int
+    min: float
+    max: float
+    mean: float
+    std: float
+    q05: float
+    q25: float
+    median: float
+    q75: float
+    q95: float
     histogram_path: Optional[Path]
 
 
@@ -173,6 +227,24 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable heatmap colorization in stdout tables",
     )
+    parser.add_argument(
+        "--max-directional-rows",
+        type=int,
+        default=None,
+        help="Optional limit on the number of directional similarity rows displayed",
+    )
+    parser.add_argument(
+        "--directional-chunk-size",
+        type=int,
+        default=512,
+        help="Chunk size used when computing pairwise directional metrics",
+    )
+    parser.add_argument(
+        "--max-directional-vectors",
+        type=int,
+        default=None,
+        help="If set, skip directional metrics when the number of vectors exceeds this threshold",
+    )
     parser.set_defaults(colorize=True)
     return parser.parse_args()
 
@@ -287,19 +359,16 @@ def update_global_summary(summary: Dict[str, float], stats: Dict[str, float], te
     summary["max"] = max(summary["max"], stats["max"])
 
 
-def compute_l2_norm_stats(
-    name: str,
+def extract_embedding_vectors(
     tensor: torch.Tensor,
     embedding_dim: Optional[int],
-    histogram_dir: Optional[Path],
-    histogram_bins: int,
-) -> List[L2NormStats]:
+) -> List[Tuple[int, int, Tuple[int, ...], torch.Tensor]]:
     if not embedding_dim:
         return []
 
     tensor = tensor.detach().to(torch.float32)
     tensor_shape = tuple(tensor.shape)
-    results: List[L2NormStats] = []
+    results: List[Tuple[int, int, Tuple[int, ...], torch.Tensor]] = []
 
     for axis, axis_size in enumerate(tensor.shape):
         if axis_size != embedding_dim:
@@ -310,6 +379,29 @@ def compute_l2_norm_stats(
         if vectors.numel() == 0:
             continue
 
+        results.append((axis, axis_size, tensor_shape, vectors))
+
+    return results
+
+
+def compute_l2_norm_stats(
+    name: str,
+    tensor: torch.Tensor,
+    embedding_dim: Optional[int],
+    histogram_dir: Optional[Path],
+    histogram_bins: int,
+    *,
+    vector_data: Optional[List[Tuple[int, int, Tuple[int, ...], torch.Tensor]]] = None,
+) -> List[L2NormStats]:
+    if not embedding_dim:
+        return []
+    results: List[L2NormStats] = []
+
+    vector_entries = vector_data
+    if vector_entries is None:
+        vector_entries = extract_embedding_vectors(tensor, embedding_dim)
+
+    for axis, axis_size, tensor_shape, vectors in vector_entries:
         norms = torch.linalg.norm(vectors, dim=-1)
         if norms.numel() == 0:
             continue
@@ -398,6 +490,242 @@ def save_l2_histogram(
     plt.close()
 
     return file_path
+
+
+def save_metric_histogram(
+    values: torch.Tensor,
+    histogram_dir: Path,
+    name: str,
+    axis: int,
+    metric_key: str,
+    *,
+    tensor_shape: Tuple[int, ...],
+    axis_size: int,
+    bins: int,
+    xlabel: str,
+    title_prefix: str,
+) -> Path:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise SystemExit(
+            "matplotlib is required for --histogram-dir but is not installed"
+        ) from exc
+
+    histogram_dir.mkdir(parents=True, exist_ok=True)
+    shape_token = "x".join(str(dim) for dim in tensor_shape) or "scalar"
+    sanitized_name = name.replace("/", "_").replace(".", "_")
+    sanitized_metric = metric_key.replace("/", "_")
+    file_name = (
+        f"{sanitized_name}_shape{shape_token}_axis{axis}_dim{axis_size}_metric_{sanitized_metric}.png"
+    )
+    file_path = histogram_dir / file_name
+
+    plt.figure(figsize=(8, 4))
+    plt.hist(values.cpu().numpy(), bins=bins, color="#55A868", edgecolor="black", alpha=0.8)
+    plt.title(
+        "\n".join(
+            [
+                f"{title_prefix} for {name}",
+                f"shape={tensor_shape}, axis={axis}, vector dim={axis_size}",
+            ]
+        )
+    )
+    plt.xlabel(xlabel)
+    plt.ylabel("Frequency")
+    plt.tight_layout()
+    plt.savefig(file_path, dpi=150)
+    plt.close()
+
+    return file_path
+
+
+def _quantiles(values: torch.Tensor) -> Tuple[float, float, float, float, float]:
+    quantiles = torch.tensor([0.05, 0.25, 0.5, 0.75, 0.95], dtype=values.dtype, device=values.device)
+    q05, q25, median, q75, q95 = torch.quantile(values, quantiles).tolist()
+    return q05, q25, median, q75, q95
+
+
+def compute_directional_metric_stats(
+    *,
+    name: str,
+    axis: int,
+    axis_size: int,
+    tensor_shape: Tuple[int, ...],
+    vectors: torch.Tensor,
+    histogram_dir: Optional[Path],
+    histogram_bins: int,
+    console: Optional[Console],
+    chunk_size: int,
+    max_vectors: Optional[int],
+) -> List[DirectionalMetricStats]:
+    num_vectors = vectors.shape[0]
+    if num_vectors <= 1:
+        return []
+
+    if max_vectors is not None and num_vectors > max_vectors:
+        if console is not None:
+            console.print(
+                f"[yellow]Skipping directional metrics for {name} axis {axis} because there are {num_vectors:,} vectors (limit {max_vectors:,}).[/]"
+            )
+        return []
+
+    chunk_size = max(1, min(chunk_size, num_vectors))
+    vectors = vectors.to(torch.float32)
+    norms = torch.linalg.norm(vectors, dim=-1, keepdim=True)
+    safe_norms = torch.clamp(norms, min=1e-12)
+    normalized = vectors / safe_norms
+
+    per_vector_metrics: Dict[str, List[float]] = defaultdict(list)
+    for row_start in range(0, num_vectors, chunk_size):
+        row_end = min(row_start + chunk_size, num_vectors)
+        row_chunk = normalized[row_start:row_end]
+        row_size = row_chunk.shape[0]
+        row_buffers: List[List[torch.Tensor]] = [[] for _ in range(row_size)]
+
+        row_indices = torch.arange(row_start, row_end)
+        for col_start in range(0, num_vectors, chunk_size):
+            col_end = min(col_start + chunk_size, num_vectors)
+            col_chunk = normalized[col_start:col_end]
+
+            sims = torch.matmul(row_chunk, col_chunk.transpose(0, 1))
+
+            if row_start <= col_end and col_start <= row_end:
+                col_indices = torch.arange(col_start, col_end)
+                overlap_mask = row_indices.unsqueeze(1) == col_indices.unsqueeze(0)
+                sims = sims.masked_fill(overlap_mask, float("nan"))
+
+            for idx in range(row_size):
+                row_buffers[idx].append(sims[idx].clone())
+
+        for idx in range(row_size):
+            cos_values = torch.cat(row_buffers[idx], dim=0)
+            cos_values = cos_values[~torch.isnan(cos_values)]
+            if cos_values.numel() == 0:
+                continue
+
+            cos_values = torch.clamp(cos_values, -1.0, 1.0)
+            angle_values = torch.rad2deg(torch.acos(cos_values))
+
+            angle_min = angle_values.min().item()
+            angle_mean = angle_values.mean().item()
+            angle_q05, angle_q25, angle_median, angle_q75, angle_q95 = _quantiles(angle_values)
+
+            cos_min = cos_values.min().item()
+            cos_mean = cos_values.mean().item()
+            cos_q05, cos_q25, cos_median, cos_q75, cos_q95 = _quantiles(cos_values)
+
+            per_vector_metrics["angle_min"].append(angle_min)
+            per_vector_metrics["angle_mean"].append(angle_mean)
+            per_vector_metrics["angle_q05"].append(angle_q05)
+            per_vector_metrics["angle_q25"].append(angle_q25)
+            per_vector_metrics["angle_median"].append(angle_median)
+            per_vector_metrics["angle_q75"].append(angle_q75)
+            per_vector_metrics["angle_q95"].append(angle_q95)
+
+            per_vector_metrics["cos_min"].append(cos_min)
+            per_vector_metrics["cos_mean"].append(cos_mean)
+            per_vector_metrics["cos_q05"].append(cos_q05)
+            per_vector_metrics["cos_q25"].append(cos_q25)
+            per_vector_metrics["cos_median"].append(cos_median)
+            per_vector_metrics["cos_q75"].append(cos_q75)
+            per_vector_metrics["cos_q95"].append(cos_q95)
+
+    results: List[DirectionalMetricStats] = []
+    for metric_key, values in per_vector_metrics.items():
+        metric_tensor = torch.tensor(values, dtype=torch.float32)
+        if metric_tensor.numel() == 0:
+            continue
+
+        min_val = metric_tensor.min().item()
+        max_val = metric_tensor.max().item()
+        mean_val = metric_tensor.mean().item()
+        std_val = metric_tensor.std(unbiased=False).item() if metric_tensor.numel() > 1 else 0.0
+        q05_val, q25_val, median_val, q75_val, q95_val = _quantiles(metric_tensor)
+
+        histogram_path: Optional[Path] = None
+        if histogram_dir is not None:
+            category = METRIC_CATEGORY.get(metric_key, "unknown")
+            if category == "angle":
+                title_prefix = "Directional angle statistic histogram"
+            elif category == "cosine":
+                title_prefix = "Directional cosine statistic histogram"
+            else:
+                title_prefix = "Directional metric histogram"
+            histogram_path = save_metric_histogram(
+                metric_tensor,
+                histogram_dir,
+                name,
+                axis,
+                metric_key,
+                tensor_shape=tensor_shape,
+                axis_size=axis_size,
+                bins=histogram_bins,
+                xlabel=METRIC_DISPLAY.get(metric_key, metric_key),
+                title_prefix=title_prefix,
+            )
+
+        results.append(
+            DirectionalMetricStats(
+                parameter=name,
+                axis=axis,
+                axis_size=axis_size,
+                tensor_shape=tensor_shape,
+                metric=metric_key,
+                metric_label=METRIC_DISPLAY.get(metric_key, metric_key),
+                category=METRIC_CATEGORY.get(metric_key, "unknown"),
+                num_vectors=len(values),
+                min=min_val,
+                max=max_val,
+                mean=mean_val,
+                std=std_val,
+                q05=q05_val,
+                q25=q25_val,
+                median=median_val,
+                q75=q75_val,
+                q95=q95_val,
+                histogram_path=histogram_path,
+            )
+        )
+
+    return sorted(
+        results,
+        key=lambda item: (
+            item.parameter,
+            item.axis,
+            0 if item.metric in METRIC_DISPLAY else 1,
+            item.metric,
+        ),
+    )
+
+
+def register_vectors_for_groups(
+    name: str,
+    vectors: torch.Tensor,
+    registry: Dict[str, List[torch.Tensor]],
+) -> None:
+    is_wte = name.endswith("wte.weight")
+    is_attn_c_proj = ".attn.c_proj.weight" in name
+    is_mlp_c_proj = ".mlp.c_proj.weight" in name
+
+    registry["all_vectors"].append(vectors)
+
+    if is_wte:
+        registry["wte"].append(vectors)
+        registry["cproj_with_wte"].append(vectors)
+
+    if is_attn_c_proj:
+        registry["attn_c_proj"].append(vectors)
+        registry["all_c_proj"].append(vectors)
+        registry["cproj_with_wte"].append(vectors)
+
+    if is_mlp_c_proj:
+        registry["mlp_c_proj"].append(vectors)
+        registry["all_c_proj"].append(vectors)
+        registry["cproj_with_wte"].append(vectors)
 
 
 def render_table(
@@ -613,6 +941,137 @@ def render_l2_table(
         )
 
 
+def render_directional_metric_table(
+    rows: List[DirectionalMetricStats],
+    max_rows: Optional[int],
+    *,
+    colorize: bool,
+) -> None:
+    if not rows:
+        return
+
+    rows = sorted(
+        rows,
+        key=lambda item: (
+            item.parameter,
+            item.axis,
+            0 if item.category == "angle" else 1,
+            item.metric,
+        ),
+    )
+
+    total_rows = len(rows)
+    display_rows = rows if max_rows is None else rows[:max_rows]
+    has_histograms = any(row.histogram_path is not None for row in rows)
+
+    column_specs: List[ColumnSpec] = [
+        ColumnSpec(
+            "# Vectors",
+            extractor=lambda row: float(row.num_vectors),
+            formatter=lambda row: f"{row.num_vectors:,}",
+        ),
+        ColumnSpec(
+            "Min",
+            extractor=lambda row: float(row.min),
+            formatter=lambda row: f"{row.min:.6g}",
+            reverse=True,
+        ),
+        ColumnSpec(
+            "Max",
+            extractor=lambda row: float(row.max),
+            formatter=lambda row: f"{row.max:.6g}",
+        ),
+        ColumnSpec(
+            "Mean",
+            extractor=lambda row: float(row.mean),
+            formatter=lambda row: f"{row.mean:.6g}",
+        ),
+        ColumnSpec(
+            "Std",
+            extractor=lambda row: float(row.std),
+            formatter=lambda row: f"{row.std:.6g}",
+        ),
+        ColumnSpec(
+            "Q05",
+            extractor=lambda row: float(row.q05),
+            formatter=lambda row: f"{row.q05:.6g}",
+            reverse=True,
+        ),
+        ColumnSpec(
+            "Q25",
+            extractor=lambda row: float(row.q25),
+            formatter=lambda row: f"{row.q25:.6g}",
+            reverse=True,
+        ),
+        ColumnSpec(
+            "Median",
+            extractor=lambda row: float(row.median),
+            formatter=lambda row: f"{row.median:.6g}",
+        ),
+        ColumnSpec(
+            "Q75",
+            extractor=lambda row: float(row.q75),
+            formatter=lambda row: f"{row.q75:.6g}",
+        ),
+        ColumnSpec(
+            "Q95",
+            extractor=lambda row: float(row.q95),
+            formatter=lambda row: f"{row.q95:.6g}",
+        ),
+    ]
+
+    column_ranges = _compute_column_ranges(rows, column_specs)
+
+    table = Table(
+        title="Directional similarity statistics",
+        box=box.SIMPLE_HEAVY,
+        header_style="bold green",
+        show_lines=False,
+    )
+    table.add_column("Parameter", overflow="fold")
+    table.add_column("Shape", justify="center")
+    table.add_column("Axis", justify="center")
+    table.add_column("Metric", justify="left")
+    table.add_column("Category", justify="left")
+    table.add_column("# Vectors", justify="right")
+    table.add_column("Min", justify="right")
+    table.add_column("Max", justify="right")
+    table.add_column("Mean", justify="right")
+    table.add_column("Std", justify="right")
+    table.add_column("Q05", justify="right")
+    table.add_column("Q25", justify="right")
+    table.add_column("Median", justify="right")
+    table.add_column("Q75", justify="right")
+    table.add_column("Q95", justify="right")
+    if has_histograms:
+        table.add_column("Histogram", overflow="fold")
+
+    for row in display_rows:
+        formatted_cells = [
+            _format_with_color(spec, row, column_ranges, colorize=colorize)
+            for spec in column_specs
+        ]
+
+        values = [
+            row.parameter,
+            str(row.tensor_shape),
+            f"axis {row.axis} (vector dim={row.axis_size})",
+            row.metric_label,
+            row.category,
+            *formatted_cells,
+        ]
+        if has_histograms:
+            values.append(str(row.histogram_path) if row.histogram_path else "—")
+        table.add_row(*values)
+
+    console = Console()
+    console.print(table)
+    if max_rows is not None and total_rows > max_rows:
+        console.print(
+            f"[dim]Displayed {len(display_rows)} of {total_rows} rows (limited by --max-directional-rows). Use a larger value to see more.[/]"
+        )
+
+
 def render_summary(summary: Dict[str, float], matched: int) -> None:
     table = Table(title="Aggregate statistics", box=box.SQUARE)
     table.add_column("Metric", style="bold magenta")
@@ -662,6 +1121,7 @@ def main() -> None:
 
     rows = []
     l2_rows: List[L2NormStats] = []
+    directional_rows: List[DirectionalMetricStats] = []
     summary = {
         "numel": 0,
         "sum": 0.0,
@@ -672,21 +1132,50 @@ def main() -> None:
         "max": float("-inf"),
     }
 
+    group_registry: Dict[str, List[torch.Tensor]] = defaultdict(list)
+    group_display_names = {
+        "wte": "wte",
+        "attn_c_proj": "attn c_proj (all)",
+        "mlp_c_proj": "mlp c_proj (all)",
+        "all_c_proj": "all c_proj",
+        "cproj_with_wte": "c_proj + wte",
+        "all_vectors": "all vectors",
+    }
+
     for name, tensor in state_dict.items():
         if pattern.search(name):
             stats = tensor_stats(tensor)
             rows.append((name, stats))
             update_global_summary(summary, stats, tensor)
             if embedding_dim:
-                l2_rows.extend(
-                    compute_l2_norm_stats(
-                        name,
-                        tensor,
-                        embedding_dim=embedding_dim,
-                        histogram_dir=histogram_dir,
-                        histogram_bins=args.histogram_bins,
+                vector_entries = extract_embedding_vectors(tensor, embedding_dim)
+                if vector_entries:
+                    l2_rows.extend(
+                        compute_l2_norm_stats(
+                            name,
+                            tensor,
+                            embedding_dim=embedding_dim,
+                            histogram_dir=histogram_dir,
+                            histogram_bins=args.histogram_bins,
+                            vector_data=vector_entries,
+                        )
                     )
-                )
+                    for axis, axis_size, tensor_shape, vectors in vector_entries:
+                        register_vectors_for_groups(name, vectors, group_registry)
+                        directional_rows.extend(
+                            compute_directional_metric_stats(
+                                name=name,
+                                axis=axis,
+                                axis_size=axis_size,
+                                tensor_shape=tensor_shape,
+                                vectors=vectors,
+                                histogram_dir=histogram_dir,
+                                histogram_bins=args.histogram_bins,
+                                console=console,
+                                chunk_size=args.directional_chunk_size,
+                                max_vectors=args.max_directional_vectors,
+                            )
+                        )
 
     if not rows:
         console.print("[red]No parameters matched the provided pattern.[/]")
@@ -695,8 +1184,58 @@ def main() -> None:
     rows.sort(key=lambda item: item[0])
     render_table(rows, args.max_rows, colorize=args.colorize)
     render_summary(summary, matched=len(rows))
-    if l2_rows:
-        render_l2_table(l2_rows, args.max_l2_rows, colorize=args.colorize)
+    if embedding_dim:
+        for group_key, display_name in group_display_names.items():
+            vectors_list = group_registry.get(group_key)
+            if not vectors_list:
+                continue
+            combined = torch.cat(vectors_list, dim=0).to(torch.float32)
+            if combined.numel() == 0:
+                continue
+
+            group_name = f"[Group] {display_name}"
+            axis_index = combined.dim() - 1
+            tensor_shape = tuple(combined.shape)
+            vector_data = [(axis_index, embedding_dim, tensor_shape, combined)]
+
+            l2_rows.extend(
+                compute_l2_norm_stats(
+                    group_name,
+                    combined,
+                    embedding_dim=embedding_dim,
+                    histogram_dir=histogram_dir,
+                    histogram_bins=args.histogram_bins,
+                    vector_data=vector_data,
+                )
+            )
+
+            directional_rows.extend(
+                compute_directional_metric_stats(
+                    name=group_name,
+                    axis=axis_index,
+                    axis_size=embedding_dim,
+                    tensor_shape=tensor_shape,
+                    vectors=combined,
+                    histogram_dir=histogram_dir,
+                    histogram_bins=args.histogram_bins,
+                    console=console,
+                    chunk_size=args.directional_chunk_size,
+                    max_vectors=args.max_directional_vectors,
+                )
+            )
+
+        if l2_rows:
+            render_l2_table(l2_rows, args.max_l2_rows, colorize=args.colorize)
+
+        if directional_rows:
+            render_directional_metric_table(
+                directional_rows,
+                args.max_directional_rows,
+                colorize=args.colorize,
+            )
+    else:
+        if l2_rows:
+            render_l2_table(l2_rows, args.max_l2_rows, colorize=args.colorize)
 
 
 if __name__ == "__main__":
