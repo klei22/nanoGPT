@@ -163,6 +163,7 @@ class RemoteTrainer:
 
                 # kick off remote job; robust conda detection: prefer `conda run -n base`, else activate via hook or conda.sh; log diagnostics
                 max_iters = 10000  # default max iters if not overridden
+                conda_env = "reallmforge"
                 cmd = (
                     f"cd {remote_work_dir} && "
                     f"setsid bash -lc '\n"
@@ -170,18 +171,18 @@ class RemoteTrainer:
                     f"echo \"[launcher] $(date) starting on $(hostname)\";\n"
                     f"echo \"[launcher] PATH: $PATH\";\n"
                     f"CONDA_BIN=$(command -v conda || true);\n"
-                    f"echo \"[launcher] which conda: ${{CONDA_BIN:-not-found}}\";\n"
-                    f"if [ -n \"$CONDA_BIN\" ] && conda run -n base python -V >/dev/null 2>&1; then\n"
-                    f"  echo \"[launcher] using conda run -n base\";\n"
-                    f"  conda run -n base python -u optimization_and_search/run_from_yaml.py --yaml {remote_yaml_path} --output_dir {remote_run_dir} --prefix {base} --override_args max_iters={max_iters}; ec=$?;\n"
+                    f"echo \"[launcher] which conda: $CONDA_BIN\";\n"
+                    f"if [ -n \"$CONDA_BIN\" ] && conda run -n {conda_env} python -V >/dev/null 2>&1; then\n"
+                    f"  echo \"[launcher] using conda run -n {conda_env}\";\n"
+                    f"  conda run -n {conda_env} python -u optimization_and_search/run_from_yaml.py --yaml {remote_yaml_path} --output_dir {remote_run_dir} --prefix {base} --override_args max_iters={max_iters}; ec=$?;\n"
                     f"else\n"
                     f"  if [ -n \"$CONDA_BIN\" ]; then eval \"$(conda shell.bash hook)\" >/dev/null 2>&1 || true; fi;\n"
                     f"  if command -v conda >/dev/null 2>&1; then\n"
-                    f"    conda activate base || echo \"[ERROR] conda activate base failed\";\n"
+                    f"    conda activate {conda_env} || echo \"[ERROR] conda activate {conda_env} failed\";\n"
                     f"  else\n"
                     f"    CONDA_SH=${{CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}};\n"
                     f"    [ -f \"$CONDA_SH\" ] || CONDA_SH=\"$HOME/anaconda3/etc/profile.d/conda.sh\";\n"
-                    f"    if [ -f \"$CONDA_SH\" ]; then . \"$CONDA_SH\"; conda activate base || echo \"[ERROR] conda activate base failed (from conda.sh)\"; else echo \"[WARN] conda.sh not found at $CONDA_SH\"; fi;\n"
+                    f"    if [ -f \"$CONDA_SH\" ]; then . \"$CONDA_SH\"; conda activate {conda_env} || echo \"[ERROR] conda activate {conda_env} failed (from conda.sh)\"; else echo \"[WARN] conda.sh not found at $CONDA_SH\"; fi;\n"
                     f"  fi;\n"
                     f"  echo \"[launcher] conda: $(conda --version 2>/dev/null || echo not-found)\";\n"
                     f"  echo \"[launcher] which python: $(which python 2>/dev/null || echo not-found)\";\n"
@@ -319,6 +320,20 @@ class RemoteTrainer:
                 except Exception:
                     pass
         return self.jobs
+
+    def check_hosts_status(self) -> None:
+        for i, host in enumerate(self.hosts):
+            # check connectivity: if no connection, kick out the host from the list
+            try:
+                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                conn.open()
+                conn.close()
+                logging.info(f"Connectivity OK: host_{i} ({host})")
+            except Exception as e:
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed: {e}\033[0m")
+                self.hosts.remove(host)
+                self.num_hosts = len(self.hosts)
+                logging.warning(f"\033[33mHost_{i} ({host}) removed from host list. Remaining hosts: {self.num_hosts}\033[0m") 
 
     def wait_for_all(self, poll_interval: float = 10.0, timeout: Optional[float] = None, verbose: bool = False) -> bool:
         start = time.time()

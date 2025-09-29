@@ -1,4 +1,4 @@
-import random, math
+import random, math, pickle
 import os, time
 from typing import Any, Dict, List
 from search_space import HeteroSearchSpace, Individual
@@ -53,8 +53,15 @@ class Population:
     # Holds individuals and their evaluations
     # initialized after evaluation 
     def __init__(self, individuals: List[Individual], evaluations: List[EvaluationResult] = None, search_space: HeteroSearchSpace = None):
-        self.individuals = individuals
-        self.evaluations = evaluations
+        self.individuals: List[Individual] = []
+        for ind in individuals:
+            if isinstance(ind, Individual):
+                self.individuals.append(ind)
+            elif isinstance(ind, dict):
+                self.individuals.append(Individual.from_dict(ind))
+            else:
+                raise TypeError(f"Expected Individual or dict, got {type(ind)}")
+        self.evaluations: List[EvaluationResult] = evaluations or []
         self.offspring: List[Individual] = []
         self.offspring_evaluations: List[EvaluationResult] = []
         self.gen = 0
@@ -103,6 +110,33 @@ class Population:
             print("No evaluations completed yet")
         
         print("=" * 50)
+
+    def print_details(self):
+        """Print detailed information of each individual and its evaluation."""
+        for i, (ind, ev) in enumerate(zip(self.individuals, self.evaluations or [])):
+            print(f"\n--- Individual {i+1} ---")
+            indiv: Individual = ind
+            indiv.print_individual()
+            if ev:
+                print(f"Objectives: {ev.objs}")
+                print(f"Constraints: {ev.cons}")
+                print(f"Auxiliary Info: {ev.aux}")
+            else:
+                print("No evaluation result available.")
+        
+        print("\n------------------------------------------")
+        for i, ind in enumerate(self.offspring):
+            print(f"\n--- Offspring Individual {i+1} ---")
+            ind.print_individual()
+            if self.offspring_evaluations and i < len(self.offspring_evaluations):
+                ev = self.offspring_evaluations[i]
+                print(f"Objectives: {ev.objs}")
+                print(f"Constraints: {ev.cons}")
+                print(f"Auxiliary Info: {ev.aux}")
+            else:
+                print("No evaluation result available.")
+
+        print("\n" + "=" * 50)
 
     def __str__(self):
         """String representation of the population."""
@@ -293,13 +327,28 @@ class Population:
         os.replace(tmp, path)
         return path
 
+    def save_checkpoint_pkl(self, path: str) -> None:
+        """Save a checkpoint of the population to a pickle file.
+        """
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+        return
+
     @staticmethod
-    def load_checkpoint(path: str) -> "Population":
+    def load_checkpoint(path: str, from_pkl=True) -> "Population":
         """Load a Population from a checkpoint created by save_checkpoint.
 
         Note: EvaluationResult objects are reconstructed from stored dicts.
         Search space must be re-initialized separately if needed for operations.
         """
+        if from_pkl:
+            with open(path, "rb") as f:
+                pop = pickle.load(f)
+            if not isinstance(pop, Population):
+                raise TypeError(f"Loaded object is not a Population, got {type(pop)}")
+            return pop
+        
         with open(path, "r") as f:
             data = json.load(f)
         
@@ -343,7 +392,7 @@ class Population:
         train_yaml_path = self.to_yaml(save_path="train")
         trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
         trainer.submit_job(path_to_yaml=train_yaml_path, remote_work_dir=f"/home/{user}/Evo_GPT")
-        trainer.wait_for_all(poll_interval=600, timeout=72000, verbose=True)
+        trainer.wait_for_all(poll_interval=300, timeout=72000, verbose=True)
         data_csv = trainer.fetch_results(local_dir="train", gen=self.gen)
         # read the csv and populate self.evaluations
         # load the csv file's second column as a list of floats

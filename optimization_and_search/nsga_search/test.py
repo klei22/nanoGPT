@@ -16,7 +16,7 @@ for name in ("paramiko", "paramiko.transport", "fabric", "invoke"):
     logging.getLogger(name).disabled = True
 
 #initialize Population class from nsga.py with individuals randomly
-init_population_size = 16
+init_population_size = 32
 max_n_layer = 10
 search_space = HeteroSearchSpace(L_max=max_n_layer)
 individuals = [search_space.sample() for _ in range(init_population_size)]
@@ -33,20 +33,25 @@ population.sw_eval(hosts=hosts, user=user, key_filename=key_filename)
 population.print_summary()
 
 # nsga parameters defined here
-population.n_population = 16
-population.n_offspring = 8
+population.n_population = init_population_size
+population.n_offspring = 16
 
-ckpt_filename = "test_ckpt"
-for gen in range(1, 5):
+run_time = time.strftime("%m%d_%H%M", time.localtime())
+n_gen = 15
+for gen in range(1, n_gen + 1):
     print(f"\n\n================ Generation {gen} ================\n")
     population.generate_offspring()
     population.sw_eval(hosts=hosts, user=user, key_filename=key_filename)
     population.update_elimination()
     population.print_summary()
-    checkpoint_filename = f"ckpts/{ckpt_filename}_gen{gen}.pkl"
+    checkpoint_filename = f"ckpts/{run_time}_gen{gen}.json"
     # create directory if not exists
     os.makedirs(os.path.dirname(checkpoint_filename), exist_ok=True)
     population.save_checkpoint(checkpoint_filename)
     print(f"Checkpoint saved to {checkpoint_filename}")
+
+population.save_checkpoint_pkl(f"ckpts/{run_time}_final_pop_gen{n_gen}.pkl")
+
+
 
 

@@ -258,9 +258,11 @@ class HeteroSearchSpace:
         for _ in range(random.randint(1, flips)):
             idx = random.randrange(self.L_max)
             mask[idx] = not mask[idx]
-        # ensure still at least one active
-        if not any(mask):
-            mask[random.randrange(self.L_max)] = True
+        # ensure still at least four active
+        min_layers = 4  
+        if sum(mask) < min_layers:
+            for _ in range(min_layers - sum(mask)):
+                mask[random.randrange(self.L_max)] = True
         y["globals"]["layer_mask"] = mask
         return self.repair(y)
 
