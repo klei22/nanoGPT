@@ -1,0 +1,38 @@
+# explorations/bit_balanced_vs_cross_entropy.yaml
+---
+parameter_groups:
+  # Baseline: adaptive linear layers with standard cross-entropy
+  - linear_variant_mlp: ["adaptive_bit_linear"]
+    loss_fn: ["cross_entropy"]
+    adaptive_linear_init_bits: [6.0]
+    adaptive_linear_min_bits: [2.0]
+    adaptive_linear_max_bits: [8.0]
+    adaptive_linear_activation_bits: [8.0]
+    adaptive_linear_quantize_input: [true]
+
+  # Bit-balanced alternatives with different regularization strengths
+  - linear_variant_mlp: ["adaptive_bit_linear"]
+    loss_fn: ["bit_balanced_cross_entropy"]
+    adaptive_linear_init_bits: [6.0]
+    adaptive_linear_min_bits: [2.0]
+    adaptive_linear_max_bits: [8.0]
+    adaptive_linear_activation_bits: [8.0]
+    adaptive_linear_quantize_input: [true]
+    bit_loss_weight: [1.0e-6, 5.0e-6, 1.0e-5]
+    bit_loss_normalize: [true, false]
+
+# Base hyperparameters shared across runs
+max_iters: [5000]
+eval_interval: [500]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["bfloat16"]
+
+# Training options
+compile: [true]
+wandb_log: [false]
+never_save_checkpoint: [true]
