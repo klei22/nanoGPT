@@ -25,7 +25,7 @@ population.delete_duplicates()  # Remove duplicates if any
 
 
 # TODO: Define remote training parameters
-hosts = ["34.85.168.66", "34.132.101.194"]  # Instance IP addresses
+hosts = ["34.11.9.189", "34.11.48.206", "34.86.55.236", "35.245.124.235", "34.162.85.215", "34.85.252.132", "34.162.41.36"]  # Instance IP addresses
 user = "xinting"  # SSH username for login
 key_filename = "/home/xinting/.ssh/id_rsa"  # Path to SSH private key file
 
