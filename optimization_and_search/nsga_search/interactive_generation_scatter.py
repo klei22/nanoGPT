@@ -14,6 +14,8 @@ from plotly.subplots import make_subplots
 import numpy as np
 import pandas as pd
 from visualization.evolution_history import LogParser
+from nsga2 import Population
+import json, os
 
 
 def create_interactive_generational_scatter(log_path: str, output_path: str = "htmls/interactive_generational_scatter.html"):
@@ -32,7 +34,7 @@ def create_interactive_generational_scatter(log_path: str, output_path: str = "h
         print("No generations found in log file")
         return
     
-    # Get all individual data
+    # Get all individual data for the offspring generations
     val_loss_data = history.get_individual_data_by_generation('validation_loss')
     energy_data = history.get_individual_data_by_generation('energy_per_token')
     ttft_data = history.get_individual_data_by_generation('ttft')
@@ -60,17 +62,46 @@ def create_interactive_generational_scatter(log_path: str, output_path: str = "h
     
     df = pd.DataFrame(all_data)
 
-    df.to_csv("logs/interactive_scatter_data.csv", index=False)
+    df.to_csv("logs/interactive_scatter_data_offspring.csv", index=False)
     
     if df.empty:
         print("No individual data found in log file")
         return
-    
+
+    file_name_base = "ckpts/0929_2359_gen"  # Default base name
+    pop_data = []
+    for gen in generations:
+        json_file_name = f"{file_name_base}{gen}.json"
+        if not os.path.exists(json_file_name):
+            print(f"❌ Checkpoint file not found: {json_file_name}")
+            exit(f"❌ Checkpoint file not found: {json_file_name}\nPlease ensure all generation checkpoint files are present.")
+                
+        population = Population.load_checkpoint(json_file_name, from_pkl=False)
+
+        val_loss_vals = [eva.objs[0] for eva in population.evaluations ]
+        energy_vals = [eva.objs[1] for eva in population.evaluations ]
+        ttft_vals = [eva.objs[2] for eva in population.evaluations ]
+
+        # Ensure all lists have the same length
+        min_len = min(len(val_loss_vals), len(energy_vals), len(ttft_vals))
+        
+        for i in range(min_len):
+            pop_data.append({
+                'generation': gen,
+                'validation_loss': val_loss_vals[i],
+                'energy_per_token': energy_vals[i],
+                'ttft': ttft_vals[i],
+                'individual_id': i
+            })
+
+    df_pop = pd.DataFrame(pop_data)
+    df_pop.to_csv("logs/interactive_scatter_population_data.csv", index=False)
+
     # Create 2D plots
-    fig_2d = create_2d_plots(df, generations)
+    fig_2d = create_2d_plots(df_pop, generations)
     
     # Create 3D plot
-    fig_3d = create_3d_plot(df, generations)
+    fig_3d = create_3d_plot(df_pop, generations)
     
     # Save files
     fig_2d.write_html(output_path.replace('.html', '_2d.html'))
@@ -443,7 +474,7 @@ def main():
     import os
     
     # Default log file
-    log_file = "logs/run_20250930_202505.log"
+    log_file = "logs/run_0930.log"
     
     if not os.path.exists(log_file):
         print(f"❌ Log file not found: {log_file}")
