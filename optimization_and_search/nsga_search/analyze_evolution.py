@@ -17,8 +17,9 @@ def main():
     
     # Parse the log file
     parser = LogParser()
-    history = parser.parse_log_file(log_file)
-    
+    history = parser.parse_json_ckpts("/home/xinting/Evo_GPT/optimization_and_search/nsga_search/ckpts/0929_2359_gen", (1, 13))
+    # history = parser.parse_log_file(log_file)
+
     print(f"Successfully parsed {len(history.generations)} generations")
     
     # Generate and save plots
