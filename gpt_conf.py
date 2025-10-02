@@ -479,6 +479,10 @@ class GPTConfig:
     quantize_asic_prenorm: bool = False
     quantize_asic_offchip_residual: bool = False
     quantize_asic_bits: int = None
+    quantize_asic_attn_softmax_denom: bool = False
+    quantize_asic_attn_softmax_denom_bits: int = None
+    quantize_asic_attn_softmax_numerator: bool = False
+    quantize_asic_attn_softmax_numerator_bits: int = None
     store_activations: bool = False
 
     ## Linear Quantizations
