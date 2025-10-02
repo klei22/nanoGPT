@@ -27,7 +27,7 @@ parameter_groups:
 n_layer: [12]
 n_head: [12]
 n_embd: [768]
-block_size: [1024]
+block_size: [256]
 
 device: ["cuda"]
 dtype: ["bfloat16"]
@@ -37,11 +37,11 @@ learning_rate: ["6e-4"]
 min_lr: ["6e-5"]
 beta1: [0.9]
 beta2: [0.95]
-max_iters: [30000]
-lr_decay_iters: [30000]
-warmup_iters: [3000]
+max_iters: [10000]
+lr_decay_iters: [10000]
+warmup_iters: [1000]
 decay_lr: [true]
-eval_interval: [5000]
+eval_interval: [1000]
 
 # normalization extras
 use_peri_ln: [true, false]
@@ -54,6 +54,6 @@ use_abs_pos_embeddings: [false]
 
 # compilation and checkpointing
 compile: [true]
-only_save_checkpoint_at_end: [true]
+never_save_checkpoint: [true]
 
 tensorboard_run_name: ["rmsnorm_linear_vs_hsnorm"]
