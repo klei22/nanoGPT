@@ -63,6 +63,13 @@ def parse_args() -> argparse.Namespace:
         '--use_timestamp', action='store_true',
         help="Prepend timestamp to run names and out_dir."
     )
+    parser.add_argument(
+        '-t', '--trim_tensorboard_run_name', action='store_true',
+        help=(
+            "Limit the tensorboard run name to parameters that vary across "
+            "all generated configurations."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -143,7 +150,17 @@ def generate_combinations(config: dict):
         if isinstance(raw_conditions, dict):
             return all(combo.get(k) == v for k, v in raw_conditions.items())
         if isinstance(raw_conditions, list):
-            clauses = [d for d in raw_conditions if isinstance(d, dict)]
+            clauses = []
+            for entry in raw_conditions:
+                if isinstance(entry, dict):
+                    clauses.append(entry)
+                elif (
+                    isinstance(entry, (list, tuple))
+                    and len(entry) == 2
+                    and isinstance(entry[0], str)
+                ):
+                    key, value = entry
+                    clauses.append({key: value})
             if not clauses:
                 return False
             return any(all(combo.get(k) == v for k, v in d.items()) for d in clauses)
@@ -198,7 +215,40 @@ def format_run_name(combo: dict, base: str, prefix: str) -> str:
     """
     parts = [str(v) for v in combo.values()
              if not (isinstance(v, str) and RUN_NAME_VAR in v)]
-    return f"{prefix}{base}-{'-'.join(parts)}"
+    joined = "-".join(parts)
+    return f"{prefix}{base}" if not joined else f"{prefix}{base}-{joined}"
+
+
+def _normalize_value(value):
+    """Normalize values for set/dict comparisons."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return tuple(_normalize_value(v) for v in value)
+    if isinstance(value, dict):
+        return tuple(sorted((k, _normalize_value(v)) for k, v in value.items()))
+    return repr(value)
+
+
+def determine_varying_keys(combos: list[dict]) -> set[str]:
+    """Return parameter keys whose values differ across combos."""
+    if not combos:
+        return set()
+
+    sentinel = object()
+    all_keys: set[str] = set()
+    for combo in combos:
+        all_keys.update(combo.keys())
+
+    varying: set[str] = set()
+    for key in all_keys:
+        seen = set()
+        for combo in combos:
+            seen.add(_normalize_value(combo.get(key, sentinel)))
+            if len(seen) > 1:
+                varying.add(key)
+                break
+    return varying
 
 
 def read_metrics(out_dir: str) -> dict:
@@ -267,7 +317,8 @@ def build_command(combo: dict) -> list[str]:
 def run_experiment(
     combo: dict,
     base: str,
-    args: argparse.Namespace
+    args: argparse.Namespace,
+    varying_keys: set[str] | None = None,
 ) -> None:
     """
     Execute one experiment combo: skip if done, run train.py, record metrics.
@@ -278,13 +329,24 @@ def run_experiment(
         print(f"[yellow]Skipping already-run:[/] {run_name}")
         return
 
+    trimmed_run_name = None
+    if args.trim_tensorboard_run_name and varying_keys:
+        trimmed_combo = {k: combo[k] for k in combo if k in varying_keys}
+        if trimmed_combo:
+            trimmed_run_name = format_run_name(trimmed_combo, base, args.prefix)
+        else:
+            trimmed_run_name = f"{args.prefix}{base}"
+
+    tensorboard_run_name = trimmed_run_name or run_name
+
     # Prepare output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S') if args.use_timestamp else None
-    out_dir_name = f"{timestamp}_{run_name}" if timestamp else run_name
+    short_name = trimmed_run_name or run_name
+    out_dir_name = f"{timestamp}_{short_name}" if timestamp else short_name
     combo['out_dir'] = os.path.join(args.output_dir, out_dir_name)
 
     # Prepare tensorboard run name
-    combo['tensorboard_run_name'] = run_name
+    combo['tensorboard_run_name'] = tensorboard_run_name
 
     # Substitute special run-name token in string parameters
     combo = _substitute_run_name(combo, run_name)
@@ -321,7 +383,9 @@ def main():
     # Precompute all combinations to know total experiment count
     all_combos = []
     for cfg in configs:
-        all_combos.extend(list(generate_combinations(cfg)))
+        all_combos.extend([dict(combo) for combo in generate_combinations(cfg)])
+
+    varying_keys = determine_varying_keys(all_combos) if args.trim_tensorboard_run_name else set()
 
     total = len(all_combos)
     start_time = datetime.now()
@@ -352,7 +416,7 @@ def main():
             )
             print(f"[green]{message}[/]")
             append_progress(progress_log, message)
-        run_experiment(combo, base, args)
+        run_experiment(combo, base, args, varying_keys if varying_keys else None)
 
 
 if __name__ == '__main__':
