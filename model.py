@@ -505,6 +505,7 @@ class GPT(nn.Module):
             if self.n_embd_wte:
                 x = F.linear(x, self.transformer.scale_down.weight.t())
 
+            logits = []
             # 5. Compute separate logits
             if self.uses_numerical_multicontext:
                 logits = [self.numerical_output_mlps[str(i)](x) for i in range(len(token_list))]
@@ -528,7 +529,6 @@ class GPT(nn.Module):
                     logits = [pred[:, [-1], :] for pred in logits]
                     losses = None
             else:                
-                logits = []
                 for i in range(len(token_list)):
                      lm_head = self.transformer[f'lm_head_{i}']
 
@@ -666,16 +666,19 @@ class GPT(nn.Module):
                 x = F.linear(x, self.transformer.scale_down.weight.t())
 
 
-            if targets is not None:
-                # if we are given some desired targets also calculate the loss
+            if targets is not None:                
                 if self.config.multidataset_wte and dataset_idx is not None:
-                    weight = self.transformer[f'lm_head_{dataset_idx}'].weight
+                    lm_head = self.transformer[f'lm_head_{dataset_idx}']
                 else:
-                    weight = self.lm_head.weight
+                    lm_head = self.lm_head
+                
                 if self.l2_norm_lm_head:
-                    weight = F.normalize(weight, dim=1)
-                    weight = weight * self.lm_head_l2_scale
-                logits = F.linear(x, weight)
+                    # normalize + scale the chosen head’s weight
+                    weight = F.normalize(lm_head.weight, dim=1) * self.lm_head_l2_scale
+                    logits = F.linear(x, weight, lm_head.bias)
+                else:
+                    # normal forward
+                    logits = lm_head(x)
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
