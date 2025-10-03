@@ -648,7 +648,7 @@ class GPT(nn.Module):
                 # Intercept for Steering Vectors
                 if self.config.apply_vector_at_layer_idx is not None and layer_idx == self.config.apply_vector_at_layer_idx:
                     x = self.apply_vector_to_layer_output(x)
-                if self.config.obtain_vector_at_layer_idx icodex/add-new-rmsnorm-variations-and-comparisons-nf3m1vs not None and layer_idx == self.config.obtain_vector_at_layer_idx:
+                if self.config.obtain_vector_at_layer_idx is not None and layer_idx == self.config.obtain_vector_at_layer_idx:
                     print(layer_idx, self.config.obtain_vector_at_layer_idx)
                     x = self.obtain_vector_from_layer_output(x)
 
@@ -712,7 +712,7 @@ class GPT(nn.Module):
     #  LATENT-CHAINING
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def embed_tokens(self, idx, dataset_idx=None):codex/add-new-rmsnorm-variations-and-comparisons-nf3m1v
+    def embed_tokens(self, idx, dataset_idx=None):
         """
         Return the (B,T,E) tensor right *after* token embeddings,
         factor-scale-up, positional embedding and dropout.  Exactly the
