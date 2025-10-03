@@ -7,6 +7,8 @@ import tiktoken
 from tqdm import tqdm
 from collections import defaultdict
 import json
+import math
+import numpy as np
 
 
 class Tokenizer:
@@ -185,7 +187,7 @@ class TiktokenTokenizer(Tokenizer):
 
         # Save metadata
         meta = {
-            "vocab_size": len(self.enc._mergeable_ranks) + len(self.special_tokens),
+            "vocab_size": self.enc.n_vocab,
             "tokenizer": "tiktoken",
             "tiktoken_encoding": self.tiktoken_encoding,
             "has_additional_tokens": bool(self.additional_tokens),
@@ -255,6 +257,27 @@ class CustomTokenizer(Tokenizer):
 
     def detokenize(self, ids):
         return ''.join([self.itos[id] for id in ids])
+
+class ByteTokenizer(Tokenizer):
+    def __init__(self, args):
+        super().__init__(args)
+
+    def tokenize(self, data):
+        data_bytes = data.encode('utf-8')
+        ids = list(data_bytes)
+        for token_id in ids:
+            self.record_token(token_id)
+        meta = {
+            "vocab_size": 256,
+            "tokenizer": "byte",
+            "itos": {i: bytes([i]) for i in range(256)},
+        }
+        self.finalize_meta(meta)
+        return ids
+
+    def detokenize(self, ids):
+        return bytes(ids).decode('utf-8', errors='replace')
+
 
 class CharTokenizer(Tokenizer):
     def __init__(self, args, train_data, val_data):
@@ -550,4 +573,33 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
             out_pieces.append(all_bytes.decode('utf-8', errors='replace'))
 
         return ''.join(out_pieces)
+
+
+class SineWaveTokenizer:
+    """Generate a deterministic sequence of sine wave samples."""
+
+    def __init__(self, args):
+        self.period = args.sine_period
+        self.points_per_period = args.sine_points_per_period
+        self.num_periods = args.sine_num_periods
+        self.amplitude = args.sine_amplitude
+        self.max_val = 255
+
+    def generate_wave(self):
+        total_points = self.num_periods * self.points_per_period
+        values = []
+        for i in range(total_points):
+            x = (i * 2 * math.pi) / self.points_per_period
+            y = 64 + self.amplitude * math.sin(x * self.period)
+            y_clamped = int(max(0, min(self.max_val, round(y))))
+            values.append(y_clamped)
+        return values
+
+    def tokenize(self, data=None):
+        # `data` is unused; generation is parameter driven.
+        return self.generate_wave()
+
+    def detokenize(self, ids):
+        array = np.asarray(ids, dtype=np.int64)
+        return ','.join(map(str, array.tolist()))
 

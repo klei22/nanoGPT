@@ -1,6 +1,7 @@
 # sample.py
 import argparse
 import json
+import math
 import os
 import pickle
 import time
@@ -9,19 +10,20 @@ from datetime import datetime
 
 # from __future__ import annotations
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Union
+from typing import Callable, Dict, List, Optional, Sequence, Union
 
+import io
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
 import tiktoken
-import io
-from rich import print
-from rich.text import Text
-from rich.console import Console
-from torch.nn import functional as F
 from collections import OrderedDict
+from rich import print
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+from torch.nn import functional as F
 
 from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
@@ -68,9 +70,13 @@ def parse_args():
 
 
     # Output Confidence
-    parser.add_argument('--colorize_mode', type=str, default='minmax', choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product',  'all'],
-                        help="Mode to colorize text: 'minmax' (default), 'softmax', or 'softmax_top_k' for softmax only over the top k vals. "
-                        "Requires --colorize_output (enabled by default).")
+    parser.add_argument('--colorize_mode', type=str, default='minmax',
+                        choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'all'],
+                        help="Mode to colorize text: 'minmax' (default), 'softmax', 'softmax_top_k' for softmax over top-k values,"
+                             " 'rank', 'dot_product', or 'topk' to display a prediction table. "
+                             "Requires --colorize_output (enabled by default).")
+    parser.add_argument('--colorize_topk', type=int, default=10,
+                        help="Number of top predictions to display when colorize_mode='topk'")
     parser.add_argument('--colorize_output', default=False, action=argparse.BooleanOptionalAction,
                     help="Colorize tokens based on their predicted probabilities. Default = True. "
                     "Disable with --no-colorize-output.")
@@ -131,21 +137,15 @@ def parse_args():
 
 
 
-def convert_rich_text_to_ansi(rich_text: Text) -> str:
-    # 1) Create an in-memory buffer
+def convert_rich_renderable_to_ansi(renderable) -> str:
+    """Convert any Rich renderable (Text, Table, etc.) into an ANSI string."""
     buffer = io.StringIO()
-
-    # 2) Create a Console that writes into the buffer, forcing ANSI output
     temp_console = Console(
         file=buffer,
-        force_terminal=True,        # force Rich to generate ANSI codes
-        color_system="truecolor"    # or "standard"/"256" if you prefer
+        force_terminal=True,
+        color_system="truecolor",
     )
-
-    # 3) Print Rich Text to the temp_console
-    temp_console.print(rich_text)
-
-    # 4) Extract the ANSI-encoded string
+    temp_console.print(renderable)
     return buffer.getvalue()
 
 def append_to_sample_file(sample_file, output_line, start_token, k_tag, iter_num=None, best_val_loss=None, run_name=None):
@@ -169,9 +169,9 @@ def append_to_sample_file(sample_file, output_line, start_token, k_tag, iter_num
 
         header += '---------------\n'
 
-        # If it's a Rich Text object, convert it to an ANSI string
-        if isinstance(output_line, Text):
-            output_line = convert_rich_text_to_ansi(output_line)
+        # If it's a Rich renderable, convert it to an ANSI string
+        if not isinstance(output_line, str):
+            output_line = convert_rich_renderable_to_ansi(output_line)
 
         file.write(header + output_line + '\n\n')
 
@@ -220,6 +220,74 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
         g = int(color_val * 255)
         text.append(token_str, style=f"bold #{r:02x}{g:02x}00")
     return text
+
+
+def _escape_ws(text: str) -> str:
+    return text.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
+def _topk_table(
+    token_ids: List[int],
+    rows: List[torch.Tensor],
+    decode: Callable[[Sequence[int]], str],
+    k: int,
+    max_token_chars: int = 20,
+    escape_ws: bool = True,
+) -> Table:
+    """Return a Rich table showing top-k predictions for each token."""
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column("target", no_wrap=True)
+    table.add_column("xent", justify="right", no_wrap=True)
+    table.add_column("rank", justify="right", no_wrap=True)
+    table.add_column("p_tgt", justify="right", no_wrap=True)
+    table.add_column("p_left", justify="right", no_wrap=True)
+    for _ in range(k):
+        table.add_column(justify="center", no_wrap=True)
+
+    for tid, row in zip(token_ids, rows):
+        probs = F.softmax(row, dim=-1)
+        tgt_prob = probs[tid].item()
+        rank = int((row > row[tid]).sum().item()) + 1
+        prob_left = probs[row > row[tid]].sum().item()
+        ce = -math.log(tgt_prob + 1e-12)
+
+        topv, topi = row.topk(k)
+        norm = (topv - topv.min()) / (topv.max() - topv.min() + 1e-6)
+        words: List[Text] = []
+        for idx, v in zip(topi.tolist(), norm.tolist()):
+            r = int((1 - v) * 255); g = int(v * 255)
+            style = f"#{r:02x}{g:02x}00"
+            token = decode([idx])
+            if max_token_chars >= 0:
+                token = token[:max_token_chars]
+            if escape_ws:
+                token = _escape_ws(token)
+            if idx == tid:
+                words.append(Text(token, style="bold cyan"))
+            else:
+                words.append(Text(token, style=style))
+
+        rank_norm = 1 - (min(rank, 100) - 1) / 99
+        r = int((1 - rank_norm) * 255); g = int(rank_norm * 255)
+        rank_text = Text(str(rank), style=f"bold #{r:02x}{g:02x}00")
+
+        v = tgt_prob
+        r = int((1 - v) * 255); g = int(v * 255)
+        p_tgt_text = Text(f"{tgt_prob:.4f}", style=f"bold #{r:02x}{g:02x}00")
+
+        v = 1 - prob_left
+        r = int((1 - v) * 255); g = int(v * 255)
+        p_left_text = Text(f"{prob_left:.4f}", style=f"bold #{r:02x}{g:02x}00")
+
+        target_word = decode([tid])
+        if max_token_chars >= 0:
+            target_word = target_word[:max_token_chars]
+        if escape_ws:
+            target_word = _escape_ws(target_word)
+
+        table.add_row(Text(target_word, style="bold cyan"), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text, *words)
+
+    return table
 
 def save_chart(probs, idx, decode, step, out_dir, last_k_tokens, chart_type, selected_token, top_k_value, args):
     """
@@ -404,7 +472,7 @@ def sample_with_existing_model(
     args=None,
     # ── visual / logging flags ────────────────────────────────────────────
     colorize_output: bool = False,
-    colorize_mode: str = "minmax",         # "rank" & "all" supported
+    colorize_mode: str = "minmax",         # "rank", "topk" & "all" supported
     token_boundary: Optional[str] = None,
     show_heatmaps: bool = False,
     chart_type: str = "heatmap",
@@ -428,7 +496,7 @@ def sample_with_existing_model(
         • None  – no truncation.
         • list  – run once per k in the list (duplicates filtered).
     colorize_mode :
-        "minmax" | "softmax" | "softmax_top_k" | "dot_product" | **"rank"** | "all"
+        "minmax" | "softmax" | "softmax_top_k" | "dot_product" | "rank" | "topk" | "all"
     writer : torch.utils.tensorboard.SummaryWriter | None
         When provided, dataset metrics for each top-k sample will be logged to TensorBoard.
     """
@@ -450,7 +518,7 @@ def sample_with_existing_model(
     console = Console()
     model.eval()
 
-    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank"]
+    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank", "topk"]
     modes_to_apply = valid_modes if colorize_mode == "all" else [colorize_mode]
 
 
@@ -663,18 +731,22 @@ def sample_with_existing_model(
                         data_for_color = dot_product_values
 
                     if data_for_color is not None:
-                         coloured = colorize_text(              # type: ignore
-                             tokens_for_color,
-                             data_for_color,
-                             decode,
-                             colorize_mode=cm,
-                         )
+                        coloured = colorize_text(              # type: ignore
+                            tokens_for_color,
+                            data_for_color,
+                            decode,
+                            colorize_mode=cm,
+                        )
                     elif cm == "rank":
-                         coloured = _colorize_rank(
-                             tokens_for_color, ranks_list, decode, current_k
-                         )
+                        coloured = _colorize_rank(
+                            tokens_for_color, ranks_list, decode, current_k
+                        )
+                    elif cm == "topk":
+                        coloured = _topk_table(
+                            tokens_for_color, full_rows, decode, args.colorize_topk
+                        )
                     else:
-                        continue # Should not happen if data_for_color is None
+                        continue  # Should not happen if data_for_color is None
 
 
                     fgcolor="bold light_slate_blue"
@@ -728,6 +800,75 @@ def save_args(args, out_dir):
         json.dump(vars(args), f, indent=4)
 
 
+def write_eval_summary(
+    out_dir: Union[str, os.PathLike[str], None],
+    summary: Dict[str, object],
+    *,
+    extra_dirs: Optional[Sequence[Union[str, os.PathLike[str]]]] = None,
+) -> None:
+    if not summary:
+        return
+
+    def _convert(value):
+        if isinstance(value, torch.Tensor):
+            value = value.detach()
+            if value.numel() == 1:
+                return float(value.item())
+            return value.cpu().tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (float, int)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (list, tuple)):
+            return [_convert(v) for v in value]
+        if isinstance(value, dict):
+            return {k: _convert(v) for k, v in value.items()}
+        return value
+
+    destinations: List[str] = []
+    if out_dir:
+        destinations.append(os.fspath(out_dir))
+    if extra_dirs:
+        for path in extra_dirs:
+            if path:
+                destinations.append(os.fspath(path))
+
+    if not destinations:
+        return
+
+    serializable = {
+        key: _convert(value)
+        for key, value in summary.items()
+        if value is not None
+    }
+
+    saved_paths: List[str] = []
+    seen_dirs: set[str] = set()
+    for directory in destinations:
+        normalized = os.path.normpath(directory)
+        if normalized in seen_dirs:
+            continue
+        seen_dirs.add(normalized)
+        os.makedirs(normalized, exist_ok=True)
+        eval_path = os.path.join(normalized, "eval_loss.txt")
+        with open(eval_path, "w", encoding="utf-8") as eval_file:
+            json.dump(serializable, eval_file, indent=2, sort_keys=True)
+            eval_file.write("\n")
+        saved_paths.append(eval_path)
+
+    if saved_paths:
+        if len(saved_paths) == 1:
+            print(f"Saved evaluation metrics to {saved_paths[0]}")
+        else:
+            print("Saved evaluation metrics to:")
+            for path in saved_paths:
+                print(f"  {path}")
+
+
 #TODO: Rename to reflect general purpose
 def save_quantized_data(state_dict, out_file):
     to_save = OrderedDict()
@@ -753,11 +894,11 @@ def get_batch(data, block_size, device):
     y = torch.stack([torch.from_numpy((data[i + 1:i + 1 + block_size]).astype(np.int64)) for i in ix])
     return x.to(device), y.to(device)
 
-def calculate_validation_loss(model, val_data, block_size, eval_iters, device, dtype):
+def calculate_validation_loss(model, val_data, block_size, eval_iters, device, dtype, dataset_idx: Optional[int] = None):
     model.eval()
-    losses = []
+    losses: List[float] = []
+    total_time = 0.0
     with torch.no_grad():
-        total_time = 0
         for _ in range(eval_iters):
             X, Y = get_batch(val_data,  block_size, device)
             with torch.amp.autocast(device_type=device, dtype=dtype):
@@ -765,9 +906,22 @@ def calculate_validation_loss(model, val_data, block_size, eval_iters, device, d
                 logits, loss = model(X, Y, dataset_idx=dataset_idx)
                 end = time.perf_counter()
                 total_time += (end - start)
-            losses.append(loss.item())
-    print(f"Elapsed time: {total_time} seconds")
-    return np.mean(losses)
+            losses.append(float(loss.item()))
+
+    if losses:
+        mean_loss = float(np.mean(losses))
+        std_loss = float(np.std(losses)) if len(losses) > 1 else 0.0
+    else:
+        mean_loss = float("nan")
+        std_loss = float("nan")
+
+    return {
+        "val": mean_loss,
+        "val_std": std_loss,
+        "eval_iters": int(eval_iters),
+        "num_batches": len(losses),
+        "elapsed_time_s": float(total_time),
+    }
 
 def custom_char_with_byte_fallback_encode(text: str, stoi: dict) -> list[int]:
     """Encode ``text`` using a byte-level vocabulary with optional custom tokens.
@@ -825,6 +979,16 @@ def custom_char_with_byte_fallback_decode(ids: list[int], itos: dict) -> str:
     flush_bytes()
     return "".join(out_parts)
 
+
+def byte_encode(text: str) -> list[int]:
+    """Encode text into raw UTF-8 byte values."""
+    return list(text.encode("utf-8"))
+
+
+def byte_decode(ids: list[int]) -> str:
+    """Decode a list of raw byte values back into text."""
+    return bytes(ids).decode("utf-8", errors="replace")
+
 def get_tokenizer_functions(meta):
     """Get encode/decode functions based on tokenizer metadata"""
     if 'tokenizer' not in meta:
@@ -834,11 +998,26 @@ def get_tokenizer_functions(meta):
         decode = lambda l: ''.join([itos[i] for i in l])
         return encode, decode
 
+    if meta['tokenizer'] == "sinewave":
+        def encode_fn(s: str):
+            s = s.strip()
+            if not s:
+                return []
+            return [int(v) for v in s.split(',')]
+
+        def decode_fn(values):
+            return ','.join(str(int(v)) for v in values)
+
+        return encode_fn, decode_fn
+
     if meta['tokenizer'] == 'tiktoken':
         enc = tiktoken.get_encoding(meta['tiktoken_encoding'])
         encode = lambda s: enc.encode(s, allowed_special={""})
         decode = lambda l: enc.decode(l)
         return encode, decode
+
+    if meta['tokenizer'] == 'byte':
+        return byte_encode, byte_decode
 
     if meta['tokenizer'] == 'custom_char_with_byte_fallback':
         stoi, itos = meta['stoi'], meta['itos']
@@ -945,9 +1124,13 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     save_args(args, out_dir)
 
+    checkpoint = None
+    checkpoint_config: Dict[str, object] = {}
+
     if args.init_from == 'resume':
         ckpt_path = os.path.join(args.out_dir, 'ckpt.pt')
         checkpoint = torch.load(ckpt_path, map_location=args.device)
+        checkpoint_config = checkpoint.get('config', {})
         checkpoint['model_args']['dropout'] = 0.0
         if args.save_avg_vector:
             print(f"saving {args.save_avg_vector}")
@@ -988,6 +1171,18 @@ def main():
             setattr(gptconf, k, v)
         model = GPT.from_pretrained(gptconf, model_type=args.init_from)
 
+    if args.init_from == 'resume' and args.multicontext is None:
+        args.multicontext = bool(getattr(model.config, "multicontext", False))
+
+    if (
+        args.init_from == 'resume'
+        and args.multicontext
+        and args.multicontext_datasets is None
+    ):
+        datasets_from_ckpt = checkpoint_config.get('multicontext_datasets') if checkpoint_config else None
+        if datasets_from_ckpt:
+            args.multicontext_datasets = list(datasets_from_ckpt)
+
     # Load meta information if available
     load_meta = False
     meta_path = None
@@ -1010,6 +1205,7 @@ def main():
         encode = lambda s: enc.encode(s, allowed_special={""})
         decode = lambda l: enc.decode(l)
 
+    meta = None
     if load_meta:
         print(f"Loading meta from {meta_path}...")
         with open(meta_path, 'rb') as f:
@@ -1020,7 +1216,19 @@ def main():
         with open(args.start[5:], 'r', encoding='utf-8') as f:
             args.start = f.read()
 
+    if args.multicontext and args.multicontext_start is None and args.multicontext_datasets:
+        args.multicontext_start = [args.start] * len(args.multicontext_datasets)
+
     start_ids = encode(args.start)
+    if len(start_ids) == 0:
+        if meta and meta.get('tokenizer') == 'sinewave':
+            print("Start string produced no tokens for sinewave tokenizer; defaulting to '0'.")
+            start_ids = [0]
+        elif not args.multicontext:
+            raise ValueError(
+                "The provided --start text resulted in an empty context. "
+                "Please supply a non-empty prompt or comma-separated values for numerical tokenizers."
+            )
     model.eval()
     model.to(args.device)
 
@@ -1061,15 +1269,46 @@ def main():
 
     if args.eval_only:
         print("Running in eval_only mode...")
-        # Load the validation dataset
-        print(model.config.block_size)
-        val_data = load_validation_data(model.config.block_size,
-                                        args.eval_dataset)
-        # Calculate validation loss
-        val_loss = calculate_validation_loss(model, val_data,
-                                             model.config.block_size,
-                                             args.eval_iters, args.device, ptdtype)
+        dataset_name = args.eval_dataset
+        if dataset_name is None and args.init_from == 'resume':
+            dataset_name = (
+                checkpoint.get('config', {}).get('dataset')
+                if isinstance(checkpoint, dict)
+                else None
+            )
+        if dataset_name is None:
+            raise ValueError(
+                "--eval_dataset must be provided when running in eval_only mode"
+            )
+
+        print(f"Using validation dataset: {dataset_name}")
+        print(f"Model block size: {model.config.block_size}")
+        val_data = load_validation_data(model.config.block_size, dataset_name)
+        metrics = calculate_validation_loss(
+            model,
+            val_data,
+            model.config.block_size,
+            args.eval_iters,
+            args.device,
+            ptdtype,
+        )
+
+        val_loss = metrics.get("val", float("nan"))
         print(f"Validation Loss: {val_loss:.4f}")
+        if metrics.get("elapsed_time_s") is not None:
+            print(f"Elapsed time: {metrics['elapsed_time_s']:.4f} seconds")
+
+        summary: Dict[str, object] = dict(metrics)
+        summary.setdefault("eval_dataset", dataset_name)
+        summary.setdefault("timestamp", timestamp)
+        summary.setdefault("out_dir", args.out_dir)
+        summary.setdefault("init_from", args.init_from)
+
+        write_eval_summary(
+            args.out_dir,
+            summary,
+            extra_dirs=[out_dir],
+        )
         return
 
     x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
@@ -1087,54 +1326,50 @@ def main():
     if args.interactive:
         interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_strings, decode, encode)
     elif args.multicontext:
-        assert args.multicontext_datasets is not None, (
-            "Must specify --multicontext_datasets when using --multicontext"
-        )
-        assert args.multicontext_start is not None, (
-            "Must specify --multicontext_start when using --multicontext"
-        )
+        if not args.multicontext_datasets:
+            raise ValueError("Must specify --multicontext_datasets when using --multicontext")
+        if args.multicontext_start is None:
+            raise ValueError("Must specify --multicontext_start when using --multicontext")
         if len(args.multicontext_datasets) != len(args.multicontext_start):
             raise ValueError(
                 "Number of --multicontext_datasets must match number of --multicontext_start strings."
             )
 
-        # Build a separate tokenizer for each dataset
-        token_dict = {}
-        target_dict = {}
+        dataset_names = list(args.multicontext_datasets)
+        start_strings = list(args.multicontext_start)
 
-        for i, dataset_name in enumerate(args.multicontext_datasets):
-            # 1) Find meta.pkl for this dataset, e.g. data/<dataset_name>/meta.pkl
+        dataset_meta: Dict[str, Dict[str, object]] = {}
+        decode_lookup: Dict[str, Callable[[Sequence[int]], str]] = {}
+        initial_tokens: Dict[str, torch.Tensor] = {}
+
+        for dataset_name, start_str in zip(dataset_names, start_strings):
             meta_path = os.path.join("data", dataset_name, "meta.pkl")
-            assert os.path.exists(meta_path), f"meta.pkl not found at {meta_path}"
+            if not os.path.exists(meta_path):
+                raise FileNotFoundError(f"meta.pkl not found at {meta_path}")
             with open(meta_path, "rb") as f:
-                meta = pickle.load(f)
+                dataset_meta[dataset_name] = pickle.load(f)
 
-            stoi = meta['stoi']
-            itos = meta['itos']
-            encode_i = lambda s: [stoi[c] for c in s if c in stoi]
-            decode_i = lambda l: "".join([itos[i] for i in l])
+            encode_i, decode_i = get_tokenizer_functions(dataset_meta[dataset_name])
+            token_ids = encode_i(start_str)
+            if len(token_ids) == 0:
+                if dataset_meta[dataset_name].get('tokenizer') == 'sinewave':
+                    print(
+                        f"Start string for dataset '{dataset_name}' produced no tokens; defaulting to '0'."
+                    )
+                    token_ids = [0]
+                else:
+                    raise ValueError(
+                        f"Start string for dataset '{dataset_name}' produced no tokens. "
+                        "Provide a valid prompt or comma-separated values for numerical tokenizers."
+                    )
 
-            # 3) Encode the start string for *this* context
-            start_str = args.multicontext_start[i]
-            start_ids = encode_i(start_str)
-            token_tensor = torch.tensor(
-                start_ids,
-                dtype=torch.long,
-                device=args.device
-            )[None, ...]
+            token_tensor = torch.tensor(token_ids, dtype=torch.long, device=args.device)[None, ...]
+            initial_tokens[dataset_name] = token_tensor
+            decode_lookup[dataset_name] = decode_i
 
-            # 4) Keep decode function if we want to print each context separately
-            token_dict[f"context_{i}"] = token_tensor
-            # Optionally we could store decode_i if we want to decode separately
-            # e.g. a dictionary of decode functions: decode_dict[f"context_{i}"] = decode_i
-
-        # Now do the same generation loop. We'll do the "one forward pass per time-step" approach
         block_size = args.block_size if args.block_size else model.config.block_size
         with torch.no_grad(), ctx:
-            for k in range(args.num_samples):
-                # This block handles LSV for standalone sampling. When called from train.py,
-                # lsv_size is not an arg, so we skip this to avoid an AttributeError and
-                # to respect the index already set by the trainer.
+            for sample_idx in range(args.num_samples):
                 if args.use_lsv and hasattr(args, 'lsv_size'):
                     model.set_lsv_index(sample_idx % args.lsv_size)
                     if args.lsv_scaling_factor is not None:
@@ -1145,73 +1380,70 @@ def main():
                     else:
                         model.set_lsv_mode(1)
 
+                token_state = {name: tensor.clone() for name, tensor in initial_tokens.items()}
 
-                # We'll generate args.max_new_tokens total tokens
-                for step in range(args.max_new_tokens):
+                for _ in range(args.max_new_tokens):
                     idx_cond_dict = {}
-                    # 5) Build a cropped version per context
-                    for key, tokens in token_dict.items():
-                        if tokens.size(1) <= block_size:
-                            idx_cond_dict[key] = tokens
-                        else:
-                            idx_cond_dict[key] = tokens[:, -block_size:]
+                    for name in dataset_names:
+                        tokens = token_state[name]
+                        idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
 
-                    # 6) Single forward pass for all contexts
                     logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
 
-                    # import pdb; pdb.set_trace()
-                    # 7) For each context, sample next token
-                    key_list = list(idx_cond_dict.keys())
-                    for i, key in enumerate(key_list):
-                        cur_logits = logits_list[i][:, -1, :] / args.temperature
-                        # ── top-k truncation ───────────────────────────────
-                        # argparse uses `nargs='+'`, so --top_k may arrive as
-                        # an *int* or as a *list* (even when only one value is
-                        # supplied).  Convert to a plain int before `min()`.
-                        if args.top_k is not None:
-                            top_k_val = args.top_k[0] if isinstance(
-                                args.top_k, (list, tuple)
-                            ) else args.top_k
+                    for i, name in enumerate(dataset_names):
+                        if model.config.numerical_multicontext:
+                            preds = logits_list[i][:, -1]
+                            preds = preds.squeeze(-1)
+                            if preds.ndim == 0:
+                                preds = preds.unsqueeze(0)
+                            rounded = preds.round()
+                            min_val = 0.0
+                            max_val = None
+                            meta_info = dataset_meta.get(name, {})
+                            tokenizer_name = meta_info.get('tokenizer') if isinstance(meta_info, dict) else None
+                            if tokenizer_name == 'sinewave':
+                                max_val = 255.0
+                            elif isinstance(meta_info, dict) and 'vocab_size' in meta_info:
+                                max_val = float(meta_info['vocab_size'] - 1)
 
-                            k = min(top_k_val, cur_logits.size(-1))
-                            v, _ = torch.topk(cur_logits, k)
-                            cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
+                            if max_val is not None:
+                                rounded = torch.clamp(rounded, min=min_val, max=max_val)
+                            else:
+                                rounded = torch.clamp(rounded, min=min_val)
 
-                        probs = F.softmax(cur_logits, dim=-1)
-                        idx_next = torch.multinomial(probs, num_samples=1)
-                        token_dict[key] = torch.cat((token_dict[key], idx_next), dim=1)
+                            idx_next = rounded.to(torch.long).unsqueeze(-1)
+                        else:
+                            cur_logits = logits_list[i][:, -1, :] / args.temperature
+                            if args.top_k is not None:
+                                top_k_val = (
+                                    args.top_k[0]
+                                    if isinstance(args.top_k, (list, tuple))
+                                    else args.top_k
+                                )
+                                k = min(top_k_val, cur_logits.size(-1))
+                                v, _ = torch.topk(cur_logits, k)
+                                cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
 
-                # 8) After generation, decode each context
-                output_dict = {}
-                # Re-load the meta & decode for each context to show final text
-                for i, dataset_name in enumerate(args.multicontext_datasets):
-                    meta_path = os.path.join("data", dataset_name, "meta.pkl")
-                    with open(meta_path, "rb") as f:
-                        meta = pickle.load(f)
-                    if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
-                        enc_obj = tiktoken.get_encoding(meta['tiktoken_encoding'])
-                        decode_i = lambda l: enc_obj.decode(l)
-                    else:
-                        # or custom fallback
-                        stoi = meta['stoi']
-                        itos = meta['itos']
-                        decode_i = lambda l: "".join([itos[ix] for ix in l if ix in itos])
+                            probs = F.softmax(cur_logits, dim=-1)
+                            idx_next = torch.multinomial(probs, num_samples=1)
 
-                    key = f"context_{i}"
-                    tokens_i = token_dict[key][0].tolist()
-                    output_dict[key] = decode_i(tokens_i)
+                        token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
 
-                # 9) Print
-                for key, text in output_dict.items():
-                    key_color="bold light_slate_blue"
-                    text_color="bold cyan"
-                    print(f"\n[{key_color}]{key}:[/{key_color}]\n[{text_color}]{text}[/{text_color}]")
+                output_dict: Dict[str, str] = {}
+                for name in dataset_names:
+                    decode_fn = decode_lookup[name]
+                    output_dict[name] = decode_fn(token_state[name][0].tolist())
+
+                for name, text in output_dict.items():
+                    key_color = "bold light_slate_blue"
+                    text_color = "bold cyan"
+                    print(f"\n[{key_color}]{name}:[/{key_color}]\n[{text_color}]{text}[/{text_color}]")
                 print("---------------")
 
                 if args.sample_file:
                     with open(args.sample_file, "w") as file:
-                        for key, text in output_dict.items():
-                            file.write(f"\n{key}: \n{text}\n")
+                        for name, text in output_dict.items():
+                            file.write(f"\n{name}: \n{text}\n")
     else:
         sample_with_existing_model(
                 model,

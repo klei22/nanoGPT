@@ -15,6 +15,10 @@ class GPTConfig:
     n_embd: int = 768
     mlp_down_projs: int = 1  # Number of down projections in MLP/SwiGLU
 
+    # numerical multicontext
+    numerical_multicontext: bool = False
+    numerical_mlp_hidden_dim: int = 64
+
     # Layerlists
     n_head_layerlist: List[int] = field(default_factory=list)
     n_qk_head_dim_layerlist: List[int] = field(default_factory=list)
@@ -167,6 +171,7 @@ class GPTConfig:
     # QK Norm Options
     use_qk_norm: bool = False
     use_qk_norm_scale: bool = False
+    use_v_norm: bool = False
 
     ## SSM - Attention Varient (same as Hymba)
     ssm_mamba_expand: int = 2
@@ -332,6 +337,12 @@ class GPTConfig:
     use_post_ln: bool = False
     use_pre_ln: bool = True
     use_peri_ln: bool = False
+    use_pre_ln_attn: bool | None = None
+    use_pre_ln_mlp: bool | None = None
+    use_peri_ln_attn: bool | None = None
+    use_peri_ln_mlp: bool | None = None
+    use_post_ln_attn: bool | None = None
+    use_post_ln_mlp: bool | None = None
     use_attn_resid_scaling: bool = False
     use_mlp_resid_scaling: bool = False
     attn_confidence_variant: str = "zeros"
@@ -344,6 +355,13 @@ class GPTConfig:
     learn_mlp_resid_const: bool = False
     resid_gaussian_mean_init: float = 0.0
     resid_gaussian_std_init: float = 0.02
+    attn_residual_combination: str = "add"
+    mlp_residual_combination: str = "add"
+    residual_slerp_eps: float = 0.0
+    attn_residual_alpha: float = 0.05
+    mlp_residual_alpha: float = 0.05
+    attn_residual_alpha_type: str = "fixed"
+    mlp_residual_alpha_type: str = "fixed"
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
@@ -459,7 +477,12 @@ class GPTConfig:
     quantize_mlp_act_output: bool = False
     quantize_mlp_act_output_bits: int = None
     quantize_asic_prenorm: bool = False
+    quantize_asic_offchip_residual: bool = False
     quantize_asic_bits: int = None
+    quantize_asic_attn_softmax_denom: bool = False
+    quantize_asic_attn_softmax_denom_bits: int = None
+    quantize_asic_attn_softmax_numerator: bool = False
+    quantize_asic_attn_softmax_numerator_bits: int = None
     store_activations: bool = False
 
     ## Linear Quantizations

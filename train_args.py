@@ -169,6 +169,10 @@ def parse_args():
     training_group.add_argument("--seed", default=1337, type=int)
 
     # Multicontext Training Dataset args
+    model_group.add_argument('--numerical_multicontext', default=False, action=argparse.BooleanOptionalAction,
+                                    help="Interpret multicontext inputs as numerical values and use regression heads")
+    model_group.add_argument('--numerical_mlp_hidden_dim', default=64, type=int,
+                                    help="Hidden dimension for numerical multi-context embedding/output MLPs")
     model_group.add_argument('--multicontext', default=False, action=argparse.BooleanOptionalAction,
                                     help="Enable multi-context training on multiple simultaneous datasets")
     model_group.add_argument('--multidataset_wte', default=False, action=argparse.BooleanOptionalAction,
@@ -246,6 +250,7 @@ def parse_args():
             "var_adaptive_lr",
             "lookahead",
             "entropy_aware_adamw",
+            "muon",
             ]
 
     training_group.add_argument("--optimizer", type=str, default="adamw",
@@ -255,6 +260,9 @@ def parse_args():
     # --------  SGD --------------------------------------------------
     training_group.add_argument("--sgd_momentum", type=float, default=0.9, help="Momentum for SGD optimizer.")
     training_group.add_argument("--sgd_nesterov", type=bool, default=False, action=argparse.BooleanOptionalAction)
+    # --------  MUON --------------------------------------------------
+    training_group.add_argument("--muon_momentum", type=float, default=0.95,
+                                help="Momentum for the Muon optimizer.")
     # --------  ADAMW --------------------------------------------------
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
@@ -414,7 +422,11 @@ def parse_args():
     training_group.add_argument('--interactive', default=False, action=argparse.BooleanOptionalAction, help="Enable interactive generation at the end of training (similar to sample.py --interactive).")
     training_group.add_argument('--stop_string', type=str, default='~W', help="String to stop generation and allow user input (used when --interactive).")
     training_group.add_argument('--colorize_output', default=True, action=argparse.BooleanOptionalAction, help="Colorize tokens based on predicted probabilities.")
-    training_group.add_argument('--colorize_mode', type=str, default='minmax', choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'all'], help="Colorization mode for tokens (see sample.py).")
+    training_group.add_argument('--colorize_mode', type=str, default='minmax',
+                                choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'all'],
+                                help="Colorization mode for tokens (see sample.py).")
+    training_group.add_argument('--colorize_topk', type=int, default=10,
+                                help="Number of top predictions to display when colorize_mode='topk'.")
     training_group.add_argument('--show_heatmaps', type=bool, default=False, action=argparse.BooleanOptionalAction, help="Show heatmaps (or bar charts) of top-k token probabilities.")
     training_group.add_argument('--show_minmax_chart', type=bool, default=False, action=argparse.BooleanOptionalAction, help="show timeseries of raw logit values")
     training_group.add_argument('--chart_type', type=str, default='heatmap', choices=['heatmap', 'barchart'], help="Type of chart to display if --show_heatmaps is set.")
@@ -451,6 +463,12 @@ def parse_args():
     model_group.add_argument('--use_pre_ln', default=True,   action=argparse.BooleanOptionalAction, help="apply before any attn or mlp")
     model_group.add_argument('--use_peri_ln', default=False, action=argparse.BooleanOptionalAction, help="apply directly after each attn and mlp")
     model_group.add_argument('--use_post_ln', default=False, action=argparse.BooleanOptionalAction, help="apply after recombining the residual")
+    model_group.add_argument('--use_pre_ln_attn', default=None, action=argparse.BooleanOptionalAction, help="override pre-LN for attention block")
+    model_group.add_argument('--use_pre_ln_mlp', default=None, action=argparse.BooleanOptionalAction, help="override pre-LN for MLP block")
+    model_group.add_argument('--use_peri_ln_attn', default=None, action=argparse.BooleanOptionalAction, help="override peri-LN for attention block")
+    model_group.add_argument('--use_peri_ln_mlp', default=None, action=argparse.BooleanOptionalAction, help="override peri-LN for MLP block")
+    model_group.add_argument('--use_post_ln_attn', default=None, action=argparse.BooleanOptionalAction, help="override post-LN for attention block")
+    model_group.add_argument('--use_post_ln_mlp', default=None, action=argparse.BooleanOptionalAction, help="override post-LN for MLP block")
     model_group.add_argument('--window_size', default=None, type=int, help="Sliding window size, note this cannot be greater than block size")
     model_group.add_argument('--gate', default=False, action=argparse.BooleanOptionalAction, help="option for gated attention see https://arxiv.org/abs/2306.12929")
     model_group.add_argument('--use_moe', default=False,  action=argparse.BooleanOptionalAction, help="option for Mixture of Experts (MoE) architecture")
@@ -504,6 +522,7 @@ def parse_args():
     # MLP Variations
     mlp_variants = [
             "mlp",
+            "edgellm_asic_mlp",
             "kan",
             "swiglu",
             "dual_path",
@@ -554,6 +573,54 @@ def parse_args():
     ### Guassian style settings
     model_group.add_argument('--resid_gaussian_mean_init', type=float, default=0.0, help='Gaussian residual init setting, mean value.')
     model_group.add_argument('--resid_gaussian_std_init', type=float, default=0.02, help='Gaussian residual init setting, standard deviation.')
+
+    # Residual combination options
+    model_group.add_argument(
+        '--attn_residual_combination',
+        type=str,
+        default='add',
+        choices=['add', 'lerp', 'slerp'],
+        help='Residual combination method for attention block'
+    )
+    model_group.add_argument(
+        '--mlp_residual_combination',
+        type=str,
+        default='add',
+        choices=['add', 'lerp', 'slerp'],
+        help='Residual combination method for MLP block'
+    )
+    model_group.add_argument(
+        '--residual_slerp_eps',
+        type=float,
+        default=0.0,
+        help='Threshold below which LERP is used instead of SLERP; 0 means no fallback to LERP (SLERP is always used)'
+    )
+    model_group.add_argument(
+        '--attn_residual_alpha',
+        type=float,
+        default=0.05,
+        help='Alpha parameter for attention residual LERP/SLERP'
+    )
+    model_group.add_argument(
+        '--mlp_residual_alpha',
+        type=float,
+        default=0.05,
+        help='Alpha parameter for MLP residual LERP/SLERP'
+    )
+    model_group.add_argument(
+        '--attn_residual_alpha_type',
+        type=str,
+        default='fixed',
+        choices=['fixed', 'learned', 'dot'],
+        help='Alpha mode for attention residual combination'
+    )
+    model_group.add_argument(
+        '--mlp_residual_alpha_type',
+        type=str,
+        default='fixed',
+        choices=['fixed', 'learned', 'dot'],
+        help='Alpha mode for MLP residual combination'
+    )
 
 
     # NORM VARIATIONS
@@ -653,6 +720,7 @@ def parse_args():
     # Attention Variations
     attention_variants = [
                           "causal",
+                          "edgellm_asic_attn",
                           "linear",
                           "ssm",
                           "identity",
@@ -719,6 +787,7 @@ def parse_args():
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
     model_group.add_argument("--use_qk_norm_scale",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies norm scale, preloads scale for flash attn, post qk multiplication in manual attn")
+    model_group.add_argument("--use_v_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to v before attn output")
 
     ## Flash Lobo
     model_group.add_argument("--use_flash_lobo",   type=bool, default=False, action=argparse.BooleanOptionalAction)
@@ -834,6 +903,11 @@ def parse_args():
 
     ### ASIC Activations
     model_group.add_argument("--quantize_asic_prenorm", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC input to norm")
+    model_group.add_argument("--quantize_asic_offchip_residual", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC off-chip residual")
+    model_group.add_argument("--quantize_asic_attn_softmax_denom", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC attention softmax denominator")
+    model_group.add_argument("--quantize_asic_attn_softmax_denom_bits", type=int, default=16, help="number of bits for ASIC attention softmax denominator quantization")
+    model_group.add_argument("--quantize_asic_attn_softmax_numerator", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC attention softmax numerator")
+    model_group.add_argument("--quantize_asic_attn_softmax_numerator_bits", type=int, default=8, help="number of bits for ASIC attention softmax numerator quantization")
 
     ### Default Precisions for ASIC Activations
     model_group.add_argument("--quantize_asic_bits", type=int, default=8, help="number of bits for asic quantization")
