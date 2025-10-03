@@ -272,42 +272,55 @@ def _resolve_unit_norm_flags(self, config) -> None:
             setattr(self, granular_key, granular_val if (granular_val is not None) else general_val)
 
 
-def _setup_norms_parallel(self, config, norm_cls) -> None:
+def _resolve_norm_variants(config):
+    """Return normalization constructors for each positional slot."""
+
+    base_variant = getattr(config, "norm_variant_attn", "rmsnorm")
+    variant_names = {
+        "pre": getattr(config, "norm_variant_attn_pre", None) or base_variant,
+        "peri": getattr(config, "norm_variant_attn_peri", None) or base_variant,
+        "post": getattr(config, "norm_variant_attn_post", None) or base_variant,
+    }
+
+    return {slot: norm_dictionary[name] for slot, name in variant_names.items()}
+
+
+def _setup_norms_parallel(self, config, norm_clses) -> None:
     """Norm layout for the 'parallel_mlp' variation."""
     # Pre-LN
     if getattr(self, "use_pre_ln", False):
-        self.pre_ln = norm_cls(config)
+        self.pre_ln = norm_clses["pre"](config)
 
     # Peri-LN
     if getattr(self, "use_peri_ln_attn", False):
-        self.peri_ln_attn = norm_cls(config)
+        self.peri_ln_attn = norm_clses["peri"](config)
     if getattr(self, "use_peri_ln_mlp", False):
-        self.peri_ln_mlp = norm_cls(config)
+        self.peri_ln_mlp = norm_clses["peri"](config)
 
     # Post-LN
     if getattr(self, "use_post_ln", False):
-        self.post_ln = norm_cls(config)
+        self.post_ln = norm_clses["post"](config)
 
-def _setup_norms_sequential(self, config, norm_cls) -> None:
+def _setup_norms_sequential(self, config, norm_clses) -> None:
     """Norm layout for the 'attn_then_mlp' variation."""
 
     # Pre-Norm
     if getattr(self, "use_pre_ln_attn", False):
-        self.pre_ln_attn = norm_cls(config)
+        self.pre_ln_attn = norm_clses["pre"](config)
     if getattr(self, "use_pre_ln_mlp", False):
-        self.pre_ln_mlp = norm_cls(config)
+        self.pre_ln_mlp = norm_clses["pre"](config)
 
     # Peri-LN
     if getattr(self, "use_peri_ln_attn", False):
-        self.peri_ln_attn = norm_cls(config)
+        self.peri_ln_attn = norm_clses["peri"](config)
     if getattr(self, "use_peri_ln_mlp", False):
-        self.peri_ln_mlp = norm_cls(config)
+        self.peri_ln_mlp = norm_clses["peri"](config)
 
     # Post-LN
     if getattr(self, "use_post_ln_attn", False):
-        self.post_ln_attn = norm_cls(config)
+        self.post_ln_attn = norm_clses["post"](config)
     if getattr(self, "use_post_ln_mlp", False):
-        self.post_ln_mlp = norm_cls(config)
+        self.post_ln_mlp = norm_clses["post"](config)
 
 
 normalization_setup_variations = {
@@ -364,7 +377,7 @@ class Block(nn.Module):
         super().__init__()
 
         # Choose norm class for attention/MLP blocks
-        norm_cls = norm_dictionary[config.norm_variant_attn]
+        norm_clses = _resolve_norm_variants(config)
 
         # Resolve per-unit norm flags from config (pre/post/peri × attn/mlp)
         _resolve_unit_norm_flags(self, config)
@@ -399,7 +412,7 @@ class Block(nn.Module):
         self.block_forward = partial(block_forward_variations[variant], self)
 
         ## Instantiate norms for Block Forward Variant
-        normalization_setup_variations[variant](self, config, norm_cls)
+        normalization_setup_variations[variant](self, config, norm_clses)
 
         ## Instantiate (Optional) learned residual scalers for Block Forward Variant
         resid_scaler_setup_variations[variant](self, config)
