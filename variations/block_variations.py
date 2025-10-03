@@ -16,6 +16,54 @@ from quantization.quantize import fake_quantize_act
 BlockForward = Callable[['Block', torch.Tensor, int], torch.Tensor]
 
 # -----------------------
+# Residual combination helpers
+# -----------------------
+
+def slerp(a: torch.Tensor, b: torch.Tensor, alpha: float, eps: float) -> torch.Tensor:
+    """Spherical linear interpolation between tensors ``a`` and ``b``."""
+    a_norm = a / a.norm(dim=-1, keepdim=True)
+    b_norm = b / b.norm(dim=-1, keepdim=True)
+    dot = (a_norm * b_norm).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
+    omega = torch.acos(dot)
+    so = torch.sin(omega)
+    close = so.abs() < eps
+    interp = (
+        torch.sin((1 - alpha) * omega) / so * a
+        + torch.sin(alpha * omega) / so * b
+    )
+    lerp = (1 - alpha) * a + alpha * b
+    return torch.where(close, lerp, interp)
+
+
+def add_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
+    return x + out
+
+
+def lerp_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
+    return (1 - alpha) * x + alpha * (x + out)
+
+
+def slerp_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
+    return slerp(x, x + out, alpha, eps)
+
+
+residual_combine_dict = {
+    "add": add_residual,
+    "lerp": lerp_residual,
+    "slerp": slerp_residual,
+}
+
+
+def make_alpha_fn(mode: str, init: float, param=None, vec=None):
+    if mode == "fixed":
+        return lambda _out: init
+    if mode == "learned":
+        return lambda _out: param
+    if mode == "dot":
+        return lambda out: init * (param + (out * vec).sum(dim=-1, keepdim=True))
+    raise ValueError(f"unknown alpha mode {mode}")
+
+# -----------------------
 # Block Forward Variations
 # -----------------------
 
@@ -46,7 +94,8 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
     # Skip Connection
-    x = x + attn_out + mlp_out
+    combined = attn_out + mlp_out
+    x = block._combine_resid("attn", x, combined)
 
     # Post-LN
     if block.use_post_ln:
@@ -77,7 +126,7 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         attn_out = block.attn_resid_scaler(attn_out)
 
     # Attn Skip Connection
-    x = attn_out + x
+    x = block._combine_resid("attn", x, attn_out)
 
     # Attn Post-LN
     if block.use_post_ln_attn:
@@ -102,7 +151,7 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
     # MLP Skip Connection
-    x = mlp_out + x
+    x = block._combine_resid("mlp", x, mlp_out)
 
     # MLP Post-LN
     if block.use_post_ln_mlp:
@@ -177,7 +226,9 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     # Note:
     # chip_output = x_quantized_residual_initial + mlp_out + attn_out
     # Therefore subtract initial before merging
-    x = (chip_output - x_quantized_residual_initial) + x
+    # x = (chip_output - x_quantized_residual_initial) + x
+    adj_chip_output = chip_output - x_quantized_residual_initial
+    x = block._combine_resid("mlp", x, adj_chip_output)
 
     if block.quantization_dict["quantize_asic_offchip_residual"]:
         num_bits = block.quantization_dict["quantize_asic_bits"]
@@ -364,6 +415,40 @@ class Block(nn.Module):
         else:
             self.mlp = mlp
 
+        self.attn_resid_type = getattr(config, "attn_residual_combination", "add")
+        self.mlp_resid_type = getattr(config, "mlp_residual_combination", "add")
+        self.residual_slerp_eps = getattr(config, "residual_slerp_eps", 0.0)
+
+        self.attn_alpha = getattr(config, "attn_residual_alpha", 0.05)
+        self.mlp_alpha = getattr(config, "mlp_residual_alpha", 0.05)
+        self.attn_alpha_mode = getattr(config, "attn_residual_alpha_type", "fixed")
+        self.mlp_alpha_mode = getattr(config, "mlp_residual_alpha_type", "fixed")
+
+        if self.attn_alpha_mode == "learned":
+            self.attn_alpha_param = nn.Parameter(torch.tensor(self.attn_alpha))
+        elif self.attn_alpha_mode == "dot":
+            self.attn_alpha_vec = nn.Parameter(torch.zeros(config.n_embd))
+            self.attn_alpha_param = nn.Parameter(torch.tensor(self.attn_alpha))
+        if self.mlp_alpha_mode == "learned":
+            self.mlp_alpha_param = nn.Parameter(torch.tensor(self.mlp_alpha))
+        elif self.mlp_alpha_mode == "dot":
+            self.mlp_alpha_vec = nn.Parameter(torch.zeros(config.n_embd))
+            self.mlp_alpha_param = nn.Parameter(torch.tensor(self.mlp_alpha))
+
+        self.alpha_fns = {
+            "attn": make_alpha_fn(self.attn_alpha_mode, self.attn_alpha,
+                                  getattr(self, "attn_alpha_param", None),
+                                  getattr(self, "attn_alpha_vec", None)),
+            "mlp": make_alpha_fn(self.mlp_alpha_mode, self.mlp_alpha,
+                                 getattr(self, "mlp_alpha_param", None),
+                                 getattr(self, "mlp_alpha_vec", None)),
+        }
+
+        self.resid_fns = {
+            "attn": residual_combine_dict[self.attn_resid_type],
+            "mlp": residual_combine_dict[self.mlp_resid_type],
+        }
+
         # Gradient checkpointing
         self.use_gradient_checkpointing = getattr(config, "use_gradient_checkpointing", False)
 
@@ -371,4 +456,9 @@ class Block(nn.Module):
         if self.use_gradient_checkpointing and x.requires_grad:
             return checkpoint.checkpoint(self.block_forward, x, iter_num, use_reentrant=False)
         return self.block_forward(x, iter_num)
+
+    def _combine_resid(self, kind: str, x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+        """Helper method to streamline forward block skip connections"""
+        alpha = self.alpha_fns[kind](out)
+        return self.resid_fns[kind](x, out, alpha, self.residual_slerp_eps)
 

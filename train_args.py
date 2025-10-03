@@ -169,6 +169,10 @@ def parse_args():
     training_group.add_argument("--seed", default=1337, type=int)
 
     # Multicontext Training Dataset args
+    model_group.add_argument('--numerical_multicontext', default=False, action=argparse.BooleanOptionalAction,
+                                    help="Interpret multicontext inputs as numerical values and use regression heads")
+    model_group.add_argument('--numerical_mlp_hidden_dim', default=64, type=int,
+                                    help="Hidden dimension for numerical multi-context embedding/output MLPs")
     model_group.add_argument('--multicontext', default=False, action=argparse.BooleanOptionalAction,
                                     help="Enable multi-context training on multiple simultaneous datasets")
     model_group.add_argument('--multidataset_wte', default=False, action=argparse.BooleanOptionalAction,
@@ -518,6 +522,7 @@ def parse_args():
     # MLP Variations
     mlp_variants = [
             "mlp",
+            "edgellm_asic_mlp",
             "kan",
             "swiglu",
             "dual_path",
@@ -568,6 +573,54 @@ def parse_args():
     ### Guassian style settings
     model_group.add_argument('--resid_gaussian_mean_init', type=float, default=0.0, help='Gaussian residual init setting, mean value.')
     model_group.add_argument('--resid_gaussian_std_init', type=float, default=0.02, help='Gaussian residual init setting, standard deviation.')
+
+    # Residual combination options
+    model_group.add_argument(
+        '--attn_residual_combination',
+        type=str,
+        default='add',
+        choices=['add', 'lerp', 'slerp'],
+        help='Residual combination method for attention block'
+    )
+    model_group.add_argument(
+        '--mlp_residual_combination',
+        type=str,
+        default='add',
+        choices=['add', 'lerp', 'slerp'],
+        help='Residual combination method for MLP block'
+    )
+    model_group.add_argument(
+        '--residual_slerp_eps',
+        type=float,
+        default=0.0,
+        help='Threshold below which LERP is used instead of SLERP; 0 means no fallback to LERP (SLERP is always used)'
+    )
+    model_group.add_argument(
+        '--attn_residual_alpha',
+        type=float,
+        default=0.05,
+        help='Alpha parameter for attention residual LERP/SLERP'
+    )
+    model_group.add_argument(
+        '--mlp_residual_alpha',
+        type=float,
+        default=0.05,
+        help='Alpha parameter for MLP residual LERP/SLERP'
+    )
+    model_group.add_argument(
+        '--attn_residual_alpha_type',
+        type=str,
+        default='fixed',
+        choices=['fixed', 'learned', 'dot'],
+        help='Alpha mode for attention residual combination'
+    )
+    model_group.add_argument(
+        '--mlp_residual_alpha_type',
+        type=str,
+        default='fixed',
+        choices=['fixed', 'learned', 'dot'],
+        help='Alpha mode for MLP residual combination'
+    )
 
 
     # NORM VARIATIONS
@@ -682,6 +735,7 @@ def parse_args():
     # Attention Variations
     attention_variants = [
                           "causal",
+                          "edgellm_asic_attn",
                           "linear",
                           "ssm",
                           "identity",
@@ -865,6 +919,10 @@ def parse_args():
     ### ASIC Activations
     model_group.add_argument("--quantize_asic_prenorm", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC input to norm")
     model_group.add_argument("--quantize_asic_offchip_residual", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC off-chip residual")
+    model_group.add_argument("--quantize_asic_attn_softmax_denom", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC attention softmax denominator")
+    model_group.add_argument("--quantize_asic_attn_softmax_denom_bits", type=int, default=16, help="number of bits for ASIC attention softmax denominator quantization")
+    model_group.add_argument("--quantize_asic_attn_softmax_numerator", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC attention softmax numerator")
+    model_group.add_argument("--quantize_asic_attn_softmax_numerator_bits", type=int, default=8, help="number of bits for ASIC attention softmax numerator quantization")
 
     ### Default Precisions for ASIC Activations
     model_group.add_argument("--quantize_asic_bits", type=int, default=8, help="number of bits for asic quantization")

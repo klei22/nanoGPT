@@ -17,6 +17,8 @@ popd
 python3 train.py \
     --out_dir asic_quant \
     --use_edgellm_asic \
+    --mlp_variant edgellm_asic_mlp \
+    --attention_variant edgellm_asic_attn \
     --max_iters 20000 \
     --full_quant_iteration 10000 \
     --dataset "$dataset" \
@@ -32,6 +34,10 @@ python3 train.py \
     --quantize_attn_act \
     --quantize_mlp_act \
     --quantize_asic_prenorm \
+    --quantize_asic_attn_softmax_denom \
+    --quantize_asic_attn_softmax_denom_bits 16 \
+    --quantize_asic_attn_softmax_numerator \
+    --quantize_asic_attn_softmax_numerator_bits 8 \
     --linear_variant_attn quantized_linear \
     --linear_variant_mlp quantized_linear \
     --quantize_linear_method symmetric_quant \

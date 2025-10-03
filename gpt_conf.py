@@ -15,6 +15,10 @@ class GPTConfig:
     n_embd: int = 768
     mlp_down_projs: int = 1  # Number of down projections in MLP/SwiGLU
 
+    # numerical multicontext
+    numerical_multicontext: bool = False
+    numerical_mlp_hidden_dim: int = 64
+
     # Layerlists
     n_head_layerlist: List[int] = field(default_factory=list)
     n_qk_head_dim_layerlist: List[int] = field(default_factory=list)
@@ -351,6 +355,13 @@ class GPTConfig:
     learn_mlp_resid_const: bool = False
     resid_gaussian_mean_init: float = 0.0
     resid_gaussian_std_init: float = 0.02
+    attn_residual_combination: str = "add"
+    mlp_residual_combination: str = "add"
+    residual_slerp_eps: float = 0.0
+    attn_residual_alpha: float = 0.05
+    mlp_residual_alpha: float = 0.05
+    attn_residual_alpha_type: str = "fixed"
+    mlp_residual_alpha_type: str = "fixed"
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
@@ -475,6 +486,10 @@ class GPTConfig:
     quantize_asic_prenorm: bool = False
     quantize_asic_offchip_residual: bool = False
     quantize_asic_bits: int = None
+    quantize_asic_attn_softmax_denom: bool = False
+    quantize_asic_attn_softmax_denom_bits: int = None
+    quantize_asic_attn_softmax_numerator: bool = False
+    quantize_asic_attn_softmax_numerator_bits: int = None
     store_activations: bool = False
 
     ## Linear Quantizations

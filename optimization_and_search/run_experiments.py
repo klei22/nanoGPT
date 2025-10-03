@@ -1,7 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import product
 import argparse
 import os
@@ -18,6 +18,7 @@ METRICS_FILENAME = "best_val_loss_and_iter.txt"
 METRIC_KEYS = [
     "best_val_loss",
     "best_val_iter",
+    "best_val_tokens",
     "num_params",
     "better_than_chance",
     "btc_per_param",
@@ -30,6 +31,8 @@ METRIC_KEYS = [
     "avg_target_prob",
     "target_rank_95",
     "left_prob_95",
+    "avg_ln_f_cosine",
+    "ln_f_cosine_95",
 ]
 
 
@@ -211,7 +214,8 @@ def read_metrics(out_dir: str) -> dict:
     line = path.read_text().strip()
     parts = [p.strip() for p in line.split(',')]
 
-    casts = [float, int, int, float, float, float, float, float, float, float, float, float, float, float]
+    casts = [float, int, int, int, float, float, float, float, float, float, float, float, float, float, float, float, float]
+
     return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
 
 
@@ -235,6 +239,13 @@ def append_log(log_file: Path, name: str, combo: dict, metrics: dict) -> None:
     entry = {'formatted_name': name, 'config': combo, **metrics}
     with log_file.open('a') as f:
         yaml.safe_dump(entry, f, explicit_start=True)
+
+
+def append_progress(log_file: Path, message: str) -> None:
+    """Append a timestamped progress message to a log file."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with log_file.open('a') as f:
+        f.write(f"[{timestamp}] {message}\n")
 
 
 def build_command(combo: dict) -> list[str]:
@@ -307,9 +318,41 @@ def main():
     base = Path(args.config).stem
     configs = load_configurations(args.config, args.config_format)
 
+    # Precompute all combinations to know total experiment count
+    all_combos = []
     for cfg in configs:
-        for combo in generate_combinations(cfg):
-            run_experiment(combo, base, args)
+        all_combos.extend(list(generate_combinations(cfg)))
+
+    total = len(all_combos)
+    start_time = datetime.now()
+    progress_log = LOG_DIR / f"{base}_progress.log"
+    for idx, combo in enumerate(all_combos, 1):
+        configs_left = total - idx + 1
+        if idx == 1:
+            message = (
+                "Starting config "
+                f"{idx}/{total} ({configs_left} configs left). "
+                "Estimated time remaining: N/A. Estimated completion: N/A"
+            )
+            print(f"[green]{message}[/]")
+            append_progress(progress_log, message)
+        else:
+            now = datetime.now()
+            elapsed = (now - start_time).total_seconds()
+            avg = elapsed / (idx - 1)
+            eta_seconds = int(avg * configs_left)
+            eta = timedelta(seconds=eta_seconds)
+            finish_time = now + timedelta(seconds=eta_seconds)
+            finish_formatted = finish_time.strftime("%Y-%m-%d %H:%M:%S")
+            message = (
+                "Starting config "
+                f"{idx}/{total} ({configs_left} configs left). "
+                f"Estimated time remaining: {eta}. "
+                f"Estimated completion: {finish_formatted}"
+            )
+            print(f"[green]{message}[/]")
+            append_progress(progress_log, message)
+        run_experiment(combo, base, args)
 
 
 if __name__ == '__main__':
