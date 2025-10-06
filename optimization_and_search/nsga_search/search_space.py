@@ -77,7 +77,7 @@ class HeteroSearchSpace:
 
         # Globals
         self.globals = {
-            "d_model":      {"type":"int","low":256,"high":2048,"step":128},
+            "d_model":      {"type":"int","low":256,"high":2048,"step":256},
             "block_size":      {"type":"int","low":512,"high":512,"step":128},
             "quant_bits":   {"type":"int","low":8,"high":8},
             # replaced active_L with an explicit layer usage mask of length L_max
@@ -107,6 +107,12 @@ class HeteroSearchSpace:
     def _sample_layer(self):
         l = {}
         for k,s in self.layer_spec.items():
+            # ensure head is to the power of 2 for efficiency
+            if k == "n_heads":
+                choices = [h for h in range(s["low"], s["high"]+1) if (h & (h - 1)) == 0]
+                l[k] = random.choice(choices) if choices else s["low"]
+                continue
+
             if s["type"]=="int":
                 step=s.get("step",1)
                 l[k]=random.randrange(s["low"], s["high"]+1, step)
@@ -171,9 +177,7 @@ class HeteroSearchSpace:
             # enforce d_model % n_heads == 0
             if d_model % li["n_heads"] != 0:
                 # snap to nearest divisor in [low, high]
-                candidates = [h for h in range(self.layer_spec["n_heads"]["low"],
-                                               self.layer_spec["n_heads"]["high"]+1)
-                              if d_model % h == 0]
+                candidates = [h for h in range(s["low"], s["high"]+1) if (h & (h - 1)) == 0 and d_model % h == 0]
                 if candidates:
                     li["n_heads"] = min(candidates, key=lambda h: abs(h - li["n_heads"]))
         # ensure at least one active layer; if mask empty, activate first 4 or available

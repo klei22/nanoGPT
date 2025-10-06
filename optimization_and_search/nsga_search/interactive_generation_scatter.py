@@ -33,6 +33,8 @@ def create_interactive_generational_scatter(log_path: str, output_path: str = "h
     if not history.generations:
         print("No generations found in log file")
         return
+
+    print(f"Parsed {len(history.generations)} generations from log file")
     
     # Get all individual data for the offspring generations
     val_loss_data = history.get_individual_data_by_generation('validation_loss')
