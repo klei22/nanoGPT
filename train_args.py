@@ -144,7 +144,7 @@ def parse_args():
 
     # Checkpoint args
     training_group.add_argument('--save_major_ckpt_interval', default=None, type=int, help="Interval for saving major checkpoints.")
-    training_group.add_argument('--only_save_checkpoint_at_end', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument('--only_save_checkpoint_at_end', default=False, action=argparse.BooleanOptionalAction, help="Note: overrides never_save_checkpoint. Useful for coupling with epoch or token training limits.")
     training_group.add_argument('--always_save_checkpoint', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--never_save_checkpoint', default=False, action=argparse.BooleanOptionalAction, help="If set, disables saving of all checkpoints.")
     training_group.add_argument('--patience', default=None, type=int, help="if set, will stop training if the number of evaluations since val loss was seen to decrease exceeds 'patience' setting.")
@@ -637,6 +637,18 @@ def parse_args():
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)
     model_group.add_argument("--norm_variant_output", type=str, default="rmsnorm", choices=norm_variations)
 
+    ### WTE and Abs Pos Embedding Post Norms (optional, and default None)
+    model_group.add_argument("--norm_variant_wte", type=str, default=None, choices=norm_variations)
+    model_group.add_argument("--norm_variant_abs", type=str, default=None, choices=norm_variations)
+
+    model_group.add_argument("--norm_wte_radius", type=float, default=None)
+    model_group.add_argument("--norm_wte_scale", type=float, default=None)
+    model_group.add_argument("--norm_wte_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
+
+    model_group.add_argument("--norm_abs_radius", type=float, default=None)
+    model_group.add_argument("--norm_abs_scale", type=float, default=None)
+    model_group.add_argument("--norm_abs_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
+
     ## Layernorm
     model_group.add_argument('--bias', default=False, action=argparse.BooleanOptionalAction, help="only used for layernorm variation option")
 
@@ -652,6 +664,7 @@ def parse_args():
 
     ## HyperSphereNorm
     model_group.add_argument("--hsnorm_gain", default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--hsnorm_scale", type=float, default=1.0)
     model_group.add_argument("--hsnorm_radius", type=float, default=None)
     model_group.add_argument("--hsnorm_radius_learning", default=False, action=argparse.BooleanOptionalAction)
 
@@ -691,6 +704,7 @@ def parse_args():
     model_group.add_argument("--dact_use_alpha",  type=bool, default=True, action=argparse.BooleanOptionalAction)
 
     model_group.add_argument("--use_embedding_scale", type=bool, default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--embedding_scale_init", type=float, default=None)
 
     # ACTIVATION VARIATIONS
     model_group.add_argument( "--activation_variant", type=str, default="gelu", choices=activation_variations)

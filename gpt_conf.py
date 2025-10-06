@@ -366,8 +366,17 @@ class GPTConfig:
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
     norm_variant_output: str = "rmsnorm"
+
     norm_variant_wte: str | None = None
+    norm_wte_radius: float | None = None
+    norm_wte_scale: float | None = None
+    norm_wte_gain: bool | None = None
+
     norm_variant_abs: str | None = None
+    norm_abs_radius: float | None = None
+    norm_abs_scale: float | None = None
+    norm_abs_gain: bool | None = None
+
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     prmsnorm_pct: float = 0.0625
     krmsnorm_num: float = 10
@@ -375,8 +384,10 @@ class GPTConfig:
     krmsnorm_enable_gain: bool = True
     krmsnorm_selection_type: str = 'last'
     krmsnorm_recompute_percentage: float = 0.05
+
     hsnorm_gain: bool = False
-    hsnorm_radius: float = 1.0
+    hsnorm_radius: float | None = None
+    hsnorm_scale: float = 1.0
     hsnorm_radius_learning: bool = False
 
     dact_alpha_init: float = 1.0
@@ -385,6 +396,7 @@ class GPTConfig:
     dact_use_beta: bool = True
     dact_use_alpha: bool = True
     use_embedding_scale: bool = False
+    embedding_scale_init: float | None = None
 
     # Activation Alternatives
 
