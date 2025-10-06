@@ -1,0 +1,46 @@
+# attn_peri_output_norms.yaml
+---
+
+parameter_groups:
+  - norm_variant_attn: ["rmsnorm"]
+    norm_variant_attn_pre: ["rmsnorm", "rmsnorm_linear_post", "hyperspherenorm"]
+    norm_variant_attn_peri: ["rmsnorm_pre_gain", "rmsnorm_linear_pre", "hyperspherenorm"]
+    norm_variant_output: ["rmsnorm", "hyperspherenorm", "rmsnorm_pre_gain", "rmsnorm_linear_post"]
+    rmsnorm_linear_post_init: ["default", "identity"]
+    rmsnorm_linear_pre_init: ["default", "identity"]
+    rmsnorm_linear_post_divisor_mode: ["default", "constant", "learnable"]
+    rmsnorm_linear_pre_divisor_mode: ["default", "constant", "learnable"]
+    hsnorm_radius_mode: ["fixed", "learned_param"]
+
+# GPT-2 124M architecture
+n_layer: [12]
+n_head: [12]
+n_embd: [768]
+block_size: [1024]
+
+device: ["cuda"]
+dtype: ["bfloat16"]
+dataset: ["minipile"]
+batch_size: [16]
+learning_rate: ["6e-4"]
+min_lr: ["6e-5"]
+beta1: [0.9]
+beta2: [0.95]
+max_iters: [30000]
+lr_decay_iters: [30000]
+warmup_iters: [3000]
+decay_lr: [true]
+eval_interval: [5000]
+
+# normalization extras
+use_peri_ln: [true]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+
+# positional embeddings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# compilation and checkpointing
+compile: [true]
+only_save_checkpoint_at_end: [true]
