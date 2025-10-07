@@ -1,0 +1,35 @@
+# explorations/bit_balanced_vs_cross_entropy.yaml
+---
+parameter_groups:
+  # Bit-balanced loss with different penalty strengths
+  - loss_fn: ["bit_balanced_cross_entropy"]
+    bit_loss_weight: [1.0e-6, 5.0e-6, 1.0e-5]
+    bit_loss_normalize: [false, true]
+
+  # Baseline cross-entropy objective
+  - loss_fn: ["cross_entropy"]
+
+# Shared model hyperparameters
+linear_variant_attn: ["adaptive_bit_linear"]
+linear_variant_mlp: ["adaptive_bit_linear"]
+adaptive_linear_init_bits: [6.0]
+adaptive_linear_min_bits: [2.0]
+adaptive_linear_max_bits: [8.0]
+adaptive_linear_activation_bits: [8.0]
+adaptive_linear_quantize_input: [true]
+
+# Optimization setup
+max_iters: [2000]
+eval_interval: [200]
+log_interval: [50]
+learning_rate: [3.0e-4]
+batch_size: [32]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["float16"]
+
+# Misc training controls
+eval_iters: [100]
+block_size: [256]
+compile: [false]
+never_save_checkpoint: [true]
