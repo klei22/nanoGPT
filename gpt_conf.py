@@ -63,6 +63,7 @@ class GPTConfig:
     n_qk_head_dim: int = None
     n_v_head_dim: int = None
     n_cproj: int = None
+    n_qkv_proj: int = 1
     use_concat_heads: bool = False
 
     # Softcapping params

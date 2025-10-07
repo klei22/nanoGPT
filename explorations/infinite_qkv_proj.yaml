@@ -1,0 +1,27 @@
+# infinite_qkv_proj.yaml
+---
+
+# Shared base hyperparameters
+max_iters: [20000]
+block_size: [256]
+train_iters: [20000]
+wandb_log: [false]
+device: ["cuda"]
+dataset: ["minipile"]
+attention_variant: ["infinite"]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+compile: [true]
+dtype: ["bfloat16"]
+
+# Infinite attention dimensions
+n_head: [12]
+n_qk_head_dim: [64]
+n_v_head_dim: [64]
+
+# Compare additional q/k/v projection stacks to baseline
+n_qkv_proj: ["1", "2", "4"]
+
+# Keep a simple additive head fusion for the comparison
+use_concat_heads: [false]
+n_cproj: ["1"]

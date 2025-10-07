@@ -782,6 +782,8 @@ def parse_args():
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
     model_group.add_argument('--n_v_head_dim', default=None, type=int)
     model_group.add_argument('--n_cproj', default=None, type=int)
+    model_group.add_argument('--n_qkv_proj', default=1, type=int,
+                             help="number of parallel q/k/v projection sets to sum in infinite attention")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
 
     ## qk_norm variations
