@@ -11,8 +11,18 @@ The setup is tuned for day-to-day Python and PyTorch development with strong nav
 - `<leader>ff` / `<leader>fg` search files or ripgrep the project with Telescope.
 - `<leader>aa` toggles Aerial's outline for jump-to-symbol navigation.
 - `<leader>tb` opens Tagbar's class/method tree; press `<CR>` on any symbol to jump there or `p` to preview.
-- Use `]]` / `[[` to jump between top-level classes, and `]m` / `[m` to hop to the next or previous function/method definition.
-- Use `gd` to go to definitions and `<leader>ca` for quick code actions via LSP.
+- Motion cheatsheet for Python buffers:
+
+  | Mapping        | Purpose                                   |
+  | -------------- | ------------------------------------------ |
+  | `]]` / `[[`    | Jump to next / previous top-level class    |
+  | `]m` / `[m`    | Jump to next / previous function or method |
+  | `]M` / `[M`    | Jump to next / previous class definition   |
+  | `gd`           | Go to definition via LSP                   |
+  | `gD`           | Go to declaration                          |
+  | `<leader>ca`   | Trigger LSP code actions                   |
+
+- Use `gr` to list references in Telescope and `<leader>rn` to rename the symbol under the cursor.
 
 ## Debugging & Testing
 - `<F5>`, `<F10>`, `<F11>`, and `<F12>` control debugpy sessions through `nvim-dap`.

@@ -3,7 +3,7 @@
 This configuration ships with the Fugitive, Gitsigns, and Vimade plugins to cover the entire Git workflow without leaving Neovim.
 
 ## Status, Diffs, and Commits
-- `:Git` opens Fugitive's status dashboard where you can stage, commit, and push interactively.
+- `<leader>gs` opens Fugitive's status dashboard where you can stage, commit, and push interactively.
 - Use `dv` inside the status buffer to open a vertical diff or `ds` for a horizontal diff.
 - `:Gwrite` stages the current buffer, while `:Gread` resets it to HEAD.
 - `:Gdiffsplit` compares the current buffer against the index; add `!` to compare against another branch or commit.
@@ -14,8 +14,20 @@ This configuration ships with the Fugitive, Gitsigns, and Vimade plugins to cove
 
 ## Inline Git Hints
 - Gitsigns highlights added, removed, and modified hunks in the sign column.
-- `[c` / `]c` jump between hunks; `:Gitsigns preview_hunk` shows the diff in a floating window.
-- Use `<leader>hs` / `<leader>hr` to stage or reset the hunk under the cursor.
+- `[c` / `]c` jump between hunks; `<leader>gp` previews the current hunk in a floating window.
+- Buffer-local mappings are registered automatically when Gitsigns attaches:
+
+  | Mapping          | Action                          |
+  | ---------------- | -------------------------------- |
+  | `<leader>gh`     | Stage hunk under cursor          |
+  | `<leader>gH`     | Stage entire buffer              |
+  | `<leader>gu`     | Undo last staged hunk            |
+  | `<leader>gr`     | Reset current hunk               |
+  | `<leader>gR`     | Reset buffer to HEAD             |
+  | `<leader>gd`     | Diff against index               |
+  | `<leader>gp`     | Preview the current hunk         |
+  | `<leader>gt`     | Toggle current line blame        |
+  | `]c` / `[c`      | Jump to next / previous hunk     |
 
 ## Focused Reviewing
 - Vimade automatically dims inactive windows so you can concentrate on the file that is currently under review.
