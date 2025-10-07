@@ -963,6 +963,7 @@ class InfiniteHeadAttention(nn.Module):
         self.n_embd = config.n_embd
         self.n_qk_head_dim = config.n_qk_head_dim
         self.n_v_head_dim = config.n_v_head_dim
+        self.n_qkv_proj = getattr(config, "n_qkv_proj", 1) or 1
 
 
         # Concat Heads
@@ -1003,6 +1004,31 @@ class InfiniteHeadAttention(nn.Module):
         self.c_attn_q = self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
+
+        if self.n_qkv_proj > 1:
+            extra_range = range(self.n_qkv_proj - 1)
+            self.c_attn_q_extra = nn.ModuleList(
+                [
+                    self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
+                    for _ in extra_range
+                ]
+            )
+            self.c_attn_k_extra = nn.ModuleList(
+                [
+                    self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
+                    for _ in extra_range
+                ]
+            )
+            self.c_attn_v_extra = nn.ModuleList(
+                [
+                    self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
+                    for _ in extra_range
+                ]
+            )
+        else:
+            self.c_attn_q_extra = None
+            self.c_attn_k_extra = None
+            self.c_attn_v_extra = None
 
         if self.use_concat_heads:
             print("use_concat_heads")
@@ -1067,6 +1093,16 @@ class InfiniteHeadAttention(nn.Module):
         q = self.c_attn_q(x)
         k = self.c_attn_k(x)
         v = self.c_attn_v(x)
+
+        if self.c_attn_q_extra is not None:
+            for proj in self.c_attn_q_extra:
+                q = q + proj(x)
+        if self.c_attn_k_extra is not None:
+            for proj in self.c_attn_k_extra:
+                k = k + proj(x)
+        if self.c_attn_v_extra is not None:
+            for proj in self.c_attn_v_extra:
+                v = v + proj(x)
 
         q = q.view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2) # (B, n_h, T, hs)
         k = k.view(B, T, self.n_kv_group, self.n_qk_head_dim).transpose(1, 2) # (B, n_kv, T, hs)
