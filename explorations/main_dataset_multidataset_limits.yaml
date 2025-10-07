@@ -1,0 +1,27 @@
+# main_dataset_multidataset_limits.yaml
+#
+# Validates main-dataset epoch/token limits when additional datasets are
+# sampled in multidataset mode.
+---
+training_mode: ["multidataset"]
+dataset: ["shakespeare_char"]
+dataset_list: ["shakespeare_char openwebtext"]
+dataset_sampling_probs: ["3 1"]
+block_size: [128]
+batch_size: [64]
+max_iters: [300]
+eval_interval: [60]
+device: ["cuda"]
+compile: [false]
+
+# Exercise the supported batch sampling methods
+sampling_method: ["random", "sequential", "without_replacement"]
+
+parameter_groups:
+  # Confirm epoch-based stopping respects the main dataset in multidataset mode
+  - max_epochs: [0.5]
+  # Confirm token-based stopping respects the main dataset in multidataset mode
+  - max_tokens: [25000]
+  # Ensure the combination exits when either limit is reached
+  - max_epochs: [1.0]
+    max_tokens: [50000]
