@@ -1,7 +1,7 @@
 # hetero_space.py
 
 import random, math
-from typing import Any, Dict, List, TypedDict
+from typing import Any, Dict, List, Tuple, TypedDict
 
 class Individual(dict):
     """Runtime Individual object that behaves like a dict but has helpers."""
@@ -72,8 +72,9 @@ class Individual(dict):
         return
 
 class HeteroSearchSpace:
-    def __init__(self, L_max=24):
+    def __init__(self, L_max=24, L_min=1):
         self.L_max = L_max
+        self.L_min = L_min  # minimum active layers
 
         # Globals
         self.globals = {
@@ -90,6 +91,69 @@ class HeteroSearchSpace:
             "mlp_ratio":  {"type":"int","low":1,"high":8,"step":1},
             "attn_type":  {"type":"cat","choices":["mha"]},
         }
+
+    @classmethod
+    def from_dicts(
+        cls,
+        globals_spec: Dict[str, Any],
+        layer_spec: Dict[str, Any],
+        L_max: int = 24,
+        L_min: int = 1, 
+    ) -> "HeteroSearchSpace":
+        """Alternate constructor: build a search space from explicit spec dicts.
+
+        Parameters
+        - globals_spec: dict mapping global field name -> spec
+            Spec format examples:
+              {"type": "int", "low": 256, "high": 2048, "step": 256}
+              {"type": "float", "low": 0.0, "high": 1.0}
+              {"type": "cat", "choices": ["mha", "flash"]}
+        - layer_spec: dict mapping per-layer field name -> spec (same format as above)
+        - L_max: maximum number of layers
+
+        Returns a configured HeteroSearchSpace instance.
+        """
+        inst = cls(L_max=L_max, L_min=L_min)
+        inst.globals = cls._normalize_spec_dict(globals_spec)
+        if layer_spec is None:
+            inst.layer_spec = {}
+        else:
+            inst.layer_spec = cls._normalize_spec_dict(layer_spec)
+        return inst
+
+    @staticmethod
+    def _normalize_spec_dict(spec_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and normalize a spec dict.
+
+        Ensures required keys exist and fills reasonable defaults (e.g., step=1 for ints).
+        Raises ValueError on invalid specifications.
+        """
+        out: Dict[str, Any] = {}
+        for k, raw in spec_dict.items():
+            if not isinstance(raw, dict):
+                raise ValueError(f"Spec for '{k}' must be a dict, got {type(raw)}")
+            s = dict(raw)  # shallow copy
+            s_type = s.get("type")
+            if s_type not in {"int", "float", "cat"}:
+                raise ValueError(
+                    f"Spec for '{k}' must include a valid 'type' in {{'int','float','cat'}}, got {s_type}"
+                )
+            if s_type == "int":
+                for req in ("low", "high"):
+                    if req not in s:
+                        raise ValueError(f"Int spec for '{k}' missing '{req}'")
+                s.setdefault("step", 1)
+                if not isinstance(s["step"], int) or s["step"] <= 0:
+                    raise ValueError(f"Int spec for '{k}' has invalid step: {s['step']}")
+            elif s_type == "float":
+                for req in ("low", "high"):
+                    if req not in s:
+                        raise ValueError(f"Float spec for '{k}' missing '{req}'")
+            elif s_type == "cat":
+                if "choices" not in s or not s["choices"]:
+                    raise ValueError(f"Cat spec for '{k}' requires non-empty 'choices'")
+            out[k] = s
+        return out
 
     # ---------- utils ----------
     def _sample_global(self):
@@ -129,8 +193,7 @@ class HeteroSearchSpace:
         x: Individual = Individual(g, layers)
         # if globals does not yet have layer_mask (e.g., older serialized), create one
         if "layer_mask" not in x["globals"]:
-            min_active = 4
-            active_count = random.randint(min_active, self.L_max)
+            active_count = random.randint(self.L_min, self.L_max)
             idxs = set(random.sample(range(self.L_max), active_count))
             x["globals"]["layer_mask"] = [i in idxs for i in range(self.L_max)]
         return self.repair(x)
@@ -177,7 +240,14 @@ class HeteroSearchSpace:
             # enforce d_model % n_heads == 0
             if d_model % li["n_heads"] != 0:
                 # snap to nearest divisor in [low, high]
-                candidates = [h for h in range(s["low"], s["high"]+1) if (h & (h - 1)) == 0 and d_model % h == 0]
+                # candidates = [h for h in range(s["low"], s["high"]+1) if (h & (h - 1)) == 0 and d_model % h == 0]
+
+                # snap to nearest divisor in [low, high] and power-of-two like sampling
+                nh_spec = self.layer_spec.get("n_heads", {"low": 1, "high": max(1, li["n_heads"])})
+                candidates = [
+                    h for h in range(nh_spec["low"], nh_spec["high"] + 1)
+                    if (h & (h - 1)) == 0 and d_model % h == 0
+                ]
                 if candidates:
                     li["n_heads"] = min(candidates, key=lambda h: abs(h - li["n_heads"]))
         # ensure at least one active layer; if mask empty, activate first 4 or available
@@ -187,7 +257,7 @@ class HeteroSearchSpace:
         return Individual.from_dict(y)
 
     # ----- variation: layer-aware -----
-    def crossover(self, a: Dict[str,Any], b: Dict[str,Any], crossover_rate: float = 0.5) -> (Dict[str,Any], Dict[str,Any]):
+    def crossover(self, a: Dict[str,Any], b: Dict[str,Any], crossover_rate: float = 0.5) -> Tuple[Dict[str,Any], Dict[str,Any]]:
         A = {"globals": dict(a["globals"]), "layers":[dict(li) for li in a["layers"]]}
         B = {"globals": dict(b["globals"]), "layers":[dict(li) for li in b["layers"]]}
 
@@ -215,9 +285,9 @@ class HeteroSearchSpace:
         return self.repair(A), self.repair(B)
 
     def mutate(self, x: Dict[str,Any],
-               p_glob_int=0.1, p_glob_float=0.1,
-               p_layer_int=0.08, p_layer_float=0.08, p_layer_cat=0.05,
-               p_swap_layers=0.05) -> Dict[str,Any]:
+        p_glob_int=0.1, p_glob_float=0.1,
+        p_layer_int=0.08, p_layer_float=0.08, p_layer_cat=0.05,
+        p_swap_layers=0.05) -> Dict[str,Any]:
         y = {"globals": dict(x["globals"]), "layers":[dict(li) for li in x["layers"]]}
 
         # mutate globals
@@ -303,4 +373,37 @@ class HeteroSearchSpace:
                         "flash": d*seq*0.7}.get(attn, d*seq)
             cost += (2*d*d + attn_cost) + li["mlp_ratio"]*d*d
         return cost
+    
+    def calculate_possible_configs(self) -> int:
+        total = 1
+        for s in self.globals.values():
+            if s["type"] == "int":
+                step = s.get("step", 1)
+                count = ((s["high"] - s["low"]) // step) + 1
+                total *= count
+            elif s["type"] == "float":
+                # Assuming a reasonable discretization for floats
+                total *= round(s["high"] - s["low"]) / 0.1  # arbitrary choice for float discretization
+            elif s["type"] == "cat":
+                total *= len(s["choices"])
+        
+        # Layer configurations
+        layer_configs = 1
+        for s in self.layer_spec.values():
+            if s["type"] == "int":
+                step = s.get("step", 1)
+                count = ((s["high"] - s["low"]) // step) + 1
+                layer_configs *= count
+            elif s["type"] == "float":
+                layer_configs *= round(s["high"] - s["low"]) / 0.1  # arbitrary choice for float discretization
+            elif s["type"] == "cat":
+                layer_configs *= len(s["choices"])
+        
+        total_layer_config = 0
+        # Each layer can be active or inactive, except we enforce at least L_min active layers
+        for layers_active in range(self.L_min, self.L_max + 1):
+            total_layer_config += layer_configs * layers_active
+        total *= total_layer_config
+        return total
+
 
