@@ -24,6 +24,7 @@ class GPTConfig:
     n_qk_head_dim_layerlist: List[int] = field(default_factory=list)
     n_v_head_dim_layerlist: List[int] = field(default_factory=list)
     mlp_size_layerlist: List[int] = field(default_factory=list)
+    n_cproj_layerlist: List[int] = field(default_factory=list)
 
     # For multicontext training
     multicontext: bool = False
