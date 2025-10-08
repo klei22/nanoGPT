@@ -197,6 +197,10 @@ class GPT(nn.Module):
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
+        self.use_dual_residual = config.use_dual_residual
+        if self.use_dual_residual:
+            dual_variant = config.dual_residual_norm_variant or config.norm_variant_output
+            self.transformer['dual_residual_ln'] = norm_dictionary[dual_variant](config)
 
         # Optional post-embedding normalizations
         if self.config.norm_variant_wte is not None:
@@ -442,6 +446,10 @@ class GPT(nn.Module):
 
             x.requires_grad_(True)
 
+            dual_residual = None
+            if self.use_dual_residual:
+                dual_residual = x.clone()
+
             # sum all learned position residuals
             learned_sum = None
 
@@ -466,7 +474,10 @@ class GPT(nn.Module):
 
             layer_idx = 1
             for block in self.transformer.h:
+                prev_x = x
                 x = block(x, iter_num)
+                if self.use_dual_residual:
+                    dual_residual = dual_residual + (x - prev_x)
 
                 # TODO: abstact into a method
                 if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == layer_idx:
@@ -498,8 +509,10 @@ class GPT(nn.Module):
             if self.use_ln_f_input_mixer:
                 x = self.ln_f_mixer(layer_outputs)
 
-            # 3. Final layer norm
+            # 3. Final layer norm and optional dual residual fusion
             x = self.transformer.ln_f(x)
+            if self.use_dual_residual:
+                x = x + self.transformer.dual_residual_ln(dual_residual)
 
             # 4. Optionally scale down
             if self.n_embd_wte:
@@ -609,6 +622,10 @@ class GPT(nn.Module):
 
             x.requires_grad_(True)  # Ensure requires_grad is True
 
+            dual_residual = None
+            if self.use_dual_residual:
+                dual_residual = x.clone()
+
             if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
                 x = self.lsv_matrix(x)
 
@@ -618,7 +635,10 @@ class GPT(nn.Module):
             layer_idx = 1
             for block in self.transformer.h:
                 # Propagate tokens through layers
+                prev_x = x
                 x = block(x, iter_num)
+                if self.use_dual_residual:
+                    dual_residual = dual_residual + (x - prev_x)
 
                 # Intercept for Learned Steering Vectors
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -653,6 +673,8 @@ class GPT(nn.Module):
                 x = self.ln_f_mixer(layer_outputs)
 
             x = self.transformer.ln_f(x)
+            if self.use_dual_residual:
+                x = x + self.transformer.dual_residual_ln(dual_residual)
 
             if self.n_embd_wte:
                 x = F.linear(x, self.transformer.scale_down.weight.t())
@@ -737,6 +759,10 @@ class GPT(nn.Module):
         b, t, _ = x_emb.size()
         x = x_emb
 
+        dual_residual = None
+        if self.use_dual_residual:
+            dual_residual = x.clone()
+
         # (learned position residuals, steering vectors, etc.)
         learned_sum = None
         if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
@@ -747,7 +773,10 @@ class GPT(nn.Module):
 
         layer_idx = 1
         for block in self.transformer.h:
+            prev_x = x
             x = block(x, iter_num)
+            if self.use_dual_residual:
+                dual_residual = dual_residual + (x - prev_x)
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
             if self.use_ln_f_input_mixer:
@@ -758,6 +787,8 @@ class GPT(nn.Module):
             x = self.ln_f_mixer(layer_outputs)
 
         x = self.transformer.ln_f(x)
+        if self.use_dual_residual:
+            x = x + self.transformer.dual_residual_ln(dual_residual)
         if self.n_embd_wte:
             x = F.linear(x, self.transformer.scale_down.weight.t())
 

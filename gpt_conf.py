@@ -144,6 +144,10 @@ class GPTConfig:
     window_size: int = None
     use_flex_attn: bool = None
 
+    # Dual residual (ResiDual) options
+    use_dual_residual: bool = False
+    dual_residual_norm_variant: str | None = None
+
     gate: bool = False
     use_moe: bool = False
     moe_layer_freq: int = 2
