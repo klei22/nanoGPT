@@ -37,8 +37,8 @@ bash ./04-setup-rust.sh
 log "Step 5: Setting up Tectonic..."
 bash ./05-setup-tectonic.sh
 
-# log "Step 6: Setting up Neovim..."
-# bash ./06-setup-neovim.sh
+log "Step 6: Setting up Neovim..."
+bash ./06-setup-neovim.sh
 
 log "Step 7: Setting up bash_aliases..."
 bash ./07-setup-bash-aliases.sh
