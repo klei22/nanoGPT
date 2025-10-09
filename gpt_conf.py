@@ -25,6 +25,8 @@ class GPTConfig:
     n_v_head_dim_layerlist: List[int] = field(default_factory=list)
     mlp_size_layerlist: List[int] = field(default_factory=list)
     n_cproj_layerlist: List[int] = field(default_factory=list)
+    n_kv_group_layerlist: List[int] = field(default_factory=list)
+    attention_variant_layerlist: List[str] = field(default_factory=list)
 
     # For multicontext training
     multicontext: bool = False

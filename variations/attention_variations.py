@@ -649,7 +649,7 @@ class InfiniteHeadAttention(nn.Module):
         if (config.n_kv_group is None):
             self.n_kv_group = config.n_head
         else:
-            assert config.n_embd % config.n_kv_group == 0
+            assert config.n_head % config.n_kv_group == 0
             self.n_kv_group = config.n_kv_group
 
         self.n_embd = config.n_embd
