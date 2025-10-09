@@ -465,7 +465,7 @@ class Population:
                 flops = ind.estimate_flops()
                 _, e_per_token, ttft = proxy_measure(ind, params, mem_bytes, flops)
                 c1 = params - 1_000_000_000
-                c2 = mem_bytes - 1_200_000_000
+                c2 = mem_bytes - 10000_200_000_000
                 # c3 = latency_from_tp(throughput) - 180.0
                 objs = [float(val_loss), float(e_per_token), float(ttft)]
                 eval_res = EvaluationResult(objs, [c1, c2], {
