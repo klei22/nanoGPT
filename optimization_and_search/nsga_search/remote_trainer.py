@@ -81,7 +81,7 @@ class RemoteTrainer:
         job.heartbeat_thread = t
         t.start()
 
-    def submit_job(self, path_to_yaml: str, remote_work_dir: str) -> bool:
+    def submit_job(self, path_to_yaml: str, remote_work_dir: str, conda_env: str = "reallmforge") -> bool:
         # Load the aggregated YAML (expects a top-level list of configs)
         yaml_path = Path(path_to_yaml)
         if yaml is None:
@@ -162,8 +162,7 @@ class RemoteTrainer:
                 logging.info(f"Uploaded {local_slice_files[i].name} to host_{i}:{remote_yaml_path}")
 
                 # kick off remote job; robust conda detection: prefer `conda run -n base`, else activate via hook or conda.sh; log diagnostics
-                max_iters = 10000  # default max iters if not overridden
-                conda_env = "reallmforge"
+                max_iters = 10000  # default max iters if not overridden  
                 cmd = (
                     f"cd {remote_work_dir} && "
                     f"setsid bash -lc '\n"
