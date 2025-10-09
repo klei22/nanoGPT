@@ -80,8 +80,56 @@ class RemoteTrainer:
         t = threading.Thread(target=beater, name=f"heartbeat-{job.id}", daemon=True)
         job.heartbeat_thread = t
         t.start()
+        
+    def clear_all_jobs(self) -> None:
+        overall_ok = True
+        for i, host in enumerate(self.hosts):
+            try:
+                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                try:
+                    conn.open()
+                    cmd = f"pkill -f optimization_and_search/run_from_yaml.py"
+                    r = conn.run(cmd, hide=True, warn=True)
+                    if r.ok:
+                        logging.info(f"\033[32mKilling jobs succeeded on host_{i} ({host})\033[0m")
+                    else:
+                        logging.error(f"\033[31mKilling jobs failed on host_{i} ({host}): {r.stderr}\033[0m")
+                        overall_ok = False
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
+                overall_ok = False
+        return overall_ok
+        
+    def perform_git_pull(self, remote_work_dir: str) -> bool:
+        overall_ok = True
+        for i, host in enumerate(self.hosts):
+            try:
+                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                try:
+                    conn.open()
+                    cmd = f"cd {remote_work_dir} && git pull"
+                    r = conn.run(cmd, hide=True, warn=True)
+                    if r.ok:
+                        logging.info(f"\033[32mGit pull succeeded on host_{i} ({host})\033[0m")
+                    else:
+                        logging.error(f"\033[31mGit pull failed on host_{i} ({host}): {r.stderr}\033[0m")
+                        overall_ok = False
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
+                overall_ok = False
+        return overall_ok
 
-    def submit_job(self, path_to_yaml: str, remote_work_dir: str) -> bool:
+    def submit_job(self, path_to_yaml: str, remote_work_dir: str, dir_name: str) -> bool:
         # Load the aggregated YAML (expects a top-level list of configs)
         yaml_path = Path(path_to_yaml)
         if yaml is None:
@@ -151,7 +199,7 @@ class RemoteTrainer:
             try:
                 conn.open()
                 # Create run directory under remote_work_dir (no per-host subfolder)
-                remote_run_dir = f"{remote_work_dir}/nsga_exps/{base}-{run_id}-host{i}"
+                remote_run_dir = f"{remote_work_dir}/nsga_exps/{dir_name}/{base}-{run_id}-host{i}"
                 conn.run(f"mkdir -p {remote_run_dir}", hide=True)
                 remote_yaml_path = f"{remote_run_dir}/{local_slice_files[i].name}"
                 remote_log_path = f"{remote_run_dir}/run.log"

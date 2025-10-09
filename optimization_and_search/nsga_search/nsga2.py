@@ -220,7 +220,7 @@ class Population:
         self.evaluations = [self.evaluations[i] for i in order]
         print(f"Reordered individuals and evaluations by non-domination: {order}")
         return
-
+    
     def to_yaml(self, save_path: str = None) -> str:
         """Convert population to YAML format for training experiments.
         Only includes active layers based on layer_mask.
@@ -240,44 +240,26 @@ class Population:
             
             if not active_indices:  # Skip if no active layers
                 continue
-                
-            # Build lists for active layers only
-            n_head_list = []
-            mlp_size_list = []
+
+            # Format YAML entry
+            yaml_lines.append(f"- idx: {i+1}")
             
-            for j in active_indices:
-                if j < len(layers):
-                    layer = layers[j]
-                    n_head_list.append(layer.get("n_heads", 8))
-                    mlp_ratio = layer.get("mlp_ratio", 4)
-                    mlp_size = mlp_ratio * g["d_model"]
-                    mlp_size_list.append(mlp_size)
-            
-            # Get parameter count
-            if hasattr(individual, "estimate_params"):
-                params = individual.estimate_params()  # type: ignore[attr-defined]
-            else:
-                # Fallback inline estimate consistent with search_space
-                d = g["d_model"]
-                vocab_size = 50257
-                total = vocab_size * d
+            # add the configs in global settings
+            for key, value in g.items():
+                if key != "layer_mask":  # Exclude layer_mask from globals
+                    yaml_lines.append(f"  {key}: {value}")
+
+            # Build lists for active layers
+            for key, _ in layers[0].items():
+                layerlist = []
+                arg = f"{key}_layerlist"
                 for j in active_indices:
                     if j < len(layers):
                         layer = layers[j]
-                        h = max(1, layer.get("n_heads", 8))
-                        r = layer.get("mlp_ratio", 4)
-                        total += (2.0 + r)*d*d + 0.05*h*d*d
-                params = int(total)
-            param_millions = params / 1_000_000
-            
-            # Format YAML entry
-            yaml_lines.append(f"- idx: {i+1}")
-            yaml_lines.append(f"  n_embd: {g['d_model']}")
-            # yaml_lines.append(f"- n_embd: {g['d_model']}")
-            yaml_lines.append(f"  block_size: {g['block_size']}")
-            yaml_lines.append(f"  n_head_layerlist: {n_head_list}")
-            yaml_lines.append(f"  mlp_size_layerlist: {mlp_size_list}")
-            yaml_lines.append(f"# n_layers: {len(active_indices)}, ~{param_millions:.1f}M params")
+                        layerlist.append(layer.get(key))
+                yaml_lines.append(f"  {arg}: {layerlist}")
+
+            yaml_lines.append(f"# n_layers: {len(active_indices)}")
             
             yaml_lines.append("")
 
@@ -288,6 +270,74 @@ class Population:
             f.write(yaml_output)
         
         return file_name
+
+    # def to_yaml(self, save_path: str = None) -> str:
+    #     """Convert population to YAML format for training experiments.
+    #     Only includes active layers based on layer_mask.
+    #     """
+    #     yaml_lines = ["# Example YAML configuration file for training experiments"]
+    #     yaml_lines.append("# Generated from NSGA-II population")
+    #     yaml_lines.append("# Note: n_layers is automatically determined from the length of n_head_layerlist")
+    #     yaml_lines.append("")
+
+    #     for i, individual in enumerate(self.individuals if self.gen == 0 else self.offspring):
+    #         g = individual["globals"]
+    #         layers = individual["layers"]
+    #         mask = g.get("layer_mask", [True] * len(layers))
+            
+    #         # Get active layers only
+    #         active_indices = [j for j, active in enumerate(mask) if active]
+            
+    #         if not active_indices:  # Skip if no active layers
+    #             continue
+                
+    #         # Build lists for active layers only
+    #         n_head_list = []
+    #         mlp_size_list = []
+            
+    #         for j in active_indices:
+    #             if j < len(layers):
+    #                 layer = layers[j]
+    #                 n_head_list.append(layer.get("n_heads", 8))
+    #                 mlp_ratio = layer.get("mlp_ratio", 4)
+    #                 mlp_size = mlp_ratio * g["d_model"]
+    #                 mlp_size_list.append(mlp_size)
+            
+    #         # Get parameter count
+    #         if hasattr(individual, "estimate_params"):
+    #             params = individual.estimate_params()  # type: ignore[attr-defined]
+    #         else:
+    #             # Fallback inline estimate consistent with search_space
+    #             d = g["d_model"]
+    #             vocab_size = 50257
+    #             total = vocab_size * d
+    #             for j in active_indices:
+    #                 if j < len(layers):
+    #                     layer = layers[j]
+    #                     h = max(1, layer.get("n_heads", 8))
+    #                     r = layer.get("mlp_ratio", 4)
+    #                     total += (2.0 + r)*d*d + 0.05*h*d*d
+    #             params = int(total)
+    #         param_millions = params / 1_000_000
+            
+    #         # Format YAML entry
+    #         yaml_lines.append(f"- idx: {i+1}")
+    #         yaml_lines.append(f"  n_embd: {g['d_model']}")
+    #         # yaml_lines.append(f"- n_embd: {g['d_model']}")
+    #         yaml_lines.append(f"  block_size: {g['block_size']}")
+    #         yaml_lines.append(f"  n_head_layerlist: {n_head_list}")
+    #         yaml_lines.append(f"  mlp_size_layerlist: {mlp_size_list}")
+    #         yaml_lines.append(f"# n_layers: {len(active_indices)}, ~{param_millions:.1f}M params")
+            
+    #         yaml_lines.append("")
+
+    #     yaml_output = "\n".join(yaml_lines)
+    #     file_name = f"{save_path or 'population'}/gen{self.gen}.yaml"
+    #     os.makedirs(os.path.dirname(file_name), exist_ok=True)
+    #     with open(file_name, "w") as f:
+    #         f.write(yaml_output)
+        
+    #     return file_name
 
     def save_checkpoint(self, path: str) -> str:
         """Save a checkpoint of the population to JSON.
@@ -387,11 +437,11 @@ class Population:
         
         return pop
 
-    def sw_eval(self, hosts: List[str], user: str, key_filename: str) -> None:
+    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str = "default") -> None:
         # send the training work to worker nodes and wait for results
         train_yaml_path = self.to_yaml(save_path="train")
         trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
-        trainer.submit_job(path_to_yaml=train_yaml_path, remote_work_dir=f"/home/{user}/Evo_GPT")
+        trainer.submit_job(path_to_yaml=train_yaml_path, remote_work_dir=f"/home/{user}/Evo_GPT", dir_name=run_dir_name)
         trainer.wait_for_all(poll_interval=300, timeout=72000, verbose=True)
         data_csv = trainer.fetch_results(local_dir="train", gen=self.gen)
         # read the csv and populate self.evaluations
@@ -409,11 +459,12 @@ class Population:
             if idx in sw_data:
                 val_loss = sw_data[idx]
                 # reconstruct evaluation result
-                params = estimate_params_hetero(ind)
-                mem_bytes = estimate_mem_hetero(ind)
-                flops = estimate_flops_hetero(ind)
+                # params = estimate_params_hetero_infi(ind)
+                params = ind.estimate_params()
+                mem_bytes = ind.estimate_mem_access()
+                flops = ind.estimate_flops()
                 _, e_per_token, ttft = proxy_measure(ind, params, mem_bytes, flops)
-                c1 = params - 110_000_000
+                c1 = params - 1_000_000_000
                 c2 = mem_bytes - 1_200_000_000
                 # c3 = latency_from_tp(throughput) - 180.0
                 objs = [float(val_loss), float(e_per_token), float(ttft)]
@@ -499,6 +550,116 @@ def load_csv_with_idx_lookup(filepath):
 # -----------------------------
 # Proxies (edit/replace later)
 # -----------------------------
+# def estimate_params_hetero_infi(x: Individual):
+#     """Approximate parameter count for heterogeneous infinite attention model."""
+#     g = x["globals"]
+#     d = g.get("n_embd", g.get("d_model", 768))
+#     total = 0.0
+
+#     # Embedding table (approx)
+#     vocab_size = 50257
+#     total += vocab_size * d
+
+#     mask = g.get("layer_mask", [True] * len(x["layers"]))
+#     indices = [i for i, active in enumerate(mask) if active and i < len(x["layers"])]
+#     for i in indices:
+#         li = x["layers"][i]
+#         h = int(li.get("n_head", 8))
+#         m = int(li.get("mlp_size", 4 * d))
+#         qk = int(li.get("n_qk_head_dim", d // max(1, h)))
+#         v = int(li.get("n_v_head_dim", d // max(1, h)))
+#         n_cproj = int(li.get("n_cproj", 1))
+#         n_kv_group = int(li.get("n_kv_group", h))
+#         use_concat_heads = bool(li.get("use_concat_heads", g.get("use_concat_heads", False)))
+#         attn_variant = li.get("attention_variant", g.get("attention_variant", "mha"))
+        
+#         attn_cost = 0
+        
+#         if attn_variant == "infinite":
+#             # Q, K, V projection weights
+#             q_params = d * (h * qk)
+#             k_params = d * (n_kv_group * qk)
+#             v_params = d * (n_kv_group * v)
+
+#             # Output projection params
+#             if use_concat_heads:
+#                 # concatenate all heads then project back to d
+#                 cproj_params = (h * v) * d
+#             else:
+#                 # sum heads first; project v_head_dim back to d, possibly with multiple small projections
+#                 cproj_params = n_cproj * (v * d)
+
+#             attn_cost = q_params + k_params + v_params + cproj_params
+#         elif attn_variant == "identity":
+#             attn_cost = 0
+#         else:
+#             raise ValueError(f"Unknown attention_variant: {attn_variant}")
+
+#         # MLP params (two linear layers d->m and m->d)
+#         mlp_params = 2 * d * m
+
+#         total += attn_cost + mlp_params
+
+#     return int(total)
+
+# def estimate_flops_hetero_infi(x: Individual):
+#     """Approximate FLOPs for one forward pass over seq tokens per layer.
+
+#     Counts multiply-add as 2 FLOPs, using rough shapes:
+#       - Q/K/V: 2 * seq * d * (h*qk + n_kv_group*qk + n_kv_group*v)
+#       - Attention scores and weighted values: 2 * h * seq^2 * (qk + v)
+#       - Output projection:
+#           * concat: 2 * seq * (h*v) * d
+#           * summed heads: 2 * seq * n_cproj * v * d
+#       - MLP: 4 * seq * d * m
+#     """
+#     g = x["globals"]
+#     d = g.get("n_embd", g.get("d_model", 768))
+#     seq = int(g.get("block_size", 512))
+#     cost = 0.0
+
+#     mask = g.get("layer_mask", [True] * len(x["layers"]))
+#     indices = [i for i, active in enumerate(mask) if active and i < len(x["layers"])]
+#     for i in indices:
+#         li = x["layers"][i]
+#         h = int(li.get("n_head", 8))
+#         m = int(li.get("mlp_size", 4 * d))
+#         qk = int(li.get("n_qk_head_dim", d // max(1, h)))
+#         v = int(li.get("n_v_head_dim", d // max(1, h)))
+#         n_cproj = int(li.get("n_cproj", 1))
+#         n_kv_group = int(li.get("n_kv_group", h))
+#         use_concat_heads = bool(li.get("use_concat_heads", g.get("use_concat_heads", False)))
+
+#         # QKV projections
+#         qkv = 2.0 * seq * d * (h * qk + n_kv_group * (qk + v))
+#         # Attention computations (scores + weighted values)
+#         attn_core = 2.0 * h * (seq ** 2) * (qk + v)
+#         # Output projection
+#         if use_concat_heads:
+#             outp = 2.0 * seq * (h * v) * d
+#         else:
+#             outp = 2.0 * seq * n_cproj * v * d
+#         # MLP
+#         mlp = 4.0 * seq * d * m
+
+#         cost += qkv + attn_core + outp + mlp
+#     return cost
+
+# def estimate_mem_hetero_infi(x: Individual):
+#     """Approximate memory in bytes: parameters + a simple KV cache proxy.
+
+#     - Parameter bytes = params * (quant_bits/8) with default 16-bit if missing
+#     - KV cache proxy ≈ 4 * seq * n_embd bytes (kept simple and stable)
+#     """
+#     params = estimate_params_hetero_infi(x)
+#     g = x["globals"]
+#     quant_bits = int(g.get("quant_bits", 16))
+#     bytes_per_param = max(1, quant_bits // 8)
+#     seq = int(g.get("block_size", 512))
+#     d = int(g.get("n_embd", g.get("d_model", 768)))
+#     kv = 4 * seq * d
+#     return int(params * bytes_per_param + kv)
+
 def estimate_params_hetero(x: Individual):
     g = x["globals"]; d = g["d_model"]
     total = 0.0
@@ -545,14 +706,11 @@ def proxy_measure(x: Individual, params, mem_bytes, flops):
     # TTFT depends on params and whether using flash/linear
     mask = x["globals"].get("layer_mask", [True]*len(x["layers"]))
     L = sum(1 for v in mask if v)
-    attn_bonus = sum(1 for i in range(L) if x["layers"][i]["attn_type"] in ("flash","mha"))
-    ttft = 50.0 + 0.5*(params/1e6)  #ms  scale with size
+    ttft = params/1e6  #ms  scale with size
     # energy per token depends on flops and memory
-    e_per_token = 0.1 + 6e-11*flops + 1.5e-9*mem_bytes + 0.015*(1.0)
+    e_per_token = flops/1e3
     # val_loss improves with capacity but worsens with aggressive quant + sparsity
-    capacity = math.log10(params + 10.0)
-    reg = 0.15 + (x["globals"]["quant_bits"] <= 6)*0.18
-    val_loss = max(2.0, 5.2 - 0.40*capacity + 0.5*reg)
+    val_loss = 99
     return val_loss, e_per_token, ttft
 
 # -----------------------------
