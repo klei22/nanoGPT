@@ -1,0 +1,44 @@
+# explorations/skip_correct_top1_comparison.yaml
+---
+# Sweep comparing the skip-correct-top1 loss against other top-1 centric losses.
+
+# Base hyperparameters shared across the sweep.
+max_iters: [20000]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+eval_interval: [500]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["bfloat16"]
+
+# Position encoding configuration
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# Optimization setup
+optimizer: ["adamw"]
+weight_decay: [0.1]
+learning_rate: [3.0e-4]
+betas:
+  - [0.9, 0.95]
+
+grad_clip: [1.0]
+min_lr: [6.0e-5]
+
+# Loss variants under test.
+parameter_groups:
+  - loss_fn: ["cross_entropy"]
+  - loss_fn: ["skip_correct_top1"]
+  - loss_fn: ["top1_focus"]
+    top1_focus_alpha: [0.25, 0.5, 0.75]
+  - loss_fn: ["top1_margin"]
+    top1_margin: [0.05, 0.1, 0.2]
+  - loss_fn: ["focal"]
+    focal_gamma: [1.0, 2.0, 4.0]
+
+# Misc settings
+compile: [true]
+never_save_checkpoint: [true]
+tensorboard_run_name: ["skip_correct_top1_comparison"]
