@@ -11,11 +11,272 @@ Creates an interactive scatter plot showing evolution across generations with:
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+import plotly.io as pio
 import numpy as np
 import pandas as pd
 from visualization.evolution_history import LogParser
 from nsga2 import Population
 import json, os
+
+
+def _pretty_json(d: dict) -> str:
+        try:
+                return json.dumps(d if isinstance(d, dict) else {}, indent=2, sort_keys=True)
+        except Exception:
+                return "{}"
+
+
+def _find_layers_list(cfg: dict):
+    """Best-effort: locate the per-layer list of dicts in the config."""
+    if not isinstance(cfg, dict):
+        return []
+    # Prefer explicit nested structure from checkpoints
+    if isinstance(cfg.get("layers"), list):
+        return cfg.get("layers")
+    # common keys
+    for k in ("layers", "layer_settings", "layer_cfgs", "per_layer", "blocks"):
+        v = cfg.get(k)
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            return v
+    # generic scan
+    for v in cfg.values():
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            sample = v[0]
+            if any(key in sample for key in ("n_head", "mlp_size", "n_kv_group", "n_qk_head_dim", "n_v_head_dim", "n_cproj", "attention_variant")):
+                return v
+    return []
+
+
+def _extract_globals(cfg: dict) -> dict:
+    """Return a dict of global settings regardless of nesting (flat or cfg['globals'])."""
+    if not isinstance(cfg, dict):
+        return {}
+    g = cfg.get('globals') if isinstance(cfg.get('globals'), dict) else cfg
+    return {
+        'n_embd': g.get('n_embd'),
+        'block_size': g.get('block_size'),
+        'use_concat_heads': g.get('use_concat_heads'),
+        'layer_mask': g.get('layer_mask') or []
+    }
+
+
+def _estimate_params_simple(cfg: dict) -> float:
+    """Rough parameter estimate in millions (M). Best-effort and may not match backend exactly."""
+    try:
+        g = _extract_globals(cfg)
+        d = int(g.get("n_embd") or 0)
+        layer_mask = g.get("layer_mask") or []
+        use_concat = bool(g.get("use_concat_heads", True))
+        layers = _find_layers_list(cfg)
+        total = 0
+        L = max(len(layers), len(layer_mask))
+        for i in range(L):
+            if layer_mask and (i >= len(layer_mask) or not layer_mask[i]):
+                continue
+            li = layers[i] if i < len(layers) else {}
+            h = int(li.get('n_head', 8) or 8)
+            g = int(li.get('n_kv_group', h) or h)
+            dq = int(li.get('n_qk_head_dim', max(1, d // max(h, 1))) or max(1, d // max(h, 1)))
+            dv = int(li.get('n_v_head_dim', dq) or dq)
+            cproj = int(li.get('n_cproj', 1) or 1)
+            mlp = int(li.get('mlp_size', 4 * d) or (4 * d))
+
+            # Q, K, V projections
+            q_params = d * (h * dq)
+            k_params = d * (g * dq)
+            v_params = d * (g * dv)
+            # Output projection (very rough)
+            out_in = (h * dv) if use_concat else dv
+            o_params = out_in * d * max(1, cproj)
+            # MLP two-linears
+            mlp_params = d * mlp + mlp * d
+
+            total += q_params + k_params + v_params + o_params + mlp_params
+        return total / 1e6
+    except Exception:
+        return 0.0
+
+
+def _format_cfg_block(cfg: dict) -> str:
+    """Render the configuration text similar to the run log formatting."""
+    try:
+        if not isinstance(cfg, dict):
+            return _pretty_json({})
+
+        # Globals line (support nested structure: cfg['globals'])
+        globals_dict = _extract_globals(cfg)
+        globals_line = f"Globals: {str(globals_dict)}"
+
+        # Layers info
+        layer_mask = globals_dict.get('layer_mask') or []
+        layers = _find_layers_list(cfg)  # cfg['layers'] if present
+        total_layers = len(layer_mask) if layer_mask else (len(layers) or 0)
+        active_layers = sum(1 for x in layer_mask if x) if layer_mask else (len(layers) or 0)
+
+        header_lines = [
+            globals_line,
+            f"Total layers: {total_layers}; Active layers: {active_layers}",
+        ]
+
+        # Estimated params
+        est_m = _estimate_params_simple(cfg)
+        if est_m > 0:
+            header_lines.append(f"Estimated params: {est_m:.2f}M")
+
+        # Per-layer lines (skip inactive)
+        lines = []
+        L = max(len(layers), len(layer_mask))
+        for i in range(L):
+            if layer_mask and (i >= len(layer_mask) or not layer_mask[i]):
+                continue
+            li = layers[i] if i < len(layers) else {}
+            n_head = li.get('n_head', 'NA')
+            n_kv_group = li.get('n_kv_group', 'NA')
+            mlp_size = li.get('mlp_size', 'NA')
+            n_qk_head_dim = li.get('n_qk_head_dim', 'NA')
+            n_v_head_dim = li.get('n_v_head_dim', 'NA')
+            n_cproj = li.get('n_cproj', 'NA')
+            attn_var = li.get('attention_variant', li.get('attn_variant', 'NA'))
+            lines.append(
+                f"  - Layer {i}: n_head={n_head}, n_kv_group={n_kv_group}, mlp_size={mlp_size}, "
+                f"n_qk_head_dim={n_qk_head_dim}, n_v_head_dim={n_v_head_dim}, n_cproj={n_cproj}, attention_variant={attn_var}"
+            )
+
+        return "\n".join(header_lines + lines)
+    except Exception:
+        return _pretty_json(cfg)
+
+
+def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = "gen2d"):
+    """Write the 2D figure to HTML and add a details panel below that updates on hover."""
+    html_template = """<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset=\"utf-8\"/>
+    <title>Interactive Generational Scatter - 2D</title>
+    <style>
+      body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; }}
+      .container {{ max-width: 1400px; margin: 0 auto; padding: 16px; }}
+      #details-panel {{
+        margin-top: 12px;
+        padding: 12px;
+        border-top: 1px solid #e0e0e0;
+        background: #fafafa;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", monospace;
+        white-space: pre-wrap;
+        overflow-x: auto;
+        max-height: 360px;
+      }}
+      .details-header {{ font-weight: 600; margin-bottom: 6px; }}
+      .details-meta {{ color: #444; margin-bottom: 8px; }}
+      .hint {{ color: #666; font-style: italic; }}
+    </style>
+  </head>
+  <body>
+    <div class=\"container\">
+      {plotly_html}
+            <div id=\"gen-label\" style=\"margin: 8px 0 6px 0; font-weight: 600;\"></div>
+            <div id=\"details-panel\">
+                <div class=\"hint\">Click a point to see its full configuration here…</div>
+      </div>
+    </div>
+    {plotly_script}
+  </body>
+</html>
+"""
+    post_script = """
+(function() {
+  var gd = document.getElementById('__DIV_ID__') || document.getElementsByClassName('plotly-graph-div')[0];
+  var panel = document.getElementById('details-panel');
+    var genLabel = document.getElementById('gen-label');
+  if(!gd || !panel) return;
+    var lastDetailsHTML = null;
+
+  function fmt(val, digits) {
+    if (typeof val === 'number' && isFinite(val)) return val.toFixed(digits);
+    return String(val);
+  }
+
+    function getCurrentGenFromTraces() {
+        try {
+            var data = gd.data || [];
+            for (var i = 0; i < data.length; i++) {
+                var tr = data[i];
+                if (!tr || !tr.name) continue;
+                // Look for the currently visible highlighted trace name: 'Current: Gen X'
+                if (tr.name.indexOf('Current: Gen') === 0 && tr.visible !== false && tr.visible !== 'legendonly') {
+                    var m = tr.name.match(/Current: Gen\s+(\d+)/);
+                    if (m && m[1]) return m[1];
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function updateGenLabel() {
+        if (!genLabel) return;
+        var g = getCurrentGenFromTraces();
+        if (g !== null) {
+            genLabel.textContent = 'Generation: ' + g;
+        }
+    }
+
+        gd.on('plotly_click', function(e) {
+    if (!e || !e.points || e.points.length === 0) return;
+    var p = e.points[0];
+
+    var cfg = p.customdata;
+    if (Array.isArray(cfg)) { cfg = cfg[0]; }
+    if (typeof cfg !== 'string') {
+      try { cfg = JSON.stringify(cfg, null, 2); } catch(err) { cfg = String(cfg); }
+    }
+
+    var seriesName = p.data && p.data.name ? p.data.name : '';
+    var hdr = '<div class="details-header">' + seriesName + '</div>';
+
+    var metaParts = [];
+    if (p.text) metaParts.push('Point: ' + p.text);
+    if (typeof p.x !== 'undefined') metaParts.push('X=' + fmt(p.x, 5));
+    if (typeof p.y !== 'undefined') metaParts.push('Y=' + fmt(p.y, 5));
+    var meta = '<div class="details-meta">' + metaParts.join(' | ') + '</div>';
+
+        var content = hdr + meta + '<pre>' + cfg + '</pre>';
+        panel.innerHTML = content;
+        lastDetailsHTML = content;
+  });
+
+    function restoreDetails() {
+        if (lastDetailsHTML) {
+            panel.innerHTML = lastDetailsHTML;
+        }
+    }
+    gd.on('plotly_restyle', restoreDetails);
+    gd.on('plotly_relayout', restoreDetails);
+    gd.on('plotly_redraw', restoreDetails);
+    gd.on('plotly_animated', restoreDetails);
+        gd.on('plotly_sliderchange', updateGenLabel);
+        gd.on('plotly_restyle', updateGenLabel);
+        gd.on('plotly_relayout', updateGenLabel);
+        gd.on('plotly_redraw', updateGenLabel);
+        gd.on('plotly_animated', updateGenLabel);
+        // Initialize label once figure is ready
+        if (gd && gd.layout) {
+            updateGenLabel();
+        } else {
+            setTimeout(updateGenLabel, 0);
+        }
+
+})();
+""".replace('__DIV_ID__', div_id)
+    try:
+        fig_html = pio.to_html(fig, include_plotlyjs="cdn", full_html=False, div_id=div_id)
+    except TypeError:
+        # Older Plotly versions may not support div_id; fall back without it
+        fig_html = pio.to_html(fig, include_plotlyjs="cdn", full_html=False)
+    html_str = html_template.format(plotly_html=fig_html, plotly_script=f"<script>{post_script}</script>")
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html_str)
 
 
 def create_interactive_generational_scatter(file_name_base: str, output_path: str = "htmls/interactive_generational_scatter.html", start_gen: int = 0, end_gen: int = 10):
@@ -30,24 +291,42 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
             exit(f"❌ Checkpoint file not found: {json_file_name}\nPlease ensure all generation checkpoint files are present.")
                 
         population = Population.load_checkpoint(json_file_name, from_pkl=False)
+        # also load raw JSON to fetch configs
+        try:
+            with open(json_file_name, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            raw_inds = raw.get("individuals", []) or []
+        except Exception:
+            raw_inds = []
 
         val_loss_vals = [eva.objs[0] for eva in population.evaluations ]
         energy_vals = [eva.objs[1] for eva in population.evaluations ]
         ttft_vals = [eva.objs[2] for eva in population.evaluations ]
 
         # Ensure all lists have the same length
-        min_len = min(len(val_loss_vals), len(energy_vals), len(ttft_vals))
+        min_len = min(
+            len(val_loss_vals),
+            len(energy_vals),
+            len(ttft_vals),
+            len(raw_inds) if isinstance(raw_inds, list) and len(raw_inds) > 0 else 10**9,
+        )
         
         for i in range(min_len):
+            cfg_dict = raw_inds[i] if isinstance(raw_inds, list) and i < len(raw_inds) else {}
             pop_data.append({
                 'generation': gen,
                 'validation_loss': val_loss_vals[i],
                 'energy_per_token': energy_vals[i],
                 'ttft': ttft_vals[i],
-                'individual_id': i
+                'individual_id': i,
+                'config': cfg_dict
             })
 
     df_pop = pd.DataFrame(pop_data)
+    # Prepare formatted config strings for embedding into customdata
+    if 'config' in df_pop.columns:
+        df_pop['config_str'] = df_pop['config'].apply(_format_cfg_block)
+    os.makedirs("logs", exist_ok=True)
     df_pop.to_csv("logs/interactive_scatter_population_data.csv", index=False)
 
     # Create 2D plots
@@ -56,8 +335,8 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
     # Create 3D plot
     fig_3d = create_3d_plot(df_pop, generations)
     
-    # Save files
-    fig_2d.write_html(output_path.replace('.html', '_2d.html'))
+    # Save files (2D with details panel; 3D plain)
+    _write_2d_html_with_details(fig_2d, output_path.replace('.html', '_2d.html'), div_id="gen2d")
     fig_3d.write_html(output_path.replace('.html', '_3d.html'))
     
     print(f"✅ Interactive 2D scatter plot saved to: {output_path.replace('.html', '_2d.html')}")
@@ -88,6 +367,11 @@ def create_2d_plots(df, generations):
         
         if gen_data.empty:
             continue
+        # customdata for details panel (pretty JSON per point)
+        if 'config_str' in gen_data.columns:
+            customdata_bg = gen_data['config_str'].tolist()
+        else:
+            customdata_bg = ["{}"] * len(gen_data)
             
         # Plot 1: Validation Loss vs Energy/Token
         fig.add_trace(
@@ -106,6 +390,7 @@ def create_2d_plots(df, generations):
                 hovertemplate='<b>%{text}</b><br>' +
                              'Energy/Token: %{x:.3f}<br>' +
                              'Validation Loss: %{y:.3f}<extra></extra>',
+                customdata=customdata_bg,
                 visible=True,
                 showlegend=False
             ),
@@ -129,6 +414,7 @@ def create_2d_plots(df, generations):
                 hovertemplate='<b>%{text}</b><br>' +
                              'TTFT: %{x:.3f}<br>' +
                              'Validation Loss: %{y:.3f}<extra></extra>',
+                customdata=customdata_bg,
                 visible=True,
                 showlegend=False
             ),
@@ -152,6 +438,7 @@ def create_2d_plots(df, generations):
                 hovertemplate='<b>%{text}</b><br>' +
                              'Energy/Token: %{x:.3f}<br>' +
                              'TTFT: %{y:.3f}<extra></extra>',
+                customdata=customdata_bg,
                 visible=True,
                 showlegend=False
             ),
@@ -167,6 +454,11 @@ def create_2d_plots(df, generations):
         
         # Highlighted traces (initially only first generation visible)
         visible = True if i == 0 else False
+        # customdata for highlighted points too
+        if 'config_str' in gen_data.columns:
+            customdata_hl = gen_data['config_str'].tolist()
+        else:
+            customdata_hl = ["{}"] * len(gen_data)
         
         # Plot 1 highlighted
         fig.add_trace(
@@ -185,6 +477,7 @@ def create_2d_plots(df, generations):
                 hovertemplate='<b>%{text}</b><br>' +
                              'Energy/Token: %{x:.3f}<br>' +
                              'Validation Loss: %{y:.3f}<extra></extra>',
+                customdata=customdata_hl,
                 visible=visible,
                 showlegend=True if i == 0 else False
             ),
@@ -208,6 +501,7 @@ def create_2d_plots(df, generations):
                 hovertemplate='<b>%{text}</b><br>' +
                              'TTFT: %{x:.3f}<br>' +
                              'Validation Loss: %{y:.3f}<extra></extra>',
+                customdata=customdata_hl,
                 visible=visible,
                 showlegend=False
             ),
@@ -231,6 +525,7 @@ def create_2d_plots(df, generations):
                 hovertemplate='<b>%{text}</b><br>' +
                              'Energy/Token: %{x:.3f}<br>' +
                              'TTFT: %{y:.3f}<extra></extra>',
+                customdata=customdata_hl,
                 visible=visible,
                 showlegend=False
             ),
@@ -249,11 +544,10 @@ def create_2d_plots(df, generations):
         # Add visibility for highlighted traces
         for j in range(num_generations):
             visible_list.extend([j == i, j == i, j == i])  # Highlight current generation
-        
         step = dict(
             method="update",
             args=[{"visible": visible_list}],
-            label=f"Gen {gen}"
+            label=""
         )
         steps.append(step)
     
@@ -375,11 +669,10 @@ def create_3d_plot(df, generations):
         # Background traces always visible, highlight only current generation
         visible_list = [True] * num_generations  # Background traces
         visible_list.extend([j == i for j in range(num_generations)])  # Highlighted traces
-        
         step = dict(
             method="update",
             args=[{"visible": visible_list}],
-            label=f"Gen {gen}"
+            label=""
         )
         steps.append(step)
     
