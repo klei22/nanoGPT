@@ -50,7 +50,7 @@ key_filename = "/home/xinting/.ssh/id_rsa"  # Path to SSH private key file
 trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
 trainer.perform_git_pull(remote_work_dir=f"/home/{user}/Evo_GPT")
 
-exp_name = "infi_attn_exp_1"
+exp_name = "infi_attn_exp_2"
 
 population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name)
 population.print_summary()
@@ -60,8 +60,10 @@ population.n_population = init_population_size
 population.n_offspring = 8
 
 run_time = time.strftime("%m%d_%H%M", time.localtime())
+population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{population.gen}.json")
+population.save_checkpoint_pkl(f"ckpts/{exp_name}/{run_time}_pop_gen{population.gen}.pkl")
 
-n_iter = 20
+n_iter = 30
 for i in range(0, n_iter):
     population.generate_offspring()
     gen = population.gen

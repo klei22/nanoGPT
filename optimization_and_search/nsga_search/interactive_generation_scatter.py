@@ -18,60 +18,11 @@ from nsga2 import Population
 import json, os
 
 
-def create_interactive_generational_scatter(log_path: str, output_path: str = "htmls/interactive_generational_scatter.html"):
-    """
-    Create interactive scatter plot with generation slider
+def create_interactive_generational_scatter(file_name_base: str, output_path: str = "htmls/interactive_generational_scatter.html", start_gen: int = 0, end_gen: int = 10):
     
-    Args:
-        log_path: Path to the evolution log file
-        output_path: Path to save the HTML file
-    """
-    # Parse log file
-    parser = LogParser()
-    history = parser.parse_log_file(log_path)
-    
-    if not history.generations:
-        print("No generations found in log file")
-        return
-
-    print(f"Parsed {len(history.generations)} generations from log file")
-    
-    # Get all individual data for the offspring generations
-    val_loss_data = history.get_individual_data_by_generation('validation_loss')
-    energy_data = history.get_individual_data_by_generation('energy_per_token')
-    ttft_data = history.get_individual_data_by_generation('ttft')
-    
-    generations = sorted(val_loss_data.keys())
-    
-    # Prepare data for all generations
-    all_data = []
-    for gen in generations:
-        val_loss_vals = val_loss_data.get(gen, [])
-        energy_vals = energy_data.get(gen, [])
-        ttft_vals = ttft_data.get(gen, [])
-        
-        # Ensure all lists have the same length
-        min_len = min(len(val_loss_vals), len(energy_vals), len(ttft_vals))
-        
-        for i in range(min_len):
-            all_data.append({
-                'generation': gen,
-                'validation_loss': val_loss_vals[i],
-                'energy_per_token': energy_vals[i],
-                'ttft': ttft_vals[i],
-                'individual_id': i
-            })
-    
-    df = pd.DataFrame(all_data)
-
-    df.to_csv("logs/interactive_scatter_data_offspring.csv", index=False)
-    
-    if df.empty:
-        print("No individual data found in log file")
-        return
-
-    file_name_base = "ckpts/0929_2359_gen"  # Default base name
     pop_data = []
+    generations = list(range(start_gen, end_gen + 1))
+
     for gen in generations:
         json_file_name = f"{file_name_base}{gen}.json"
         if not os.path.exists(json_file_name):
@@ -112,7 +63,7 @@ def create_interactive_generational_scatter(log_path: str, output_path: str = "h
     print(f"✅ Interactive 2D scatter plot saved to: {output_path.replace('.html', '_2d.html')}")
     print(f"✅ Interactive 3D scatter plot saved to: {output_path.replace('.html', '_3d.html')}")
     
-    return fig_2d, fig_3d
+    return
 
 
 def create_2d_plots(df, generations):
@@ -475,19 +426,23 @@ def main():
     """Main function to create the interactive plots"""
     import os
     
-    # Default log file
-    log_file = "logs/run_0930.log"
+    # take arguments from command line
+    import argparse
     
-    if not os.path.exists(log_file):
-        print(f"❌ Log file not found: {log_file}")
-        print("Please make sure you have a log file in the logs/ directory")
-        return
+    parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_attn_exp_2/1009_0627_ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index")
+    parser.add_argument("--end_gen", type=int, default=50, help="Ending generation index")
+    parser.add_argument("--output", type=str, default="htmls/interactive_generational_scatter.html", help="Output HTML file path")
+    args = parser.parse_args()
     
-    print("🎨 Creating interactive generational scatter plots...")
-    
-    # Create the interactive plots
-    fig_2d, fig_3d = create_interactive_generational_scatter(log_file)
-    
+    file_name_base = args.ckpt_base
+    start_gen = args.start_gen
+    end_gen = args.end_gen
+    output_path = args.output
+
+    create_interactive_generational_scatter(file_name_base, output_path, start_gen, end_gen)
+
     print("\n✅ Interactive plots created!")
     print("📁 Files created:")
     print("   interactive_generational_scatter_2d.html - 2D scatter plots with slider")
@@ -497,3 +452,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+# python interactive_generation_scatter.py --ckpt_base="ckpts/infi_attn_exp_2/1009_0627_ckpt_gen" --start_gen=1 --end_gen=30

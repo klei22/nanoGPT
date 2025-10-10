@@ -14,28 +14,21 @@ for name in ("paramiko", "paramiko.transport", "fabric", "invoke"):
     logging.getLogger(name).disabled = True
 
 # load from checkpoint
-population = Population.load_checkpoint("/home/xinting/Evo_GPT/optimization_and_search/nsga_search/ckpts/2025-09-30 20:25:05_pop_gen13.pkl")
-population.gen = 13
-print("Loaded population from checkpoint.")
-population.print_summary()
+population = Population.load_checkpoint("/home/xinting/Evo_GPT/optimization_and_search/nsga_search/ckpts/infi_attn_exp_2/1009_0627_pop_gen30.pkl", from_pkl=True)
 
-hosts = ["34.11.48.206", "34.86.55.236", "35.245.124.235", "34.162.85.215", "34.85.252.132", "34.162.41.36"]  # Instance IP addresses
+hosts = ["34.11.48.206", "34.86.55.236", "35.245.124.235", "34.144.183.145", "34.85.252.132", "34.162.10.11", "34.11.9.189", "34.85.233.248"]  # Instance IP addresses
+
 # hosts = ["34.85.168.66", "34.11.48.206", "34.86.55.236"]
 user = "xinting"
 key_filename = "/home/xinting/.ssh/id_rsa"
 
-population.n_offspring = 12
+population.n_offspring = 8
 
-# population.generate_offspring()
-# population.print_details()
-# population.sw_eval(hosts=hosts, user=user, key_filename=key_filename)
-
-# population.save_checkpoint("ckpts/gen1_pop.json")
-
-run_time = time.strftime("%m%d_%H%M", time.localtime())
+exp_name = "infi_attn_exp_2_continued"
+run_time = 1009_0627
 # use time for name
 
-n_iter = 10
+n_iter = 50
 for i in range(0, n_iter):
     population.generate_offspring()
     gen = population.gen
@@ -43,8 +36,8 @@ for i in range(0, n_iter):
     population.sw_eval(hosts=hosts, user=user, key_filename=key_filename)
     population.update_elimination()
     population.print_summary()
-    population.save_checkpoint(f"ckpts/{run_time}_ckpt_gen{gen}.json")
-    population.save_checkpoint_pkl(f"ckpts/{run_time}_pop_gen{gen}.pkl")
+    population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{gen}.json")
+    population.save_checkpoint_pkl(f"ckpts/{exp_name}/{run_time}_pop_gen{gen}.pkl")
 
 # population.save_checkpoint_pkl(f"ckpts/{run_time}_final_pop_gen{n_gen}.pkl")
 
