@@ -96,8 +96,9 @@ def skip_correct_top1_loss(
     if mask.any():
         return losses[mask].mean()
 
-    # If every token is already correct we skip the loss entirely.
-    return losses.new_tensor(0.0)
+    # If every token is already correct we skip the loss entirely while
+    # preserving device/dtype for downstream consumers expecting a tensor.
+    return losses.new_full((), 0.0)
 
 
 def top1_margin_loss(
