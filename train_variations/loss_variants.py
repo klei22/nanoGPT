@@ -77,6 +77,29 @@ def top1_focus_loss(
     return ce + alpha * penalty.mean()
 
 
+def skip_correct_top1_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+) -> torch.Tensor:
+    """Ignore examples that are already predicted correctly at top-1."""
+
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+    losses = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+
+    with torch.no_grad():
+        predictions = torch.argmax(logits_flat, dim=-1)
+        mask = (targets_flat != -1) & (predictions != targets_flat)
+
+    if mask.any():
+        return losses[mask].mean()
+
+    # If every token is already correct we skip the loss entirely.
+    return losses.new_tensor(0.0)
+
+
 def top1_margin_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -317,6 +340,7 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "label_smoothing": label_smoothing_loss,
     "focal": focal_loss,
     "top1_focus": top1_focus_loss,
+    "skip_correct_top1": skip_correct_top1_loss,
     "top1_margin": top1_margin_loss,
     "entropy_penalty": entropy_penalty_loss,
     "top1_ratio": top1_ratio_loss,
@@ -413,6 +437,7 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
         "top1_focus": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_focus"](
             l, t, iter_num=iter_num, alpha=getattr(args, "top1_focus_alpha", 0.5)
         ),
+        "skip_correct_top1": LOSS_VARIANTS["skip_correct_top1"],
         "top1_margin": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_margin"](
             l, t, iter_num=iter_num, margin=getattr(args, "top1_margin", 0.1)
         ),
