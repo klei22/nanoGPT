@@ -30,8 +30,8 @@ layer_spec = {
         "n_head": {"type": "int", "low": 1, "high": 16, "step": 1},
         "n_kv_group": {"type": "int", "low": 1, "high": 16, "step": 1},
         "mlp_size": {"type": "int", "low": 256, "high": 4096, "step": 256},
-        "n_qk_head_dim": {"type": "int", "low": 16, "high": 128, "step": 16},
-        "n_v_head_dim": {"type": "int", "low": 16, "high": 128, "step": 16},
+        "n_qk_head_dim": {"type": "int", "low": 16, "high": 512, "step": 16},
+        "n_v_head_dim": {"type": "int", "low": 16, "high": 512, "step": 16},
         "n_cproj": {"type": "int", "low": 1, "high": 4, "step": 1},
         "attention_variant": {"type": "cat", "choices": ["infinite", "identity"]},
     }
@@ -50,7 +50,7 @@ key_filename = "/home/xinting/.ssh/id_rsa"  # Path to SSH private key file
 trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
 trainer.perform_git_pull(remote_work_dir=f"/home/{user}/Evo_GPT")
 
-exp_name = "infi_attn_exp_2"
+exp_name = "infi_attn_exp_iter20k"
 
 population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name)
 population.print_summary()
@@ -63,12 +63,12 @@ run_time = time.strftime("%m%d_%H%M", time.localtime())
 population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{population.gen}.json")
 population.save_checkpoint_pkl(f"ckpts/{exp_name}/{run_time}_pop_gen{population.gen}.pkl")
 
-n_iter = 30
+n_iter = 40
 for i in range(0, n_iter):
     population.generate_offspring()
     gen = population.gen
     print(f"\n\n================ Generation {gen} ================\n")
-    population.sw_eval(hosts=hosts, user=user, key_filename=key_filename)
+    population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, max_iterations=20000)
     population.update_elimination()
     population.print_summary()
     population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{gen}.json")
