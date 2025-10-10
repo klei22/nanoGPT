@@ -1572,7 +1572,7 @@ def main() -> None:
                             other_vectors,
                             histogram_dir,
                             args.histogram_bins,
-                            histogram_prefix="comparison",
+                            histogram_prefix=f"comparison_{name}_axis{axis}",
                             angle_units=args.angle_units,
                         )
                         comparison_rows.extend(stats_result)
