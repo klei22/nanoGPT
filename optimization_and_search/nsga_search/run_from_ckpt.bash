@@ -7,6 +7,7 @@ python run_exp.py \
     --user xinting \
     --key ~/.ssh/id_rsa \
     --hosts ../host_configs/hosts_used.yaml \
+    --pop_size 16 \
     --max_layers 16 \
     --min_layers 1 \
     --offspring 8 \

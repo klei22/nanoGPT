@@ -369,11 +369,11 @@ class Population:
         
         return pop
 
-    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str = "default", max_iterations: int = 10000) -> None:
+    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str = "default", max_iters: int = 10000, conda_env: str = "reallmforge") -> None:
         # send the training work to worker nodes and wait for results
         train_yaml_path = self.to_yaml(save_path="train")
         trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
-        trainer.submit_job(path_to_yaml=train_yaml_path, remote_work_dir=f"/home/{user}/Evo_GPT", dir_name=run_dir_name, max_iterations=max_iterations)
+        trainer.submit_job(path_to_yaml=train_yaml_path, remote_work_dir=f"/home/{user}/Evo_GPT", dir_name=run_dir_name, max_iters=max_iters, conda_env=conda_env)
         trainer.wait_for_all(poll_interval=300, timeout=72000, verbose=True)
         data_csv = trainer.fetch_results(local_dir="train", gen=self.gen)
         # read the csv and populate self.evaluations
