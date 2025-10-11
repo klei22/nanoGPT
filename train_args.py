@@ -133,6 +133,18 @@ def parse_args():
         default=1.0,
         help='Scaling for flatness_boost loss when predictions are flat.',
     )
+    training_group.add_argument(
+        '--correct_top1_attenuation',
+        type=float,
+        default=1.0,
+        help='Constant multiplier for correctly predicted tokens in attenuated_correct_top1 loss.',
+    )
+    training_group.add_argument(
+        '--distance_top1_strength',
+        type=float,
+        default=0.0,
+        help='Strength of distance-based attenuation in distance_attenuated_top1 loss.',
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
