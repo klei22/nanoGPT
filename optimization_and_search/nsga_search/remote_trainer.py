@@ -129,7 +129,7 @@ class RemoteTrainer:
                 overall_ok = False
         return overall_ok
 
-    def submit_job(self, path_to_yaml: str, remote_work_dir: str, dir_name: str, max_iterations: int = 10000) -> bool:
+    def submit_job(self, path_to_yaml: str, remote_work_dir: str, dir_name: str, conda_env: str = "reallmforge", max_iterations: int = 10000) -> bool:
         # Load the aggregated YAML (expects a top-level list of configs)
         yaml_path = Path(path_to_yaml)
         if yaml is None:

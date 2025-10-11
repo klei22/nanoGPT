@@ -16,3 +16,7 @@ Minimal utilities for multi-objective hyperparameter/architecture search using N
 
 * From this folder run `python test.py`
 
+## Notes
+
+* The conda env on the slave machines are currently hardcoded as "reallmforge" (run dev_env_setup_scripts/00-setup-conda.sh)
+
