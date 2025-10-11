@@ -16,22 +16,6 @@ class Individual(dict):
 
     def estimate_params(self) -> int:
         # g = self["globals"]; d = g["d_model"]; seq_len = g["block_size"]
-
-        # # Embedding table parameters (same as GPT-2)
-        # vocab_size = 50257  # GPT-2 vocabulary size
-        # embedding_params = vocab_size * d  # token embeddings: vocab_size x d_model
-        # # embedding_params += seq_len * d    # positional embeddings: block_size x d_model
-        
-        # total = embedding_params
-        # mask = self["globals"].get("layer_mask", [True]*len(self["layers"]))
-        # for i,active in enumerate(mask):
-        #     if not active: continue
-        #     li = self["layers"][i]
-        #     h = max(1, li["n_heads"])
-        #     r = li["mlp_ratio"]
-        #     # very rough: per-layer params ~ 2*d^2 (proj) + r*d^2 (MLP) + heads overhead
-        #     total += (2.0 + r)*d*d + 0.05*h*d*d
-        # return int(total)
         x = self
         g = x["globals"]
         d = g.get("n_embd", g.get("d_model", 768))
@@ -562,10 +546,32 @@ class HeteroSearchSpace:
 
         # mutate layer usage mask: flip a few bits
         mask = list(x["globals"].get("layer_mask", [True]*self.L_max))
-        flips = max(1, self.L_max//10)
-        for _ in range(random.randint(1, flips)):
-            idx = random.randrange(self.L_max)
-            mask[idx] = not mask[idx]
+        turn_on_rate = 0.2
+        turn_off_rate = 0.1
+        for i in range(len(mask)):
+            if mask[i]:
+                # currently on, may turn off
+                if random.random() < turn_off_rate:
+                    mask[i] = False
+            else:
+                # currently off, may turn on
+                if random.random() < turn_on_rate:
+                    mask[i] = True
+                    # copy the layer_configs from the nearsest active layer
+                    left = right = None
+                    for j in range(i-1, -1, -1):
+                        if mask[j]:
+                            left = j
+                            break
+                    for j in range(i+1, self.L_max):
+                        if mask[j]:
+                            right = j
+                            break
+                    if left is not None:
+                        y["layers"][i] = y["layers"][left]
+                    if right is not None:
+                        y["layers"][i] = y["layers"][right]
+
         # ensure still at least four active
         min_layers = self.L_min
         if sum(mask) < min_layers:
