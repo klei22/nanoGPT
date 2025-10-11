@@ -475,7 +475,7 @@ class HeteroSearchSpace:
         return Individual.from_dict(y)
 
     # ----- variation: layer-aware -----
-    def crossover(self, a: Dict[str,Any], b: Dict[str,Any], crossover_rate: float = 0.5) -> Tuple[Dict[str,Any], Dict[str,Any]]:
+    def crossover(self, a: Dict[str,Any], b: Dict[str,Any], crossover_rate: float = 0.9) -> Tuple[Dict[str,Any], Dict[str,Any]]:
         A = {"globals": dict(a["globals"]), "layers":[dict(li) for li in a["layers"]]}
         B = {"globals": dict(b["globals"]), "layers":[dict(li) for li in b["layers"]]}
 
@@ -487,18 +487,27 @@ class HeteroSearchSpace:
         # layer usage mask crossover (treat mask as gene string)
         mask_a = list(a["globals"].get("layer_mask", [True]*self.L_max))
         mask_b = list(b["globals"].get("layer_mask", [True]*self.L_max))
-        # single point crossover on mask
-        cut = random.randint(1, self.L_max-1) if self.L_max>1 else 0
-        new_mask_a = mask_a[:cut] + mask_b[cut:]
-        new_mask_b = mask_b[:cut] + mask_a[cut:]
-        A["globals"]["layer_mask"] = new_mask_a
-        B["globals"]["layer_mask"] = new_mask_b
-
+       
         # segment crossover on layers
-        L = self.L_max
-        a_idx, b_idx = sorted(random.sample(range(L), 2))
-        for i in range(a_idx, b_idx+1):
-            A["layers"][i], B["layers"][i] = B["layers"][i], A["layers"][i]
+        if random.random() < crossover_rate and self.L_max >= 2:
+            # perform crossover only on activated layers
+            active_indices_a = [i for i, active in enumerate(mask_a) if active and i < len(A["layers"])]
+            active_indices_b = [i for i, active in enumerate(mask_b) if active and i < len(B["layers"])]
+            
+            shorter_len = min(len(active_indices_a), len(active_indices_b))
+            if shorter_len >= 2:
+                # randomly choose the length of the segment to swap
+                seg_len = random.randint(1, shorter_len - 1)
+                # swap the segment from backwards to preserve relative order
+                start_idx = random.randint(0, shorter_len - seg_len)
+                seg_a = active_indices_a[start_idx:start_idx + seg_len]
+                seg_b = active_indices_b[start_idx:start_idx + seg_len]
+                for i, j in zip(seg_a, seg_b):
+                    A["layers"][i], B["layers"][j] = B["layers"][j], A["layers"][i]
+                    # also swap the mask bits to keep consistency
+                    mask_a[i], mask_b[j] = mask_b[j], mask_a[i]
+                A["globals"]["layer_mask"] = mask_a
+                B["globals"]["layer_mask"] = mask_b
 
         return self.repair(A), self.repair(B)
 
@@ -528,6 +537,7 @@ class HeteroSearchSpace:
         for li in y["layers"]:
             # make it generic
             for k,s in self.layer_spec.items():
+                # add gaussian perturbation for int/float, random resample for cat
                 if s["type"]=="int" and random.random()<p_layer_int:
                     step=s.get("step",1); lo,hi=s["low"],s["high"]
                     span_steps=max(1, (hi-lo)//step)
@@ -544,22 +554,6 @@ class HeteroSearchSpace:
                     choices=s["choices"]
                     cur=li[k]
                     li[k]=random.choice([c for c in choices if c!=cur] or choices)
-            # # int
-            # if random.random()<p_layer_int:
-            #     s=self.layer_spec["n_heads"]; lo,hi=s["low"],s["high"]; step=s.get("step",1)
-            #     span=((hi-lo)//step)+1
-            #     delta=random.randint(-2,2)*step
-            #     li["n_heads"]=max(lo,min(hi, li["n_heads"]+delta))
-            # # float
-            # if random.random()<p_layer_float:
-            #     s=self.layer_spec["mlp_ratio"]; lo,hi=s["low"],s["high"]
-            #     sigma=(hi-lo)*0.05
-            #     li["mlp_ratio"]=max(lo,min(hi, li["mlp_ratio"]+random.gauss(0,sigma)))
-            # # categorical
-            # if random.random()<p_layer_cat:
-            #     choices=self.layer_spec["attn_type"]["choices"]
-            #     cur=li["attn_type"]
-            #     li["attn_type"]=random.choice([c for c in choices if c!=cur] or choices)
 
         # occasional layer swap (explores schedule if meaningful)
         if random.random()<p_swap_layers and self.L_max>=2:
@@ -595,40 +589,6 @@ class HeteroSearchSpace:
 
         return self.repair(y)
 
-    # def estimate_params_hetero(x):
-    #     g = x["globals"]; d = g["d_model"]; seq_len = g["block_size"]
-        
-    #     # Embedding table parameters (same as GPT-2)
-    #     vocab_size = 50257  # GPT-2 vocabulary size
-    #     embedding_params = vocab_size * d  # token embeddings: vocab_size x d_model
-    #     # embedding_params += seq_len * d    # positional embeddings: block_size x d_model
-        
-    #     total = embedding_params
-    #     mask = x["globals"].get("layer_mask", [True]*len(x["layers"]))
-    #     for i,active in enumerate(mask):
-    #         if not active: continue
-    #         li = x["layers"][i]
-    #         h = max(1, li["n_heads"])
-    #         r = li["mlp_ratio"]
-    #         # very rough: per-layer params ~ 2*d^2 (proj) + r*d^2 (MLP) + heads overhead
-    #         total += (2.0 + r)*d*d + 0.05*h*d*d
-    #     return int(total)
-
-    # def estimate_flops_hetero(x):
-    #     g = x["globals"]; d = g["d_model"]; seq = g["block_size"]
-    #     cost = 0.0
-    #     mask = x["globals"].get("layer_mask", [True]*len(x["layers"]))
-    #     for i,active in enumerate(mask):
-    #         if not active: continue
-    #         li = x["layers"][i]
-    #         attn = li["attn_type"]
-    #         attn_cost = {"scaled_dot": d*seq,
-    #                     "gqa": d*seq/2,
-    #                     "mha": d*math.log2(max(2, seq)),
-    #                     "flash": d*seq*0.7}.get(attn, d*seq)
-    #         cost += (2*d*d + attn_cost) + li["mlp_ratio"]*d*d
-    #     return cost
-    
     def calculate_possible_configs(self) -> int:
         total = 1
         for s in self.globals.values():
