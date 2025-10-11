@@ -9,7 +9,7 @@ n_head: [6]
 n_embd: [384]
 block_size: [256]
 eval_interval: [500]
-dataset: ["minipile"]
+dataset: ["opus-100"]
 device: ["cuda"]
 dtype: ["bfloat16"]
 
@@ -41,6 +41,8 @@ parameter_groups:
     top1_margin: [0.05, 0.1, 0.2]
   - loss_fn: ["focal"]
     focal_gamma: [1.0, 2.0, 4.0]
+  - loss_schedule: ["0:cross_entropy,10000:skip_correct_top1"]
+  - loss_schedule: ["0:cross_entropy,10000:focal"]
 
 # Misc settings
 compile: [true]
