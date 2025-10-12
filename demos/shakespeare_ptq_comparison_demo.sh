@@ -14,7 +14,8 @@ BASE_OUT="${OUT_ROOT}/fp32"
 QUANT_ROOT="${OUT_ROOT}/quantized"
 HIST_ROOT="${OUT_ROOT}/histograms"
 CSV_ROOT="${OUT_ROOT}/comparison_csv"
-PATTERN='transformer\\.h\\.[0-9]+\\.(attn\\.(c_attn_(q|k|v)|c_proj)|mlp\\.(c_fc|c_proj))\\.weight'
+# Match both fused attention projections (c_attn.weight) and split q/k/v variants.
+PATTERN='transformer\\.h\\.[0-9]+\\.(attn\\.(c_attn(_(q|k|v))?|c_proj)|mlp\\.(c_fc|c_proj))\\.weight'
 BITS=(8 6 4)
 
 mkdir -p "${DATA_DIR}"
