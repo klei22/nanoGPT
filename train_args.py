@@ -478,6 +478,8 @@ def parse_args():
     model_group.add_argument('--moe_router_scheme', default="softmax", type=str, help="option to set routing scheme for MoE layer, defaults to softmax")
     model_group.add_argument('--use_flex_attn', default=None,  action=argparse.BooleanOptionalAction, help="option for using flex attention for sliding windows")
     model_group.add_argument('--attn_logit_softcapping', default=None, action=argparse.BooleanOptionalAction, help="option for softcapping attention (before masking)")
+    model_group.add_argument('--attn_cproj_scale', default=1.0, type=float, help="Divide attention outputs by this value before the output projection")
+    model_group.add_argument('--attn_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction, help="L2 normalize attention outputs before the output projection")
     model_group.add_argument('--final_logit_softcapping', default=None, action=argparse.BooleanOptionalAction, help="option for softcapping final logits")
     model_group.add_argument('--use_ln_f_input_mixer', default=False, action=argparse.BooleanOptionalAction, help='blend outputs of all blocks before final layer norm')
     model_group.add_argument('--ln_f_input_mixer_variant', default='linear', type=str,

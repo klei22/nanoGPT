@@ -70,6 +70,9 @@ class CausalSelfAttention(nn.Module):
         self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
         self.c_proj = self.linear_variant_attn_proj(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_proj_method"], self.quantization_attn_dict["quantize_linear_attn_proj_bits"], bias=config.bias)
 
+        self.post_attn_l2_norm = config.attn_post_act_l2_norm
+        self.attn_cproj_scale = config.attn_cproj_scale
+
         # Regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
@@ -410,8 +413,15 @@ class CausalSelfAttention(nn.Module):
 
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
+        if self.post_attn_l2_norm:
+            y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.attn_cproj_scale is not None and self.attn_cproj_scale != 1.0:
+            y = y / self.attn_cproj_scale
+
         # output projection
-        y = self.resid_dropout(self.c_proj(y))
+        y = self.c_proj(y)
+        y = self.resid_dropout(y)
 
         if self.quantization_attn_dict["quantize_attn_act_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_output_bits"]
@@ -1022,6 +1032,9 @@ class InfiniteHeadAttention(nn.Module):
                 ]
             )
 
+        self.post_attn_l2_norm = config.attn_post_act_l2_norm
+        self.attn_cproj_scale = config.attn_cproj_scale
+
         # option to turn off flash attention
         self.disable_flash_attention = config.disable_flash_attention
 
@@ -1184,14 +1197,27 @@ class InfiniteHeadAttention(nn.Module):
             # (B, nh, T, v_dim) → (B, T, nh*v_dim); avoid extra .contiguous()
             # flatten heads → (B, T, n_head * n_v_head_dim)
             y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
+            if self.post_attn_l2_norm:
+                y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            if self.attn_cproj_scale is not None and self.attn_cproj_scale != 1.0:
+                y = y / self.attn_cproj_scale
             y = self.c_proj(y)
         elif self.n_cproj == 1:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y = y.sum(dim=1)
+            if self.post_attn_l2_norm:
+                y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            if self.attn_cproj_scale is not None and self.attn_cproj_scale != 1.0:
+                y = y / self.attn_cproj_scale
             y = self.c_proj(y)
         else:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y_sum = y.sum(dim=1)
+
+            if self.post_attn_l2_norm:
+                y_sum = y_sum / y_sum.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            if self.attn_cproj_scale is not None and self.attn_cproj_scale != 1.0:
+                y_sum = y_sum / self.attn_cproj_scale
 
             # Parallel small projections then fuse; avoids Python-level loop
             y = torch.stack([proj(y_sum) for proj in self.c_proj_list ], dim=0).sum(dim=0)
