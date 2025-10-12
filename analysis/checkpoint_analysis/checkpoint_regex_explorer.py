@@ -1,4 +1,11 @@
-"""Utility to explore checkpoint parameters that match a regular expression."""
+"""Utility to explore checkpoint parameters that match a regular expression.
+
+In addition to tabulating statistics, the tool can now inject uniform
+angular noise into matching tensors before reporting metrics or exporting a
+perturbed checkpoint. This makes it convenient to study directional
+perturbation sensitivity while reusing the same CLI entry point used for
+exploration.
+"""
 
 import argparse
 import math
@@ -6,7 +13,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Pattern, Tuple
 
 import torch
 from rich import box
@@ -72,6 +79,18 @@ class PairwiseMetricStats:
     histogram_path: Optional[Path]
 
 
+@dataclass
+class AngularNoiseSummary:
+    """Aggregate summary of angular noise perturbations applied to tensors."""
+
+    pattern_matches: int = 0
+    eligible_tensors: int = 0
+    modified_tensors: int = 0
+    eligible_vectors: int = 0
+    modified_vectors: int = 0
+    zero_vectors: int = 0
+
+
 PAIRWISE_METRIC_INFO: Dict[str, Tuple[str, str]] = {
     "angle_min": ("Min angle", "angle"),
     "angle_mean": ("Mean angle", "angle"),
@@ -108,6 +127,122 @@ def iter_vector_views(
         if vectors.numel() == 0:
             continue
         yield axis, axis_size, vectors
+
+
+def _sample_orthogonal_unit(
+    unit_vector: torch.Tensor, generator: torch.Generator, max_attempts: int = 10
+) -> Optional[torch.Tensor]:
+    """Sample a unit vector orthogonal to ``unit_vector`` using rejection sampling."""
+
+    for _ in range(max_attempts):
+        candidate = torch.randn_like(unit_vector, generator=generator)
+        candidate = candidate - torch.dot(candidate, unit_vector) * unit_vector
+        norm = torch.linalg.norm(candidate)
+        if norm > 1e-8:
+            return candidate / norm
+    return None
+
+
+def _apply_uniform_angular_noise_to_tensor(
+    tensor: torch.Tensor,
+    *,
+    max_angle_rad: float,
+    generator: torch.Generator,
+) -> Tuple[torch.Tensor, int, int, int]:
+    """Rotate vectors within ``tensor`` by uniformly sampled angles.
+
+    Returns the perturbed tensor (as ``torch.float32``) along with a tuple of
+    ``(total_vectors, modified_vectors, zero_vectors)``.
+    """
+
+    original_shape = tensor.shape
+    vector_dim = original_shape[-1]
+    flat = tensor.detach().to(torch.float32).reshape(-1, vector_dim)
+    total_vectors = flat.shape[0]
+    modified_vectors = 0
+    zero_vectors = 0
+
+    if total_vectors == 0:
+        return tensor.detach().to(torch.float32), 0, 0, 0
+
+    if vector_dim < 2 or max_angle_rad <= 0:
+        # Nothing to do (either no orthogonal direction exists or no noise).
+        zero_vectors = int((flat.norm(dim=1) == 0).sum().item())
+        return tensor.detach().to(torch.float32), total_vectors, 0, zero_vectors
+
+    cos = math.cos
+    sin = math.sin
+
+    for idx in range(total_vectors):
+        vector = flat[idx]
+        norm = torch.linalg.norm(vector)
+        if norm <= 0:
+            zero_vectors += 1
+            continue
+
+        unit_vector = vector / norm
+        orthogonal = _sample_orthogonal_unit(unit_vector, generator)
+        if orthogonal is None:
+            # Degenerate case (vector_dim == 1 or repeated failures); skip.
+            continue
+
+        angle = torch.rand((), generator=generator).item() * max_angle_rad
+        if angle <= 0:
+            continue
+
+        rotated = (
+            cos(angle) * unit_vector + sin(angle) * orthogonal
+        ) * norm.item()
+        flat[idx] = rotated
+        modified_vectors += 1
+
+    reshaped = flat.reshape(original_shape)
+    return reshaped, total_vectors, modified_vectors, zero_vectors
+
+
+def apply_uniform_angular_noise_to_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    *,
+    pattern: Pattern[str],
+    embedding_dim: int,
+    max_angle_rad: float,
+    generator: torch.Generator,
+) -> AngularNoiseSummary:
+    """Apply angular noise to tensors with trailing dimension ``embedding_dim``."""
+
+    summary = AngularNoiseSummary()
+
+    if max_angle_rad <= 0:
+        return summary
+
+    for name, tensor in state_dict.items():
+        if not pattern.search(name):
+            continue
+
+        summary.pattern_matches += 1
+
+        if tensor.ndim == 0 or tensor.shape[-1] != embedding_dim:
+            continue
+
+        summary.eligible_tensors += 1
+        perturbed, total_vectors, modified_vectors, zero_vectors = (
+            _apply_uniform_angular_noise_to_tensor(
+                tensor,
+                max_angle_rad=max_angle_rad,
+                generator=generator,
+            )
+        )
+
+        summary.eligible_vectors += total_vectors
+        summary.modified_vectors += modified_vectors
+        summary.zero_vectors += zero_vectors
+        if modified_vectors > 0:
+            summary.modified_tensors += 1
+
+        # Preserve original dtype.
+        state_dict[name] = perturbed.to(tensor.dtype)
+
+    return summary
 
 
 def _compute_column_ranges(
@@ -259,12 +394,67 @@ def parse_args() -> argparse.Namespace:
         help="Disable heatmap colorization in stdout tables",
     )
     parser.set_defaults(colorize=True)
-    return parser.parse_args()
+    parser.add_argument(
+        "--angular-noise-max",
+        type=float,
+        default=None,
+        metavar="ANGLE",
+        help=(
+            "Apply uniform angular noise up to this angle to tensors matching"
+            " --angular-noise-pattern (defaults to the main pattern)."
+        ),
+    )
+    parser.add_argument(
+        "--angular-noise-units",
+        choices=["degrees", "radians"],
+        default=None,
+        help=(
+            "Units used for --angular-noise-max. Defaults to the value provided"
+            " via --angle-units."
+        ),
+    )
+    parser.add_argument(
+        "--angular-noise-pattern",
+        type=str,
+        default=None,
+        help=(
+            "Override the primary regex when selecting tensors that receive"
+            " angular noise."
+        ),
+    )
+    parser.add_argument(
+        "--angular-noise-output",
+        type=Path,
+        default=None,
+        help=(
+            "If set, write the perturbed checkpoint (after applying angular"
+            " noise) to this path."
+        ),
+    )
+    parser.add_argument(
+        "--angular-noise-seed",
+        type=int,
+        default=0,
+        help="Random seed used when sampling angular noise directions.",
+    )
+    parser.add_argument(
+        "--angular-noise-only",
+        action="store_true",
+        help=(
+            "Apply angular noise (if requested) and exit without computing"
+            " statistics."
+        ),
+    )
+
+    args = parser.parse_args()
+    if args.angular_noise_max is not None and args.angular_noise_max < 0:
+        parser.error("--angular-noise-max must be non-negative")
+    return args
 
 
 def load_state_dict(
     ckpt_path: str, device: str
-) -> Tuple[Dict[str, torch.Tensor], GPTConfig]:
+) -> Tuple[Dict[str, Any], Dict[str, torch.Tensor], GPTConfig]:
     checkpoint = torch.load(ckpt_path, map_location=device)
     model_args = checkpoint.get("model_args")
     state_dict = checkpoint.get("model")
@@ -299,7 +489,12 @@ def load_state_dict(
     state_dict = {
         name: parameter.detach().to("cpu") for name, parameter in model.state_dict().items()
     }
-    return state_dict, model.config
+
+    checkpoint = dict(checkpoint)
+    checkpoint["model"] = state_dict
+    checkpoint["model_args"] = model_args
+
+    return checkpoint, state_dict, model.config
 
 
 def tensor_stats(tensor: torch.Tensor) -> Dict[str, float]:
@@ -1050,7 +1245,9 @@ def main() -> None:
     console = Console()
 
     try:
-        state_dict, config = load_state_dict(args.ckpt_path, args.device)
+        checkpoint_data, state_dict, config = load_state_dict(
+            args.ckpt_path, args.device
+        )
     except FileNotFoundError as exc:
         raise SystemExit(f"Checkpoint not found: {exc}") from exc
 
@@ -1061,6 +1258,86 @@ def main() -> None:
         console.print(
             "[yellow]Embedding dimension not found in checkpoint configuration; skipping L2 norm statistics.[/]"
         )
+
+    if args.angular_noise_only and args.angular_noise_max is None:
+        console.print(
+            "[yellow]--angular-noise-only specified without --angular-noise-max; continuing with statistics.[/]"
+        )
+
+    if args.angular_noise_max is not None:
+        if embedding_dim is None:
+            raise SystemExit(
+                "Embedding dimension is required to apply angular noise."
+                " Provide --embedding-dim explicitly."
+            )
+
+        noise_units = args.angular_noise_units or args.angle_units
+        max_angle_value = args.angular_noise_max
+        max_angle_rad = (
+            math.radians(max_angle_value)
+            if noise_units == "degrees"
+            else max_angle_value
+        )
+
+        noise_pattern = re.compile(args.angular_noise_pattern or args.pattern)
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(args.angular_noise_seed)
+
+        noise_summary = apply_uniform_angular_noise_to_state_dict(
+            state_dict,
+            pattern=noise_pattern,
+            embedding_dim=embedding_dim,
+            max_angle_rad=max_angle_rad,
+            generator=generator,
+        )
+
+        if noise_summary.pattern_matches == 0:
+            console.print(
+                "[yellow]Angular noise requested but no parameters matched"
+                " --angular-noise-pattern.[/]"
+            )
+        elif noise_summary.eligible_tensors == 0:
+            console.print(
+                f"[yellow]Angular noise requested but no matched tensors have"
+                f" embedding dimension {embedding_dim} on the trailing axis;"
+                " no modifications applied.[/]"
+            )
+        else:
+            eligible_vectors = noise_summary.eligible_vectors
+            modified_vectors = noise_summary.modified_vectors
+            zero_vectors = noise_summary.zero_vectors
+            console.print(
+                "[cyan]Applied uniform angular noise up to "
+                f"{max_angle_value:g} {noise_units} across"
+                f" {noise_summary.eligible_tensors} tensor(s); rotated"
+                f" {modified_vectors:,} of {eligible_vectors:,} vector(s)"
+                f" while skipping {zero_vectors:,} zero vector(s).[/]"
+            )
+            skipped = noise_summary.pattern_matches - noise_summary.eligible_tensors
+            if skipped > 0:
+                console.print(
+                    f"[dim]Note: {skipped} tensor(s) matched the angular noise"
+                    f" pattern but did not expose embedding dimension"
+                    f" {embedding_dim} on the trailing axis.[/]"
+                )
+
+        if args.angular_noise_output is not None:
+            output_path = args.angular_noise_output.expanduser().resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(checkpoint_data, output_path)
+            console.print(
+                f"[green]Wrote perturbed checkpoint with angular noise to"
+                f" {output_path}[/]"
+            )
+
+        if args.angular_noise_only:
+            if args.angular_noise_output is None:
+                console.print(
+                    "[yellow]--angular-noise-only specified but"
+                    " --angular-noise-output was not provided; the perturbed"
+                    " checkpoint was not saved.[/]"
+                )
+            return
 
     histogram_dir = args.histogram_dir
     if histogram_dir is not None:
