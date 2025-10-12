@@ -108,6 +108,7 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     """Attention followed by MLP."""
 
     # Make sure not to override skip connection
+    b2t_source = x
     x_attn_in = x
 
     # Attn Pre-LN
@@ -153,6 +154,9 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     # MLP Skip Connection
     x = block._combine_resid("mlp", x, mlp_out)
 
+    if block.use_b2t_connection:
+        x = x + b2t_source
+
     # MLP Post-LN
     if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
@@ -164,6 +168,7 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """EdgeLLM ASIC forward: Attention followed by MLP with skip connection accumulation between blocks."""
 
     # Separate Full Precision Residual 'x' from 'x_quantized_residual'
+    b2t_source = x
     x_quantized_residual = x
 
     # Quantize x_attn_in before pre-norm
@@ -233,6 +238,9 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     # x = (chip_output - x_quantized_residual_initial) + x
     adj_chip_output = chip_output - x_quantized_residual_initial
     x = block._combine_resid("mlp", x, adj_chip_output)
+
+    if block.use_b2t_connection:
+        x = x + b2t_source
 
     if block.quantization_dict["quantize_asic_offchip_residual"]:
         num_bits = block.quantization_dict["quantize_asic_bits"]
@@ -381,6 +389,7 @@ class Block(nn.Module):
         # Forward variation choice
         self.use_parallel_mlp = getattr(config, "use_parallel_mlp", False)
         self.use_edgellm_asic = getattr(config, "use_edgellm_asic", False)
+        self.use_b2t_connection = getattr(config, "use_b2t_connection", False)
 
         self.use_flash_norm = getattr(config, "use_flash_norm", False)
 
@@ -400,6 +409,9 @@ class Block(nn.Module):
             self.quant_scheduler = config.quant_scheduler
         else:
             variant = "attn_then_mlp"
+
+        if self.use_b2t_connection and variant not in {"attn_then_mlp", "edgellm_asic"}:
+            raise ValueError("B2T connection requires a sequential attention-then-MLP block")
 
         # Set Block Forward Variant
         self.block_forward = partial(block_forward_variations[variant], self)
