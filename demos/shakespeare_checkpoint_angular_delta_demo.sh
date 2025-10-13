@@ -1,5 +1,5 @@
 #!/bin/bash
-# demos/shakespeare_checkpoint_comparison_demo.sh
+# demos/shakespeare_checkpoint_angular_delta_demo.sh
 # Demonstrates training two Shakespeare character models and comparing their checkpoints.
 
 set -euo pipefail
