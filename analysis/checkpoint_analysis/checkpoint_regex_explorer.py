@@ -1,6 +1,7 @@
 """Utility to explore checkpoint parameters that match a regular expression."""
 
 import argparse
+import csv
 import math
 import re
 import sys
@@ -72,6 +73,29 @@ class PairwiseMetricStats:
     histogram_path: Optional[Path]
 
 
+@dataclass
+class CheckpointComparisonStats:
+    """Summary statistics when comparing aligned vectors across checkpoints."""
+
+    parameter: str
+    axis: int
+    axis_size: int
+    tensor_shape: Tuple[int, ...]
+    num_vectors: int
+    metric: str
+    units: str
+    min: float
+    max: float
+    mean: float
+    std: float
+    q05: float
+    q1: float
+    median: float
+    q3: float
+    q95: float
+    histogram_path: Optional[Path]
+
+
 PAIRWISE_METRIC_INFO: Dict[str, Tuple[str, str]] = {
     "angle_min": ("Min angle", "angle"),
     "angle_mean": ("Mean angle", "angle"),
@@ -88,6 +112,12 @@ PAIRWISE_METRIC_INFO: Dict[str, Tuple[str, str]] = {
     "cos_q3": ("75th pct cosine similarity", "cosine"),
     "cos_q95": ("95th pct cosine similarity", "cosine"),
     "cos_max": ("Max cosine similarity", "cosine"),
+}
+
+
+COMPARISON_METRIC_INFO: Dict[str, Tuple[str, str]] = {
+    "angle": ("Angle between checkpoints", "angle"),
+    "cosine": ("Cosine similarity between checkpoints", "cosine"),
 }
 
 
@@ -229,6 +259,24 @@ def parse_args() -> argparse.Namespace:
         help="Number of bins used when plotting L2 norm histograms",
     )
     parser.add_argument(
+        "--compare-ckpt",
+        type=Path,
+        default=None,
+        help=(
+            "Optional second checkpoint used to compare parameter directions. "
+            "Assumes matching tensor shapes across checkpoints."
+        ),
+    )
+    parser.add_argument(
+        "--comparison-limit",
+        type=int,
+        default=0,
+        help=(
+            "Maximum number of vectors per tensor when computing checkpoint "
+            "comparison statistics. Set to 0 to disable the limit."
+        ),
+    )
+    parser.add_argument(
         "--pairwise-limit",
         type=int,
         default=0,
@@ -251,6 +299,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional limit on the number of pairwise metric rows displayed",
+    )
+    parser.add_argument(
+        "--max-comparison-rows",
+        type=int,
+        default=None,
+        help="Optional limit on the number of checkpoint comparison rows displayed",
+    )
+    parser.add_argument(
+        "--comparison-csv",
+        type=Path,
+        default=None,
+        help="If set, export checkpoint comparison summary statistics to this CSV file",
     )
     parser.add_argument(
         "--no-colorize",
@@ -636,6 +696,112 @@ def compute_pairwise_metrics(
     return results
 
 
+def compute_checkpoint_comparison_metrics(
+    name: str,
+    tensor_shape: Tuple[int, ...],
+    axis: int,
+    axis_size: int,
+    vectors_a: torch.Tensor,
+    vectors_b: torch.Tensor,
+    histogram_dir: Optional[Path],
+    histogram_bins: int,
+    *,
+    histogram_prefix: Optional[str] = None,
+    angle_units: str,
+) -> Tuple[List[CheckpointComparisonStats], torch.Tensor, torch.Tensor]:
+    if vectors_a.shape != vectors_b.shape or vectors_a.numel() == 0:
+        return [], torch.empty(0), torch.empty(0)
+
+    normalized_a = torch.nn.functional.normalize(vectors_a, dim=-1)
+    normalized_b = torch.nn.functional.normalize(vectors_b, dim=-1)
+    normalized_a = torch.nan_to_num(normalized_a, nan=0.0, posinf=0.0, neginf=0.0)
+    normalized_b = torch.nan_to_num(normalized_b, nan=0.0, posinf=0.0, neginf=0.0)
+
+    cosine_values = torch.sum(normalized_a * normalized_b, dim=-1).clamp(-1.0, 1.0)
+    angle_values = torch.acos(cosine_values)
+    if angle_units == "degrees":
+        angle_values = torch.rad2deg(angle_values)
+        angle_unit_label = "degrees"
+    elif angle_units == "radians":
+        angle_unit_label = "radians"
+    else:
+        raise ValueError(f"Unsupported angle unit: {angle_units}")
+
+    cosine_summary = summarize_metric_values(cosine_values)
+    angle_summary = summarize_metric_values(angle_values)
+
+    histogram_path_angle: Optional[Path] = None
+    histogram_path_cosine: Optional[Path] = None
+    if histogram_dir is not None:
+        histogram_path_angle = save_pairwise_histogram(
+            angle_values,
+            histogram_dir,
+            name,
+            axis,
+            tensor_shape=tensor_shape,
+            axis_size=axis_size,
+            metric=COMPARISON_METRIC_INFO["angle"][0],
+            units=angle_unit_label,
+            bins=histogram_bins,
+            histogram_prefix=histogram_prefix,
+        )
+        histogram_path_cosine = save_pairwise_histogram(
+            cosine_values,
+            histogram_dir,
+            name,
+            axis,
+            tensor_shape=tensor_shape,
+            axis_size=axis_size,
+            metric=COMPARISON_METRIC_INFO["cosine"][0],
+            units="cosine",
+            bins=histogram_bins,
+            histogram_prefix=histogram_prefix,
+        )
+
+    results = [
+        CheckpointComparisonStats(
+            parameter=name,
+            axis=axis,
+            axis_size=axis_size,
+            tensor_shape=tensor_shape,
+            num_vectors=vectors_a.shape[0],
+            metric="angle",
+            units=angle_unit_label,
+            min=angle_summary["min"],
+            max=angle_summary["max"],
+            mean=angle_summary["mean"],
+            std=angle_summary["std"],
+            q05=angle_summary["q05"],
+            q1=angle_summary["q1"],
+            median=angle_summary["median"],
+            q3=angle_summary["q3"],
+            q95=angle_summary["q95"],
+            histogram_path=histogram_path_angle,
+        ),
+        CheckpointComparisonStats(
+            parameter=name,
+            axis=axis,
+            axis_size=axis_size,
+            tensor_shape=tensor_shape,
+            num_vectors=vectors_a.shape[0],
+            metric="cosine",
+            units="cosine",
+            min=cosine_summary["min"],
+            max=cosine_summary["max"],
+            mean=cosine_summary["mean"],
+            std=cosine_summary["std"],
+            q05=cosine_summary["q05"],
+            q1=cosine_summary["q1"],
+            median=cosine_summary["median"],
+            q3=cosine_summary["q3"],
+            q95=cosine_summary["q95"],
+            histogram_path=histogram_path_cosine,
+        ),
+    ]
+
+    return results, angle_values.detach(), cosine_values.detach()
+
+
 def save_l2_histogram(
     norms: torch.Tensor,
     histogram_dir: Path,
@@ -1019,6 +1185,218 @@ def render_pairwise_table(
         )
 
 
+def render_checkpoint_comparison_table(
+    rows: List[CheckpointComparisonStats],
+    max_rows: Optional[int],
+    *,
+    colorize: bool,
+) -> None:
+    if not rows:
+        return
+
+    rows = sorted(rows, key=lambda item: (item.parameter, item.axis, item.metric))
+    total_rows = len(rows)
+    display_rows = rows if max_rows is None else rows[:max_rows]
+    has_histograms = any(row.histogram_path is not None for row in rows)
+
+    column_specs: List[ColumnSpec] = [
+        ColumnSpec(
+            "# Vectors",
+            extractor=lambda row: float(row.num_vectors),
+            formatter=lambda row: f"{row.num_vectors:,}",
+        ),
+        ColumnSpec(
+            "Min",
+            extractor=lambda row: float(row.min),
+            formatter=lambda row: f"{row.min:.6g}",
+        ),
+        ColumnSpec(
+            "Max",
+            extractor=lambda row: float(row.max),
+            formatter=lambda row: f"{row.max:.6g}",
+        ),
+        ColumnSpec(
+            "Mean",
+            extractor=lambda row: float(row.mean),
+            formatter=lambda row: f"{row.mean:.6g}",
+        ),
+        ColumnSpec(
+            "Std",
+            extractor=lambda row: float(row.std),
+            formatter=lambda row: f"{row.std:.6g}",
+        ),
+        ColumnSpec(
+            "Q05",
+            extractor=lambda row: float(row.q05),
+            formatter=lambda row: f"{row.q05:.6g}",
+        ),
+        ColumnSpec(
+            "Q1",
+            extractor=lambda row: float(row.q1),
+            formatter=lambda row: f"{row.q1:.6g}",
+        ),
+        ColumnSpec(
+            "Median",
+            extractor=lambda row: float(row.median),
+            formatter=lambda row: f"{row.median:.6g}",
+        ),
+        ColumnSpec(
+            "Q3",
+            extractor=lambda row: float(row.q3),
+            formatter=lambda row: f"{row.q3:.6g}",
+        ),
+        ColumnSpec(
+            "Q95",
+            extractor=lambda row: float(row.q95),
+            formatter=lambda row: f"{row.q95:.6g}",
+        ),
+    ]
+
+    column_ranges = _compute_column_ranges(rows, column_specs)
+
+    table = Table(
+        title="Checkpoint comparison statistics",
+        box=box.SIMPLE_HEAVY,
+        header_style="bold yellow",
+        show_lines=False,
+    )
+    table.add_column("Parameter", overflow="fold")
+    table.add_column("Shape", justify="center")
+    table.add_column("Axis", justify="center")
+    table.add_column("Metric", justify="left")
+    table.add_column("Units", justify="center")
+    table.add_column("# Vectors", justify="right")
+    table.add_column("Min", justify="right")
+    table.add_column("Max", justify="right")
+    table.add_column("Mean", justify="right")
+    table.add_column("Std", justify="right")
+    table.add_column("Q05", justify="right")
+    table.add_column("Q1", justify="right")
+    table.add_column("Median", justify="right")
+    table.add_column("Q3", justify="right")
+    table.add_column("Q95", justify="right")
+    if has_histograms:
+        table.add_column("Histogram", overflow="fold")
+
+    for row in display_rows:
+        formatted_cells = [
+            _format_with_color(spec, row, column_ranges, colorize=colorize)
+            for spec in column_specs
+        ]
+        metric_label, _ = COMPARISON_METRIC_INFO.get(row.metric, (row.metric, ""))
+        values = [
+            row.parameter,
+            str(row.tensor_shape),
+            f"axis {row.axis} (vector dim={row.axis_size})",
+            metric_label,
+            row.units,
+            *formatted_cells,
+        ]
+        if has_histograms:
+            values.append(str(row.histogram_path) if row.histogram_path else "—")
+        table.add_row(*values)
+
+    console = Console()
+    console.print(table)
+    if max_rows is not None and total_rows > max_rows:
+        console.print(
+            f"[dim]Displayed {len(display_rows)} of {total_rows} rows (limited by --max-comparison-rows). Use a larger value to see more.[/]"
+        )
+
+
+def render_comparison_summary(
+    angle_values: List[torch.Tensor],
+    cosine_values: List[torch.Tensor],
+    angle_units: str,
+) -> None:
+    if not angle_values and not cosine_values:
+        return
+
+    table = Table(title="Checkpoint comparison aggregate statistics", box=box.SQUARE)
+    table.add_column("Metric", style="bold magenta")
+    table.add_column("Value", style="bold cyan", justify="right")
+
+    if angle_values:
+        concatenated_angles = torch.cat(angle_values)
+        summary = summarize_metric_values(concatenated_angles)
+        table.add_row("Angle units", angle_units)
+        table.add_row("Angle min", f"{summary['min']:.6g}")
+        table.add_row("Angle max", f"{summary['max']:.6g}")
+        table.add_row("Angle mean", f"{summary['mean']:.6g}")
+        table.add_row("Angle std", f"{summary['std']:.6g}")
+        table.add_row("Angle median", f"{summary['median']:.6g}")
+        table.add_row("Angle q05", f"{summary['q05']:.6g}")
+        table.add_row("Angle q95", f"{summary['q95']:.6g}")
+
+    if cosine_values:
+        concatenated_cosine = torch.cat(cosine_values)
+        summary = summarize_metric_values(concatenated_cosine)
+        table.add_row("Cosine min", f"{summary['min']:.6g}")
+        table.add_row("Cosine max", f"{summary['max']:.6g}")
+        table.add_row("Cosine mean", f"{summary['mean']:.6g}")
+        table.add_row("Cosine std", f"{summary['std']:.6g}")
+        table.add_row("Cosine median", f"{summary['median']:.6g}")
+        table.add_row("Cosine q05", f"{summary['q05']:.6g}")
+        table.add_row("Cosine q95", f"{summary['q95']:.6g}")
+
+    Console().print(table)
+
+
+def export_comparison_to_csv(rows: List[CheckpointComparisonStats], csv_path: Path) -> None:
+    if not rows:
+        return
+
+    csv_path = csv_path.expanduser().resolve()
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fieldnames = [
+        "parameter",
+        "shape",
+        "axis",
+        "axis_size",
+        "metric",
+        "units",
+        "num_vectors",
+        "min",
+        "max",
+        "mean",
+        "std",
+        "q05",
+        "q1",
+        "median",
+        "q3",
+        "q95",
+        "histogram_path",
+    ]
+
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "parameter": row.parameter,
+                    "shape": "scalar"
+                    if len(row.tensor_shape) == 0
+                    else "x".join(str(dim) for dim in row.tensor_shape),
+                    "axis": row.axis,
+                    "axis_size": row.axis_size,
+                    "metric": row.metric,
+                    "units": row.units,
+                    "num_vectors": row.num_vectors,
+                    "min": row.min,
+                    "max": row.max,
+                    "mean": row.mean,
+                    "std": row.std,
+                    "q05": row.q05,
+                    "q1": row.q1,
+                    "median": row.median,
+                    "q3": row.q3,
+                    "q95": row.q95,
+                    "histogram_path": str(row.histogram_path) if row.histogram_path else "",
+                }
+            )
+
 def render_summary(summary: Dict[str, float], matched: int) -> None:
     table = Table(title="Aggregate statistics", box=box.SQUARE)
     table.add_column("Metric", style="bold magenta")
@@ -1054,12 +1432,31 @@ def main() -> None:
     except FileNotFoundError as exc:
         raise SystemExit(f"Checkpoint not found: {exc}") from exc
 
+    comparison_state: Optional[Dict[str, torch.Tensor]] = None
+    comparison_config: Optional[GPTConfig] = None
+    if args.compare_ckpt is not None:
+        try:
+            comparison_state, comparison_config = load_state_dict(
+                str(args.compare_ckpt), args.device
+            )
+        except FileNotFoundError as exc:
+            raise SystemExit(f"Comparison checkpoint not found: {exc}") from exc
+
     pattern = re.compile(args.pattern)
 
     embedding_dim = args.embedding_dim if args.embedding_dim else getattr(config, "n_embd", None)
     if embedding_dim is None:
         console.print(
             "[yellow]Embedding dimension not found in checkpoint configuration; skipping L2 norm statistics.[/]"
+        )
+
+    if (
+        embedding_dim is not None
+        and comparison_config is not None
+        and getattr(comparison_config, "n_embd", embedding_dim) != embedding_dim
+    ):
+        console.print(
+            "[yellow]Warning:[/] Comparison checkpoint embedding dimension does not match the reference checkpoint; using reference embedding dimension for directional statistics."
         )
 
     histogram_dir = args.histogram_dir
@@ -1070,6 +1467,9 @@ def main() -> None:
     l2_rows: List[L2NormStats] = []
     pairwise_rows: List[PairwiseMetricStats] = []
     group_pairwise_rows: List[PairwiseMetricStats] = []
+    comparison_rows: List[CheckpointComparisonStats] = []
+    comparison_angle_values: List[torch.Tensor] = []
+    comparison_cosine_values: List[torch.Tensor] = []
     group_vectors: Dict[str, List[torch.Tensor]] = {
         "wte": [],
         "attn_c_proj": [],
@@ -1077,6 +1477,7 @@ def main() -> None:
         "all_vectors": [],
     }
     pairwise_limit = args.pairwise_limit if args.pairwise_limit is not None else 0
+    comparison_limit = args.comparison_limit if args.comparison_limit is not None else 0
     summary = {
         "numel": 0,
         "sum": 0.0,
@@ -1135,6 +1536,50 @@ def main() -> None:
                             angle_units=args.angle_units,
                         )
                     )
+
+                    if comparison_state is not None:
+                        other_tensor = comparison_state.get(name)
+                        if other_tensor is None:
+                            console.print(
+                                f"[yellow]Warning:[/] Parameter '{name}' not found in comparison checkpoint; skipping comparison stats."
+                            )
+                            continue
+                        if other_tensor.shape != tensor.shape:
+                            console.print(
+                                f"[yellow]Warning:[/] Shape mismatch for '{name}' between checkpoints ({tensor.shape} vs {other_tensor.shape}); skipping comparison stats."
+                            )
+                            continue
+
+                        other_vectors = (
+                            other_tensor.detach()
+                            .to(torch.float32)
+                            .movedim(axis, -1)
+                            .reshape(-1, embedding_dim)
+                        )
+
+                        if comparison_limit > 0 and vectors.shape[0] > comparison_limit:
+                            console.print(
+                                f"[yellow]Skipping comparison statistics for {name} axis {axis} ({vectors.shape[0]:,} vectors) because it exceeds --comparison-limit={comparison_limit}.[/]"
+                            )
+                            continue
+
+                        stats_result, angle_values, cosine_values = compute_checkpoint_comparison_metrics(
+                            name,
+                            tensor_shape,
+                            axis,
+                            axis_size,
+                            vectors,
+                            other_vectors,
+                            histogram_dir,
+                            args.histogram_bins,
+                            histogram_prefix=f"comparison_{name}_axis{axis}",
+                            angle_units=args.angle_units,
+                        )
+                        comparison_rows.extend(stats_result)
+                        if angle_values.numel():
+                            comparison_angle_values.append(angle_values.to(torch.float64).cpu())
+                        if cosine_values.numel():
+                            comparison_cosine_values.append(cosine_values.to(torch.float64).cpu())
 
     if not rows:
         console.print("[red]No parameters matched the provided pattern.[/]")
@@ -1208,6 +1653,21 @@ def main() -> None:
             colorize=args.colorize,
             title="Pairwise similarity statistics (groups)",
         )
+
+    if comparison_rows:
+        render_checkpoint_comparison_table(
+            comparison_rows,
+            args.max_comparison_rows,
+            colorize=args.colorize,
+        )
+        render_comparison_summary(
+            comparison_angle_values,
+            comparison_cosine_values,
+            args.angle_units,
+        )
+        if args.comparison_csv is not None:
+            export_comparison_to_csv(comparison_rows, args.comparison_csv)
+
 
 
 if __name__ == "__main__":
