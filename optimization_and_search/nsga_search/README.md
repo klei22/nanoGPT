@@ -14,7 +14,8 @@ Minimal utilities for multi-objective hyperparameter/architecture search using N
 * In test.py, set the TODO section [hosts, user, key_filename]
 * Ensure the master machine has its public key stored in the slave machines
 
-* The host ips should be defined in host_configs/host.yaml
+* The host ips should be defined in host_configs/internal_host.yaml
+* for an example of the yaml format, see host_configs/hosts.yaml
 
 * From this folder run `bash run_from_scratch.bash`
 
