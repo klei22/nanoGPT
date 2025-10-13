@@ -3,29 +3,60 @@
 # Sweep comparing the skip-correct-top1 loss against other top-1 centric losses.
 
 # Base hyperparameters shared across the sweep.
-max_iters: [20000]
-n_layer: [6]
-n_head: [6]
-n_embd: [384]
-block_size: [256]
-eval_interval: [500]
-dataset: ["opus-100"]
-device: ["cuda"]
-dtype: ["bfloat16"]
+common_group:
+  max_iters: [10000]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  block_size: [256]
+  eval_interval: [500]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  # Position encoding configuration
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  # Position encoding configuration
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  # Misc settings
+  compile: [true]
+  never_save_checkpoint: [true]
+  compute_model_stats: [true]
+  max_sample_tokens: ["256"]
+  # arch
+  use_peri_ln: [true]
+  # norms
+  norm_variant_wte: ["hyperspherenorm"]
+  norm_variant_attn: ["hyperspherenorm"]
+  norm_variant_output: ["hyperspherenorm"]
+  # hsnorm settings
+  hsnorm_gain: [false]
 
-# Position encoding configuration
-use_rotary_embeddings: [true]
-use_abs_pos_embeddings: [false]
+print_model_stats: ["./print_stats/${RUN_NAME}"]
+sample_file: ["./inference_samples/${RUN_NAME}"]
 
-# Optimization setup
-optimizer: ["adamw"]
-weight_decay: [0.1]
-learning_rate: [3.0e-4]
-betas:
-  - [0.9, 0.95]
+named_static_groups:
+  - named_group: "res_slerp"
+    attn_residual_combination: ["slerp"]
+    mlp_residual_combination: ["slerp"]
+  - named_group: "res_add"
+    attn_residual_combination: ["add"]
+    mlp_residual_combination: ["add"]
 
-grad_clip: [1.0]
-min_lr: [6.0e-5]
+named_variation_groups:
+  - named_group: "res_comb_type"
+    named_group_alternates: ["res_slerp", "res_add"]
+
+
+# dataset
+dataset: ["opus-100", "minipile"]
+
+# scale experiments -- testing wte vs attn/output
+hsnorm_scale: ["1.0", "5.0"]
+norm_wte_scale: ["1.0", "5.0"]
+
+# global variations
+named_group_variations: ["res_comb_type"]
 
 # Loss variants under test.
 parameter_groups:
@@ -44,7 +75,3 @@ parameter_groups:
   - loss_schedule: ["0:cross_entropy,10000:skip_correct_top1"]
   - loss_schedule: ["0:cross_entropy,10000:focal"]
 
-# Misc settings
-compile: [true]
-never_save_checkpoint: [true]
-tensorboard_run_name: ["skip_correct_top1_comparison"]
