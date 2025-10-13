@@ -80,8 +80,56 @@ class RemoteTrainer:
         t = threading.Thread(target=beater, name=f"heartbeat-{job.id}", daemon=True)
         job.heartbeat_thread = t
         t.start()
+        
+    def clear_all_jobs(self) -> None:
+        overall_ok = True
+        for i, host in enumerate(self.hosts):
+            try:
+                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                try:
+                    conn.open()
+                    cmd = f"pkill -f optimization_and_search/run_from_yaml.py"
+                    r = conn.run(cmd, hide=True, warn=True)
+                    if r.ok:
+                        logging.info(f"\033[32mKilling jobs succeeded on host_{i} ({host})\033[0m")
+                    else:
+                        logging.error(f"\033[31mKilling jobs failed on host_{i} ({host}): {r.stderr}\033[0m")
+                        overall_ok = False
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
+                overall_ok = False
+        return overall_ok
+        
+    def perform_git_pull(self, remote_work_dir: str) -> bool:
+        overall_ok = True
+        for i, host in enumerate(self.hosts):
+            try:
+                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                try:
+                    conn.open()
+                    cmd = f"cd {remote_work_dir} && git pull"
+                    r = conn.run(cmd, hide=True, warn=True)
+                    if r.ok:
+                        logging.info(f"\033[32mGit pull succeeded on host_{i} ({host})\033[0m")
+                    else:
+                        logging.error(f"\033[31mGit pull failed on host_{i} ({host}): {r.stderr}\033[0m")
+                        overall_ok = False
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
+                overall_ok = False
+        return overall_ok
 
-    def submit_job(self, path_to_yaml: str, remote_work_dir: str) -> bool:
+    def submit_job(self, path_to_yaml: str, remote_work_dir: str, dir_name: str, conda_env: str = "reallmforge", max_iters: int = 10000) -> bool:
         # Load the aggregated YAML (expects a top-level list of configs)
         yaml_path = Path(path_to_yaml)
         if yaml is None:
@@ -151,7 +199,7 @@ class RemoteTrainer:
             try:
                 conn.open()
                 # Create run directory under remote_work_dir (no per-host subfolder)
-                remote_run_dir = f"{remote_work_dir}/nsga_exps/{base}-{run_id}-host{i}"
+                remote_run_dir = f"{remote_work_dir}/nsga_exps/{dir_name}/{base}-{run_id}-host{i}"
                 conn.run(f"mkdir -p {remote_run_dir}", hide=True)
                 remote_yaml_path = f"{remote_run_dir}/{local_slice_files[i].name}"
                 remote_log_path = f"{remote_run_dir}/run.log"
@@ -162,7 +210,6 @@ class RemoteTrainer:
                 logging.info(f"Uploaded {local_slice_files[i].name} to host_{i}:{remote_yaml_path}")
 
                 # kick off remote job; robust conda detection: prefer `conda run -n base`, else activate via hook or conda.sh; log diagnostics
-                max_iters = 10000  # default max iters if not overridden
                 cmd = (
                     f"cd {remote_work_dir} && "
                     f"setsid bash -lc '\n"
@@ -170,18 +217,18 @@ class RemoteTrainer:
                     f"echo \"[launcher] $(date) starting on $(hostname)\";\n"
                     f"echo \"[launcher] PATH: $PATH\";\n"
                     f"CONDA_BIN=$(command -v conda || true);\n"
-                    f"echo \"[launcher] which conda: ${{CONDA_BIN:-not-found}}\";\n"
-                    f"if [ -n \"$CONDA_BIN\" ] && conda run -n base python -V >/dev/null 2>&1; then\n"
-                    f"  echo \"[launcher] using conda run -n base\";\n"
-                    f"  conda run -n base python -u optimization_and_search/run_from_yaml.py --yaml {remote_yaml_path} --output_dir {remote_run_dir} --prefix {base} --override_args max_iters={max_iters}; ec=$?;\n"
+                    f"echo \"[launcher] which conda: $CONDA_BIN\";\n"
+                    f"if [ -n \"$CONDA_BIN\" ] && conda run -n {conda_env} python -V >/dev/null 2>&1; then\n"
+                    f"  echo \"[launcher] using conda run -n {conda_env}\";\n"
+                    f"  conda run -n {conda_env} python -u optimization_and_search/run_from_yaml.py --yaml {remote_yaml_path} --output_dir {remote_run_dir} --prefix {base} --override_args max_iters={max_iters}; ec=$?;\n"
                     f"else\n"
                     f"  if [ -n \"$CONDA_BIN\" ]; then eval \"$(conda shell.bash hook)\" >/dev/null 2>&1 || true; fi;\n"
                     f"  if command -v conda >/dev/null 2>&1; then\n"
-                    f"    conda activate base || echo \"[ERROR] conda activate base failed\";\n"
+                    f"    conda activate {conda_env} || echo \"[ERROR] conda activate {conda_env} failed\";\n"
                     f"  else\n"
                     f"    CONDA_SH=${{CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}};\n"
                     f"    [ -f \"$CONDA_SH\" ] || CONDA_SH=\"$HOME/anaconda3/etc/profile.d/conda.sh\";\n"
-                    f"    if [ -f \"$CONDA_SH\" ]; then . \"$CONDA_SH\"; conda activate base || echo \"[ERROR] conda activate base failed (from conda.sh)\"; else echo \"[WARN] conda.sh not found at $CONDA_SH\"; fi;\n"
+                    f"    if [ -f \"$CONDA_SH\" ]; then . \"$CONDA_SH\"; conda activate {conda_env} || echo \"[ERROR] conda activate {conda_env} failed (from conda.sh)\"; else echo \"[WARN] conda.sh not found at $CONDA_SH\"; fi;\n"
                     f"  fi;\n"
                     f"  echo \"[launcher] conda: $(conda --version 2>/dev/null || echo not-found)\";\n"
                     f"  echo \"[launcher] which python: $(which python 2>/dev/null || echo not-found)\";\n"
@@ -319,6 +366,20 @@ class RemoteTrainer:
                 except Exception:
                     pass
         return self.jobs
+
+    def check_hosts_status(self) -> None:
+        for i, host in enumerate(self.hosts):
+            # check connectivity: if no connection, kick out the host from the list
+            try:
+                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                conn.open()
+                conn.close()
+                logging.info(f"Connectivity OK: host_{i} ({host})")
+            except Exception as e:
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed: {e}\033[0m")
+                self.hosts.remove(host)
+                self.num_hosts = len(self.hosts)
+                logging.warning(f"\033[33mHost_{i} ({host}) removed from host list. Remaining hosts: {self.num_hosts}\033[0m") 
 
     def wait_for_all(self, poll_interval: float = 10.0, timeout: Optional[float] = None, verbose: bool = False) -> bool:
         start = time.time()

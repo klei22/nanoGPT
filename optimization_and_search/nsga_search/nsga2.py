@@ -1,4 +1,4 @@
-import random, math
+import random, math, pickle
 import os, time
 from typing import Any, Dict, List
 from search_space import HeteroSearchSpace, Individual
@@ -53,8 +53,15 @@ class Population:
     # Holds individuals and their evaluations
     # initialized after evaluation 
     def __init__(self, individuals: List[Individual], evaluations: List[EvaluationResult] = None, search_space: HeteroSearchSpace = None):
-        self.individuals = individuals
-        self.evaluations = evaluations
+        self.individuals: List[Individual] = []
+        for ind in individuals:
+            if isinstance(ind, Individual):
+                self.individuals.append(ind)
+            elif isinstance(ind, dict):
+                self.individuals.append(Individual.from_dict(ind))
+            else:
+                raise TypeError(f"Expected Individual or dict, got {type(ind)}")
+        self.evaluations: List[EvaluationResult] = evaluations or []
         self.offspring: List[Individual] = []
         self.offspring_evaluations: List[EvaluationResult] = []
         self.gen = 0
@@ -103,6 +110,33 @@ class Population:
             print("No evaluations completed yet")
         
         print("=" * 50)
+
+    def print_details(self):
+        """Print detailed information of each individual and its evaluation."""
+        for i, (ind, ev) in enumerate(zip(self.individuals, self.evaluations or [])):
+            print(f"\n--- Individual {i+1} ---")
+            indiv: Individual = ind
+            indiv.print_individual()
+            if ev:
+                print(f"Objectives: {ev.objs}")
+                print(f"Constraints: {ev.cons}")
+                print(f"Auxiliary Info: {ev.aux}")
+            else:
+                print("No evaluation result available.")
+        
+        print("\n------------------------------------------")
+        for i, ind in enumerate(self.offspring):
+            print(f"\n--- Offspring Individual {i+1} ---")
+            ind.print_individual()
+            if self.offspring_evaluations and i < len(self.offspring_evaluations):
+                ev = self.offspring_evaluations[i]
+                print(f"Objectives: {ev.objs}")
+                print(f"Constraints: {ev.cons}")
+                print(f"Auxiliary Info: {ev.aux}")
+            else:
+                print("No evaluation result available.")
+
+        print("\n" + "=" * 50)
 
     def __str__(self):
         """String representation of the population."""
@@ -186,7 +220,7 @@ class Population:
         self.evaluations = [self.evaluations[i] for i in order]
         print(f"Reordered individuals and evaluations by non-domination: {order}")
         return
-
+    
     def to_yaml(self, save_path: str = None) -> str:
         """Convert population to YAML format for training experiments.
         Only includes active layers based on layer_mask.
@@ -206,44 +240,26 @@ class Population:
             
             if not active_indices:  # Skip if no active layers
                 continue
-                
-            # Build lists for active layers only
-            n_head_list = []
-            mlp_size_list = []
+
+            # Format YAML entry
+            yaml_lines.append(f"- idx: {i+1}")
             
-            for j in active_indices:
-                if j < len(layers):
-                    layer = layers[j]
-                    n_head_list.append(layer.get("n_heads", 8))
-                    mlp_ratio = layer.get("mlp_ratio", 4)
-                    mlp_size = mlp_ratio * g["d_model"]
-                    mlp_size_list.append(mlp_size)
-            
-            # Get parameter count
-            if hasattr(individual, "estimate_params"):
-                params = individual.estimate_params()  # type: ignore[attr-defined]
-            else:
-                # Fallback inline estimate consistent with search_space
-                d = g["d_model"]
-                vocab_size = 50257
-                total = vocab_size * d
+            # add the configs in global settings
+            for key, value in g.items():
+                if key != "layer_mask":  # Exclude layer_mask from globals
+                    yaml_lines.append(f"  {key}: {value}")
+
+            # Build lists for active layers
+            for key, _ in layers[0].items():
+                layerlist = []
+                arg = f"{key}_layerlist"
                 for j in active_indices:
                     if j < len(layers):
                         layer = layers[j]
-                        h = max(1, layer.get("n_heads", 8))
-                        r = layer.get("mlp_ratio", 4)
-                        total += (2.0 + r)*d*d + 0.05*h*d*d
-                params = int(total)
-            param_millions = params / 1_000_000
-            
-            # Format YAML entry
-            yaml_lines.append(f"- idx: {i+1}")
-            yaml_lines.append(f"  n_embd: {g['d_model']}")
-            # yaml_lines.append(f"- n_embd: {g['d_model']}")
-            yaml_lines.append(f"  block_size: {g['block_size']}")
-            yaml_lines.append(f"  n_head_layerlist: {n_head_list}")
-            yaml_lines.append(f"  mlp_size_layerlist: {mlp_size_list}")
-            yaml_lines.append(f"# n_layers: {len(active_indices)}, ~{param_millions:.1f}M params")
+                        layerlist.append(layer.get(key))
+                yaml_lines.append(f"  {arg}: {layerlist}")
+
+            yaml_lines.append(f"# n_layers: {len(active_indices)}")
             
             yaml_lines.append("")
 
@@ -293,13 +309,28 @@ class Population:
         os.replace(tmp, path)
         return path
 
+    def save_checkpoint_pkl(self, path: str) -> None:
+        """Save a checkpoint of the population to a pickle file.
+        """
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+        return
+
     @staticmethod
-    def load_checkpoint(path: str) -> "Population":
+    def load_checkpoint(path: str, from_pkl=True) -> "Population":
         """Load a Population from a checkpoint created by save_checkpoint.
 
         Note: EvaluationResult objects are reconstructed from stored dicts.
         Search space must be re-initialized separately if needed for operations.
         """
+        if from_pkl:
+            with open(path, "rb") as f:
+                pop = pickle.load(f)
+            if not isinstance(pop, Population):
+                raise TypeError(f"Loaded object is not a Population, got {type(pop)}")
+            return pop
+        
         with open(path, "r") as f:
             data = json.load(f)
         
@@ -338,12 +369,12 @@ class Population:
         
         return pop
 
-    def sw_eval(self, hosts: List[str], user: str, key_filename: str) -> None:
+    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str = "default", max_iters: int = 10000, conda_env: str = "reallmforge") -> None:
         # send the training work to worker nodes and wait for results
         train_yaml_path = self.to_yaml(save_path="train")
         trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
-        trainer.submit_job(path_to_yaml=train_yaml_path, remote_work_dir=f"/home/{user}/Evo_GPT")
-        trainer.wait_for_all(poll_interval=600, timeout=72000, verbose=True)
+        trainer.submit_job(path_to_yaml=train_yaml_path, remote_work_dir=f"/home/{user}/Evo_GPT", dir_name=run_dir_name, max_iters=max_iters, conda_env=conda_env)
+        trainer.wait_for_all(poll_interval=300, timeout=72000, verbose=True)
         data_csv = trainer.fetch_results(local_dir="train", gen=self.gen)
         # read the csv and populate self.evaluations
         # load the csv file's second column as a list of floats
@@ -360,12 +391,13 @@ class Population:
             if idx in sw_data:
                 val_loss = sw_data[idx]
                 # reconstruct evaluation result
-                params = estimate_params_hetero(ind)
-                mem_bytes = estimate_mem_hetero(ind)
-                flops = estimate_flops_hetero(ind)
+                # params = estimate_params_hetero_infi(ind)
+                params = ind.estimate_params()
+                mem_bytes = ind.estimate_mem_access()
+                flops = ind.estimate_flops()
                 _, e_per_token, ttft = proxy_measure(ind, params, mem_bytes, flops)
-                c1 = params - 110_000_000
-                c2 = mem_bytes - 1_200_000_000
+                c1 = params - 1_000_000_000
+                c2 = val_loss - 3.0
                 # c3 = latency_from_tp(throughput) - 180.0
                 objs = [float(val_loss), float(e_per_token), float(ttft)]
                 eval_res = EvaluationResult(objs, [c1, c2], {
@@ -447,9 +479,6 @@ def load_csv_with_idx_lookup(filepath):
             data[idx] = best_val_loss
     return data
 
-# -----------------------------
-# Proxies (edit/replace later)
-# -----------------------------
 def estimate_params_hetero(x: Individual):
     g = x["globals"]; d = g["d_model"]
     total = 0.0
@@ -496,14 +525,11 @@ def proxy_measure(x: Individual, params, mem_bytes, flops):
     # TTFT depends on params and whether using flash/linear
     mask = x["globals"].get("layer_mask", [True]*len(x["layers"]))
     L = sum(1 for v in mask if v)
-    attn_bonus = sum(1 for i in range(L) if x["layers"][i]["attn_type"] in ("flash","mha"))
-    ttft = 50.0 + 0.5*(params/1e6)  #ms  scale with size
+    ttft = params/1e6  #ms  scale with size
     # energy per token depends on flops and memory
-    e_per_token = 0.1 + 6e-11*flops + 1.5e-9*mem_bytes + 0.015*(1.0)
+    e_per_token = flops/1e3
     # val_loss improves with capacity but worsens with aggressive quant + sparsity
-    capacity = math.log10(params + 10.0)
-    reg = 0.15 + (x["globals"]["quant_bits"] <= 6)*0.18
-    val_loss = max(2.0, 5.2 - 0.40*capacity + 0.5*reg)
+    val_loss = 99
     return val_loss, e_per_token, ttft
 
 # -----------------------------
