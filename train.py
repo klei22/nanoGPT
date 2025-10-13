@@ -143,6 +143,11 @@ class Trainer:
         self.stats_device = torch.device("cuda") if stats_dev_flag == "gpu" else torch.device("cpu")
 
         self.stats_csv_path = getattr(self.args, "print_model_stats_table", None)
+        if self.stats_csv_path:
+            self.stats_csv_path = os.path.expanduser(self.stats_csv_path)
+            stats_dir = os.path.dirname(self.stats_csv_path)
+            if stats_dir and not os.path.exists(stats_dir):
+                os.makedirs(stats_dir, exist_ok=True)
 
         # calculation on end time via eval cycle
         self.eval_cycle_window = deque(maxlen=self.args.eval_cycle_window)

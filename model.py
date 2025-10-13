@@ -144,7 +144,10 @@ class GPT(nn.Module):
 
         # Embedding scale
         if config.use_embedding_scale:
-            self.embedding_scale = nn.Parameter(torch.sqrt(torch.tensor(config.n_embd)))
+            if config.embedding_scale_init is not None:
+                self.embedding_scale = nn.Parameter(torch.tensor([config.embedding_scale_init]))
+            else:
+                self.embedding_scale = nn.Parameter(torch.sqrt(torch.tensor([config.n_embd])))
 
         # Learned Steering Vectors
         self.use_lsv = config.use_lsv
@@ -194,6 +197,12 @@ class GPT(nn.Module):
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
+
+        # Optional post-embedding normalizations
+        if self.config.norm_variant_wte is not None:
+            self.transformer['post_embedding_norm'] = self.build_norm_from_variant(config, "norm_variant_wte", "norm_wte")
+        if self.config.norm_variant_abs is not None:
+            self.transformer['post_abs_norm'] = self.build_norm_from_variant(config, "norm_variant_abs", "norm_abs")
 
         if self.config.use_abs_pos_embeddings:
             if config.quantize_wpe:
@@ -287,6 +296,15 @@ class GPT(nn.Module):
             for block in self.transformer.h:
                 if hasattr(block.attn, 'bias'):
                     block.attn.bias = torch.tril(torch.ones(new_block_size, new_block_size)).view(1, 1, new_block_size, new_block_size)
+
+    def build_norm_from_variant(self, config, variant_key: str, prefix: str):
+        """Helper to deep-copy config and override hsnorm parameters if present."""
+        norm_config = copy.deepcopy(config)
+        for attr in ("radius", "scale", "gain"):
+            src = f"{prefix}_{attr}"
+            if getattr(norm_config, src, None) is not None:
+                setattr(norm_config, f"hsnorm_{attr}", getattr(norm_config, src))
+        return norm_dictionary[getattr(config, variant_key)](norm_config)
 
     def _init_weights(self, module):
         """
@@ -555,16 +573,22 @@ class GPT(nn.Module):
                 tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
             x = None
 
+            if self.n_embd_wte:
+                tok_emb = self.transformer.scale_up(tok_emb)
+
             if self.config.use_embedding_scale:
                 tok_emb = tok_emb * self.embedding_scale
 
-            if self.n_embd_wte:
-                tok_emb = self.transformer.scale_up(tok_emb)
+            if self.config.norm_variant_wte is not None:
+                tok_emb = self.transformer.post_embedding_norm(tok_emb)
 
             if self.config.use_abs_pos_embeddings:
                 pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
                 pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-                x = self.transformer.drop(tok_emb + pos_emb)
+                x = tok_emb + pos_emb
+                if self.config.norm_variant_abs is not None:
+                    x = self.transformer.post_abs_norm(x)
+                x = self.transformer.drop(x)
             else:
                 x = self.transformer.drop(tok_emb)
 
@@ -681,14 +705,24 @@ class GPT(nn.Module):
             tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
         else:
             tok_emb = self.transformer.wte(idx)
+
         if self.n_embd_wte:
             tok_emb = self.transformer.scale_up(tok_emb)
+
         if self.config.use_embedding_scale:
             tok_emb = tok_emb * self.embedding_scale
+
+        if self.config.norm_variant_wte is not None:
+            tok_emb = self.transformer.post_embedding_norm(tok_emb)
+
         if self.config.use_abs_pos_embeddings:
             t = idx.size(1)
             pos = torch.arange(0, t, dtype=torch.long, device=device)
             tok_emb = tok_emb + self.transformer.wpe(pos)
+            if self.config.norm_variant_abs is not None:
+                tok_emb = self.transformer.post_abs_norm(tok_emb)
+
+
         return self.transformer.drop(tok_emb)
 
     def forward_embedded(self, x_emb, iter_num=None, return_hidden=False, dataset_idx=None):

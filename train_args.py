@@ -522,9 +522,11 @@ def parse_args():
     # MLP Variations
     mlp_variants = [
             "mlp",
+            "edgellm_asic_mlp",
             "kan",
             "swiglu",
             "dual_path",
+            "dual_path_swiglu",
             "identity",
             ]
     
@@ -635,6 +637,19 @@ def parse_args():
 
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)
     model_group.add_argument("--norm_variant_output", type=str, default="rmsnorm", choices=norm_variations)
+    model_group.add_argument("--use_flash_norm", type=bool, default=None, action=argparse.BooleanOptionalAction)
+
+    ### WTE and Abs Pos Embedding Post Norms (optional, and default None)
+    model_group.add_argument("--norm_variant_wte", type=str, default=None, choices=norm_variations)
+    model_group.add_argument("--norm_variant_abs", type=str, default=None, choices=norm_variations)
+
+    model_group.add_argument("--norm_wte_radius", type=float, default=None)
+    model_group.add_argument("--norm_wte_scale", type=float, default=None)
+    model_group.add_argument("--norm_wte_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
+
+    model_group.add_argument("--norm_abs_radius", type=float, default=None)
+    model_group.add_argument("--norm_abs_scale", type=float, default=None)
+    model_group.add_argument("--norm_abs_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
 
     ## Layernorm
     model_group.add_argument('--bias', default=False, action=argparse.BooleanOptionalAction, help="only used for layernorm variation option")
@@ -651,6 +666,7 @@ def parse_args():
 
     ## HyperSphereNorm
     model_group.add_argument("--hsnorm_gain", default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--hsnorm_scale", type=float, default=1.0)
     model_group.add_argument("--hsnorm_radius", type=float, default=None)
     model_group.add_argument("--hsnorm_radius_learning", default=False, action=argparse.BooleanOptionalAction)
 
@@ -677,6 +693,7 @@ def parse_args():
             "softsign",
             "softshrink",
             "squared_relu",
+            "squared_gelu",
             "tanh",
             "identity",
         ]
@@ -690,6 +707,7 @@ def parse_args():
     model_group.add_argument("--dact_use_alpha",  type=bool, default=True, action=argparse.BooleanOptionalAction)
 
     model_group.add_argument("--use_embedding_scale", type=bool, default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--embedding_scale_init", type=float, default=None)
 
     # ACTIVATION VARIATIONS
     model_group.add_argument( "--activation_variant", type=str, default="gelu", choices=activation_variations)
@@ -719,6 +737,7 @@ def parse_args():
     # Attention Variations
     attention_variants = [
                           "causal",
+                          "edgellm_asic_attn",
                           "linear",
                           "ssm",
                           "identity",
@@ -905,6 +924,10 @@ def parse_args():
     ### ASIC Activations
     model_group.add_argument("--quantize_asic_prenorm", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC input to norm")
     model_group.add_argument("--quantize_asic_offchip_residual", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC off-chip residual")
+    model_group.add_argument("--quantize_asic_attn_softmax_denom", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC attention softmax denominator")
+    model_group.add_argument("--quantize_asic_attn_softmax_denom_bits", type=int, default=16, help="number of bits for ASIC attention softmax denominator quantization")
+    model_group.add_argument("--quantize_asic_attn_softmax_numerator", action=argparse.BooleanOptionalAction, default=False, help="quantize the ASIC attention softmax numerator")
+    model_group.add_argument("--quantize_asic_attn_softmax_numerator_bits", type=int, default=8, help="number of bits for ASIC attention softmax numerator quantization")
 
     ### Default Precisions for ASIC Activations
     model_group.add_argument("--quantize_asic_bits", type=int, default=8, help="number of bits for asic quantization")

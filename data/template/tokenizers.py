@@ -121,6 +121,7 @@ class TiktokenTokenizer(Tokenizer):
     def __init__(self, args):
         super().__init__(args)
         self.tiktoken_encoding = args.tiktoken_encoding
+        self.last_token_count = 0
 
         # Load additional tokens if provided
         self.additional_tokens = {}
@@ -195,6 +196,8 @@ class TiktokenTokenizer(Tokenizer):
             "itos": {i: self.enc.decode([i]) for i in set(token_ids)}
         }
         self.finalize_meta(meta)
+
+        self.last_token_count = len(token_ids)
         return token_ids
 
     def detokenize(self, token_ids):

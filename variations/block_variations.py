@@ -181,6 +181,8 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     # Attn Pre-LN
     x_attn_in = x_quantized_residual
     if block.use_pre_ln_attn:
+        if block.use_flash_norm:
+            print("Warning: FlashNorm is used with pre_ln, causing double normalization.")
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
     # Attn Operation
@@ -207,6 +209,8 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 
     # MLP Pre-LN
     if block.use_pre_ln_mlp:
+        if block.use_flash_norm:
+            print("Warning: FlashNorm is used with pre_ln, causing double normalization.")
         x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
     # MLP Operation
@@ -377,6 +381,8 @@ class Block(nn.Module):
         # Forward variation choice
         self.use_parallel_mlp = getattr(config, "use_parallel_mlp", False)
         self.use_edgellm_asic = getattr(config, "use_edgellm_asic", False)
+
+        self.use_flash_norm = getattr(config, "use_flash_norm", False)
 
         if self.use_parallel_mlp:
             variant = "parallel_mlp"

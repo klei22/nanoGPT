@@ -118,12 +118,16 @@ def main():
 
     # Tokenize data
     train_ids = tokenizer.tokenize(train_data)
+    if args.method == "tiktoken":
+        print(f"[tiktoken] Total train tokens: {tokenizer.last_token_count:,}")
     if args.method == "sinewave" and args.val_input is None:
         split_point = int(len(train_ids) * args.percentage_train)
         val_ids = train_ids[split_point:]
         train_ids = train_ids[:split_point]
     elif val_data is not None:
         val_ids = tokenizer.tokenize(val_data)
+        if args.method == "tiktoken":
+            print(f"[tiktoken] Total val tokens: {tokenizer.last_token_count:,}")
     else:
         val_ids = None
 
