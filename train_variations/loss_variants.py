@@ -29,6 +29,44 @@ def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor, *, iter_num:
     return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
 
+def no_repeat_cross_entropy_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+) -> torch.Tensor:
+    """Cross entropy that skips positions where the target repeats the previous token."""
+
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+
+    ce = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+
+    try:
+        targets_seq = targets.reshape(-1, targets.size(-1))
+    except RuntimeError:
+        mask = targets_flat != -1
+        if mask.any():
+            return ce[mask].mean()
+        return ce.new_zeros(())
+
+    repeated_mask = torch.zeros_like(targets_seq, dtype=torch.bool)
+    valid_mask = targets_seq != -1
+    repeated_mask[:, 1:] = (
+        (targets_seq[:, 1:] == targets_seq[:, :-1])
+        & valid_mask[:, 1:]
+        & valid_mask[:, :-1]
+    )
+
+    mask_flat = (targets_flat != -1) & ~repeated_mask.view(-1)
+
+    if mask_flat.any():
+        return ce[mask_flat].mean()
+
+    # If every token was skipped we still need a tensor with grad for autograd.
+    return ce.new_zeros(())
+
+
 def label_smoothing_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -314,6 +352,7 @@ def entropy_rank_distance_focal_loss(
 
 LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
     "cross_entropy": cross_entropy_loss,
+    "no_repeat_cross_entropy": no_repeat_cross_entropy_loss,
     "label_smoothing": label_smoothing_loss,
     "focal": focal_loss,
     "top1_focus": top1_focus_loss,
@@ -404,6 +443,7 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
 
     built_losses: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
         "cross_entropy": LOSS_VARIANTS["cross_entropy"],
+        "no_repeat_cross_entropy": LOSS_VARIANTS["no_repeat_cross_entropy"],
         "label_smoothing": lambda l, t, *, iter_num=None: LOSS_VARIANTS["label_smoothing"](
             l, t, iter_num=iter_num, smoothing=getattr(args, "label_smoothing", 0.1)
         ),
