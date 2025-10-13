@@ -8,6 +8,7 @@ import logging
 import time
 from run_exp import load_hosts_from_file
 import os
+import argparse
 
 
 # Configure logging to only show INFO:root messages
@@ -16,13 +17,41 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s: %(messag
 for name in ("paramiko", "paramiko.transport", "fabric", "invoke"):
     logging.getLogger(name).disabled = True
 
-hosts = load_hosts_from_file("../host_configs/internal_hosts.yaml")
-user = "xinting"  # SSH username for login
-key_filename = "/home/xinting/.ssh/id_rsa"  # Path to SSH private key file
+def main():
+    parser = argparse.ArgumentParser(description="Stop/clear all remote training jobs across hosts.")
+    parser.add_argument(
+        "--hosts",
+        type=str,
+        default="../host_configs/internal_hosts.yaml",
+        help="Path to YAML file listing remote hosts",
+    )
+    parser.add_argument(
+        "--user",
+        type=str,
+        default="xinting",
+        help="SSH username",
+    )
+    parser.add_argument(
+        "--key",
+        dest="key_filename",
+        type=str,
+        default="/home/xinting/.ssh/id_rsa",
+        help="Path to SSH private key file",
+    )
 
-trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
-trainer.clear_all_jobs()
-print("Cleared all training jobs on remote hosts.")
+    args = parser.parse_args()
+
+    hosts = load_hosts_from_file(args.hosts)
+    user = args.user
+    key_filename = args.key_filename
+
+    trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
+    trainer.clear_all_jobs()
+    print("Cleared all training jobs on remote hosts.")
+
+
+if __name__ == "__main__":
+    main()
 
 
 

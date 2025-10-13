@@ -176,9 +176,15 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
     <div class=\"container\">
       {plotly_html}
             <div id=\"gen-label\" style=\"margin: 8px 0 6px 0; font-weight: 600;\"></div>
-            <div id=\"details-panel\">
+                    <div id=\"arch-panel\" style=\"margin-top: 10px;\">
+                        <div style=\"font-weight:600; margin-bottom:6px;\">Architecture</div>
+                        <div id=\"arch-plot-heads\" style=\"height:180px;\"></div>
+                        <div id=\"arch-plot-dims\" style=\"height:180px; margin-top:8px;\"></div>
+                        <div id=\"arch-plot-mlp\" style=\"height:180px; margin-top:8px;\"></div>
+                    </div>
+            <div id=\"details-panel\"> 
                 <div class=\"hint\">Click a point to see its full configuration here…</div>
-      </div>
+            </div>
     </div>
     {plotly_script}
   </body>
@@ -191,6 +197,7 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
     var genLabel = document.getElementById('gen-label');
   if(!gd || !panel) return;
     var lastDetailsHTML = null;
+        var lastCfgObj = null;
 
   function fmt(val, digits) {
     if (typeof val === 'number' && isFinite(val)) return val.toFixed(digits);
@@ -221,15 +228,22 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
         }
     }
 
-        gd.on('plotly_click', function(e) {
+            gd.on('plotly_click', function(e) {
     if (!e || !e.points || e.points.length === 0) return;
     var p = e.points[0];
 
-    var cfg = p.customdata;
-    if (Array.isArray(cfg)) { cfg = cfg[0]; }
-    if (typeof cfg !== 'string') {
-      try { cfg = JSON.stringify(cfg, null, 2); } catch(err) { cfg = String(cfg); }
-    }
+                    var cfgText = null;
+                    var cfgObj = null;
+                    if (Array.isArray(p.customdata)) {
+                        cfgText = p.customdata[0];
+                        cfgObj = p.customdata[1] || null;
+                    } else {
+                        // backward fallback
+                        cfgText = p.customdata;
+                    }
+                if (typeof cfgText !== 'string') {
+                    try { cfgText = JSON.stringify(cfgText, null, 2); } catch(err) { cfgText = String(cfgText); }
+                }
 
     var seriesName = p.data && p.data.name ? p.data.name : '';
     var hdr = '<div class="details-header">' + seriesName + '</div>';
@@ -240,15 +254,77 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
     if (typeof p.y !== 'undefined') metaParts.push('Y=' + fmt(p.y, 5));
     var meta = '<div class="details-meta">' + metaParts.join(' | ') + '</div>';
 
-        var content = hdr + meta + '<pre>' + cfg + '</pre>';
-        panel.innerHTML = content;
-        lastDetailsHTML = content;
+            var content = hdr + meta + '<pre>' + cfgText + '</pre>';
+            panel.innerHTML = content;
+            lastDetailsHTML = content;
+            if (cfgObj) {
+                renderArchPlots(cfgObj);
+                lastCfgObj = cfgObj;
+            }
   });
+
+        function getGlobals(cfg) {
+            if (!cfg || typeof cfg !== 'object') return {};
+            return (cfg.globals && typeof cfg.globals === 'object') ? cfg.globals : cfg;
+        }
+
+        function getLayers(cfg) {
+            if (!cfg || typeof cfg !== 'object') return [];
+            if (Array.isArray(cfg.layers)) return cfg.layers;
+            return [];
+        }
+
+        function renderArchPlots(cfg) {
+            var g = getGlobals(cfg);
+            var layers = getLayers(cfg);
+            var mask = Array.isArray(g.layer_mask) ? g.layer_mask.slice(0, layers.length) : new Array(layers.length).fill(true);
+            var xs = [];
+            for (var i = 0; i < layers.length; i++) { if (mask[i]) xs.push(i); }
+
+            var a_heads = [], a_kvg = [], a_qk = [], a_v = [], a_mlp = [], pos = [];
+            for (var j = 0; j < xs.length; j++) {
+                var li = layers[xs[j]] || {};
+                var isInf = (li.attention_variant === 'infinite');
+                a_heads.push(isInf ? (li.n_head || 0) : 0);
+                a_kvg.push(isInf ? (li.n_kv_group || 0) : 0);
+                a_qk.push(isInf ? (li.n_qk_head_dim || 0) : 0);
+                a_v.push(isInf ? (li.n_v_head_dim || 0) : 0);
+                a_mlp.push(li.mlp_size || 0);
+                pos.push(j);
+            }
+
+            var ticktext = xs.map(function(i){ return String(i); });
+            var tickvals = pos.slice();
+
+            // Plot 1: n_heads vs n_kv_group
+            var data1 = [
+                {type:'bar', x: tickvals, y: a_heads, name:'n_heads', marker:{color:'#4C72B0'}, offsetgroup:'a'},
+                {type:'bar', x: tickvals, y: a_kvg,   name:'n_kv_group', marker:{color:'#DD8452'}, offsetgroup:'b'}
+            ];
+            var layout1 = {barmode:'group', margin:{l:40,r:10,t:10,b:40}, showlegend:true, legend:{orientation:'h'}, yaxis:{title:'count'}, xaxis:{tickmode:'array', tickvals:tickvals, ticktext:ticktext}};
+            Plotly.newPlot('arch-plot-heads', data1, layout1, {displayModeBar:false, responsive:true});
+
+            // Plot 2: qk/v dims
+            var data2 = [
+                {type:'bar', x: tickvals, y: a_qk, name:'qk_dim', marker:{color:'#C44E52'}, offsetgroup:'a'},
+                {type:'bar', x: tickvals, y: a_v,  name:'v_dim',  marker:{color:'#8172B2'}, offsetgroup:'b'}
+            ];
+            var layout2 = {barmode:'group', margin:{l:40,r:10,t:10,b:40}, showlegend:true, legend:{orientation:'h'}, yaxis:{title:'head dims'}, xaxis:{title:'active layer index', tickmode:'array', tickvals:tickvals, ticktext:ticktext}};
+            Plotly.newPlot('arch-plot-dims', data2, layout2, {displayModeBar:false, responsive:true});
+
+            // Plot 3: mlp_size
+                var data3 = [{type:'bar', x: tickvals, y: a_mlp, name:'mlp_size', marker:{color:'#55A868'}}];
+                var layout3 = {margin:{l:40,r:10,t:10,b:40}, showlegend:true, legend:{orientation:'h'}, yaxis:{title:'mlp_size'}, xaxis:{tickmode:'array', tickvals:tickvals, ticktext:ticktext}};
+            Plotly.newPlot('arch-plot-mlp', data3, layout3, {displayModeBar:false, responsive:true});
+        }
 
     function restoreDetails() {
         if (lastDetailsHTML) {
             panel.innerHTML = lastDetailsHTML;
         }
+            if (lastCfgObj) {
+                renderArchPlots(lastCfgObj);
+            }
     }
     gd.on('plotly_restyle', restoreDetails);
     gd.on('plotly_relayout', restoreDetails);
@@ -367,11 +443,13 @@ def create_2d_plots(df, generations):
         
         if gen_data.empty:
             continue
-        # customdata for details panel (pretty JSON per point)
-        if 'config_str' in gen_data.columns:
-            customdata_bg = gen_data['config_str'].tolist()
+        # customdata for details panel and on-the-fly arch plots: [config_text, config_object]
+        if 'config_str' in gen_data.columns and 'config' in gen_data.columns:
+            customdata_bg = [[cfg_text, cfg_obj] for cfg_text, cfg_obj in zip(gen_data['config_str'].tolist(), gen_data['config'].tolist())]
+        elif 'config_str' in gen_data.columns:
+            customdata_bg = [[cfg_text, None] for cfg_text in gen_data['config_str'].tolist()]
         else:
-            customdata_bg = ["{}"] * len(gen_data)
+            customdata_bg = [["{}", None]] * len(gen_data)
             
         # Plot 1: Validation Loss vs Energy/Token
         fig.add_trace(
@@ -455,10 +533,12 @@ def create_2d_plots(df, generations):
         # Highlighted traces (initially only first generation visible)
         visible = True if i == 0 else False
         # customdata for highlighted points too
-        if 'config_str' in gen_data.columns:
-            customdata_hl = gen_data['config_str'].tolist()
+        if 'config_str' in gen_data.columns and 'config' in gen_data.columns:
+            customdata_hl = [[cfg_text, cfg_obj] for cfg_text, cfg_obj in zip(gen_data['config_str'].tolist(), gen_data['config'].tolist())]
+        elif 'config_str' in gen_data.columns:
+            customdata_hl = [[cfg_text, None] for cfg_text in gen_data['config_str'].tolist()]
         else:
-            customdata_hl = ["{}"] * len(gen_data)
+            customdata_hl = [["{}", None]] * len(gen_data)
         
         # Plot 1 highlighted
         fig.add_trace(
@@ -723,7 +803,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_med/1012_0723_ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_attn_exp_iter20k/1010_1729_ckpt_gen", help="Path to the evolution log file")
     parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index")
     parser.add_argument("--end_gen", type=int, default=15, help="Ending generation index")
     parser.add_argument("--output", type=str, default="htmls/interactive_generational_scatter.html", help="Output HTML file path")

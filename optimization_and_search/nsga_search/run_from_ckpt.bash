@@ -12,8 +12,8 @@ python run_exp.py \
     --max_layers 24 \
     --min_layers 2 \
     --offspring 12 \
-    --generations 1 \
-    --exp_name infi_try \
+    --generations 34 \
+    --exp_name infi_med_resume \
     --conda_env reallmforge \
-    --max_iters 1000 \
+    --max_iters 10000 \
     2>&1 | tee -a "$log"

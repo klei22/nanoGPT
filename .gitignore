@@ -30,5 +30,7 @@ optimization_and_search/nsga_search/plots/
 optimization_and_search/nsga_search/htmls/
 optimization_and_search/nsga_search/visualization/
 optimization_and_search/nsga_search/tests/
+optimization_and_search/nsga_search/utils/
+optimization_and_search/nsga_search/*.bash
 
 venv/*
