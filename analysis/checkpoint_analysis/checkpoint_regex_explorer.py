@@ -1,6 +1,7 @@
 """Utility to explore checkpoint parameters that match a regular expression."""
 
 import argparse
+import csv
 import math
 import re
 import sys
@@ -72,6 +73,17 @@ class PairwiseMetricStats:
     histogram_path: Optional[Path]
 
 
+@dataclass
+class VectorViewData:
+    """Container with reshaped vectors for a parameter axis."""
+
+    parameter: str
+    axis: int
+    axis_size: int
+    tensor_shape: Tuple[int, ...]
+    vectors: torch.Tensor
+
+
 PAIRWISE_METRIC_INFO: Dict[str, Tuple[str, str]] = {
     "angle_min": ("Min angle", "angle"),
     "angle_mean": ("Mean angle", "angle"),
@@ -88,6 +100,10 @@ PAIRWISE_METRIC_INFO: Dict[str, Tuple[str, str]] = {
     "cos_q3": ("75th pct cosine similarity", "cosine"),
     "cos_q95": ("95th pct cosine similarity", "cosine"),
     "cos_max": ("Max cosine similarity", "cosine"),
+    "Angle difference": ("Angle difference", "angle"),
+    "Cosine similarity (comparison)": ("Cosine similarity (comparison)", "cosine"),
+    "Overall angle difference": ("Overall angle difference", "angle"),
+    "Overall cosine similarity": ("Overall cosine similarity", "cosine"),
 }
 
 
@@ -193,7 +209,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Display statistics for checkpoint parameters matching a regex pattern."
     )
-    parser.add_argument("ckpt_path", help="Path to the checkpoint file")
+    parser.add_argument(
+        "ckpt_paths",
+        nargs="+",
+        help="One or two checkpoint files to inspect. If two are provided, vector-level comparisons are computed.",
+    )
     parser.add_argument("pattern", help="Regular expression used to filter parameter names")
     parser.add_argument(
         "--device", type=str, default="cpu", help="Device used to load the checkpoint"
@@ -227,6 +247,20 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=50,
         help="Number of bins used when plotting L2 norm histograms",
+    )
+    parser.add_argument(
+        "--comparison-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory used to store comparison reports (CSV and histograms) when two checkpoints are provided."
+        ),
+    )
+    parser.add_argument(
+        "--comparison-bins",
+        type=int,
+        default=None,
+        help="Optional override for the number of bins used in comparison histograms.",
     )
     parser.add_argument(
         "--pairwise-limit",
@@ -1045,38 +1079,36 @@ def render_summary(summary: Dict[str, float], matched: int) -> None:
     Console().print(table)
 
 
-def main() -> None:
-    args = parse_args()
+def analyze_checkpoint(
+    *,
+    checkpoint_label: str,
+    state_dict: Dict[str, torch.Tensor],
+    pattern: re.Pattern[str],
+    embedding_dim: Optional[int],
+    histogram_dir: Optional[Path],
+    histogram_bins: int,
+    pairwise_limit: int,
+    angle_units: str,
+) -> Tuple[
+    List[Tuple[str, Dict[str, float]]],
+    Dict[str, float],
+    List[L2NormStats],
+    List[PairwiseMetricStats],
+    List[PairwiseMetricStats],
+    Dict[Tuple[str, int], VectorViewData],
+]:
     console = Console()
-
-    try:
-        state_dict, config = load_state_dict(args.ckpt_path, args.device)
-    except FileNotFoundError as exc:
-        raise SystemExit(f"Checkpoint not found: {exc}") from exc
-
-    pattern = re.compile(args.pattern)
-
-    embedding_dim = args.embedding_dim if args.embedding_dim else getattr(config, "n_embd", None)
-    if embedding_dim is None:
-        console.print(
-            "[yellow]Embedding dimension not found in checkpoint configuration; skipping L2 norm statistics.[/]"
-        )
-
-    histogram_dir = args.histogram_dir
-    if histogram_dir is not None:
-        histogram_dir = histogram_dir.expanduser().resolve()
-
-    rows = []
+    rows: List[Tuple[str, Dict[str, float]]] = []
     l2_rows: List[L2NormStats] = []
     pairwise_rows: List[PairwiseMetricStats] = []
     group_pairwise_rows: List[PairwiseMetricStats] = []
+    vector_views: Dict[Tuple[str, int], VectorViewData] = {}
     group_vectors: Dict[str, List[torch.Tensor]] = {
         "wte": [],
         "attn_c_proj": [],
         "mlp_c_proj": [],
         "all_vectors": [],
     }
-    pairwise_limit = args.pairwise_limit if args.pairwise_limit is not None else 0
     summary = {
         "numel": 0,
         "sum": 0.0,
@@ -1088,63 +1120,66 @@ def main() -> None:
     }
 
     for name, tensor in state_dict.items():
-        if pattern.search(name):
-            stats = tensor_stats(tensor)
-            rows.append((name, stats))
-            update_global_summary(summary, stats, tensor)
-            if embedding_dim:
-                tensor_shape = tuple(tensor.shape)
-                for axis, axis_size, vectors in iter_vector_views(tensor, embedding_dim):
-                    l2_stat = compute_l2_norm_stats_for_vectors(
-                        name,
-                        tensor_shape,
-                        axis,
-                        axis_size,
-                        vectors,
-                        histogram_dir,
-                        args.histogram_bins,
-                    )
-                    if l2_stat is not None:
-                        l2_rows.append(l2_stat)
+        if not pattern.search(name):
+            continue
 
-                    group_vectors["all_vectors"].append(vectors)
-                    lower_name = name.lower()
-                    if "wte" in lower_name and lower_name.endswith("weight"):
-                        group_vectors["wte"].append(vectors)
-                    if ".attn.c_proj" in lower_name:
-                        group_vectors["attn_c_proj"].append(vectors)
-                    if ".mlp.c_proj" in lower_name:
-                        group_vectors["mlp_c_proj"].append(vectors)
+        stats = tensor_stats(tensor)
+        rows.append((name, stats))
+        update_global_summary(summary, stats, tensor)
 
-                    num_vectors = vectors.shape[0]
-                    if pairwise_limit > 0 and num_vectors > pairwise_limit:
-                        console.print(
-                            f"[yellow]Skipping pairwise statistics for {name} axis {axis} ({num_vectors:,} vectors) because it exceeds --pairwise-limit={pairwise_limit}.[/]"
-                        )
-                        continue
+        if not embedding_dim:
+            continue
 
-                    pairwise_rows.extend(
-                        compute_pairwise_metrics(
-                            name,
-                            tensor_shape,
-                            axis,
-                            axis_size,
-                            vectors,
-                            histogram_dir,
-                            args.histogram_bins,
-                            angle_units=args.angle_units,
-                        )
-                    )
+        tensor_shape = tuple(tensor.shape)
+        for axis, axis_size, vectors in iter_vector_views(tensor, embedding_dim):
+            l2_stat = compute_l2_norm_stats_for_vectors(
+                name,
+                tensor_shape,
+                axis,
+                axis_size,
+                vectors,
+                histogram_dir,
+                histogram_bins,
+            )
+            if l2_stat is not None:
+                l2_rows.append(l2_stat)
 
-    if not rows:
-        console.print("[red]No parameters matched the provided pattern.[/]")
-        return
+            vector_views[(name, axis)] = VectorViewData(
+                parameter=name,
+                axis=axis,
+                axis_size=axis_size,
+                tensor_shape=tensor_shape,
+                vectors=vectors.clone(),
+            )
 
-    rows.sort(key=lambda item: item[0])
-    render_table(rows, args.max_rows, colorize=args.colorize)
-    render_summary(summary, matched=len(rows))
-    if l2_rows:
-        render_l2_table(l2_rows, args.max_l2_rows, colorize=args.colorize)
+            group_vectors["all_vectors"].append(vectors)
+            lower_name = name.lower()
+            if "wte" in lower_name and lower_name.endswith("weight"):
+                group_vectors["wte"].append(vectors)
+            if ".attn.c_proj" in lower_name:
+                group_vectors["attn_c_proj"].append(vectors)
+            if ".mlp.c_proj" in lower_name:
+                group_vectors["mlp_c_proj"].append(vectors)
+
+            num_vectors = vectors.shape[0]
+            if pairwise_limit > 0 and num_vectors > pairwise_limit:
+                console.print(
+                    f"[yellow]{checkpoint_label}: Skipping pairwise statistics for {name} axis {axis} ({num_vectors:,} vectors) because it exceeds --pairwise-limit={pairwise_limit}.[/]"
+                )
+                continue
+
+            pairwise_rows.extend(
+                compute_pairwise_metrics(
+                    name,
+                    tensor_shape,
+                    axis,
+                    axis_size,
+                    vectors,
+                    histogram_dir,
+                    histogram_bins,
+                    angle_units=angle_units,
+                )
+            )
 
     if embedding_dim:
         combined_groups: Dict[str, List[torch.Tensor]] = {}
@@ -1176,7 +1211,7 @@ def main() -> None:
                 continue
             if pairwise_limit > 0 and num_vectors > pairwise_limit:
                 console.print(
-                    f"[yellow]Skipping pairwise statistics for group '{group_name}' ({num_vectors:,} vectors) because it exceeds --pairwise-limit={pairwise_limit}.[/]"
+                    f"[yellow]{checkpoint_label}: Skipping pairwise statistics for group '{group_name}' ({num_vectors:,} vectors) because it exceeds --pairwise-limit={pairwise_limit}.[/]"
                 )
                 continue
 
@@ -1188,25 +1223,390 @@ def main() -> None:
                     combined.shape[1],
                     combined,
                     histogram_dir,
-                    args.histogram_bins,
+                    histogram_bins,
                     histogram_prefix=f"group_{group_name}",
-                    angle_units=args.angle_units,
+                    angle_units=angle_units,
                 )
             )
 
-    if pairwise_rows:
-        render_pairwise_table(
-            pairwise_rows,
-            args.max_pairwise_rows,
-            colorize=args.colorize,
-            title="Pairwise similarity statistics (per tensor)",
+    rows.sort(key=lambda item: item[0])
+    return rows, summary, l2_rows, pairwise_rows, group_pairwise_rows, vector_views
+
+
+def compute_checkpoint_differences(
+    *,
+    ckpt_labels: Tuple[str, str],
+    vector_views_a: Dict[Tuple[str, int], VectorViewData],
+    vector_views_b: Dict[Tuple[str, int], VectorViewData],
+    angle_units: str,
+    comparison_dir: Path,
+    histogram_bins: int,
+    colorize: bool,
+    max_rows: Optional[int],
+) -> None:
+    console = Console()
+
+    common_keys = sorted(set(vector_views_a.keys()) & set(vector_views_b.keys()))
+    if not common_keys:
+        console.print(
+            "[yellow]No shared vector views were found between the provided checkpoints; skipping comparison statistics.[/]"
         )
-    if group_pairwise_rows:
+        return
+
+    comparison_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = comparison_dir / "vector_angle_comparison.csv"
+    angle_rows: List[PairwiseMetricStats] = []
+    cos_rows: List[PairwiseMetricStats] = []
+    overall_angles: List[torch.Tensor] = []
+    overall_cos: List[torch.Tensor] = []
+
+    comparison_slug = (
+        f"{Path(ckpt_labels[0]).stem}_vs_{Path(ckpt_labels[1]).stem}"
+        if ckpt_labels[0] != ckpt_labels[1]
+        else f"{Path(ckpt_labels[0]).stem}_comparison"
+    )
+
+    with csv_path.open("w", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(
+            [
+                "parameter",
+                "axis",
+                "vector_index",
+                f"angle_{angle_units}",
+                "cosine_similarity",
+                "l2_norm_checkpoint_1",
+                "l2_norm_checkpoint_2",
+            ]
+        )
+
+        for name, axis in common_keys:
+            view_a = vector_views_a[(name, axis)]
+            view_b = vector_views_b[(name, axis)]
+
+            if view_a.axis_size != view_b.axis_size or view_a.tensor_shape != view_b.tensor_shape:
+                console.print(
+                    f"[yellow]Skipping comparison for {name} axis {axis} due to mismatched shapes between checkpoints.[/]"
+                )
+                continue
+
+            vectors_a = view_a.vectors.to(torch.float64)
+            vectors_b = view_b.vectors.to(torch.float64)
+            if vectors_a.shape != vectors_b.shape:
+                console.print(
+                    f"[yellow]Skipping comparison for {name} axis {axis} due to mismatched vector counts ({vectors_a.shape[0]:,} vs {vectors_b.shape[0]:,}).[/]"
+                )
+                continue
+
+            norms_a = torch.linalg.norm(vectors_a, dim=-1)
+            norms_b = torch.linalg.norm(vectors_b, dim=-1)
+            denom = norms_a * norms_b
+            valid_mask = denom > 0
+            dot = torch.sum(vectors_a * vectors_b, dim=-1)
+            cosines = torch.full_like(dot, float("nan"))
+            cosines[valid_mask] = torch.clamp(dot[valid_mask] / denom[valid_mask], -1.0, 1.0)
+
+            angles = torch.full_like(cosines, float("nan"))
+            valid_cosines = cosines[valid_mask]
+            if valid_cosines.numel() > 0:
+                raw_angles = torch.acos(valid_cosines)
+                if angle_units == "degrees":
+                    raw_angles = raw_angles * (180.0 / math.pi)
+                angles[valid_mask] = raw_angles
+
+            num_vectors = vectors_a.shape[0]
+            if valid_mask.any():
+                angle_values = angles[valid_mask]
+                cos_values = cosines[valid_mask]
+            else:
+                angle_values = torch.tensor([], dtype=torch.float64)
+                cos_values = torch.tensor([], dtype=torch.float64)
+
+            angle_stats = summarize_metric_values(angle_values)
+            cos_stats = summarize_metric_values(cos_values)
+
+            histogram_prefix = f"comparison_{comparison_slug}"
+            angle_hist_path: Optional[Path] = None
+            cos_hist_path: Optional[Path] = None
+            if angle_values.numel() > 0:
+                angle_hist_path = save_pairwise_histogram(
+                    angle_values,
+                    comparison_dir,
+                    name,
+                    axis,
+                    tensor_shape=view_a.tensor_shape,
+                    axis_size=view_a.axis_size,
+                    metric="Angle difference",
+                    units=angle_units,
+                    bins=histogram_bins,
+                    histogram_prefix=histogram_prefix,
+                )
+            if cos_values.numel() > 0:
+                cos_hist_path = save_pairwise_histogram(
+                    cos_values,
+                    comparison_dir,
+                    name,
+                    axis,
+                    tensor_shape=view_a.tensor_shape,
+                    axis_size=view_a.axis_size,
+                    metric="Cosine similarity (comparison)",
+                    units="cosine",
+                    bins=histogram_bins,
+                    histogram_prefix=histogram_prefix,
+                )
+
+            angle_rows.append(
+                PairwiseMetricStats(
+                    parameter=name,
+                    axis=axis,
+                    axis_size=view_a.axis_size,
+                    tensor_shape=view_a.tensor_shape,
+                    num_vectors=int(angle_values.numel()),
+                    metric="Angle difference",
+                    units=angle_units,
+                    min=angle_stats["min"],
+                    max=angle_stats["max"],
+                    mean=angle_stats["mean"],
+                    std=angle_stats["std"],
+                    q05=angle_stats["q05"],
+                    q1=angle_stats["q1"],
+                    median=angle_stats["median"],
+                    q3=angle_stats["q3"],
+                    q95=angle_stats["q95"],
+                    histogram_path=angle_hist_path,
+                )
+            )
+
+            cos_rows.append(
+                PairwiseMetricStats(
+                    parameter=name,
+                    axis=axis,
+                    axis_size=view_a.axis_size,
+                    tensor_shape=view_a.tensor_shape,
+                    num_vectors=int(cos_values.numel()),
+                    metric="Cosine similarity (comparison)",
+                    units="cosine",
+                    min=cos_stats["min"],
+                    max=cos_stats["max"],
+                    mean=cos_stats["mean"],
+                    std=cos_stats["std"],
+                    q05=cos_stats["q05"],
+                    q1=cos_stats["q1"],
+                    median=cos_stats["median"],
+                    q3=cos_stats["q3"],
+                    q95=cos_stats["q95"],
+                    histogram_path=cos_hist_path,
+                )
+            )
+
+            if angle_values.numel() > 0:
+                overall_angles.append(angle_values)
+            if cos_values.numel() > 0:
+                overall_cos.append(cos_values)
+
+            for idx, (angle_val, cos_val, norm_a, norm_b) in enumerate(
+                zip(angles.tolist(), cosines.tolist(), norms_a.tolist(), norms_b.tolist())
+            ):
+                writer.writerow(
+                    [
+                        name,
+                        axis,
+                        idx,
+                        angle_val,
+                        cos_val,
+                        norm_a,
+                        norm_b,
+                    ]
+                )
+
+    if angle_rows:
         render_pairwise_table(
+            angle_rows,
+            max_rows,
+            colorize=colorize,
+            title="Checkpoint comparison: angular statistics",
+        )
+    if cos_rows:
+        render_pairwise_table(
+            cos_rows,
+            max_rows,
+            colorize=colorize,
+            title="Checkpoint comparison: cosine similarity statistics",
+        )
+
+    if overall_angles:
+        merged_angles = torch.cat(overall_angles)
+        merged_stats = summarize_metric_values(merged_angles)
+        overall_hist = save_pairwise_histogram(
+            merged_angles,
+            comparison_dir,
+            "overall",
+            -1,
+            tensor_shape=(merged_angles.numel(),),
+            axis_size=1,
+            metric="Overall angle difference",
+            units=angle_units,
+            bins=histogram_bins,
+            histogram_prefix=f"comparison_{comparison_slug}_overall",
+        )
+        overall_row = PairwiseMetricStats(
+            parameter="[Comparison] Overall",
+            axis=-1,
+            axis_size=1,
+            tensor_shape=(merged_angles.numel(),),
+            num_vectors=int(merged_angles.numel()),
+            metric="Overall angle difference",
+            units=angle_units,
+            min=merged_stats["min"],
+            max=merged_stats["max"],
+            mean=merged_stats["mean"],
+            std=merged_stats["std"],
+            q05=merged_stats["q05"],
+            q1=merged_stats["q1"],
+            median=merged_stats["median"],
+            q3=merged_stats["q3"],
+            q95=merged_stats["q95"],
+            histogram_path=overall_hist,
+        )
+        render_pairwise_table(
+            [overall_row],
+            max_rows,
+            colorize=colorize,
+            title="Checkpoint comparison: overall angle summary",
+        )
+
+    if overall_cos:
+        merged_cos = torch.cat(overall_cos)
+        merged_cos_stats = summarize_metric_values(merged_cos)
+        overall_cos_row = PairwiseMetricStats(
+            parameter="[Comparison] Overall",
+            axis=-1,
+            axis_size=1,
+            tensor_shape=(merged_cos.numel(),),
+            num_vectors=int(merged_cos.numel()),
+            metric="Overall cosine similarity",
+            units="cosine",
+            min=merged_cos_stats["min"],
+            max=merged_cos_stats["max"],
+            mean=merged_cos_stats["mean"],
+            std=merged_cos_stats["std"],
+            q05=merged_cos_stats["q05"],
+            q1=merged_cos_stats["q1"],
+            median=merged_cos_stats["median"],
+            q3=merged_cos_stats["q3"],
+            q95=merged_cos_stats["q95"],
+            histogram_path=None,
+        )
+        render_pairwise_table(
+            [overall_cos_row],
+            max_rows,
+            colorize=colorize,
+            title="Checkpoint comparison: overall cosine summary",
+        )
+
+    console.print(
+        f"[green]Wrote vector comparison CSV to {csv_path} and saved histograms in {comparison_dir}.[/]"
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    console = Console()
+
+    if len(args.ckpt_paths) > 2:
+        raise SystemExit("Please provide at most two checkpoint paths.")
+
+    checkpoint_paths = args.ckpt_paths
+    loaded: List[Tuple[str, Dict[str, torch.Tensor], GPTConfig]] = []
+    for ckpt_path in checkpoint_paths:
+        try:
+            state_dict, config = load_state_dict(ckpt_path, args.device)
+        except FileNotFoundError as exc:
+            raise SystemExit(f"Checkpoint not found: {exc}") from exc
+        loaded.append((ckpt_path, state_dict, config))
+
+    pattern = re.compile(args.pattern)
+
+    embedding_dim = args.embedding_dim
+    if embedding_dim is None and loaded:
+        embedding_dim = getattr(loaded[0][2], "n_embd", None)
+
+    if embedding_dim is None:
+        console.print(
+            "[yellow]Embedding dimension not found in checkpoint configuration; skipping L2 norm statistics.[/]"
+        )
+
+    histogram_dir = args.histogram_dir
+    if histogram_dir is not None:
+        histogram_dir = histogram_dir.expanduser().resolve()
+
+    pairwise_limit = args.pairwise_limit if args.pairwise_limit is not None else 0
+
+    vector_view_results: List[Dict[Tuple[str, int], VectorViewData]] = []
+
+    for idx, (ckpt_path, state_dict, _) in enumerate(loaded, start=1):
+        checkpoint_label = f"Checkpoint {idx}" if len(loaded) > 1 else "Checkpoint"
+        console.print(
+            f"\n[bold underline]{checkpoint_label}: {ckpt_path}[/bold underline]"
+        )
+
+        (
+            rows,
+            summary,
+            l2_rows,
+            pairwise_rows,
             group_pairwise_rows,
-            args.max_pairwise_rows,
+            vector_views,
+        ) = analyze_checkpoint(
+            checkpoint_label=checkpoint_label,
+            state_dict=state_dict,
+            pattern=pattern,
+            embedding_dim=embedding_dim,
+            histogram_dir=histogram_dir,
+            histogram_bins=args.histogram_bins,
+            pairwise_limit=pairwise_limit,
+            angle_units=args.angle_units,
+        )
+
+        if not rows:
+            console.print("[red]No parameters matched the provided pattern.[/]")
+            vector_view_results.append(vector_views)
+            continue
+
+        render_table(rows, args.max_rows, colorize=args.colorize)
+        render_summary(summary, matched=len(rows))
+        if l2_rows:
+            render_l2_table(l2_rows, args.max_l2_rows, colorize=args.colorize)
+        if pairwise_rows:
+            render_pairwise_table(
+                pairwise_rows,
+                args.max_pairwise_rows,
+                colorize=args.colorize,
+                title="Pairwise similarity statistics (per tensor)",
+            )
+        if group_pairwise_rows:
+            render_pairwise_table(
+                group_pairwise_rows,
+                args.max_pairwise_rows,
+                colorize=args.colorize,
+                title="Pairwise similarity statistics (groups)",
+            )
+
+        vector_view_results.append(vector_views)
+
+    if len(loaded) == 2:
+        comparison_dir = args.comparison_dir or (Path.cwd() / "checkpoint_comparison")
+        comparison_dir = comparison_dir.expanduser().resolve()
+        comparison_bins = args.comparison_bins if args.comparison_bins else args.histogram_bins
+        compute_checkpoint_differences(
+            ckpt_labels=(loaded[0][0], loaded[1][0]),
+            vector_views_a=vector_view_results[0],
+            vector_views_b=vector_view_results[1],
+            angle_units=args.angle_units,
+            comparison_dir=comparison_dir,
+            histogram_bins=comparison_bins,
             colorize=args.colorize,
-            title="Pairwise similarity statistics (groups)",
+            max_rows=args.max_pairwise_rows,
         )
 
 
