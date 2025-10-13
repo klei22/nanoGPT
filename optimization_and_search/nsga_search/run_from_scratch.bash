@@ -7,12 +7,12 @@ python run_exp.py \
     --user xinting \
     --key ~/.ssh/id_rsa \
     --hosts ../host_configs/internal_hosts.yaml \
-    --pop_size 4 \
-    --max_layers 16 \
-    --min_layers 1 \
-    --offspring 2 \
-    --generations 1 \
-    --exp_name small_trail \
+    --max_layers 24 \
+    --min_layers 2 \
+    --pop_size 32 \
+    --offspring 16 \
+    --generations 50 \
+    --exp_name infi_med \
     --conda_env reallmforge \
-    --max_iters 100 \
+    --max_iters 10000 \
     2>&1 | tee -a "$log"

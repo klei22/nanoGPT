@@ -6,6 +6,7 @@ import yaml
 from remote_trainer import RemoteTrainer  
 import logging
 import time
+from run_exp import load_hosts_from_file
 import os
 
 
@@ -15,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s: %(messag
 for name in ("paramiko", "paramiko.transport", "fabric", "invoke"):
     logging.getLogger(name).disabled = True
 
-hosts = ["34.11.48.206", "34.86.55.236", "35.245.124.235", "34.144.183.145", "34.85.252.132", "34.162.10.11", "34.11.9.189", "34.85.233.248"]  # Instance IP addresses
+hosts = load_hosts_from_file("../host_configs/internal_hosts.yaml")
 user = "xinting"  # SSH username for login
 key_filename = "/home/xinting/.ssh/id_rsa"  # Path to SSH private key file
 

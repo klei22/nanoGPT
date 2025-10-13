@@ -224,6 +224,7 @@ def main(yaml_path, base, args) -> int:
                 "gradient_accumulation_steps": 2,  # Compensate for smaller batch with grad accumulation
                 # "compute_model_stats": False,  # Disable model stats to save memory
                 "dtype": "bfloat16",  # Use bfloat16 to save memory vs float16
+                "compile": True,  # Enable compilation for speed
             }
             # Apply overrides (explicit local precedence)
             dynamic_cfg.update(overrides)

@@ -73,7 +73,7 @@ def main():
     global_spec = {
             "n_embd": {"type": "int", "low": 768, "high": 768, "step": 128},
             "block_size": {"type": "int", "low": 512, "high": 512, "step": 128},
-            "use_concat_heads": {"type": "cat", "choices": [True, False]}
+            "use_concat_heads": {"type": "cat", "choices": [True, False]},
         }
 
     layer_spec = {
@@ -100,13 +100,14 @@ def main():
         population = Population(individuals, search_space=search_space)
         population.delete_duplicates()  # Remove duplicates if any
 
-        # nsga parameters defined here
-        population.n_population = init_population_size
-        population.n_offspring = args.offspring
-
         # initial evaluation
         population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, conda_env=args.conda_env, max_iters=args.max_iters)
         population.print_summary()
+
+    # nsga parameters defined here
+    population.n_population = init_population_size
+    population.n_offspring = args.offspring
+
     
     # save initial checkpoint
     exp_name = args.exp_name
