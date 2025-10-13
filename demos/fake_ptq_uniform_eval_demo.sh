@@ -101,11 +101,11 @@ if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
     --use_concat_heads \
     --use_rotary_embeddings \
     --no-use_abs_pos_embeddings \
-  	--use_peri_ln \
-  	--use_qk_norm \
-  	--use_qk_norm_scale \
+    --use_peri_ln \
+    --use_qk_norm \
+    --use_qk_norm_scale \
     --max_iters 800 \
-		--eval_interval 800 \
+    --eval_interval 800 \
     --compile
 else
   echo "Found existing checkpoint at $OUT_DIR/ckpt.pt; skipping training."
