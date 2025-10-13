@@ -94,6 +94,8 @@ def main():
             population = Population.load_checkpoint(args.resume_ckpt, from_pkl=args.resume_ckpt.endswith('.pkl'))
         else:
             raise FileNotFoundError(f"Checkpoint file not found: {args.resume_ckpt}")
+        population.search_space = search_space  # Ensure search space is set
+        population.print_summary()
     else:
         # initialize Population class from nsga.py with individuals randomly
         individuals = [search_space.sample() for _ in range(init_population_size)]
@@ -125,7 +127,7 @@ def main():
         population.generate_offspring()
         gen = population.gen
         print(f"\n\n================ Generation {gen} ================\n")
-        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, conda_env=args.conda_env, max_iters=args.max_iters)
+        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters)
         population.update_elimination()
         population.print_summary()
         population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{gen}.json")

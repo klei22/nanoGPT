@@ -12,7 +12,7 @@ python run_exp.py \
     --pop_size 32 \
     --offspring 16 \
     --generations 50 \
-    --exp_name infi_med \
+    --exp_name infi_try \
     --conda_env reallmforge \
-    --max_iters 10000 \
+    --max_iters 100 \
     2>&1 | tee -a "$log"
