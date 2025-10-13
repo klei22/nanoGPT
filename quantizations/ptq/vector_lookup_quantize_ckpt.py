@@ -135,14 +135,17 @@ def _lookup_replace(
 
     orig_shape = matrix.shape
     flat = matrix.view(-1, matrix.shape[-1])
-    norms = flat.norm(dim=1, keepdim=True)
-    nonzero = norms.squeeze(1) > 0
-    normalized = torch.zeros_like(flat)
-    normalized[nonzero] = flat[nonzero] / norms[nonzero]
+    norms = flat.norm(dim=1)
+    nonzero_idx = (norms > 0).nonzero(as_tuple=False).squeeze(1)
 
-    num_rows = flat.shape[0]
+    if nonzero_idx.numel() == 0:
+        return matrix, 0
+
+    normalized = flat[nonzero_idx] / norms[nonzero_idx].unsqueeze(1)
+
+    num_rows = normalized.shape[0]
     best_sim = torch.full((num_rows,), -math.inf, device=flat.device, dtype=flat.dtype)
-    best_idx = torch.full((num_rows,), -1, device=flat.device, dtype=torch.long)
+    best_idx = torch.zeros((num_rows,), device=flat.device, dtype=torch.long)
 
     start = 0
     while start < codebook.shape[0]:
@@ -155,10 +158,12 @@ def _lookup_replace(
         best_idx[better] = indices[better] + start
         start = end
 
-    selected = codebook[best_idx]
-    reconstructed = selected * norms
+    reconstructed = matrix.clone().view(-1, matrix.shape[-1])
+    reconstructed[nonzero_idx] = (
+        codebook[best_idx] * norms[nonzero_idx].unsqueeze(1)
+    )
     reconstructed = reconstructed.view(orig_shape)
-    matched = int(nonzero.sum().item())
+    matched = int(nonzero_idx.numel())
     return reconstructed.to(matrix.dtype), matched
 
 
