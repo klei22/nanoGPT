@@ -99,8 +99,6 @@ if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
     --n_qk_head_dim 120 \
     --n_v_head_dim 120 \
     --use_concat_heads \
-    --use_rotary_embeddings \
-    --no-use_abs_pos_embeddings \
     --use_peri_ln \
     --use_qk_norm \
     --use_qk_norm_scale \
