@@ -1,0 +1,49 @@
+# uneven_gqa_minipile.yaml
+---
+# GPT-2 sized backbone on MiniPile
+n_layer: [12]
+n_embd: [768]
+block_size: [1024]
+
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["bfloat16"]
+batch_size: [48]
+max_iters: [2000]
+eval_interval: [200]
+compile: [true]
+never_save_checkpoint: [true]
+tensorboard_run_name: ["uneven_gqa_minipile"]
+
+# normalization + rotary options
+use_pre_ln: [true]
+use_peri_ln: [true]
+use_post_ln: [false]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# attention variant
+attention_variant: ["causal"]
+
+# Sweep over head / kv-group combinations (including uneven groupings)
+parameter_groups:
+  - n_head: [6]
+    n_kv_group:
+      range:
+        start: 1
+        end: 6
+        step: 1
+  - n_head: [8]
+    n_kv_group:
+      range:
+        start: 1
+        end: 8
+        step: 1
+  - n_head: [12]
+    n_kv_group:
+      range:
+        start: 1
+        end: 12
+        step: 1
