@@ -29,6 +29,11 @@ python3 train.py \
     --batch_size 64 \
     --no-bias \
     --dtype bfloat16 \
+    --use_gradual_activation \
+    --activation_start gelu \
+    --activation_end relu \
+    --activation_transition_start_iter 0 \
+    --activation_transition_end_iter 20000 \
     --quantization_warmup_iters 0 \
     --no-use_pre_ln \
     --use_flash_norm \
