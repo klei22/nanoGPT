@@ -1,0 +1,24 @@
+# dataset_sampling_modes.yaml
+#
+# Sweeps across dataset-level sampling probability schedules and batch
+# sampling methods to ensure coverage of supported sampling configurations.
+---
+training_mode: ["multidataset"]
+dataset: ["shakespeare_char"]
+dataset_list: ["shakespeare_char openwebtext wikitext103"]
+dataset_sampling_probs: ["5 3 2"]
+dataset_sampling_probs_final: ["2 3 5"]
+dataset_sampling_probs_transition_method: ["linear", "cosine", "exponential"]
+dataset_interleaving: [false, true]
+dataset_interleaving_shuffle: [false, true]
+block_size: [128]
+batch_size: [64]
+max_iters: [300]
+eval_interval: [60]
+device: ["cuda"]
+compile: [false]
+
+parameter_groups:
+  - sampling_method: ["random"]
+  - sampling_method: ["sequential"]
+  - sampling_method: ["without_replacement"]
