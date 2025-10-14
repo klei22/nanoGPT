@@ -81,51 +81,77 @@ class RemoteTrainer:
         job.heartbeat_thread = t
         t.start()
         
-    def clear_all_jobs(self) -> None:
+    def clear_all_jobs(self) -> bool:
+        """Kill all GPU-using processes detected by nvidia-smi on each host.
+
+        This attempts a best-effort query for GPU process PIDs using
+        `nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits` and
+        falls back if the option isn't supported. Each discovered PID is
+        killed with SIGKILL. Returns True if all hosts succeeded (or had no
+        GPU pids), False if any host encountered errors.
+        """
         overall_ok = True
         for i, host in enumerate(self.hosts):
             try:
-                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
-                try:
+                # Use context manager to ensure proper cleanup/close even on exceptions
+                with Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {}) as conn:
                     conn.open()
-                    cmd = f"pkill -f optimization_and_search/run_from_yaml.py"
+                    # Robust remote snippet: try query-compute-apps first, then try a looser CSV parse
+                    cmd = """
+set -o pipefail
+if command -v nvidia-smi >/dev/null 2>&1; then
+    # try modern query for compute-apps pid (noheader,nounits); fall back to older format if needed
+    PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null || true)
+    if [ -z "$PIDS" ]; then
+        # fallback: try query without nounits/noheader or parse the process table
+        PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null || true)
+    fi
+    if [ -z "$PIDS" ]; then
+        # final fallback: try to parse the nvidia-smi textual table for digits in the processes section
+        PIDS=$(nvidia-smi 2>/dev/null | awk '/Processes:/{p=1;next} p && /[0-9]+/ { for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) print $i }' | sort -u || true)
+    fi
+    if [ -n "$PIDS" ]; then
+        KILLED=()
+        for pid in $PIDS; do
+            # sanity: ensure pid is numeric
+            case $pid in [0-9]*) true ;; *) continue ;; esac
+            kill -9 $pid >/dev/null 2>&1 || true
+            KILLED+=("$pid")
+        done
+        if [ ${#KILLED[@]} -gt 0 ]; then
+            printf 'KILLED:%s\n' "$(printf '%s,' "${KILLED[@]}" | sed 's/,$//')"
+            exit 0
+        else
+            printf 'NO_KILLED\n'
+            exit 0
+        fi
+    else
+        printf 'NO_GPU_PIDS\n'
+        exit 0
+    fi
+else
+    printf 'NO_NVIDIA_SMI\n'
+    exit 0
+fi
+"""
                     r = conn.run(cmd, hide=True, warn=True)
+                    out = (r.stdout or "").strip()
                     if r.ok:
-                        logging.info(f"\033[32mKilling jobs succeeded on host_{i} ({host})\033[0m")
+                        if out.startswith("KILLED:"):
+                            killed_list = out.replace("KILLED:", "").strip()
+                            logging.info(f"\033[32mKilled GPU PIDs on host_{i} ({host}): {killed_list}\033[0m")
+                        elif out.startswith("NO_GPU_PIDS") or out.startswith("NO_KILLED"):
+                            logging.info(f"\033[33mNo GPU PIDs found on host_{i} ({host}).\033[0m")
+                        elif out.startswith("NO_NVIDIA_SMI"):
+                            logging.warning(f"\033[33mnvidia-smi not found on host_{i} ({host}); nothing to kill.\033[0m")
+                        else:
+                            # If output is unexpected but command succeeded, log it
+                            logging.info(f"\033[32mclear_all_jobs output on host_{i} ({host}): {out}\033[0m")
                     else:
-                        logging.error(f"\033[31mKilling jobs failed on host_{i} ({host}): {r.stderr}\033[0m")
+                        logging.error(f"\033[31mKilling GPU jobs failed on host_{i} ({host}): {r.stderr}\033[0m")
                         overall_ok = False
-                finally:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
             except Exception as e:
-                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
-                overall_ok = False
-        return overall_ok
-        
-    def perform_git_pull(self, remote_work_dir: str) -> bool:
-        overall_ok = True
-        for i, host in enumerate(self.hosts):
-            try:
-                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
-                try:
-                    conn.open()
-                    cmd = f"cd {remote_work_dir} && git pull"
-                    r = conn.run(cmd, hide=True, warn=True)
-                    if r.ok:
-                        logging.info(f"\033[32mGit pull succeeded on host_{i} ({host})\033[0m")
-                    else:
-                        logging.error(f"\033[31mGit pull failed on host_{i} ({host}): {r.stderr}\033[0m")
-                        overall_ok = False
-                finally:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-            except Exception as e:
-                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during GPU-kill: {e}\033[0m")
                 overall_ok = False
         return overall_ok
 
