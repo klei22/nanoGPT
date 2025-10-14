@@ -48,8 +48,8 @@ from utils.model_stats import (
 
 from sample import (
     sample_with_existing_model,
-    get_tokenizer_functions,
 )
+from utils.tokenizer_utils import get_tokenizer_functions
 
 from rich.progress import (
         Progress,
