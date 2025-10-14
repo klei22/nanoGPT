@@ -24,6 +24,9 @@ class GPTConfig:
     n_qk_head_dim_layerlist: List[int] = field(default_factory=list)
     n_v_head_dim_layerlist: List[int] = field(default_factory=list)
     mlp_size_layerlist: List[int] = field(default_factory=list)
+    n_cproj_layerlist: List[int] = field(default_factory=list)
+    n_kv_group_layerlist: List[int] = field(default_factory=list)
+    attention_variant_layerlist: List[str] = field(default_factory=list)
 
     # For multicontext training
     multicontext: bool = False
@@ -182,6 +185,12 @@ class GPTConfig:
 
     # EdgeLLM ASIC block architecture
     use_edgellm_asic: bool = False
+    use_flash_norm: bool = False
+    use_gradual_activation: bool = False
+    activation_start: str = "gelu"
+    activation_end: str = "relu"
+    activation_transition_start_iter: int = 0
+    activation_transition_end_iter: int = None
 
     # MLP Options
     use_parallel_mlp: bool = False
@@ -366,7 +375,6 @@ class GPTConfig:
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
     norm_variant_output: str = "rmsnorm"
-    use_flash_norm: bool = False
 
     norm_variant_wte: str | None = None
     norm_wte_radius: float | None = None

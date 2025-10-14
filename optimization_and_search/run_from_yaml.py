@@ -219,11 +219,15 @@ def main(yaml_path, base, args) -> int:
                 "batch_size": 64,  # Reduced from 128 to save memory
                 "device": "cuda",
                 "dataset": "minipile",
-                "max_iters": 10000,
                 "eval_iters": 50,  # Reduced from default to save memory
                 "gradient_accumulation_steps": 2,  # Compensate for smaller batch with grad accumulation
                 # "compute_model_stats": False,  # Disable model stats to save memory
                 "dtype": "bfloat16",  # Use bfloat16 to save memory vs float16
+                # "norm_variant_abs": "hyperspherenorm",
+                # "hsnorm_gain": True,
+                # "hsnorm_scale": 5.0,
+                # "attn_residual_combination": "slerp",
+                # "mlp_residual_combination": "slerp",
             }
             # Apply overrides (explicit local precedence)
             dynamic_cfg.update(overrides)

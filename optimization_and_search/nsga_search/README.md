@@ -14,5 +14,12 @@ Minimal utilities for multi-objective hyperparameter/architecture search using N
 * In test.py, set the TODO section [hosts, user, key_filename]
 * Ensure the master machine has its public key stored in the slave machines
 
-* From this folder run `python test.py`
+* The host ips should be defined in host_configs/internal_hosts.yaml
+* for an example of the yaml format, see host_configs/hosts.yaml
+
+* From this folder run `bash run_from_scratch.bash`
+
+## Notes
+
+* The conda env on the slave machines are currently hardcoded as "reallmforge" (run dev_env_setup_scripts/00-setup-conda.sh)
 
