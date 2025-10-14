@@ -438,11 +438,20 @@ def create_2d_plots(df, generations):
     faded_color = 'lightgray'
     
     # Create traces for each generation and each subplot
+    # We'll track actual trace indices for each generation because some generations
+    # may be missing (gen_data.empty) and that previously made the slider visibility
+    # mapping go out of order.
+    gens_present = []
+    bg_indices_by_gen = {}
+    hl_indices_by_gen = {}
+
     for gen in generations:
         gen_data = df[df['generation'] == gen]
         
         if gen_data.empty:
             continue
+        # record that this generation is present
+        gens_present.append(gen)
         # customdata for details panel and on-the-fly arch plots: [config_text, config_object]
         if 'config_str' in gen_data.columns and 'config' in gen_data.columns:
             customdata_bg = [[cfg_text, cfg_obj] for cfg_text, cfg_obj in zip(gen_data['config_str'].tolist(), gen_data['config'].tolist())]
@@ -474,7 +483,6 @@ def create_2d_plots(df, generations):
             ),
             row=1, col=1
         )
-        
         # Plot 2: Validation Loss vs TTFT
         fig.add_trace(
             go.Scatter(
@@ -522,11 +530,16 @@ def create_2d_plots(df, generations):
             ),
             row=1, col=3
         )
+        # store indices of these three background traces for this generation
+        start_idx = len(fig.data) - 1  # last added trace index
+        # Background added three traces in sequence; compute their indices accordingly
+        # They were added in the order: col1, col2, col3
+        bg_indices_by_gen[gen] = [start_idx - 2, start_idx - 1, start_idx]
     
     # Add highlighted traces for the first generation (will be controlled by slider)
     for i, gen in enumerate(generations):
         gen_data = df[df['generation'] == gen]
-        
+
         if gen_data.empty:
             continue
         
@@ -563,7 +576,6 @@ def create_2d_plots(df, generations):
             ),
             row=1, col=1
         )
-        
         # Plot 2 highlighted
         fig.add_trace(
             go.Scatter(
@@ -611,24 +623,29 @@ def create_2d_plots(df, generations):
             ),
             row=1, col=3
         )
+        # record indices of the three highlighted traces added for this generation
+        hl_start = len(fig.data) - 1
+        hl_indices_by_gen[gen] = [hl_start - 2, hl_start - 1, hl_start]
     
-    # Create slider steps
+    # Create slider steps using actual trace indices collected above
     steps = []
-    num_generations = len(generations)
     total_traces = len(fig.data)
-    
-    for i, gen in enumerate(generations):
-        # Calculate which traces should be visible for this generation
-        visible_list = [True] * (num_generations * 3)  # Background traces always visible
-        
-        # Add visibility for highlighted traces
-        for j in range(num_generations):
-            visible_list.extend([j == i, j == i, j == i])  # Highlight current generation
-        step = dict(
-            method="update",
-            args=[{"visible": visible_list}],
-            label=""
-        )
+    # Compute base visibility with background traces visible
+    base_visible = [False] * total_traces
+    for gen, idxs in bg_indices_by_gen.items():
+        for ii in idxs:
+            if 0 <= ii < total_traces:
+                base_visible[ii] = True
+
+    # Build a slider step per present generation in the same order we added them
+    for gen in gens_present:
+        vis = base_visible.copy()
+        # make highlighted traces for this generation visible
+        idxs = hl_indices_by_gen.get(gen, [])
+        for ii in idxs:
+            if 0 <= ii < total_traces:
+                vis[ii] = True
+        step = dict(method="update", args=[{"visible": vis}], label=str(gen))
         steps.append(step)
     
     # Add slider
@@ -805,7 +822,7 @@ def main():
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
     parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_attn_exp_iter20k/1010_1729_ckpt_gen", help="Path to the evolution log file")
     parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index")
-    parser.add_argument("--end_gen", type=int, default=15, help="Ending generation index")
+    parser.add_argument("--end_gen", type=int, default=40, help="Ending generation index")
     parser.add_argument("--output", type=str, default="htmls/interactive_generational_scatter.html", help="Output HTML file path")
     args = parser.parse_args()
     
