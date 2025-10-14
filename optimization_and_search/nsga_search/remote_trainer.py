@@ -81,6 +81,30 @@ class RemoteTrainer:
         job.heartbeat_thread = t
         t.start()
         
+    def perform_git_pull(self, remote_work_dir: str) -> bool:
+        overall_ok = True
+        for i, host in enumerate(self.hosts):
+            try:
+                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                try:
+                    conn.open()
+                    cmd = f"cd {remote_work_dir} && git pull"
+                    r = conn.run(cmd, hide=True, warn=True)
+                    if r.ok:
+                        logging.info(f"\033[32mGit pull succeeded on host_{i} ({host})\033[0m")
+                    else:
+                        logging.error(f"\033[31mGit pull failed on host_{i} ({host}): {r.stderr}\033[0m")
+                        overall_ok = False
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
+                overall_ok = False
+        return overall_ok
+        
     def clear_all_jobs(self) -> bool:
         """Kill all GPU-using processes detected by nvidia-smi on each host.
 
