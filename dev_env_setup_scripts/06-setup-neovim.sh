@@ -101,7 +101,6 @@ opt.signcolumn = "yes"
 opt.colorcolumn = "80"
 
 -- Behavior
-opt.clipboard = "unnamedplus" -- Sync with system clipboard
 opt.splitright = true
 opt.splitbelow = true
 opt.mouse = "a"
