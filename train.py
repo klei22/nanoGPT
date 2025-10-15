@@ -149,6 +149,13 @@ class Trainer:
             if stats_dir and not os.path.exists(stats_dir):
                 os.makedirs(stats_dir, exist_ok=True)
 
+        # Ensure the sample file directory exists if a path is provided
+        if getattr(self.args, "sample_file", None):
+            self.args.sample_file = os.path.expanduser(self.args.sample_file)
+            sample_dir = os.path.dirname(self.args.sample_file)
+            if sample_dir and not os.path.exists(sample_dir):
+                os.makedirs(sample_dir, exist_ok=True)
+
         # calculation on end time via eval cycle
         self.eval_cycle_window = deque(maxlen=self.args.eval_cycle_window)
         self.eval_cycle_latency_avg: float = 0.0
