@@ -13,6 +13,32 @@ from variations.position_encoding_variations import (
     FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
 from variations.softmax_variations import softmax_dictionary
 from variations.triadic_modulation_variations import mod_fn_dict
+
+
+def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
+    """Return per-group head counts and mapping from head index to kv group."""
+    if n_kv_group <= 0:
+        raise ValueError("n_kv_group must be positive")
+    if n_head <= 0:
+        raise ValueError("n_head must be positive")
+
+    base = n_head // n_kv_group
+    remainder = n_head % n_kv_group
+
+    group_sizes = []
+    head_to_group = []
+    for group_idx in range(n_kv_group):
+        group_size = base + (1 if group_idx < remainder else 0)
+        group_sizes.append(group_size)
+        head_to_group.extend([group_idx] * group_size)
+
+    if len(head_to_group) != n_head:
+        raise RuntimeError(
+            f"Invalid kv-group distribution for n_head={n_head}, "
+            f"n_kv_group={n_kv_group}: produced {len(head_to_group)} heads"
+        )
+
+    return group_sizes, head_to_group
 # Mamba related imports
 # if torch.cuda.is_available():
 #     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -31,8 +57,6 @@ class CausalSelfAttention(nn.Module):
 
         if (config.n_kv_group is None):
             config.n_kv_group = config.n_head
-        else:
-            assert config.n_embd % config.n_kv_group == 0
 
         self.quantization_attn_dict = {}
         self.quantization_attn_dict["activations_quant_method"] = config.activations_quant_method
@@ -62,10 +86,20 @@ class CausalSelfAttention(nn.Module):
         if config.n_kv_group is None:
             self.n_kv_group = config.n_head
         else:
-            assert config.n_head % config.n_kv_group == 0
             self.n_kv_group = config.n_kv_group
 
-        self.kv_dim = (config.n_embd // config.n_head) * self.n_kv_group
+        self.head_dim = config.n_embd // self.n_head
+        self.kv_dim = self.head_dim * self.n_kv_group
+
+        group_sizes, head_to_group = _compute_kv_group_distribution(
+            self.n_head, self.n_kv_group
+        )
+        self.kv_group_sizes = group_sizes
+        self.register_buffer(
+            "head_to_kv",
+            torch.tensor(head_to_group, dtype=torch.long),
+            persistent=False,
+        )
         self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.bias)
         self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
         self.c_proj = self.linear_variant_attn_proj(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_proj_method"], self.quantization_attn_dict["quantize_linear_attn_proj_bits"], bias=config.bias)
@@ -235,6 +269,11 @@ class CausalSelfAttention(nn.Module):
         return block_mask
     # End Flex Attention Related
 
+    def _expand_kv(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.n_head == self.n_kv_group:
+            return tensor
+        return tensor.index_select(1, self.head_to_kv)
+
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -295,10 +334,13 @@ class CausalSelfAttention(nn.Module):
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
 
+            k_attn = self._expand_kv(k)
+            v_attn = self._expand_kv(v)
+
             # Flash QK Norm
             if self.use_qk_norm_scale:
                 # pre-scale Q so that built-in √dₕ division becomes our g scaling
-                head_dim = math.sqrt(k.size(-1))
+                head_dim = math.sqrt(k_attn.size(-1))
                 qk_scaling_factor = self.qk_norm_factor * math.sqrt(head_dim)
                 q = q * qk_scaling_factor
 
@@ -306,14 +348,14 @@ class CausalSelfAttention(nn.Module):
             attn_bias = None
             if self.use_flash_lobo:
                 # 2-a  Make dummy key/value column of zeros
-                dummy_k = q.new_zeros(B, self.n_kv_group, 1, q.size(-1))
-                dummy_v = q.new_zeros(B, self.n_kv_group, 1, v.size(-1))
+                dummy_k = q.new_zeros(B, k_attn.size(1), 1, q.size(-1))
+                dummy_v = q.new_zeros(B, v_attn.size(1), 1, v.size(-1))
 
-                k = torch.cat([dummy_k, k], dim=2)   # prepend → causal mask still valid
-                v = torch.cat([dummy_v, v], dim=2)
+                k_attn = torch.cat([dummy_k, k_attn], dim=2)   # prepend → causal mask still valid
+                v_attn = torch.cat([dummy_v, v_attn], dim=2)
 
                 # 2-b  Bias only that column with log C
-                attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
+                attn_bias = q.new_zeros(1, self.n_head, 1, k_attn.size(2))
                 if self.use_flash_lobo_per_head:
                     attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
                 else:
@@ -323,8 +365,8 @@ class CausalSelfAttention(nn.Module):
             # Efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(
                 q,
-                k,
-                v,
+                k_attn,
+                v_attn,
                 attn_mask=attn_bias,
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=True,
@@ -344,12 +386,9 @@ class CausalSelfAttention(nn.Module):
 
             att = None
             # manual implementation of attention
-            head_dim = math.sqrt(k.size(-1))
-            if self.n_head != self.n_kv_group:
-                k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-                att = (q @ k_repeated.transpose(-2, -1))
-            else:
-                att = (q @ k.transpose(-2, -1))
+            k_attn = self._expand_kv(k)
+            head_dim = math.sqrt(k_attn.size(-1))
+            att = (q @ k_attn.transpose(-2, -1))
 
             if self.use_qk_norm_scale:
                 att = att * self.qk_norm_factor
@@ -397,11 +436,8 @@ class CausalSelfAttention(nn.Module):
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
                 v = fake_quantize_act(self, "attn_act_pv_mult_v_input", v, num_bits, quant_method, iter_num)
 
-            if self.n_head != self.n_kv_group:
-                v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-                y = att @ v_repeated # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-            else:
-                y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            v_attn = self._expand_kv(v)
+            y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]
@@ -433,8 +469,6 @@ class EdgeLLMASICAttention(nn.Module):
 
         if (config.n_kv_group is None):
             config.n_kv_group = config.n_head
-        else:
-            assert config.n_embd % config.n_kv_group == 0
 
         self.quantization_attn_dict = {}
         self.quantization_attn_dict["activations_quant_method"] = config.activations_quant_method
@@ -468,10 +502,20 @@ class EdgeLLMASICAttention(nn.Module):
         if config.n_kv_group is None:
             self.n_kv_group = config.n_head
         else:
-            assert config.n_head % config.n_kv_group == 0
             self.n_kv_group = config.n_kv_group
 
-        self.kv_dim = (config.n_embd // config.n_head) * self.n_kv_group
+        self.head_dim = config.n_embd // self.n_head
+        self.kv_dim = self.head_dim * self.n_kv_group
+
+        group_sizes, head_to_group = _compute_kv_group_distribution(
+            self.n_head, self.n_kv_group
+        )
+        self.kv_group_sizes = group_sizes
+        self.register_buffer(
+            "head_to_kv",
+            torch.tensor(head_to_group, dtype=torch.long),
+            persistent=False,
+        )
         self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.bias)
         self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
         self.c_proj = self.linear_variant_attn_proj(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_proj_method"], self.quantization_attn_dict["quantize_linear_attn_proj_bits"], bias=config.bias)
@@ -560,6 +604,11 @@ class EdgeLLMASICAttention(nn.Module):
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                     .view(1, 1, config.block_size, config.block_size))
 
+    def _expand_kv(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.n_head == self.n_kv_group:
+            return tensor
+        return tensor.index_select(1, self.head_to_kv)
+
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -628,12 +677,9 @@ class EdgeLLMASICAttention(nn.Module):
 
         att = None
         # manual implementation of attention
-        head_dim = math.sqrt(k.size(-1))
-        if self.n_head != self.n_kv_group:
-            k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-            att = (q @ k_repeated.transpose(-2, -1))
-        else:
-            att = (q @ k.transpose(-2, -1))
+        k_attn = self._expand_kv(k)
+        head_dim = math.sqrt(k_attn.size(-1))
+        att = (q @ k_attn.transpose(-2, -1))
 
         if self.use_qk_norm_scale:
             att = att * self.qk_norm_factor
@@ -702,11 +748,8 @@ class EdgeLLMASICAttention(nn.Module):
 
         att = self.attn_dropout(att)
 
-        if self.n_head != self.n_kv_group:
-            v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-            y = att @ v_repeated # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        else:
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        v_attn = self._expand_kv(v)
+        y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         # normalize manually
         y = y * inv_sum_per_row
@@ -957,8 +1000,17 @@ class InfiniteHeadAttention(nn.Module):
         if (config.n_kv_group is None):
             self.n_kv_group = config.n_head
         else:
-            assert config.n_head % config.n_kv_group == 0
             self.n_kv_group = config.n_kv_group
+
+        group_sizes, head_to_group = _compute_kv_group_distribution(
+            self.n_head, self.n_kv_group
+        )
+        self.kv_group_sizes = group_sizes
+        self.register_buffer(
+            "head_to_kv",
+            torch.tensor(head_to_group, dtype=torch.long),
+            persistent=False,
+        )
 
         self.n_embd = config.n_embd
         self.n_qk_head_dim = config.n_qk_head_dim
@@ -1061,6 +1113,11 @@ class InfiniteHeadAttention(nn.Module):
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                              .view(1, 1, config.block_size, config.block_size))
 
+    def _expand_kv(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.n_head == self.n_kv_group:
+            return tensor
+        return tensor.index_select(1, self.head_to_kv)
+
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -1089,45 +1146,28 @@ class InfiniteHeadAttention(nn.Module):
         att = None
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if not self.disable_flash_attention:
+            k_attn = self._expand_kv(k)
+            v_attn = self._expand_kv(v)
+
             # Flash QK Norm
             if self.use_qk_norm_scale:
                 # pre-scale Q so that built-in √dₕ division becomes our g scaling
-                sqrt_head_dim = math.sqrt(k.size(-1))
+                sqrt_head_dim = math.sqrt(k_attn.size(-1))
                 qk_scaling_factor = self.qk_norm_factor * sqrt_head_dim
                 q = q * qk_scaling_factor
-
-            # GQA
-            if self.n_kv_group != self.n_head:
-                repeat = self.n_head // self.n_kv_group
-
-                # (B, n_head, T, d) -> (B, T, n_head, d) -> contiguous
-                k = k.transpose(1, 2).contiguous()
-                v = v.transpose(1, 2).contiguous()
-
-                # view with n_kv_group then repeat-interleave to n_head
-                k = (
-                    k.view(B, T, self.n_kv_group, self.n_qk_head_dim)
-                    .repeat_interleave(repeat, dim=2)
-                    .transpose(1, 2)
-                )  # (B, n_head, T, d)
-                v = (
-                    v.view(B, T, self.n_kv_group, self.n_v_head_dim)
-                    .repeat_interleave(repeat, dim=2)
-                    .transpose(1, 2)
-                )  # (B, n_head, T, d)
 
             # Flash Lobo
             attn_bias = None
             if self.use_flash_lobo:
                 # 2-a  Make dummy key/value column of zeros
-                dummy_k = q.new_zeros(B, k.size(1), 1, q.size(-1))
-                dummy_v = q.new_zeros(B, v.size(1), 1, v.size(-1))
+                dummy_k = q.new_zeros(B, k_attn.size(1), 1, q.size(-1))
+                dummy_v = q.new_zeros(B, v_attn.size(1), 1, v.size(-1))
 
-                k = torch.cat([dummy_k, k], dim=2)   # prepend → causal mask still valid
-                v = torch.cat([dummy_v, v], dim=2)
+                k_attn = torch.cat([dummy_k, k_attn], dim=2)   # prepend → causal mask still valid
+                v_attn = torch.cat([dummy_v, v_attn], dim=2)
 
                 # 2-b  Bias only that column with log C
-                attn_bias = q.new_zeros(1, self.n_head, 1, k.size(2))
+                attn_bias = q.new_zeros(1, self.n_head, 1, k_attn.size(2))
                 if self.use_flash_lobo_per_head:
                     attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
                 else:
@@ -1137,8 +1177,8 @@ class InfiniteHeadAttention(nn.Module):
             # Efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(
                 q,
-                k,
-                v,
+                k_attn,
+                v_attn,
                 attn_mask=attn_bias,
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=True,
@@ -1147,22 +1187,16 @@ class InfiniteHeadAttention(nn.Module):
         else:
             # Manual implementation of attention
 
-            # ----- GQA support (repeat k & v when n_kv_group < n_head) -------
-            if self.n_kv_group != self.n_head:
-                repeat = self.n_head // self.n_kv_group
-                k_adjusted = k.repeat_interleave(repeat, dim=1)
-                v_adjusted = v.repeat_interleave(repeat, dim=1)
-            else:
-                k_adjusted = k
-                v_adjusted = v
+            k_attn = self._expand_kv(k)
+            v_attn = self._expand_kv(v)
 
-            att = (q @ k_adjusted.transpose(-2, -1))
+            att = (q @ k_attn.transpose(-2, -1))
 
             if self.use_qk_norm_scale:
                 # utilize learned qk_norm_scaling factor
                 att = att * self.qk_norm_factor
             else:
-                sqrt_head_dim = math.sqrt(k.size(-1))
+                sqrt_head_dim = math.sqrt(k_attn.size(-1))
                 # divide by sqrt of head dimension if not
                 att = att / sqrt_head_dim
 
@@ -1177,7 +1211,7 @@ class InfiniteHeadAttention(nn.Module):
 
             att = self.attn_dropout(att)
 
-            y = att @ v_adjusted # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         # Concat Heads or Inf Concat Heads
         if self.use_concat_heads:
