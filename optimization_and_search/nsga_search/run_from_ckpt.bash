@@ -3,7 +3,7 @@
 ts="$(date +'%Y%m%d_%H%M%S')"
 log="logs/run_${ts}.log"
 
-python run_exp.py \
+python run_exp_large.py \
     --user xinting \
     --key ~/.ssh/id_rsa \
     --hosts ../host_configs/internal_hosts.yaml \
@@ -12,8 +12,8 @@ python run_exp.py \
     --max_layers 24 \
     --min_layers 2 \
     --offspring 12 \
-    --generations 34 \
-    --exp_name infi_med_2_8_val_loss \
+    --generations 1 \
+    --exp_name infi_large_try \
     --conda_env reallmforge \
-    --max_iters 10000 \
+    --max_iters 100 \
     2>&1 | tee -a "$log"

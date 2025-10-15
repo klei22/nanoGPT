@@ -71,7 +71,7 @@ def main():
     min_n_layer = args.min_layers
     # Define the search space
     global_spec = {
-            "n_embd": {"type": "int", "low": 768, "high": 768, "step": 128},
+            "n_embd": {"type": "int", "low": 1024, "high": 1024, "step": 128},
             "block_size": {"type": "int", "low": 512, "high": 512, "step": 128},
             "use_concat_heads": {"type": "cat", "choices": [True, False]},
         }
