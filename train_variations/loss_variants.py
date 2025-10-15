@@ -195,6 +195,78 @@ def top1_margin_loss(
     return ce + margin_loss.mean()
 
 
+def loop_penalty_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    penalty_strength: float = 0.1,
+    window: int = 3,
+    newline_token_id: int | None = None,
+    newline_multiplier: float = 2.0,
+) -> torch.Tensor:
+    """Discourage the model from repeating recent tokens or newline loops.
+
+    The loss adds a soft penalty proportional to the probability mass the
+    model assigns to tokens that would repeat one of the last ``window``
+    tokens in the context. When ``newline_token_id`` is supplied, repeated
+    newlines receive an additional multiplier which specifically targets
+    ``\n``-heavy loops that are common failure modes.
+
+    The implementation only relies on the provided ``logits`` and
+    ``targets`` tensors, so it can be used anywhere the standard
+    cross-entropy loss is accepted.
+    """
+
+    ce = cross_entropy_loss(logits, targets)
+
+    if penalty_strength <= 0.0 or window <= 0:
+        return ce
+
+    probs = torch.softmax(logits, dim=-1)
+
+    # ``targets`` uses ``-1`` as the padding index. Restrict the penalty to
+    # valid tokens so that packed batches behave correctly.
+    valid_mask = targets != -1
+    penalty_accum = torch.zeros_like(targets, dtype=logits.dtype)
+
+    newline_tensor = None
+    if newline_token_id is not None:
+        newline_tensor = torch.tensor(newline_token_id, device=logits.device)
+
+    for step in range(1, window + 1):
+        prev_tokens = torch.roll(targets, shifts=step, dims=1)
+
+        # Positions without a full history window or with padding tokens are
+        # ignored. ``torch.roll`` wraps around so explicitly clear the prefix.
+        mask = torch.ones_like(prev_tokens, dtype=torch.bool)
+        mask[:, :step] = False
+        mask &= prev_tokens != -1
+
+        if not mask.any():
+            continue
+
+        prev_tokens_safe = prev_tokens.masked_fill(~mask, 0)
+        step_probs = torch.gather(probs, dim=-1, index=prev_tokens_safe.unsqueeze(-1)).squeeze(-1)
+
+        if newline_tensor is not None:
+            newline_mask = mask & (prev_tokens == newline_tensor)
+            if newline_mask.any():
+                multiplier = torch.ones_like(step_probs)
+                multiplier[newline_mask] = newline_multiplier
+                step_probs = step_probs * multiplier
+
+        penalty_accum = penalty_accum + step_probs * mask
+
+    penalty_values = penalty_accum[valid_mask]
+    if penalty_values.numel() == 0:
+        penalty_term = torch.zeros((), device=logits.device, dtype=logits.dtype)
+    else:
+        penalty_term = penalty_values.mean()
+
+    return ce + penalty_strength * penalty_term
+
+
 def entropy_penalty_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -426,6 +498,7 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "entropy_focal": entropy_focal_loss,
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
+    "loop_penalty": loop_penalty_loss,
 }
 
 
@@ -564,6 +637,15 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             gamma=rank_gamma(iter_num),
             focal_gamma=getattr(args, "focal_gamma", 2.0),
             beta=getattr(args, "entropy_beta", 0.01),
+        ),
+        "loop_penalty": lambda l, t, *, iter_num=None: LOSS_VARIANTS["loop_penalty"](
+            l,
+            t,
+            iter_num=iter_num,
+            penalty_strength=getattr(args, "loop_penalty_strength", 0.1),
+            window=getattr(args, "loop_penalty_window", 3),
+            newline_token_id=getattr(args, "loop_penalty_newline_id", None),
+            newline_multiplier=getattr(args, "loop_penalty_newline_multiplier", 2.0),
         ),
     }
 
