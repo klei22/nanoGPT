@@ -364,10 +364,10 @@ class HeteroSearchSpace:
         print("Global parameters:")
         for k, s in self.globals.items():
             print(f"  - {k}: {s}")
-        print(f"Per-layer parameters (L_max={self.L_max}):")
         for k, s in self.layer_spec.items():
             print(f"  - {k}: {s}")
-        print(f"Minimum active layers (L_min): {self.L_min}")
+        print(f"Max number of layers (L_max={self.L_max})")
+        print(f"Minimum active layers (L_min={self.L_min})")
         print(f"No repair mode: {self.no_repair}")
         return
 

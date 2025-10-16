@@ -21,7 +21,7 @@ def plot_gen_scatter(
     save_path: str,
     start_gen: int,
     end_gen: int,
-    x_axis: str = 'ttft',
+    x_axis: str = 'params',
     y_axis: str = 'validation_loss',
     color_axis: str = 'generation',
     cmap: str = 'Blues',           # blue (light to dark) sequential colormap
@@ -32,16 +32,6 @@ def plot_gen_scatter(
 ):
     pop_data = []
     generations = list(range(start_gen, end_gen + 1))
-    file_name_base2 = "ckpts/infi_attn_exp_2/10090627_ckpt_gen"
-    for gen in generations:
-        json_file_name = f"{file_name_base}{gen}.json"
-        if not os.path.exists(json_file_name):
-            json_file_name = f"{file_name_base2}{gen}.json"
-            # rename this file if exists
-            if os.path.exists(json_file_name):
-                # rename to the first file name
-                os.rename(json_file_name, f"{file_name_base}{gen}.json")
-
     for gen in generations:
         json_file_name = f"{file_name_base}{gen}.json"
         if not os.path.exists(json_file_name):
@@ -66,7 +56,8 @@ def plot_gen_scatter(
                 'energy_per_token': energy_vals[i],
                 'ttft': ttft_vals[i],
                 'perplexity': perplexity[i],
-                'individual_id': i
+                'individual_id': i,
+                'params': float(population.evaluations[i].aux.get('params', np.nan)) / 1e6,  # in millions
             })
 
     df_pop = pd.DataFrame(pop_data)
@@ -135,7 +126,7 @@ def plot_gen_scatter(
 
     # set axis ranges
     # ax.set_xlim(right=130)
-    # ax.set_ylim(top=3.6)
+    ax.set_ylim(top=3.6)
 
     # ax.set_xlabel(x_axis)
     ax.set_xlabel("Size (M)")
@@ -157,9 +148,9 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium/ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_val_optimized/1014_0622_ckpt_gen", help="Path to the evolution log file")
     parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index (default: 1)")
-    parser.add_argument("--end_gen", type=int, default=50, help="Ending generation index ")
+    parser.add_argument("--end_gen", type=int, default=42, help="Ending generation index ")
     parser.add_argument("--output", type=str, default="plots/gen_scatter.png", help="Output png file path")
     args = parser.parse_args()
     

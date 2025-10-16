@@ -106,10 +106,12 @@ def main():
         population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, conda_env=args.conda_env, max_iters=args.max_iters)
         population.print_summary()
 
+    print("Using search space:")
+    print(population.search_space.print_search_space())
+
     # nsga parameters defined here
     population.n_population = init_population_size
     population.n_offspring = args.offspring
-
     
     # save initial checkpoint
     exp_name = args.exp_name

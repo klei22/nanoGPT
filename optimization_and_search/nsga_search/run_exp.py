@@ -86,6 +86,9 @@ def main():
             "attention_variant": {"type": "cat", "choices": ["infinite", "identity"]},
         }
     search_space = HeteroSearchSpace.from_dicts(global_spec, layer_spec, L_max=max_n_layer, L_min=min_n_layer)
+    
+    print("Using search space:")
+    print(search_space.print_search_space())
 
     # initial evaluation
     if args.resume_ckpt is not None:
@@ -110,7 +113,6 @@ def main():
     population.n_population = init_population_size
     population.n_offspring = args.offspring
 
-    
     # save initial checkpoint
     exp_name = args.exp_name
     run_time = time.strftime("%m%d_%H%M", time.localtime())
