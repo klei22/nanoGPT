@@ -23,7 +23,7 @@ def _normalize_rows(weight: torch.Tensor, target_dim: Optional[int] = None) -> t
     natural orientation differs (e.g. attention vs. MLP projection weights).
     """
 
-    tensor = weight.detach().float()
+    tensor = weight.detach().float().cpu()
 
     if target_dim is None:
         matrix = tensor.reshape(tensor.shape[0], -1)
