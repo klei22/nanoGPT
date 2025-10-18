@@ -21,3 +21,14 @@ python3 demos/check_ckpt_for_gelu_shift.py \
 
 `adam_vs_adamw.sh` trains two tiny Shakespeare models, one with Adam and one
 with AdamW, then compares their statistics using `view_model_stats.py`.
+
+## Snap-to-Grid Projections
+
+`snap_to_grid_demo.sh` prepares the Shakespeare character dataset, trains a
+small model with snap-to-grid enabled, evaluates multiple grid sizes, and then
+generates text with and without the projections. Run it from the repository
+root:
+
+```bash
+bash demos/snap_to_grid_demo.sh
+```
