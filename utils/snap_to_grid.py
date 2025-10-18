@@ -14,11 +14,35 @@ COMP_ATTENTION = "attn"
 COMP_MLP = "mlp"
 
 
-def _normalize_rows(weight: torch.Tensor) -> torch.Tensor:
-    """Return a row-wise L2 normalised view of ``weight``."""
+def _normalize_rows(weight: torch.Tensor, target_dim: Optional[int] = None) -> torch.Tensor:
+    """Return a row-wise L2 normalised view of ``weight``.
 
-    flat = weight.detach().float().reshape(weight.shape[0], -1)
-    return F.normalize(flat, p=2, dim=-1)
+    When ``target_dim`` is provided the function ensures that the returned
+    matrix has exactly that many columns by transposing the weight matrix when
+    necessary. This prevents concatenation errors when mixing vectors whose
+    natural orientation differs (e.g. attention vs. MLP projection weights).
+    """
+
+    tensor = weight.detach().float()
+
+    if target_dim is None:
+        matrix = tensor.reshape(tensor.shape[0], -1)
+    else:
+        # Prefer views whose trailing dimension already matches ``target_dim``.
+        if tensor.ndim >= 2 and tensor.shape[-1] == target_dim:
+            matrix = tensor.reshape(-1, target_dim)
+        elif tensor.ndim >= 2 and tensor.shape[0] == target_dim:
+            matrix = tensor.transpose(0, 1).reshape(-1, target_dim)
+        else:
+            flat = tensor.reshape(tensor.shape[0], -1)
+            if flat.shape[-1] != target_dim:
+                raise ValueError(
+                    f"Unable to reshape tensor with shape {tuple(tensor.shape)} "
+                    f"to have {target_dim} features."
+                )
+            matrix = flat
+
+    return F.normalize(matrix, p=2, dim=-1)
 
 
 def _gather_base_vectors(
@@ -46,13 +70,14 @@ def _gather_base_vectors(
 
     vectors: List[torch.Tensor] = []
     upto_layer = max(int(upto_layer), 0)
+    target_dim = getattr(getattr(model, "config", None), "n_embd", None)
 
     for name, param in model.named_parameters():
         if param.ndim != 2 or not name.endswith("weight"):
             continue
 
         if "transformer.wte" in name:
-            vectors.append(_normalize_rows(param))
+            vectors.append(_normalize_rows(param, target_dim))
             continue
 
         if "transformer.h." not in name:
@@ -66,11 +91,11 @@ def _gather_base_vectors(
 
         if COMP_ATTENTION in name and name.endswith("attn.c_proj.weight"):
             if layer_idx <= upto_layer:
-                vectors.append(_normalize_rows(param))
+                vectors.append(_normalize_rows(param, target_dim))
         elif COMP_MLP in name and name.endswith("mlp.c_proj.weight"):
             limit = upto_layer if component == COMP_MLP else upto_layer - 1
             if layer_idx <= limit:
-                vectors.append(_normalize_rows(param))
+                vectors.append(_normalize_rows(param, target_dim))
 
     if not vectors:
         return None
