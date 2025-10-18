@@ -93,6 +93,14 @@ class GPT(nn.Module):
 
         self.config = config
 
+        n_head = getattr(config, "n_head", None)
+        if n_head:
+            if config.n_embd % n_head != 0:
+                raise ValueError(
+                    f"n_embd ({config.n_embd}) must be divisible by n_head ({n_head}); "
+                    "adjust the configuration (e.g. change --n_embd or --n_head)."
+                )
+
         self.uses_numerical_multicontext = bool(config.numerical_multicontext)
         if self.uses_numerical_multicontext:
             if not config.multicontext:

@@ -4,10 +4,22 @@
 
 set -euo pipefail
 
-DATASET="shakespeare_char"
+DATASET="${DATASET:-shakespeare_char}"
 DATA_DIR="data/${DATASET}"
-OUT_DIR="out/snap_to_grid_demo"
-SNAP_SIZES=(8 32)
+OUT_DIR="${OUT_DIR:-out/snap_to_grid_demo}"
+SNAP_SIZES_STR="${SNAP_SIZES:-"8 32"}"
+IFS=' ' read -r -a SNAP_SIZES <<< "${SNAP_SIZES_STR}"
+
+# Model hyperparameters (override via env vars, e.g. `N_HEAD=3 ./snap_to_grid_demo.sh`).
+N_LAYER=${N_LAYER:-4}
+N_HEAD=${N_HEAD:-4}
+N_EMBD=${N_EMBD:-128}
+
+if (( N_EMBD % N_HEAD != 0 )); then
+  echo "error: N_EMBD (${N_EMBD}) must be divisible by N_HEAD (${N_HEAD})." >&2
+  echo "update N_EMBD or N_HEAD before running the demo." >&2
+  exit 1
+fi
 
 mkdir -p "${OUT_DIR}"
 
@@ -38,9 +50,9 @@ python3 train.py \
   --out_dir "${OUT_DIR}" \
   --block_size 128 \
   --batch_size 12 \
-  --n_layer 4 \
-  --n_head 4 \
-  --n_embd 128 \
+  --n_layer "${N_LAYER}" \
+  --n_head "${N_HEAD}" \
+  --n_embd "${N_EMBD}" \
   --max_iters 200 \
   --eval_interval 100 \
   --eval_iters 50 \

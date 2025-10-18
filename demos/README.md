@@ -32,3 +32,14 @@ root:
 ```bash
 bash demos/snap_to_grid_demo.sh
 ```
+
+You can override the default model or snap-to-grid settings by exporting
+environment variables before running the script, for example:
+
+```bash
+N_HEAD=3 N_EMBD=384 SNAP_SIZES="100 1000 10000" bash demos/snap_to_grid_demo.sh
+```
+
+Ensure that `N_EMBD` remains divisible by `N_HEAD`; otherwise the
+multi-head attention projection will be invalid and the script will exit with
+an explanatory error.
