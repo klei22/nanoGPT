@@ -445,6 +445,34 @@ class Trainer:
                 {"params": other, "use_muon": False},
                 {"params": hidden, "use_muon": True},
             ]
+        elif optimizer_key == "rotation_only":
+            rotation_params = []
+            standard_params = []
+            rotation_dim = getattr(self.args, "rotation_embedding_dim", None) or getattr(self.args, "n_embd", None)
+            rotation_keywords = ("wte", "lm_head", "c_proj", "c_attn", "c_fc")
+
+            for name, param in self.raw_model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if param.ndim >= 2 and any(key in name for key in rotation_keywords):
+                    rotation_params.append(param)
+                else:
+                    standard_params.append(param)
+
+            param_groups = []
+            if standard_params:
+                param_groups.append({"params": standard_params, "lr": self.args.learning_rate})
+            if rotation_params:
+                group_cfg = {
+                    "params": rotation_params,
+                    "lr": self.args.learning_rate,
+                    "rotation_only": True,
+                }
+                if rotation_dim is not None:
+                    group_cfg["embedding_dim"] = rotation_dim
+                param_groups.append(group_cfg)
+            if not param_groups:
+                raise ValueError("rotation_only optimizer found no trainable parameters")
         else:
             param_groups = [
                 {"params": self.model.parameters(), "lr": self.args.learning_rate}

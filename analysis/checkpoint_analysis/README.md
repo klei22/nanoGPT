@@ -10,6 +10,8 @@ of model parameters interactively and inspect their values.
 - Display the hierarchical structure of the model's parameters.
 - Interactively navigate through the parameter tree.
 - View parameter tensor values.
+- Summarise per-parameter L2-norm statistics for vectors that align with the
+  model's embedding dimension.
 
 ## Requirements
 
@@ -54,6 +56,15 @@ python checkpoint_analysis/checkpoint_explorer.py out/ckpt.pt --device cuda
 
 - The script processes the checkpoint to ensure compatibility by renaming keys starting with `_orig_mod.`.
 - Parameter tensor values longer than 1000 characters will be truncated in the display for readability.
+- When the optional `--embedding-dim` flag (or the model config's
+  `n_embd`) is available, `checkpoint_regex_explorer.py` scans every tensor
+  whose shape contains that dimension and reshapes it into vectors of length
+  `embedding_dim`. The helper `iter_vector_views` walks each matching axis,
+  yielding `(num_vectors, embedding_dim)` views that allow
+  `compute_l2_norm_stats_for_vectors` to compute per-vector norms, kurtosis
+  and histograms while preserving the rest of the tensor shape information.
+  This is what powers the "Directional L2 Norms" table in the CLI output and
+  makes it easy to spot layers whose embeddings deviate in magnitude.
 
 ## Troubleshooting
 
