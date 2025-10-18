@@ -214,24 +214,20 @@ class GPT(nn.Module):
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
         self.snap_to_grid_registry = getattr(config, "snap_to_grid_registry", None)
-
-    def set_snap_to_grid_registry(self, registry: SnapToGridRegistry | None) -> None:
-        self.snap_to_grid_registry = registry
-        self.config.snap_to_grid_registry = registry
-        for block in self.transformer['h']:
-            block.snap_to_grid_registry = registry
+        self.config.snap_to_grid_registry = self.snap_to_grid_registry
+        self._apply_snap_to_grid_registry(self.snap_to_grid_registry)
 
         # Optional post-embedding normalizations
         if self.config.norm_variant_wte is not None:
-            self.transformer['post_embedding_norm'] = self.build_norm_from_variant(config, "norm_variant_wte", "norm_wte")
+            self.transformer['post_embedding_norm'] = self.build_norm_from_variant(self.config, "norm_variant_wte", "norm_wte")
         if self.config.norm_variant_abs is not None:
-            self.transformer['post_abs_norm'] = self.build_norm_from_variant(config, "norm_variant_abs", "norm_abs")
+            self.transformer['post_abs_norm'] = self.build_norm_from_variant(self.config, "norm_variant_abs", "norm_abs")
 
         if self.config.use_abs_pos_embeddings:
-            if config.quantize_wpe:
-                pos_embd = QuantizedEmbedding(config.block_size, config.n_embd, config.quantize_wpe_method, config.quantize_wpe_bits)
+            if self.config.quantize_wpe:
+                pos_embd = QuantizedEmbedding(self.config.block_size, self.config.n_embd, self.config.quantize_wpe_method, self.config.quantize_wpe_bits)
             else:
-                pos_embd = nn.Embedding(config.block_size, config.n_embd)
+                pos_embd = nn.Embedding(self.config.block_size, self.config.n_embd)
             self.transformer['wpe'] = pos_embd
 
         # Select softmax variant for output layer
@@ -293,6 +289,15 @@ class GPT(nn.Module):
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+    def _apply_snap_to_grid_registry(self, registry: SnapToGridRegistry | None) -> None:
+        for block in self.transformer['h']:
+            block.snap_to_grid_registry = registry
+
+    def set_snap_to_grid_registry(self, registry: SnapToGridRegistry | None) -> None:
+        self.snap_to_grid_registry = registry
+        self.config.snap_to_grid_registry = registry
+        self._apply_snap_to_grid_registry(registry)
 
     def get_num_params(self, non_embedding=True):
         """
