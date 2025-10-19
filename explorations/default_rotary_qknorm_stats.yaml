@@ -1,0 +1,34 @@
+# explorations/default_rotary_qknorm_stats.yaml
+# Collect model stats for the default-sized rotary + qk norm configuration
+---
+compute_model_stats: [true]
+print_model_stats: ["print_stats/${RUN_NAME}"]
+print_model_stats_table: ["print_stats/${RUN_NAME}.csv"]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: ["12"]
+  n_head: ["12"]
+  n_embd: ["768"]
+  block_size: ["1024"]
+  batch_size: ["8"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  never_save_checkpoint: [true]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  use_pre_ln: [true]
+  use_peri_ln: [true]
+  use_post_ln: [false]
+  attn_residual_combination: ["slerp"]
+  mlp_residual_combination: ["slerp"]
+  norm_variant_wte: ["hyperspherenorm"]
+  norm_variant_attn: ["hyperspherenorm"]
+  norm_variant_output: ["hyperspherenorm"]
+  hsnorm_scale: [5.0]
+
+parameter_groups:
+  - run_name: ["default_rotary_qknorm_stats"]

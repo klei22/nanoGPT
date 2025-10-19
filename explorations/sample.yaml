@@ -1,84 +1,61 @@
 # sample.yaml demonstrating named parameter group configurations
 ---
+compute_model_stats: [true]
+print_model_stats: ["print_stats/${RUN_NAME}"]
+print_model_stats_table: ["print_stats/${RUN_NAME}.csv"]
 
 # Atomic Static Groupings
 named_static_groups:
-  # QK Norm
-  - named_group: "no_qk_norm"
-    use_qk_norm: [false]
-    use_qk_norm_scale: [false]
-  - named_group: "qk_norm"
-    use_qk_norm: [true]
-    use_qk_norm_scale: [true]
-
-  # Norm Type
-  - named_group: "pre_ln"
-    use_pre_ln: [true]
-    use_peri_ln: [false]
-    use_post_ln: [false]
-  - named_group: "peri_ln"
-    use_pre_ln: [true]
-    use_peri_ln: [true]
-    use_post_ln: [false]
-  - named_group: "post_ln"
-    use_pre_ln: [true]
-    use_peri_ln: [false]
-    use_post_ln: [true]
-
-  # Position Embeddings
-  - named_group: "rotary"
+  - named_group: "rotary_qk_norm_peri"
     named_group_settings:
       use_rotary_embeddings: [true]
       use_abs_pos_embeddings: [false]
-  - named_group: "abs"
+      use_qk_norm: [true]
+      use_qk_norm_scale: [true]
+      use_pre_ln: [true]
+      use_peri_ln: [true]
+      use_post_ln: [false]
+  - named_group: "slerp_residuals"
     named_group_settings:
-      use_rotary_embeddings: [false]
-      use_abs_pos_embeddings: [true]
-
-  # RMSNorm Variations
-  - named_group: "rmsnorm_all"
+      attn_residual_combination: ["slerp"]
+      mlp_residual_combination: ["slerp"]
+  - named_group: "hypersphere_norms"
     named_group_settings:
-      norm_variant_attn: ["rmsnorm"]
-      norm_variant_output: ["rmsnorm"]
-  - named_group: "rmsnorm_attn_hsnorm_out"
-    named_group_settings:
-      norm_variant_attn: ["rmsnorm"]
+      norm_variant_wte: ["hyperspherenorm"]
+      norm_variant_attn: ["hyperspherenorm"]
       norm_variant_output: ["hyperspherenorm"]
+      hsnorm_scale: [5.0]
 
 # Higher Level Groupings
 named_variation_groups:
-  - named_group: "embedding_head_variations"
+  - named_group: "default_model_width"
     parameter_groups:
-      - n_embd: 256
-        n_head: [4, 8]
-      - n_embd: 320
-        n_head: [5, 4]
-  - named_group: "positional_embeddings"
-    named_group_alternates: ["rotary", "abs"]
+      - n_embd: 768
+        n_head: [12]
+      - n_embd: 1024
+        n_head: [16]
+  - named_group: "default_model_depth"
+    parameter_groups:
+      - n_layer: [12]
+      - n_layer: [24]
 
 # Common_group: parameters applied to every run, but omitted from run names
 common_group:
   dataset: ["shakespeare_char"]
-  n_layer: ["2"]
-  block_size: ["32"]
+  block_size: ["1024"]
   batch_size: ["8"]
-  max_iters: [750]
   device: ["cuda"]
   dtype: ["bfloat16"]
+  compile: [true]
   never_save_checkpoint: [true]
 
 # Parameter_groups: define sets of overrides to apply on top of base params
 parameter_groups:
-  - compile: [true, false]
-    named_group_static: ["qk_norm", "pre_ln"]
+  - run_name: ["rotary_default_stats"]
+    named_group_static:
+      - "rotary_qk_norm_peri"
+      - "slerp_residuals"
+      - "hypersphere_norms"
     named_group_variations:
-      - "embedding_head_variations"
-      - "positional_embeddings"
-    named_group_alternates: ["rmsnorm_all", "rmsnorm_attn_hsnorm_out"]
-  - compile: [true, false]
-    named_group_static: ["no_qk_norm", "peri_ln"]
-    named_group_variations:
-      - "embedding_head_variations"
-      - "positional_embeddings"
-    named_group_alternates: ["rmsnorm_all", "rmsnorm_attn_hsnorm_out"]
-
+      - "default_model_width"
+      - "default_model_depth"
