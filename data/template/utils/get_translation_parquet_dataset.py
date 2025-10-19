@@ -6,7 +6,7 @@ import json
 import os
 from typing import Iterable, Sequence, Tuple
 
-from .get_parquet_dataset import convert_to_json, download_file, find_parquet_links
+from get_parquet_dataset import convert_to_json, download_file, find_parquet_links
 
 
 def emit_translation_items(
