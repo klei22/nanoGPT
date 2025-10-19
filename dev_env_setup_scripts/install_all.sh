@@ -46,6 +46,9 @@ bash ./07-setup-bash-aliases.sh
 log "Step 8: Setting up gh cli util..."
 bash ./08-setup-gh-cli-util.sh
 
+log "Step 9: Setting up global github email and default name..."
+bash ./09-setup-git-user.sh
+
 echo ""
 log "✅ All setup scripts executed successfully!"
 log "Please log out and log back in for all changes to take effect."
