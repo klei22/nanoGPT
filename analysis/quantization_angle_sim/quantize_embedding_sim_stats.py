@@ -158,8 +158,8 @@ def np_draw_vectors(n: int, d: int, dist: str, std: float, dtype, seed: int) -> 
     return x.astype(dtype, copy=False)
 
 def np_quantize_int_per_vector(x: np.ndarray, bits: int) -> np.ndarray:
-    if bits < 3:
-        raise ValueError("bits must be >= 3")
+    if bits < 1:
+        raise ValueError("bits must be >= 1")
     qmax = (1 << (bits - 1)) - 1
     max_abs = np.max(np.abs(x), axis=1)  # (N,)
     tiny = np.finfo(x.dtype).tiny if np.issubdtype(x.dtype, np.floating) else 1e-12
@@ -317,8 +317,8 @@ def th_draw_vectors(n: int, d: int, dist: str, std: float, dtype, device: str, s
     return x.to(dtype)
 
 def th_quantize_int_per_vector(x: "torch.Tensor", bits: int) -> "torch.Tensor":
-    if bits < 3:
-        raise ValueError("bits must be >= 3")
+    if bits < 1:
+        raise ValueError("bits must be >= 1")
     qmax = (1 << (bits - 1)) - 1
     max_abs = torch.amax(torch.abs(x), dim=1)
     tiny = torch.tensor(torch.finfo(x.dtype).tiny, dtype=x.dtype, device=x.device)

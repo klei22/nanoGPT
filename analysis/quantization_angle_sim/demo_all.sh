@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 OUT="quantization_results_sweeps"
 mkdir -p "$OUT"
-DEVICE="${1:-cpu}"
+DEVICE="${1:-cuda}" # can also select cpu
 
-# 1) Integer fake quant sweeps (int8 -> int3)
-echo "[SWEEP] INT 8..3, std=1.0"
+# 1) Integer fake quant sweeps (int8 -> int3sh)
+echo "[SWEEP] INT 8..3, std=0.02"
 python quantize_embedding_sim_stats.py \
-  --quantizer int --bits-from 8 --bits-to 3 \
+  --quantizer int --bits-from 8 --bits-to 2 \
   --std 0.02 --seed 0 \
   --embedding-sizes 128 256 512 1024 2048 \
   --framework torch --dtype float32 --device "$DEVICE" \
@@ -28,9 +27,9 @@ done
 
 for S in 0.02; do
   for e in 5 4 3 2; do
-    echo "[SWEEP] EM formats e${e}m5 e${e}m4 e${e}m3 e${e}m2, std=${S}"
+    echo "[SWEEP] EM formats e${e}m5 e${e}m4 e${e}m3 e${e}m2 e${e}m1, std=${S}"
     python quantize_embedding_sim_stats.py \
-      --quantizer em --em-list "${e},5 ${e},4 ${e},3 ${e},2" \
+      --quantizer em --em-list "${e},5 ${e},4 ${e},3 ${e},2 ${e},1" \
       --std "${S}" --seed 0 \
       --embedding-sizes 128 256 512 1024 2048 \
       --framework torch --dtype float32 --device "$DEVICE" \
