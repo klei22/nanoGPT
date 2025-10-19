@@ -577,6 +577,29 @@ class ReLU2Max(nn.Module):
         return result
 
 
+class Softplus2Max(nn.Module):
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        beta = getattr(config, "softplus2max_beta", 1.0)
+        threshold = getattr(config, "softplus2max_threshold", 20.0)
+        self.softplus = nn.Softplus(beta=beta, threshold=threshold)
+        self.softplus2max_divisor = config.softplus2max_divisor
+        self.div_by_seq_len = config.div_by_seq_len
+
+    def forward(self, x):
+
+        result = self.softplus(x)
+        result = result * result / self.softplus2max_divisor
+
+        # divide by sequence length
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
+
 class Gelumax(nn.Module):
     def __init__(self, config, dim=-1):
         super().__init__()
@@ -817,6 +840,7 @@ softmax_dictionary = {
     "softshrink": Softshrink,
     "gelumax": Gelumax,
     "softplus": Softplus,
+    "softplus2max": Softplus2Max,
     "squareplus": Squareplus,
     "pfla_softmax": PFLASoftmax,
 }

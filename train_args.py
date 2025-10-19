@@ -703,6 +703,7 @@ def parse_args():
             "softsign",
             "softshrink",
             "squared_relu",
+            "squared_softplus",
             "squared_gelu",
             "tanh",
             "identity",
@@ -1060,6 +1061,11 @@ def parse_args():
 
     ### ReLU2Max Options
     model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
+
+    ### Softplus2Max Options
+    model_group.add_argument("--softplus2max_divisor", type=float, default=256.0)
+    model_group.add_argument("--softplus2max_beta", type=float, default=1.0)
+    model_group.add_argument("--softplus2max_threshold", type=float, default=20.0)
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
