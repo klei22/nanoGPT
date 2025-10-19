@@ -195,6 +195,88 @@ def top1_margin_loss(
     return ce + margin_loss.mean()
 
 
+def repeat_penalty_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    penalty_strength: float = 0.1,
+    window: int = 3,
+) -> torch.Tensor:
+    """Discourage the model from repeating any recent tokens.
+
+    The loss adds a soft penalty proportional to the probability mass the
+    model assigns to tokens that appeared within the last ``window``
+    positions. Each token is counted at most once per position so that
+    repeated appearances of the same token do not disproportionately scale the
+    penalty. The implementation only relies on ``logits`` and ``targets``
+    tensors, so it can be used anywhere the standard cross-entropy loss is
+    accepted.
+    """
+
+    ce = cross_entropy_loss(logits, targets)
+
+    if penalty_strength <= 0.0 or window <= 0:
+        return ce
+
+    probs = torch.softmax(logits, dim=-1)
+    vocab_size = probs.size(-1)
+
+    valid_mask = targets != -1
+    device = targets.device
+
+    recent_tokens: List[torch.Tensor] = []
+    recent_masks: List[torch.Tensor] = []
+
+    for step in range(1, window + 1):
+        prev_tokens = torch.roll(targets, shifts=step, dims=1)
+        mask = torch.ones_like(prev_tokens, dtype=torch.bool)
+        mask[:, :step] = False
+        mask &= prev_tokens != -1
+
+        recent_tokens.append(prev_tokens)
+        recent_masks.append(mask)
+
+    if not recent_masks:
+        return ce
+
+    stacked_tokens = torch.stack(recent_tokens, dim=-1)
+    stacked_masks = torch.stack(recent_masks, dim=-1)
+
+    if not stacked_masks.any():
+        return ce
+
+    sentinel = vocab_size
+    masked_tokens = stacked_tokens.masked_fill(~stacked_masks, sentinel)
+    sorted_tokens, _ = torch.sort(masked_tokens, dim=-1)
+    sorted_valid = sorted_tokens != sentinel
+
+    if window == 1:
+        unique_tokens = sorted_tokens
+        unique_mask = sorted_valid
+    else:
+        first_tokens = sorted_tokens[..., :1]
+        first_mask = sorted_valid[..., :1]
+        rest_tokens = sorted_tokens[..., 1:]
+        rest_valid = sorted_valid[..., 1:]
+        rest_unique = rest_tokens != sorted_tokens[..., :-1]
+        rest_mask = rest_valid & rest_unique
+        unique_tokens = torch.cat([first_tokens, rest_tokens], dim=-1)
+        unique_mask = torch.cat([first_mask, rest_mask], dim=-1)
+
+    safe_tokens = unique_tokens.clamp(max=vocab_size - 1)
+    gathered = torch.gather(probs, dim=-1, index=safe_tokens)
+    penalty = (gathered * unique_mask.to(gathered.dtype)).sum(dim=-1)
+
+    penalty_values = penalty[valid_mask]
+    if penalty_values.numel() == 0:
+        penalty_term = torch.zeros((), device=device, dtype=logits.dtype)
+    else:
+        penalty_term = penalty_values.mean()
+
+    return ce + penalty_strength * penalty_term
+
+
 def entropy_penalty_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -426,6 +508,8 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "entropy_focal": entropy_focal_loss,
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
+    "repeat_penalty": repeat_penalty_loss,
+    "loop_penalty": repeat_penalty_loss,
 }
 
 
@@ -503,6 +587,18 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
     def rank_gamma(iter_num: int | None) -> float:
         return scaler(iter_num) if scaler else base
 
+    def _repeat_penalty_strength(args) -> float:
+        strength = getattr(args, "repeat_penalty_strength", None)
+        if strength is None:
+            strength = getattr(args, "loop_penalty_strength", None)
+        return 0.1 if strength is None else strength
+
+    def _repeat_penalty_window(args) -> int:
+        window = getattr(args, "repeat_penalty_window", None)
+        if window is None:
+            window = getattr(args, "loop_penalty_window", None)
+        return 3 if window is None else window
+
     built_losses: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
         "cross_entropy": LOSS_VARIANTS["cross_entropy"],
         "label_smoothing": lambda l, t, *, iter_num=None: LOSS_VARIANTS["label_smoothing"](
@@ -564,6 +660,20 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             gamma=rank_gamma(iter_num),
             focal_gamma=getattr(args, "focal_gamma", 2.0),
             beta=getattr(args, "entropy_beta", 0.01),
+        ),
+        "repeat_penalty": lambda l, t, *, iter_num=None: LOSS_VARIANTS["repeat_penalty"](
+            l,
+            t,
+            iter_num=iter_num,
+            penalty_strength=_repeat_penalty_strength(args),
+            window=_repeat_penalty_window(args),
+        ),
+        "loop_penalty": lambda l, t, *, iter_num=None: LOSS_VARIANTS["loop_penalty"](
+            l,
+            t,
+            iter_num=iter_num,
+            penalty_strength=_repeat_penalty_strength(args),
+            window=_repeat_penalty_window(args),
         ),
     }
 
