@@ -222,13 +222,13 @@ python3 view_model_stats.py run1_stats.csv run2_stats.csv
 See [documentation/Model_Stats_Table.md](documentation/Model_Stats_Table.md)
 for more details.
 
-## Loop Penalty Loss
+## Repeat Penalty Loss
 
-To curb newline or character repetition loops during training you can switch to
-the [`loop_penalty` loss](documentation/Loop_Penalty_Loss.md). The loss augments
+To curb short-range repetition during training you can switch to the
+[`repeat_penalty` loss](documentation/Repeat_Penalty_Loss.md). The loss augments
 cross-entropy with a lightweight penalty that reduces the probability mass
-assigned to recently emitted tokens, which helps models break out of `\n\n\n`
-and similar degeneracies while sampling.
+assigned to tokens that appeared in the recent context, which helps models stay
+diverse and avoid local loops while sampling.
 
 ## TODO Section:
 

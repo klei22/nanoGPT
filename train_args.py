@@ -134,28 +134,40 @@ def parse_args():
         help='Scaling for flatness_boost loss when predictions are flat.',
     )
     training_group.add_argument(
+        '--repeat_penalty_strength',
+        type=float,
+        default=None,
+        help='Weight of the repetition penalty when using repeat_penalty/loop_penalty loss.',
+    )
+    training_group.add_argument(
+        '--repeat_penalty_window',
+        type=int,
+        default=None,
+        help='Number of previous tokens inspected by repeat_penalty/loop_penalty loss.',
+    )
+    training_group.add_argument(
         '--loop_penalty_strength',
         type=float,
-        default=0.1,
-        help='Weight of the repetition penalty when using loop_penalty loss.',
+        default=None,
+        help=argparse.SUPPRESS,
     )
     training_group.add_argument(
         '--loop_penalty_window',
         type=int,
-        default=3,
-        help='Number of previous tokens inspected by loop_penalty loss.',
+        default=None,
+        help=argparse.SUPPRESS,
     )
     training_group.add_argument(
         '--loop_penalty_newline_id',
         type=int,
         default=None,
-        help='Token id for newline (if known) to emphasise newline loop penalties.',
+        help=argparse.SUPPRESS,
     )
     training_group.add_argument(
         '--loop_penalty_newline_multiplier',
         type=float,
-        default=2.0,
-        help='Extra weight applied when the repeated token is the newline id.',
+        default=None,
+        help=argparse.SUPPRESS,
     )
     training_group.add_argument(
         '--correct_top1_attenuation',
