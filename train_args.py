@@ -275,6 +275,13 @@ def parse_args():
     # --------  MUON --------------------------------------------------
     training_group.add_argument("--muon_momentum", type=float, default=0.95,
                                 help="Momentum for the Muon optimizer.")
+    training_group.add_argument(
+        "--muon_orthogonalizer",
+        type=str,
+        default="jordan",
+        choices=["jordan", "polar_express"],
+        help="Polynomial iteration used to orthogonalize Muon updates.",
+    )
     # --------  ADAMW --------------------------------------------------
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")

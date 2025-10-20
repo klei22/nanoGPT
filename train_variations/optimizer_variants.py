@@ -1646,6 +1646,7 @@ def _muon(param_groups, args):
                 lr=args.learning_rate,
                 momentum=getattr(args, "muon_momentum", 0.95),
                 weight_decay=args.weight_decay,
+                orthogonalizer=getattr(args, "muon_orthogonalizer", "jordan"),
                 use_muon=True,
             )
         else:
