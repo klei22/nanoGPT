@@ -20,3 +20,10 @@ sideload them on demand.
 
 Refer to the [`executorch` README](executorch/README.md) for detailed usage
 instructions.
+
+## End-to-end demo
+
+Run `demos/executorch_android_export_demo.sh` for a lightweight example that
+downloads the Shakespeare dataset, trains a compact checkpoint, exports it to
+ExecuTorch, and copies the resulting assets into the Android demo project.  The
+script also shows how to dry-run the optional ADB push step.

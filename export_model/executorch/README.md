@@ -63,3 +63,10 @@ Override `--adb` if the binary is not on your `PATH`.
 
 All scripts include `--dry-run` and verbose logging flags.  Run
 `python <script> --help` for the full option list.
+
+## Quickstart demo
+
+The repository ships with `demos/executorch_android_export_demo.sh`, which
+chains together dataset preparation, a short training run, ExecuTorch export,
+asset installation, and an optional ADB push.  Use it as a reference for the
+expected command sequence or adapt it for your own experiments.
