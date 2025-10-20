@@ -1,0 +1,45 @@
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Build outputs
+app/build/
+build/
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Large model files (keep configs, exclude binaries)
+*.pt
+*.bin
+*.pth
+*.onnx
+*.tflite
+
+# Native libraries (too large for Git)
+*.so
+*.dll
+*.dylib
+
+# Keep only essential files for the repository
+!app/src/main/jniLibs/arm64-v8a/README.md
+!app/src/main/jniLibs/armeabi-v7a/README.md

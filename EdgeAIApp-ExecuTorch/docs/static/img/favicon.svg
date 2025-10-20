@@ -1,0 +1,38 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="32" height="32" fill="#2a2a2a"/>
+  
+  <!-- Green alligator-like creature -->
+  <g transform="translate(4, 4)">
+    <!-- Body -->
+    <ellipse cx="12" cy="12" rx="10" ry="7" fill="#32CD32"/>
+    
+    <!-- Head -->
+    <ellipse cx="12" cy="9" rx="7" ry="5" fill="#32CD32"/>
+    
+    <!-- Eyes -->
+    <path d="M9 7 Q9.5 6 10 7" stroke="black" stroke-width="1" fill="none"/>
+    <path d="M14 7 Q14.5 6 15 7" stroke="black" stroke-width="1" fill="none"/>
+    
+    <!-- Mouth with teeth -->
+    <path d="M7 11 Q12 13 17 11" stroke="black" stroke-width="1" fill="none"/>
+    <path d="M8 11 L8.5 12 L9 11" stroke="black" stroke-width="0.5" fill="white"/>
+    <path d="M11 11 L11.5 12 L12 11" stroke="black" stroke-width="0.5" fill="white"/>
+    <path d="M14 11 L14.5 12 L15 11" stroke="black" stroke-width="0.5" fill="white"/>
+    
+    <!-- Scales on back -->
+    <circle cx="12" cy="5" r="1" fill="#228B22"/>
+    <circle cx="10" cy="6" r="0.5" fill="#228B22"/>
+    <circle cx="14" cy="6" r="0.5" fill="#228B22"/>
+    
+    <!-- Limbs -->
+    <ellipse cx="7" cy="15" rx="2" ry="3" fill="#32CD32"/>
+    <ellipse cx="17" cy="15" rx="2" ry="3" fill="#32CD32"/>
+    
+    <!-- Yellow notepad -->
+    <rect x="5" y="17" width="6" height="4" rx="0.5" fill="#FFD700" stroke="#DAA520" stroke-width="0.3"/>
+    <line x1="5.5" y1="18" x2="10.5" y2="18" stroke="#DAA520" stroke-width="0.2"/>
+    <line x1="5.5" y1="19" x2="10.5" y2="19" stroke="#DAA520" stroke-width="0.2"/>
+    <line x1="5.5" y1="20" x2="10.5" y2="20" stroke="#DAA520" stroke-width="0.2"/>
+  </g>
+</svg>
