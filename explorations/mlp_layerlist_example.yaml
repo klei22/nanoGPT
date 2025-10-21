@@ -1,0 +1,32 @@
+# mlp_layerlist_example.yaml
+#
+# Demonstrates how to specify per-layer MLP hidden sizes with
+# `mlp_size_layerlist` in a run_experiments YAML configuration.
+---
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: [4]
+  n_head: [4]
+  n_embd: [256]
+  block_size: [64]
+  batch_size: [32]
+  max_iters: [200]
+  lr_decay_iters: [200]
+  eval_interval: [200]
+  warmup_iters: [50]
+  decay_lr: [false]
+  dropout: [0.0]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [false]
+  always_save_checkpoint: [false]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  # Baseline run using a single hidden size for every layer.
+  - mlp_size: [1024]
+
+  # Alternate run with alternating hidden sizes per block. The list repeats as needed
+  # when there are more transformer blocks than entries.
+  - mlp_size_layerlist:
+      - [768, 1024]
