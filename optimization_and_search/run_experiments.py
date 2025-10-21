@@ -595,7 +595,7 @@ def build_command(combo: dict) -> list[str]:
         elif isinstance(v, list):
             if v:
                 cmd.append(f"--{k}")
-                cmd.extend(str(x) for x in v)
+                cmd.extend([str(x) for x in v])
             else:
                 cmd.append(f"--{k}")
         else:
