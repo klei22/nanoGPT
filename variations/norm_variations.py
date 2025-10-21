@@ -62,6 +62,17 @@ class RMSNorm(nn.Module):
         rms = x.norm(2, dim=-1, keepdim=True) / math.sqrt(x.size(-1))
         return x / rms * self.gain
 
+class RMSNormSingle(nn.Module):
+    """RMS Normalization with a single global gain parameter."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.gain = nn.Parameter(torch.ones(1))
+
+    def forward(self, x):
+        rms = x.norm(2, dim=-1, keepdim=True) / math.sqrt(x.size(-1))
+        return x / rms * self.gain
+
 class HyperSphereNorm(nn.Module):
     """Normalization to the surface of Hypersphere"""
 
@@ -214,6 +225,7 @@ class IdentityNorm(nn.Module):
 norm_dictionary = {
     "layernorm": LayerNorm,
     "rmsnorm": RMSNorm,
+    "rmsnorm_single": RMSNormSingle,
     "prmsnorm": pRMSNorm,
     "krmsnorm": kRMSNorm,
     "hyperspherenorm": HyperSphereNorm,
