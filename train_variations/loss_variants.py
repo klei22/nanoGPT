@@ -77,6 +77,104 @@ def top1_focus_loss(
     return ce + alpha * penalty.mean()
 
 
+def skip_correct_top1_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+) -> torch.Tensor:
+    """Ignore examples that are already predicted correctly at top-1."""
+
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+    losses = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+
+    with torch.no_grad():
+        predictions = torch.argmax(logits_flat, dim=-1)
+        mask = (targets_flat != -1) & (predictions != targets_flat)
+
+    if mask.any():
+        return losses[mask].mean()
+
+    # If every token is already correct we skip the loss entirely while
+    # preserving device/dtype for downstream consumers expecting a tensor.
+    return losses.new_full((), 0.0)
+
+
+def attenuated_correct_top1_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    attenuation: float = 1.0,
+) -> torch.Tensor:
+    """Down-weight correctly predicted tokens by a constant factor.
+
+    When ``attenuation`` is ``1.0`` the behaviour exactly matches
+    cross-entropy. Setting ``attenuation`` below ``1.0`` decreases the
+    contribution from tokens that already have the correct top-1
+    prediction while keeping the gradient signal non-zero.
+    """
+
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+    losses = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+    mask = targets_flat != -1
+
+    if not mask.any():
+        return losses.new_full((), 0.0)
+
+    with torch.no_grad():
+        predictions = torch.argmax(logits_flat, dim=-1)
+        correct = (predictions == targets_flat) & mask
+        scale = torch.ones_like(losses)
+        scale[correct] = attenuation
+
+    scaled = losses * scale
+    return scaled[mask].mean()
+
+
+def distance_attenuated_top1_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    strength: float = 0.0,
+) -> torch.Tensor:
+    """Attenuate loss based on how close the target is to the top prediction.
+
+    ``strength`` controls how aggressively the attenuation is applied. A
+    value of ``0.0`` makes this identical to cross-entropy. As the
+    strength increases, tokens that are already near the top prediction
+    receive a reduced loss while badly ranked targets remain close to the
+    standard cross-entropy loss.
+    """
+
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+    losses = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
+    mask = targets_flat != -1
+
+    if not mask.any():
+        return losses.new_full((), 0.0)
+
+    with torch.no_grad():
+        logits_sel = logits_flat[mask]
+        targets_sel = targets_flat[mask]
+        top_logits, _ = logits_sel.max(dim=-1)
+        target_logits = logits_sel[torch.arange(logits_sel.size(0)), targets_sel]
+        # ``distance`` is zero when the target already matches the top
+        # prediction, and grows with the logit gap otherwise.
+        distance = torch.clamp(top_logits - target_logits, min=0.0)
+        attenuation = 1.0 - strength * torch.exp(-distance)
+        attenuation = torch.clamp(attenuation, min=0.0)
+
+    scale = torch.ones_like(losses)
+    scale[mask] = attenuation
+    scaled = losses * scale
+    return scaled[mask].mean()
+
+
 def top1_margin_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -317,6 +415,9 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "label_smoothing": label_smoothing_loss,
     "focal": focal_loss,
     "top1_focus": top1_focus_loss,
+    "skip_correct_top1": skip_correct_top1_loss,
+    "attenuated_correct_top1": attenuated_correct_top1_loss,
+    "distance_attenuated_top1": distance_attenuated_top1_loss,
     "top1_margin": top1_margin_loss,
     "entropy_penalty": entropy_penalty_loss,
     "top1_ratio": top1_ratio_loss,
@@ -412,6 +513,13 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
         ),
         "top1_focus": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_focus"](
             l, t, iter_num=iter_num, alpha=getattr(args, "top1_focus_alpha", 0.5)
+        ),
+        "skip_correct_top1": LOSS_VARIANTS["skip_correct_top1"],
+        "attenuated_correct_top1": lambda l, t, *, iter_num=None: LOSS_VARIANTS["attenuated_correct_top1"](
+            l, t, iter_num=iter_num, attenuation=getattr(args, "correct_top1_attenuation", 1.0)
+        ),
+        "distance_attenuated_top1": lambda l, t, *, iter_num=None: LOSS_VARIANTS["distance_attenuated_top1"](
+            l, t, iter_num=iter_num, strength=getattr(args, "distance_top1_strength", 0.0)
         ),
         "top1_margin": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_margin"](
             l, t, iter_num=iter_num, margin=getattr(args, "top1_margin", 0.1)

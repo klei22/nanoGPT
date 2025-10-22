@@ -101,7 +101,6 @@ opt.signcolumn = "yes"
 opt.colorcolumn = "80"
 
 -- Behavior
-opt.clipboard = "unnamedplus" -- Sync with system clipboard
 opt.splitright = true
 opt.splitbelow = true
 opt.mouse = "a"
@@ -125,6 +124,19 @@ keymap.set('n', '<leader>ff', '<cmd>Telescope find_files<cr>', { desc = 'Fuzzy f
 keymap.set('n', '<leader>fg', '<cmd>Telescope live_grep<cr>', { desc = 'Live grep' })
 keymap.set('n', '<leader>fb', '<cmd>Telescope buffers<cr>', { desc = 'Find buffers' })
 keymap.set('n', '<leader>fh', '<cmd>Telescope help_tags<cr>', { desc = 'Find help tags' })
+
+-- Fugitive Keymaps
+keymap.set("n", "<leader>gs", vim.cmd.Git, { desc = "Git status (Fugitive)" })
+
+-- GitSigns
+keymap.set('n', '<leader>gH', ':Gitsigns stage_buffer<CR>', { desc = 'Gitsigns Stage Buffer' })
+keymap.set('n', '<leader>gu', ':Gitsigns undo_stage_hunk<CR>', { desc = 'Gitsigns Undo Stage Hunk' })
+keymap.set('n', '<leader>gr', ':Gitsigns reset_hunk<CR>', { desc = 'Gitsigns Reset Hunk' })
+keymap.set('n', '<leader>gR', ':Gitsigns reset_buffer<CR>', { desc = 'Gitsigns Reset Buffer' })
+keymap.set('n', '<leader>gd', ':Gitsigns diffthis<CR>', { desc = 'Gitsigns Diff This' })
+keymap.set('n', '<leader>gp', ':Gitsigns preview_hunk<CR>', { desc = 'Gitsigns Preview Hunk' })
+keymap.set('n', '<leader>gt', ':Gitsigns toggle_current_line_blame<CR>', { desc = 'Gitsigns Toggle Blame' })
+
 
 -- Ultisnips
 vim.g.UltiSnipsExpandTrigger = "<tab>"
@@ -237,6 +249,22 @@ return {
       })
     end
   }
+}
+EOF
+
+# Write lua/plugins/gitsigns.lua
+cat > ~/.config/nvim/lua/plugins/gitsigns.lua << 'EOF'
+return {
+  "lewis6991/gitsigns.nvim",
+  config = function()
+    require("gitsigns").setup()
+  end,
+}
+EOF
+
+cat > ~/.config/nvim/lua/plugins/fugitive.lua << 'EOF'
+return {
+  "tpope/vim-fugitive",
 }
 EOF
 

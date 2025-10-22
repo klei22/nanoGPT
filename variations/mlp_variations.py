@@ -168,6 +168,15 @@ class EdgeLLMASICMLP(nn.Module):
         # Select activation variant
         self.activation_variant = activation_dictionary[config.activation_variant](config=config)
 
+        if config.use_gradual_activation:
+            self.use_gradual_activation = True
+            self.start_activation = activation_dictionary[config.activation_start](config=config)
+            self.end_activation = activation_dictionary[config.activation_end](config=config)
+            self.transition_start = config.activation_transition_start_iter
+            self.transition_end = config.activation_transition_end_iter if config.activation_transition_end_iter is not None else config.max_iters
+        else:
+            self.use_gradual_activation = False
+
         # L2 normalization options
         if config.l2_norm_mlp_up:
             print("Warning: EdgeLLMASICMLP does not support l2_norm_mlp_up.")
@@ -256,8 +265,26 @@ class EdgeLLMASICMLP(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_activation_input", x, num_bits, quant_method, iter_num)
 
-        # Apply offsets to the activation function
-        x = self.activation_variant(x - self.activation_x_offset) - self.activation_y_offset
+        if self.use_gradual_activation:
+            if not self.training:
+                x = self.end_activation(x - self.activation_x_offset) - self.activation_y_offset
+            else:
+                if iter_num == None:
+                    raise ValueError("Iter_num was not passed to GPT model")
+
+                transition_percentage = (iter_num - self.transition_start) / float(self.transition_end - self.transition_start)
+                transition_percentage = max(0.0, min(1.0, transition_percentage))  # clamp to [0, 1]
+
+                # Compute both activations
+                start_out = self.start_activation(x - self.activation_x_offset)
+                end_out = self.end_activation(x - self.activation_x_offset)
+
+                # Blend between start and end
+                x = (1 - transition_percentage) * start_out + transition_percentage * end_out
+                x = x - self.activation_y_offset
+        else:
+            # Apply offsets to the activation function
+            x = self.activation_variant(x - self.activation_x_offset) - self.activation_y_offset
 
         if self.post_act_l2_norm:
             x = x / x.norm(dim=-1, keepdim=True).clamp_min(1e-6)

@@ -72,6 +72,37 @@ class PairwiseMetricStats:
     histogram_path: Optional[Path]
 
 
+@dataclass
+class VectorComparisonSummary:
+    """Summary statistics for per-vector comparisons between checkpoints."""
+
+    parameter: str
+    axis: int
+    axis_size: int
+    tensor_shape: Tuple[int, ...]
+    num_vectors: int
+    angle_min: float
+    angle_max: float
+    angle_mean: float
+    angle_std: float
+    angle_q05: float
+    angle_q1: float
+    angle_median: float
+    angle_q3: float
+    angle_q95: float
+    cosine_min: float
+    cosine_max: float
+    cosine_mean: float
+    cosine_std: float
+    cosine_q05: float
+    cosine_q1: float
+    cosine_median: float
+    cosine_q3: float
+    cosine_q95: float
+    angle_histogram_path: Optional[Path]
+    cosine_histogram_path: Optional[Path]
+
+
 PAIRWISE_METRIC_INFO: Dict[str, Tuple[str, str]] = {
     "angle_min": ("Min angle", "angle"),
     "angle_mean": ("Mean angle", "angle"),
@@ -196,6 +227,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("ckpt_path", help="Path to the checkpoint file")
     parser.add_argument("pattern", help="Regular expression used to filter parameter names")
     parser.add_argument(
+        "--compare-ckpt",
+        type=str,
+        default=None,
+        help="Optional second checkpoint file used for per-vector comparisons",
+    )
+    parser.add_argument(
         "--device", type=str, default="cpu", help="Device used to load the checkpoint"
     )
     parser.add_argument(
@@ -251,6 +288,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional limit on the number of pairwise metric rows displayed",
+    )
+    parser.add_argument(
+        "--max-comparison-rows",
+        type=int,
+        default=None,
+        help="Optional limit on the number of checkpoint comparison rows displayed",
+    )
+    parser.add_argument(
+        "--comparison-csv",
+        type=Path,
+        default=None,
+        help="Path used to save per-vector checkpoint comparison metrics as a CSV file",
     )
     parser.add_argument(
         "--no-colorize",
@@ -1019,6 +1068,180 @@ def render_pairwise_table(
         )
 
 
+def render_vector_comparison_table(
+    rows: List[VectorComparisonSummary],
+    max_rows: Optional[int],
+    *,
+    colorize: bool,
+    angle_units: str,
+) -> None:
+    if not rows:
+        return
+
+    rows = sorted(rows, key=lambda item: (item.parameter, item.axis))
+    total_rows = len(rows)
+    display_rows = rows if max_rows is None else rows[:max_rows]
+    has_angle_hist = any(row.angle_histogram_path is not None for row in rows)
+    has_cos_hist = any(row.cosine_histogram_path is not None for row in rows)
+
+    column_specs: List[ColumnSpec] = [
+        ColumnSpec(
+            "# Vectors",
+            extractor=lambda row: float(row.num_vectors),
+            formatter=lambda row: f"{row.num_vectors:,}",
+        ),
+        ColumnSpec(
+            f"Angle min ({angle_units})",
+            extractor=lambda row: float(row.angle_min),
+            formatter=lambda row: f"{row.angle_min:.6g}",
+        ),
+        ColumnSpec(
+            f"Angle mean ({angle_units})",
+            extractor=lambda row: float(row.angle_mean),
+            formatter=lambda row: f"{row.angle_mean:.6g}",
+        ),
+        ColumnSpec(
+            f"Angle median ({angle_units})",
+            extractor=lambda row: float(row.angle_median),
+            formatter=lambda row: f"{row.angle_median:.6g}",
+        ),
+        ColumnSpec(
+            f"Angle q95 ({angle_units})",
+            extractor=lambda row: float(row.angle_q95),
+            formatter=lambda row: f"{row.angle_q95:.6g}",
+        ),
+        ColumnSpec(
+            "Cosine min",
+            extractor=lambda row: float(row.cosine_min),
+            formatter=lambda row: f"{row.cosine_min:.6g}",
+            reverse=True,
+        ),
+        ColumnSpec(
+            "Cosine mean",
+            extractor=lambda row: float(row.cosine_mean),
+            formatter=lambda row: f"{row.cosine_mean:.6g}",
+        ),
+        ColumnSpec(
+            "Cosine median",
+            extractor=lambda row: float(row.cosine_median),
+            formatter=lambda row: f"{row.cosine_median:.6g}",
+        ),
+        ColumnSpec(
+            "Cosine max",
+            extractor=lambda row: float(row.cosine_max),
+            formatter=lambda row: f"{row.cosine_max:.6g}",
+        ),
+    ]
+
+    column_ranges = _compute_column_ranges(rows, column_specs)
+
+    table = Table(
+        title="Checkpoint comparison statistics",
+        box=box.SIMPLE_HEAVY,
+        header_style="bold green",
+        show_lines=False,
+    )
+    table.add_column("Parameter", overflow="fold")
+    table.add_column("Shape", justify="center")
+    table.add_column("Axis", justify="center")
+    table.add_column("# Vectors", justify="right")
+    table.add_column(f"Angle min ({angle_units})", justify="right")
+    table.add_column(f"Angle mean ({angle_units})", justify="right")
+    table.add_column(f"Angle median ({angle_units})", justify="right")
+    table.add_column(f"Angle q95 ({angle_units})", justify="right")
+    table.add_column("Cosine min", justify="right")
+    table.add_column("Cosine mean", justify="right")
+    table.add_column("Cosine median", justify="right")
+    table.add_column("Cosine max", justify="right")
+    if has_angle_hist:
+        table.add_column("Angle histogram", overflow="fold")
+    if has_cos_hist:
+        table.add_column("Cosine histogram", overflow="fold")
+
+    for row in display_rows:
+        formatted_cells = [
+            _format_with_color(spec, row, column_ranges, colorize=colorize)
+            for spec in column_specs
+        ]
+        axis_label = f"axis {row.axis} (vector dim={row.axis_size})"
+        values: List[str] = [
+            row.parameter,
+            str(row.tensor_shape),
+            axis_label,
+            *formatted_cells,
+        ]
+        if has_angle_hist:
+            values.append(str(row.angle_histogram_path) if row.angle_histogram_path else "—")
+        if has_cos_hist:
+            values.append(
+                str(row.cosine_histogram_path) if row.cosine_histogram_path else "—"
+            )
+        table.add_row(*values)
+
+    console = Console()
+    console.print(table)
+    if max_rows is not None and total_rows > max_rows:
+        console.print(
+            f"[dim]Displayed {len(display_rows)} of {total_rows} rows (limited by --max-comparison-rows). Use a larger value to see more.[/]"
+        )
+
+
+def render_overall_comparison_summary(
+    angle_stats: Dict[str, float],
+    cosine_stats: Dict[str, float],
+    *,
+    angle_units: str,
+    num_vectors: int,
+) -> None:
+    table = Table(title="Overall checkpoint comparison summary", box=box.SQUARE)
+    table.add_column("Statistic", style="bold green")
+    table.add_column(f"Angle ({angle_units})", justify="right", style="bold cyan")
+    table.add_column("Cosine similarity", justify="right", style="bold magenta")
+
+    table.add_row("Vectors compared", f"{num_vectors:,}", f"{num_vectors:,}")
+
+    fields = [
+        ("Min", "min"),
+        ("Q05", "q05"),
+        ("Q1", "q1"),
+        ("Median", "median"),
+        ("Mean", "mean"),
+        ("Q3", "q3"),
+        ("Q95", "q95"),
+        ("Std", "std"),
+        ("Max", "max"),
+    ]
+
+    def _format(value: float) -> str:
+        return "n/a" if math.isnan(value) else f"{value:.6g}"
+
+    for label, key in fields:
+        angle_value = angle_stats.get(key, float("nan"))
+        cosine_value = cosine_stats.get(key, float("nan"))
+        table.add_row(label, _format(angle_value), _format(cosine_value))
+
+    Console().print(table)
+
+
+def write_comparison_csv(
+    records: List[Dict[str, Any]],
+    csv_path: Path,
+) -> Path:
+    try:
+        import pandas as pd
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise SystemExit(
+            "pandas is required for checkpoint comparisons but is not installed"
+        ) from exc
+
+    csv_path = csv_path.expanduser().resolve()
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    df = pd.DataFrame.from_records(records)
+    df.to_csv(csv_path, index=False)
+    return csv_path
+
+
 def render_summary(summary: Dict[str, float], matched: int) -> None:
     table = Table(title="Aggregate statistics", box=box.SQUARE)
     table.add_column("Metric", style="bold magenta")
@@ -1066,6 +1289,25 @@ def main() -> None:
     if histogram_dir is not None:
         histogram_dir = histogram_dir.expanduser().resolve()
 
+    comparison_state_dict: Optional[Dict[str, torch.Tensor]] = None
+    comparison_config: Optional[GPTConfig] = None
+    if args.compare_ckpt:
+        try:
+            comparison_state_dict, comparison_config = load_state_dict(
+                args.compare_ckpt, args.device
+            )
+        except FileNotFoundError as exc:
+            raise SystemExit(f"Comparison checkpoint not found: {exc}") from exc
+
+    if embedding_dim is None and comparison_config is not None:
+        embedding_dim = getattr(comparison_config, "n_embd", None)
+    elif embedding_dim is not None and comparison_config is not None:
+        comparison_emb = getattr(comparison_config, "n_embd", None)
+        if comparison_emb is not None and comparison_emb != embedding_dim:
+            console.print(
+                f"[yellow]Warning:[/] Embedding dimension mismatch between checkpoints ({embedding_dim} vs {comparison_emb}). Using {embedding_dim} for comparisons."
+            )
+
     rows = []
     l2_rows: List[L2NormStats] = []
     pairwise_rows: List[PairwiseMetricStats] = []
@@ -1087,11 +1329,32 @@ def main() -> None:
         "max": float("-inf"),
     }
 
+    comparison_records: List[Dict[str, Any]] = []
+    comparison_summaries: List[VectorComparisonSummary] = []
+    overall_angle_values: List[torch.Tensor] = []
+    overall_cosine_values: List[torch.Tensor] = []
+    comparison_missing: set[str] = set()
+    comparison_shape_mismatch: Dict[str, Tuple[Tuple[int, ...], Tuple[int, ...]]] = {}
+    compared_parameters: set[str] = set()
+
+    comparison_hist_dir: Optional[Path] = None
+    if histogram_dir is not None and args.compare_ckpt:
+        comparison_hist_dir = histogram_dir / "comparison"
+
     for name, tensor in state_dict.items():
         if pattern.search(name):
             stats = tensor_stats(tensor)
             rows.append((name, stats))
             update_global_summary(summary, stats, tensor)
+            comparison_tensor: Optional[torch.Tensor] = None
+            if comparison_state_dict is not None:
+                other = comparison_state_dict.get(name)
+                if other is None:
+                    comparison_missing.add(name)
+                elif other.shape != tensor.shape:
+                    comparison_shape_mismatch[name] = (tuple(tensor.shape), tuple(other.shape))
+                else:
+                    comparison_tensor = other.detach().to(torch.float32)
             if embedding_dim:
                 tensor_shape = tuple(tensor.shape)
                 for axis, axis_size, vectors in iter_vector_views(tensor, embedding_dim):
@@ -1130,15 +1393,238 @@ def main() -> None:
                             axis,
                             axis_size,
                             vectors,
-                            histogram_dir,
-                            args.histogram_bins,
-                            angle_units=args.angle_units,
-                        )
+                        histogram_dir,
+                        args.histogram_bins,
+                        angle_units=args.angle_units,
                     )
+                )
+
+                if comparison_tensor is not None:
+                    for axis, axis_size, vectors in iter_vector_views(tensor, embedding_dim):
+                        moved_shape = tensor_shape[:axis] + tensor_shape[axis + 1 :]
+                        other_moved = comparison_tensor.movedim(axis, -1)
+                        other_vectors = other_moved.reshape(-1, axis_size)
+                        if other_vectors.shape != vectors.shape:
+                            comparison_shape_mismatch[name] = (
+                                tuple(tensor.shape),
+                                tuple(comparison_tensor.shape),
+                            )
+                            break
+
+                        num_vectors = vectors.shape[0]
+                        if num_vectors == 0:
+                            continue
+
+                        cosine_values = torch.nn.functional.cosine_similarity(
+                            vectors, other_vectors, dim=-1, eps=1e-8
+                        ).clamp(-1.0, 1.0)
+                        angle_values = torch.acos(cosine_values)
+                        if args.angle_units == "degrees":
+                            angle_values = torch.rad2deg(angle_values)
+                        elif args.angle_units != "radians":
+                            raise ValueError(f"Unsupported angle unit: {args.angle_units}")
+
+                        norms_primary = torch.linalg.norm(vectors, dim=-1)
+                        norms_secondary = torch.linalg.norm(other_vectors, dim=-1)
+
+                        angle_stats = summarize_metric_values(angle_values)
+                        cosine_stats = summarize_metric_values(cosine_values)
+
+                        angle_hist_path: Optional[Path] = None
+                        cosine_hist_path: Optional[Path] = None
+                        if comparison_hist_dir is not None:
+                            base_prefix = (
+                                f"comparison_{Path(args.ckpt_path).stem}_vs_{Path(args.compare_ckpt).stem}"
+                            )
+                            angle_hist_path = save_pairwise_histogram(
+                                angle_values,
+                                comparison_hist_dir,
+                                name,
+                                axis,
+                                tensor_shape=tensor_shape,
+                                axis_size=axis_size,
+                                metric=f"Angle between checkpoints ({args.angle_units})",
+                                units=args.angle_units,
+                                bins=args.histogram_bins,
+                                histogram_prefix=f"{base_prefix}_angle_{name}",
+                            )
+                            cosine_hist_path = save_pairwise_histogram(
+                                cosine_values,
+                                comparison_hist_dir,
+                                name,
+                                axis,
+                                tensor_shape=tensor_shape,
+                                axis_size=axis_size,
+                                metric="Cosine similarity between checkpoints",
+                                units="cosine",
+                                bins=args.histogram_bins,
+                                histogram_prefix=f"{base_prefix}_cosine_{name}",
+                            )
+
+                        comparison_summaries.append(
+                            VectorComparisonSummary(
+                                parameter=name,
+                                axis=axis,
+                                axis_size=axis_size,
+                                tensor_shape=tensor_shape,
+                                num_vectors=num_vectors,
+                                angle_min=angle_stats["min"],
+                                angle_max=angle_stats["max"],
+                                angle_mean=angle_stats["mean"],
+                                angle_std=angle_stats["std"],
+                                angle_q05=angle_stats["q05"],
+                                angle_q1=angle_stats["q1"],
+                                angle_median=angle_stats["median"],
+                                angle_q3=angle_stats["q3"],
+                                angle_q95=angle_stats["q95"],
+                                cosine_min=cosine_stats["min"],
+                                cosine_max=cosine_stats["max"],
+                                cosine_mean=cosine_stats["mean"],
+                                cosine_std=cosine_stats["std"],
+                                cosine_q05=cosine_stats["q05"],
+                                cosine_q1=cosine_stats["q1"],
+                                cosine_median=cosine_stats["median"],
+                                cosine_q3=cosine_stats["q3"],
+                                cosine_q95=cosine_stats["q95"],
+                                angle_histogram_path=angle_hist_path,
+                                cosine_histogram_path=cosine_hist_path,
+                            )
+                        )
+
+                        compared_parameters.add(name)
+                        overall_angle_values.append(angle_values.detach())
+                        overall_cosine_values.append(cosine_values.detach())
+
+                        coords: List[Tuple[int, ...]]
+                        if moved_shape:
+                            coords = []
+                            for flat_index in range(num_vectors):
+                                remainder = flat_index
+                                coord: List[int] = []
+                                for dim in reversed(moved_shape):
+                                    coord.append(remainder % dim)
+                                    remainder //= dim
+                                coords.append(tuple(reversed(coord)))
+                        else:
+                            coords = [tuple() for _ in range(num_vectors)]
+
+                        angle_cpu = angle_values.detach().cpu()
+                        cosine_cpu = cosine_values.detach().cpu()
+                        norms_primary_cpu = norms_primary.detach().cpu()
+                        norms_secondary_cpu = norms_secondary.detach().cpu()
+
+                        for idx in range(num_vectors):
+                            coord_tuple = coords[idx]
+                            coord_repr = str(coord_tuple) if coord_tuple else "()"
+                            comparison_records.append(
+                                {
+                                    "parameter": name,
+                                    "tensor_shape": str(tensor_shape),
+                                    "axis": axis,
+                                    "axis_size": axis_size,
+                                    "vector_index": idx,
+                                    "vector_coordinates": coord_repr,
+                                    "vector_identifier": f"{name}::axis{axis}::{coord_repr if coord_tuple else idx}",
+                                    "angle": float(angle_cpu[idx].item()),
+                                    "angle_units": args.angle_units,
+                                    "cosine_similarity": float(cosine_cpu[idx].item()),
+                                    "ckpt1_norm": float(norms_primary_cpu[idx].item()),
+                                    "ckpt2_norm": float(norms_secondary_cpu[idx].item()),
+                                    "ckpt1_path": str(Path(args.ckpt_path).resolve()),
+                                    "ckpt2_path": str(Path(args.compare_ckpt).resolve()),
+                                }
+                            )
 
     if not rows:
         console.print("[red]No parameters matched the provided pattern.[/]")
         return
+
+    if comparison_missing:
+        for missing_name in sorted(comparison_missing):
+            console.print(
+                f"[yellow]Warning:[/] Parameter '{missing_name}' not found in comparison checkpoint; skipping per-vector comparison."
+            )
+
+    if comparison_shape_mismatch:
+        for name, (shape_a, shape_b) in sorted(comparison_shape_mismatch.items()):
+            console.print(
+                f"[yellow]Warning:[/] Shape mismatch for parameter '{name}': {shape_a} vs {shape_b}. Skipping comparison."
+            )
+
+    if comparison_state_dict is not None:
+        unmatched_parameters = [
+            key
+            for key in comparison_state_dict.keys()
+            if pattern.search(key)
+            and key not in compared_parameters
+            and key not in comparison_missing
+            and key not in comparison_shape_mismatch
+        ]
+        if unmatched_parameters:
+            console.print(
+                "[yellow]Warning:[/] Some parameters from the comparison checkpoint matched the pattern but were not compared due to embedding-dimension filtering: "
+                + ", ".join(sorted(unmatched_parameters))
+            )
+
+    if comparison_records and args.compare_ckpt:
+        default_csv_name = (
+            f"checkpoint_comparison_{Path(args.ckpt_path).stem}_vs_{Path(args.compare_ckpt).stem}.csv"
+        )
+        csv_path = args.comparison_csv if args.comparison_csv else Path(default_csv_name)
+        csv_path = write_comparison_csv(comparison_records, csv_path)
+        console.print(f"[green]Saved checkpoint comparison CSV to {csv_path}[/]")
+
+    if comparison_summaries:
+        render_vector_comparison_table(
+            comparison_summaries,
+            args.max_comparison_rows,
+            colorize=args.colorize,
+            angle_units=args.angle_units,
+        )
+
+    if overall_angle_values and overall_cosine_values:
+        all_angles = torch.cat([values.reshape(-1) for values in overall_angle_values])
+        all_cosines = torch.cat([values.reshape(-1) for values in overall_cosine_values])
+        angle_summary = summarize_metric_values(all_angles)
+        cosine_summary = summarize_metric_values(all_cosines)
+        render_overall_comparison_summary(
+            angle_summary,
+            cosine_summary,
+            angle_units=args.angle_units,
+            num_vectors=all_angles.numel(),
+        )
+
+        if comparison_hist_dir is not None and all_angles.numel() > 0:
+            base_prefix = (
+                f"comparison_{Path(args.ckpt_path).stem}_vs_{Path(args.compare_ckpt).stem}"
+            )
+            overall_angle_hist = save_pairwise_histogram(
+                all_angles,
+                comparison_hist_dir,
+                "[Comparison] overall",
+                -1,
+                tensor_shape=(all_angles.numel(),),
+                axis_size=embedding_dim if embedding_dim is not None else -1,
+                metric=f"Overall angle between checkpoints ({args.angle_units})",
+                units=args.angle_units,
+                bins=args.histogram_bins,
+                histogram_prefix=f"{base_prefix}_overall_angle",
+            )
+            overall_cosine_hist = save_pairwise_histogram(
+                all_cosines,
+                comparison_hist_dir,
+                "[Comparison] overall",
+                -1,
+                tensor_shape=(all_cosines.numel(),),
+                axis_size=embedding_dim if embedding_dim is not None else -1,
+                metric="Overall cosine similarity between checkpoints",
+                units="cosine",
+                bins=args.histogram_bins,
+                histogram_prefix=f"{base_prefix}_overall_cosine",
+            )
+            console.print(
+                f"[green]Saved overall comparison histograms to {overall_angle_hist} and {overall_cosine_hist}[/]"
+            )
 
     rows.sort(key=lambda item: item[0])
     render_table(rows, args.max_rows, colorize=args.colorize)
