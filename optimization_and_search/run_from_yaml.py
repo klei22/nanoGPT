@@ -229,7 +229,7 @@ def main(yaml_path, base, args) -> int:
                 "attn_residual_combination": "slerp",
                 "mlp_residual_combination": "slerp",
                 "use_qk_norm": True,
-                "usev_norm": True
+                "use_v_norm": True
             }
             # Apply overrides (explicit local precedence)
             dynamic_cfg.update(overrides)
