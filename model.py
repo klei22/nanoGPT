@@ -300,7 +300,7 @@ class GPT(nn.Module):
     def build_norm_from_variant(self, config, variant_key: str, prefix: str):
         """Helper to deep-copy config and override hsnorm parameters if present."""
         norm_config = copy.deepcopy(config)
-        for attr in ("radius", "scale", "gain"):
+        for attr in ("radius", "scale", "gain", "radius_learning"):
             src = f"{prefix}_{attr}"
             if getattr(norm_config, src, None) is not None:
                 setattr(norm_config, f"hsnorm_{attr}", getattr(norm_config, src))
