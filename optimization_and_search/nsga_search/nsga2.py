@@ -369,7 +369,7 @@ class Population:
         
         return pop
 
-    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str = "default", max_iters: int = 10000, conda_env: str = "reallmforge") -> None:
+    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str, max_iters: int = 10000, conda_env: str = "reallmforge") -> None:
         # send the training work to worker nodes and wait for results
         train_yaml_path = self.to_yaml(save_path="train")
         trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)

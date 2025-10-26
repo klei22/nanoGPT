@@ -1,5 +1,5 @@
 from nsga2 import Population
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from search_space import Individual
 from search_space import HeteroSearchSpace
 import yaml
@@ -40,6 +40,25 @@ def load_hosts_from_file(path: str) -> List[str]:
     return hosts
 
 
+def load_search_space_from_yaml(path: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Search space file not found: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError("Search space YAML must define a mapping with 'global_spec' and 'layer_spec'.")
+
+    global_spec = data.get("global_spec")
+    layer_spec = data.get("layer_spec")
+
+    if not isinstance(global_spec, dict) or not isinstance(layer_spec, dict):
+        raise ValueError("Search space YAML missing 'global_spec' or 'layer_spec' dictionaries.")
+
+    return global_spec, layer_spec
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run NSGA-II search with remote evaluation")
     parser.add_argument(
@@ -59,6 +78,14 @@ def main():
     parser.add_argument("--exp_name", type=str, default="infi_attn_exp_iter20k", help="Experiment name for checkpoint directory")
     parser.add_argument("--conda_env", type=str, default="reallmforge", help="Conda environment name on remote hosts")
     parser.add_argument("--max_iters", type=int, default=10000, help="Max training iterations per evaluation")
+    parser.add_argument("--crossover_rate", type=float, default=0.9, help="Crossover rate for NSGA-II")
+    parser.add_argument("--mutation_rate", type=float, default=0.1, help="Mutation rate for NSGA-II")
+    parser.add_argument(
+        "--search_space_config",
+        type=str,
+        default="search_space_def/default_search_space.yaml",
+        help="Path to YAML file defining 'global_spec' and 'layer_spec' (relative paths resolve from this script)",
+    )
     args = parser.parse_args()
 
     hosts = load_hosts_from_file(args.hosts_file)
@@ -69,22 +96,12 @@ def main():
     init_population_size = args.pop_size
     max_n_layer = args.max_layers
     min_n_layer = args.min_layers
-    # Define the search space
-    global_spec = {
-            "n_embd": {"type": "int", "low": 768, "high": 768, "step": 128},
-            "block_size": {"type": "int", "low": 512, "high": 512, "step": 128},
-            "use_concat_heads": {"type": "cat", "choices": [True, False]},
-        }
+    config_path = args.search_space_config
+    if not os.path.isabs(config_path):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, config_path)
 
-    layer_spec = {
-            "n_head": {"type": "int", "low": 1, "high": 16, "step": 1},
-            "n_kv_group": {"type": "int", "low": 1, "high": 16, "step": 1},
-            "mlp_size": {"type": "int", "low": 256, "high": 4096, "step": 256},
-            "n_qk_head_dim": {"type": "int", "low": 32, "high": 512, "step": 32},
-            "n_v_head_dim": {"type": "int", "low": 32, "high": 512, "step": 32},
-            "n_cproj": {"type": "int", "low": 1, "high": 4, "step": 1},
-            "attention_variant": {"type": "cat", "choices": ["infinite", "identity"]},
-        }
+    global_spec, layer_spec = load_search_space_from_yaml(config_path)
     search_space = HeteroSearchSpace.from_dicts(global_spec, layer_spec, L_max=max_n_layer, L_min=min_n_layer)
     
     print("Using search space:")
@@ -112,12 +129,15 @@ def main():
     # nsga parameters defined here
     population.n_population = init_population_size
     population.n_offspring = args.offspring
+    population.crossover_rate = args.crossover_rate
+    population.mutation_rate = args.mutation_rate
 
     # save initial checkpoint
     exp_name = args.exp_name
     run_time = time.strftime("%m%d_%H%M", time.localtime())
-    population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{population.gen}.json")
-    population.save_checkpoint_pkl(f"ckpts/{exp_name}/{run_time}_pop_gen{population.gen}.pkl")
+    if args.resume_ckpt is None:
+        population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{population.gen}.json")
+        population.save_checkpoint_pkl(f"ckpts/{exp_name}/pkl/{run_time}_pop_gen{population.gen}.pkl")
 
     # update the working directory on remote hosts
     trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
@@ -134,7 +154,7 @@ def main():
         population.update_elimination()
         population.print_summary()
         population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{gen}.json")
-        population.save_checkpoint_pkl(f"ckpts/{exp_name}/{run_time}_pop_gen{gen}.pkl")
+        population.save_checkpoint_pkl(f"ckpts/{exp_name}/pkl/{run_time}_pop_gen{gen}.pkl")
 
 if __name__ == "__main__":
     main()

@@ -87,6 +87,8 @@ def main():
         }
     search_space = HeteroSearchSpace.from_dicts(global_spec, layer_spec, L_max=max_n_layer, L_min=min_n_layer)
 
+    exp_name = args.exp_name
+
     # initial evaluation
     if args.resume_ckpt is not None:
         if os.path.exists(args.resume_ckpt):
@@ -103,7 +105,7 @@ def main():
         population.delete_duplicates()  # Remove duplicates if any
 
         # initial evaluation
-        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, conda_env=args.conda_env, max_iters=args.max_iters)
+        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters)
         population.print_summary()
 
     print("Using search space:")
@@ -114,7 +116,6 @@ def main():
     population.n_offspring = args.offspring
     
     # save initial checkpoint
-    exp_name = args.exp_name
     run_time = time.strftime("%m%d_%H%M", time.localtime())
     population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{population.gen}.json")
     population.save_checkpoint_pkl(f"ckpts/{exp_name}/{run_time}_pop_gen{population.gen}.pkl")
@@ -130,7 +131,7 @@ def main():
         gen = population.gen
         print(f"\n\n================ Generation {gen} ================\n")
         population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters)
-        population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_offspring_gen{gen}.json")
+        population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{gen}_offspring.json")
         population.update_elimination()
         population.print_summary()
         population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{gen}.json")

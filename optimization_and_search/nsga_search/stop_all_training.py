@@ -46,6 +46,7 @@ def main():
     key_filename = args.key_filename
 
     trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
+    trainer.check_connectivity()
     trainer.clear_all_jobs()
     print("Cleared all training jobs on remote hosts.")
 

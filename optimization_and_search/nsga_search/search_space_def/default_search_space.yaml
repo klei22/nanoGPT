@@ -1,0 +1,53 @@
+global_spec:
+  n_embd:
+    type: int
+    low: 768
+    high: 768
+    step: 128
+  block_size:
+    type: int
+    low: 512
+    high: 512
+    step: 128
+  use_concat_heads:
+    type: cat
+    choices:
+      - true
+      - false
+
+layer_spec:
+  n_head:
+    type: int
+    low: 1
+    high: 16
+    step: 1
+  n_kv_group:
+    type: int
+    low: 1
+    high: 16
+    step: 1
+  mlp_size:
+    type: int
+    low: 256
+    high: 4096
+    step: 256
+  n_qk_head_dim:
+    type: int
+    low: 32
+    high: 512
+    step: 32
+  n_v_head_dim:
+    type: int
+    low: 32
+    high: 512
+    step: 32
+  n_cproj:
+    type: int
+    low: 1
+    high: 4
+    step: 1
+  attention_variant:
+    type: cat
+    choices:
+      - infinite
+      - identity

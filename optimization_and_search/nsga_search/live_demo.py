@@ -177,7 +177,7 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
       {plotly_html}
             <div id=\"gen-label\" style=\"margin: 8px 0 6px 0; font-weight: 600;\"></div>
                     <div id=\"arch-panel\" style=\"margin-top: 10px;\">
-                        <div style=\"font-weight:600; margin-bottom:6px;\">Architecture</div>
+                        <div style=\"font-weight:600; margin-bottom:6px;\">Architecture <span id=\"arch-plot-title\" style=\"font-weight:500; margin-left:6px; color:#555;\"></span></div>
                         <div id=\"arch-plot-heads\" style=\"height:180px;\"></div>
                         <div id=\"arch-plot-dims\" style=\"height:180px; margin-top:8px;\"></div>
                         <div id=\"arch-plot-mlp\" style=\"height:180px; margin-top:8px;\"></div>
@@ -195,9 +195,10 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
   var gd = document.getElementById('__DIV_ID__') || document.getElementsByClassName('plotly-graph-div')[0];
   var panel = document.getElementById('details-panel');
     var genLabel = document.getElementById('gen-label');
-  if(!gd || !panel) return;
-    var lastDetailsHTML = null;
-        var lastCfgObj = null;
+    if(!gd || !panel) return;
+        var lastDetailsHTML = null;
+                var lastCfgObj = null;
+                var lastArchLabel = '';
 
   function fmt(val, digits) {
     if (typeof val === 'number' && isFinite(val)) return val.toFixed(digits);
@@ -258,8 +259,13 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
             panel.innerHTML = content;
             lastDetailsHTML = content;
             if (cfgObj) {
-                renderArchPlots(cfgObj);
+                var archLabel = '';
+                if (typeof p.text === 'string' && p.text.trim().length) {
+                    archLabel = p.text.trim().toLowerCase();
+                }
+                renderArchPlots(cfgObj, archLabel);
                 lastCfgObj = cfgObj;
+                lastArchLabel = archLabel;
             }
   });
 
@@ -274,12 +280,17 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
             return [];
         }
 
-        function renderArchPlots(cfg) {
+        function renderArchPlots(cfg, label) {
             var g = getGlobals(cfg);
             var layers = getLayers(cfg);
             var mask = Array.isArray(g.layer_mask) ? g.layer_mask.slice(0, layers.length) : new Array(layers.length).fill(true);
             var xs = [];
             for (var i = 0; i < layers.length; i++) { if (mask[i]) xs.push(i); }
+
+            var titleEl = document.getElementById('arch-plot-title');
+            if (titleEl) {
+                titleEl.textContent = label ? ' (' + label + ')' : '';
+            }
 
             var a_heads = [], a_kvg = [], a_qk = [], a_v = [], a_mlp = [], pos = [];
             for (var j = 0; j < xs.length; j++) {
@@ -323,7 +334,7 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
             panel.innerHTML = lastDetailsHTML;
         }
             if (lastCfgObj) {
-                renderArchPlots(lastCfgObj);
+                renderArchPlots(lastCfgObj, lastArchLabel);
             }
     }
     gd.on('plotly_restyle', restoreDetails);
@@ -365,7 +376,7 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
         if not os.path.exists(json_file_name):
             print(f"❌ Checkpoint file not found: {json_file_name}")
             exit(f"❌ Checkpoint file not found: {json_file_name}\nPlease ensure all generation checkpoint files are present.")
-                
+
         population = Population.load_checkpoint(json_file_name, from_pkl=False)
         # also load raw JSON to fetch configs
         try:
@@ -375,9 +386,11 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
         except Exception:
             raw_inds = []
 
-        val_loss_vals = [eva.objs[0] for eva in population.evaluations ]
-        energy_vals = [eva.objs[1] for eva in population.evaluations ]
-        ttft_vals = [eva.objs[2] for eva in population.evaluations ]
+        # Extract objective/aux arrays for this generation
+        val_loss_vals = [eva.objs[0] for eva in population.evaluations]
+        energy_vals = [eva.objs[1] for eva in population.evaluations]
+        ttft_vals = [eva.objs[2] for eva in population.evaluations]
+        size_vals = [eva.aux.get('params', np.nan) for eva in population.evaluations]
 
         # Ensure all lists have the same length
         min_len = min(
@@ -386,7 +399,7 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
             len(ttft_vals),
             len(raw_inds) if isinstance(raw_inds, list) and len(raw_inds) > 0 else 10**9,
         )
-        
+
         for i in range(min_len):
             cfg_dict = raw_inds[i] if isinstance(raw_inds, list) and i < len(raw_inds) else {}
             pop_data.append({
@@ -394,6 +407,7 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
                 'validation_loss': val_loss_vals[i],
                 'energy_per_token': energy_vals[i],
                 'ttft': ttft_vals[i],
+                'size': size_vals[i],
                 'individual_id': i,
                 'config': cfg_dict
             })
@@ -405,286 +419,145 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
     os.makedirs("logs", exist_ok=True)
     df_pop.to_csv("logs/interactive_scatter_population_data.csv", index=False)
 
-    # Create 2D plots
-    fig_2d = create_2d_plots(df_pop, generations)
-    
-    # Create 3D plot
-    fig_3d = create_3d_plot(df_pop, generations)
-    
-    # Save files (2D with details panel; 3D plain)
-    _write_2d_html_with_details(fig_2d, output_path.replace('.html', '_2d.html'), div_id="gen2d")
-    fig_3d.write_html(output_path.replace('.html', '_3d.html'))
-    
-    print(f"✅ Interactive 2D scatter plot saved to: {output_path.replace('.html', '_2d.html')}")
-    print(f"✅ Interactive 3D scatter plot saved to: {output_path.replace('.html', '_3d.html')}")
+    # Create a single 2D plot: Size vs Validation Loss
+    fig_2d = create_size_vs_val_plot(df_pop, generations)
+
+    # Save file and immediately serve locally
+    out2d = output_path.replace('.html', '_2d.html')
+    _write_2d_html_with_details(fig_2d, out2d, div_id="gen2d")
+    print(f"✅ Interactive 2D scatter plot (Size vs Val Loss) saved to: {out2d}")
+    try:
+        _serve_and_open(out2d)
+    except Exception as e:
+        print(f"⚠️ Could not auto-launch local server: {e}")
     
     return
 
 
-def create_2d_plots(df, generations):
-    """Create 2D subplot figure with generation slider"""
-    
-    # Create subplots: 1 row, 3 columns for the three 2D combinations
-    fig = make_subplots(
-        rows=1, cols=3,
-        subplot_titles=('Validation Loss vs Energy/Token', 
-                       'Validation Loss vs TTFT', 
-                       'Energy/Token vs TTFT'),
-        horizontal_spacing=0.1
-    )
-    
-    # Color scheme
+def create_size_vs_val_plot(df, generations):
+    """Create a single 2D scatter (Size vs Validation Loss) with generation slider highlighting."""
+    fig = go.Figure()
+
     highlight_color = 'red'
     faded_color = 'lightgray'
-    
-    # Create traces for each generation and each subplot
-    # We'll track actual trace indices for each generation because some generations
-    # may be missing (gen_data.empty) and that previously made the slider visibility
-    # mapping go out of order.
-    gens_present = []
-    bg_indices_by_gen = {}
-    hl_indices_by_gen = {}
 
+    gens_present = []
+    bg_idx = {}
+    hl_idx = {}
+
+    # Background traces (always visible)
     for gen in generations:
         gen_data = df[df['generation'] == gen]
-        
         if gen_data.empty:
             continue
-        # record that this generation is present
         gens_present.append(gen)
-        # customdata for details panel and on-the-fly arch plots: [config_text, config_object]
         if 'config_str' in gen_data.columns and 'config' in gen_data.columns:
             customdata_bg = [[cfg_text, cfg_obj] for cfg_text, cfg_obj in zip(gen_data['config_str'].tolist(), gen_data['config'].tolist())]
         elif 'config_str' in gen_data.columns:
             customdata_bg = [[cfg_text, None] for cfg_text in gen_data['config_str'].tolist()]
         else:
             customdata_bg = [["{}", None]] * len(gen_data)
-            
-        # Plot 1: Validation Loss vs Energy/Token
         fig.add_trace(
             go.Scatter(
-                x=gen_data['energy_per_token'],
+                x=gen_data['size'],
                 y=gen_data['validation_loss'],
                 mode='markers',
-                marker=dict(
-                    size=8,
-                    color=faded_color,
-                    opacity=0.3,
-                    line=dict(width=1, color='gray')
-                ),
+                marker=dict(size=8, color=faded_color, opacity=0.3, line=dict(width=1, color='gray')),
                 name=f'Gen {gen}',
                 text=[f'Gen {gen}, Individual {i}' for i in gen_data['individual_id']],
-                hovertemplate='<b>%{text}</b><br>' +
-                             'Energy/Token: %{x:.3f}<br>' +
-                             'Validation Loss: %{y:.3f}<extra></extra>',
+                hovertemplate='<b>%{text}</b><br>' + 'Size: %{x:.3f}<br>' + 'Validation Loss: %{y:.3f}<extra></extra>',
                 customdata=customdata_bg,
                 visible=True,
-                showlegend=False
-            ),
-            row=1, col=1
+                showlegend=False,
+            )
         )
-        # Plot 2: Validation Loss vs TTFT
-        fig.add_trace(
-            go.Scatter(
-                x=gen_data['ttft'],
-                y=gen_data['validation_loss'],
-                mode='markers',
-                marker=dict(
-                    size=8,
-                    color=faded_color,
-                    opacity=0.3,
-                    line=dict(width=1, color='gray')
-                ),
-                name=f'Gen {gen}',
-                text=[f'Gen {gen}, Individual {i}' for i in gen_data['individual_id']],
-                hovertemplate='<b>%{text}</b><br>' +
-                             'TTFT: %{x:.3f}<br>' +
-                             'Validation Loss: %{y:.3f}<extra></extra>',
-                customdata=customdata_bg,
-                visible=True,
-                showlegend=False
-            ),
-            row=1, col=2
-        )
-        
-        # Plot 3: Energy/Token vs TTFT
-        fig.add_trace(
-            go.Scatter(
-                x=gen_data['energy_per_token'],
-                y=gen_data['ttft'],
-                mode='markers',
-                marker=dict(
-                    size=8,
-                    color=faded_color,
-                    opacity=0.3,
-                    line=dict(width=1, color='gray')
-                ),
-                name=f'Gen {gen}',
-                text=[f'Gen {gen}, Individual {i}' for i in gen_data['individual_id']],
-                hovertemplate='<b>%{text}</b><br>' +
-                             'Energy/Token: %{x:.3f}<br>' +
-                             'TTFT: %{y:.3f}<extra></extra>',
-                customdata=customdata_bg,
-                visible=True,
-                showlegend=False
-            ),
-            row=1, col=3
-        )
-        # store indices of these three background traces for this generation
-        start_idx = len(fig.data) - 1  # last added trace index
-        # Background added three traces in sequence; compute their indices accordingly
-        # They were added in the order: col1, col2, col3
-        bg_indices_by_gen[gen] = [start_idx - 2, start_idx - 1, start_idx]
-    
-    # Add highlighted traces for the first generation (will be controlled by slider)
+        bg_idx[gen] = [len(fig.data) - 1]
+
+    # Highlighted traces (slider controls which gen is shown)
     for i, gen in enumerate(generations):
         gen_data = df[df['generation'] == gen]
-
         if gen_data.empty:
             continue
-        
-        # Highlighted traces (initially only first generation visible)
-        visible = True if i == 0 else False
-        # customdata for highlighted points too
+        visible = (len(hl_idx) == 0)  # only the first present gen visible initially
         if 'config_str' in gen_data.columns and 'config' in gen_data.columns:
             customdata_hl = [[cfg_text, cfg_obj] for cfg_text, cfg_obj in zip(gen_data['config_str'].tolist(), gen_data['config'].tolist())]
         elif 'config_str' in gen_data.columns:
             customdata_hl = [[cfg_text, None] for cfg_text in gen_data['config_str'].tolist()]
         else:
             customdata_hl = [["{}", None]] * len(gen_data)
-        
-        # Plot 1 highlighted
         fig.add_trace(
             go.Scatter(
-                x=gen_data['energy_per_token'],
+                x=gen_data['size'],
                 y=gen_data['validation_loss'],
                 mode='markers',
-                marker=dict(
-                    size=10,
-                    color=highlight_color,
-                    opacity=0.8,
-                    line=dict(width=2, color='darkred')
-                ),
+                marker=dict(size=10, color=highlight_color, opacity=0.85, line=dict(width=2, color='darkred')),
                 name=f'Current: Gen {gen}',
                 text=[f'Gen {gen}, Individual {i}' for i in gen_data['individual_id']],
-                hovertemplate='<b>%{text}</b><br>' +
-                             'Energy/Token: %{x:.3f}<br>' +
-                             'Validation Loss: %{y:.3f}<extra></extra>',
+                hovertemplate='<b>%{text}</b><br>' + 'Size: %{x:.3f}<br>' + 'Validation Loss: %{y:.3f}<extra></extra>',
                 customdata=customdata_hl,
                 visible=visible,
-                showlegend=True if i == 0 else False
-            ),
-            row=1, col=1
+                showlegend=True if visible else False,
+            )
         )
-        # Plot 2 highlighted
-        fig.add_trace(
-            go.Scatter(
-                x=gen_data['ttft'],
-                y=gen_data['validation_loss'],
-                mode='markers',
-                marker=dict(
-                    size=10,
-                    color=highlight_color,
-                    opacity=0.8,
-                    line=dict(width=2, color='darkred')
-                ),
-                name=f'Current: Gen {gen}',
-                text=[f'Gen {gen}, Individual {i}' for i in gen_data['individual_id']],
-                hovertemplate='<b>%{text}</b><br>' +
-                             'TTFT: %{x:.3f}<br>' +
-                             'Validation Loss: %{y:.3f}<extra></extra>',
-                customdata=customdata_hl,
-                visible=visible,
-                showlegend=False
-            ),
-            row=1, col=2
-        )
-        
-        # Plot 3 highlighted
-        fig.add_trace(
-            go.Scatter(
-                x=gen_data['energy_per_token'],
-                y=gen_data['ttft'],
-                mode='markers',
-                marker=dict(
-                    size=10,
-                    color=highlight_color,
-                    opacity=0.8,
-                    line=dict(width=2, color='darkred')
-                ),
-                name=f'Current: Gen {gen}',
-                text=[f'Gen {gen}, Individual {i}' for i in gen_data['individual_id']],
-                hovertemplate='<b>%{text}</b><br>' +
-                             'Energy/Token: %{x:.3f}<br>' +
-                             'TTFT: %{y:.3f}<extra></extra>',
-                customdata=customdata_hl,
-                visible=visible,
-                showlegend=False
-            ),
-            row=1, col=3
-        )
-        # record indices of the three highlighted traces added for this generation
-        hl_start = len(fig.data) - 1
-        hl_indices_by_gen[gen] = [hl_start - 2, hl_start - 1, hl_start]
-    
-    # Create slider steps using actual trace indices collected above
+        hl_idx[gen] = [len(fig.data) - 1]
+
+    # Slider steps
     steps = []
     total_traces = len(fig.data)
-    # Compute base visibility with background traces visible
     base_visible = [False] * total_traces
-    for gen, idxs in bg_indices_by_gen.items():
+    for gen, idxs in bg_idx.items():
         for ii in idxs:
-            if 0 <= ii < total_traces:
-                base_visible[ii] = True
-
-    # Build a slider step per present generation in the same order we added them
+            base_visible[ii] = True
     for gen in gens_present:
         vis = base_visible.copy()
-        # make highlighted traces for this generation visible
-        idxs = hl_indices_by_gen.get(gen, [])
-        for ii in idxs:
-            if 0 <= ii < total_traces:
-                vis[ii] = True
-        step = dict(method="update", args=[{"visible": vis}], label=str(gen))
-        steps.append(step)
-    
-    # Add slider
-    sliders = [dict(
-        active=0,
-        currentvalue={"prefix": "Current Generation: "},
-        pad={"t": 50},
-        steps=steps
-    )]
-    
+        for ii in hl_idx.get(gen, []):
+            vis[ii] = True
+        steps.append(dict(method='update', args=[{"visible": vis}], label=str(gen)))
+
     fig.update_layout(
-        sliders=sliders,
-        title=dict(
-            text="Interactive Generational Evolution - 2D Views<br><sub>Use slider to highlight different generations</sub>",
-            x=0.5,
-            font=dict(size=16)
-        ),
-        height=500,
+        sliders=[dict(active=0, currentvalue={"prefix": "Current Generation: "}, pad={"t": 40}, steps=steps)],
+        title=dict(text="Size vs Validation Loss", x=0.5, font=dict(size=16)),
+        height=600,
+        width=600,
         showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        )
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
     )
-    
-    # Update axis labels
-    fig.update_xaxes(title_text="Energy per Token", row=1, col=1)
-    fig.update_yaxes(title_text="Validation Loss", row=1, col=1)
-    
-    fig.update_xaxes(title_text="TTFT", row=1, col=2)
-    fig.update_yaxes(title_text="Validation Loss", row=1, col=2)
-    
-    fig.update_xaxes(title_text="Energy per Token", row=1, col=3)
-    fig.update_yaxes(title_text="TTFT", row=1, col=3)
-    
+    fig.update_xaxes(title_text="Model Size (params)")
+    fig.update_yaxes(title_text="Validation Loss")
     return fig
+
+def _serve_and_open(html_path: str, port: int = 8000):
+    """Serve the directory containing html_path on localhost, open the page, and keep serving until interrupted."""
+    import http.server, socketserver, webbrowser, functools
+    directory = os.path.abspath(os.path.dirname(html_path))
+    filename = os.path.basename(html_path)
+
+    def try_server(p):
+        Handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
+        httpd = socketserver.TCPServer(("", p), Handler)
+        return httpd
+
+    httpd = None
+    for p in (port, port+1, port+2):
+        try:
+            httpd = try_server(p)
+            url = f"http://localhost:{p}/{filename}"
+            print(f"🌐 Serving {directory} at {url}")
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+            print("Press Ctrl+C to stop the server…")
+            try:
+                httpd.serve_forever()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                httpd.server_close()
+            return
+        except OSError:
+            continue
+    raise RuntimeError("Unable to bind a local HTTP port (tried 8000-8002)")
 
 
 def create_3d_plot(df, generations):
@@ -821,8 +694,8 @@ def main():
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
     parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium/ckpt_gen", help="Path to the evolution log file")
-    parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index")
-    parser.add_argument("--end_gen", type=int, default=100, help="Ending generation index")
+    parser.add_argument("--start_gen", type=int, default=0, help="Starting generation index")
+    parser.add_argument("--end_gen", type=int, default=146, help="Ending generation index")
     parser.add_argument("--output", type=str, default="htmls/interactive_generational_scatter.html", help="Output HTML file path")
     args = parser.parse_args()
     
@@ -833,11 +706,10 @@ def main():
 
     create_interactive_generational_scatter(file_name_base, output_path, start_gen, end_gen)
 
-    print("\n✅ Interactive plots created!")
-    print("📁 Files created:")
-    print("   interactive_generational_scatter_2d.html - 2D scatter plots with slider")
-    print("   interactive_generational_scatter_3d.html - 3D scatter plot with slider")
-    print("\n🌐 Open the HTML files in your browser to interact with the plots!")
+    print("\n✅ Live demo ready!")
+    print("📁 File created:")
+    print(f"   {args.output.replace('.html', '_2d.html')} - Size vs Val Loss interactive scatter")
+    print("\n🌐 The local server should have opened your browser automatically. If not, open the file URL shown above.")
 
 
 if __name__ == "__main__":

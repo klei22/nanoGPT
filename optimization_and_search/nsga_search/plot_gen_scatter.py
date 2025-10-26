@@ -35,6 +35,7 @@ def plot_gen_scatter(
     for gen in generations:
         json_file_name = f"{file_name_base}{gen}.json"
         if not os.path.exists(json_file_name):
+
             print(f"❌ Checkpoint file not found: {json_file_name}")
             exit(f"❌ Checkpoint file not found: {json_file_name}\nPlease ensure all generation checkpoint files are present.")
                 
@@ -126,7 +127,7 @@ def plot_gen_scatter(
 
     # set axis ranges
     # ax.set_xlim(right=130)
-    ax.set_ylim(top=3.6)
+    ax.set_ylim(top=3.1)
 
     # ax.set_xlabel(x_axis)
     ax.set_xlabel("Size (M)")
@@ -148,9 +149,10 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_val_optimized/1014_0622_ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium/ckpt_gen", help="Path to the evolution log file")
     parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index (default: 1)")
-    parser.add_argument("--end_gen", type=int, default=42, help="Ending generation index ")
+    # parser.add_argument("--ckpt_gen", type=int, default=50, help="Checkpoint generation index (default: 50)")
+    parser.add_argument("--end_gen", type=int, default=100, help="Ending generation index ")
     parser.add_argument("--output", type=str, default="plots/gen_scatter.png", help="Output png file path")
     args = parser.parse_args()
     
