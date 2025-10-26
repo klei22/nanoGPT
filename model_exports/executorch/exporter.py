@@ -50,6 +50,65 @@ def _infer_block_size(model_args: dict) -> int:
     return int(block_size)
 
 
+def _prepare_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Normalize checkpoint parameter keys so they load with the current model."""
+
+    prepared = dict(state_dict)
+    prepared = _strip_module_prefix(prepared)
+    prepared = _convert_legacy_attention_weights(prepared)
+    return prepared
+
+
+def _strip_module_prefix(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Drop DistributedDataParallel's ``module.`` prefix when present."""
+
+    if not state_dict:
+        return state_dict
+
+    if all(key.startswith("module.") for key in state_dict):
+        return {key[len("module."):]: value for key, value in state_dict.items()}
+
+    return state_dict
+
+
+def _convert_legacy_attention_weights(
+    state_dict: dict[str, torch.Tensor]
+) -> dict[str, torch.Tensor]:
+    """Split combined QKV projections saved by older checkpoints."""
+
+    legacy_keys = [key for key in state_dict if key.endswith("attn.c_attn.weight")]
+    if not legacy_keys:
+        return state_dict
+
+    updated = dict(state_dict)
+    for weight_key in legacy_keys:
+        bias_key = weight_key.replace(".weight", ".bias")
+
+        weight = updated.pop(weight_key)
+        bias = updated.pop(bias_key, None)
+
+        try:
+            q_weight, k_weight, v_weight = weight.chunk(3, dim=0)
+        except RuntimeError as err:  # pragma: no cover - defensive path
+            raise RuntimeError(
+                f"Failed to split legacy attention weights for '{weight_key}': {err}"
+            ) from err
+
+        base = weight_key.replace("c_attn.weight", "c_attn_")
+        updated[f"{base}q.weight"] = q_weight
+        updated[f"{base}k.weight"] = k_weight
+        updated[f"{base}v.weight"] = v_weight
+
+        if bias is not None:
+            q_bias, k_bias, v_bias = bias.chunk(3, dim=0)
+            bias_base = bias_key.replace("c_attn.bias", "c_attn_")
+            updated[f"{bias_base}q.bias"] = q_bias
+            updated[f"{bias_base}k.bias"] = k_bias
+            updated[f"{bias_base}v.bias"] = v_bias
+
+    return updated
+
+
 def export_checkpoint_to_pte(
     ckpt_path: os.PathLike | str,
     output_path: os.PathLike | str,
@@ -77,7 +136,14 @@ def export_checkpoint_to_pte(
     model_args = checkpoint["model_args"]
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
-    model.load_state_dict(checkpoint["model"])
+
+    state_dict = _prepare_state_dict(checkpoint["model"])
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing or unexpected:
+        raise RuntimeError(
+            "Checkpoint parameters do not match the GPT architecture. "
+            f"Missing keys: {sorted(missing)}; Unexpected keys: {sorted(unexpected)}"
+        )
     model.eval()
 
     vocab_size = _infer_vocab_size(model_args)
