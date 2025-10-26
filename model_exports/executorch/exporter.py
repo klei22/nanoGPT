@@ -60,15 +60,32 @@ def _prepare_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.
 
 
 def _strip_module_prefix(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Drop DistributedDataParallel's ``module.`` prefix when present."""
+    """Drop common wrapper prefixes (DDP, torch.compile) from parameter names."""
 
     if not state_dict:
         return state_dict
 
-    if all(key.startswith("module.") for key in state_dict):
-        return {key[len("module."):]: value for key, value in state_dict.items()}
+    prefixes = (
+        "module.",
+        "_orig_mod.",
+        "_orig_mod.module.",
+        "module._orig_mod.",
+    )
 
-    return state_dict
+    def strip_prefix(
+        params: dict[str, torch.Tensor], prefix: str
+    ) -> dict[str, torch.Tensor]:
+        if all(key.startswith(prefix) for key in params):
+            return {key[len(prefix) :]: value for key, value in params.items()}
+        return params
+
+    prepared = state_dict
+    for prefix in prefixes:
+        updated = strip_prefix(prepared, prefix)
+        if updated is not prepared:
+            prepared = updated
+
+    return prepared
 
 
 def _convert_legacy_attention_weights(
