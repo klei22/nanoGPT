@@ -133,6 +133,18 @@ def parse_args():
         default=1.0,
         help='Scaling for flatness_boost loss when predictions are flat.',
     )
+    training_group.add_argument(
+        '--correct_top1_attenuation',
+        type=float,
+        default=1.0,
+        help='Constant multiplier for correctly predicted tokens in attenuated_correct_top1 loss.',
+    )
+    training_group.add_argument(
+        '--distance_top1_strength',
+        type=float,
+        default=0.0,
+        help='Strength of distance-based attenuation in distance_attenuated_top1 loss.',
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
@@ -529,8 +541,6 @@ def parse_args():
             "dual_path_swiglu",
             "identity",
             ]
-    
-    model_group.add_argument('--use_edgellm_asic', default=False, action=argparse.BooleanOptionalAction)
 
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
@@ -854,6 +864,15 @@ def parse_args():
     model_group.add_argument( "--init_radius", type=float, default=1.0, help="radius for angle_hypersphere initialization")
     model_group.add_argument( "--gaussian_min_norm", type=float, default=0.0, help="minimum norm for gaussian_norm_range initialization")
     model_group.add_argument( "--gaussian_max_norm", type=float, default=float('inf'), help="maximum norm for gaussian_norm_range initialization")
+
+    # EdgeLLM ASIC Args
+    model_group.add_argument('--use_edgellm_asic', default=False, action=argparse.BooleanOptionalAction)
+    # Gradual activation transition
+    model_group.add_argument("--use_gradual_activation", type=bool, default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--activation_start", type=str, default="gelu", choices=activation_variations)
+    model_group.add_argument("--activation_end", type=str, default="relu", choices=activation_variations)
+    model_group.add_argument("--activation_transition_start_iter", type=int, default=0)
+    model_group.add_argument("--activation_transition_end_iter", type=int, default=None, help="If None, defaults to max_iters from training config.")
 
     # Quantization
     model_group.add_argument("--full_quant_iteration", type=int, default=None,

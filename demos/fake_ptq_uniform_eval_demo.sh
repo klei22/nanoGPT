@@ -87,15 +87,23 @@ if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
   python3 train.py \
     --dataset shakespeare_char \
     --out_dir "$OUT_DIR" \
-    --n_layer 6 \
-    --n_head 6 \
+    --n_layer 5 \
+    --n_head 3 \
     --n_embd 384 \
     --use_rotary_embeddings \
     --no-use_abs_pos_embeddings \
     --block_size "$BLOCK_SIZE" \
     --batch_size "$BATCH_SIZE" \
-    --max_iters 750 \
     --eval_iters "$EVAL_ITERS" \
+    --attention_variant infinite \
+    --n_qk_head_dim 120 \
+    --n_v_head_dim 120 \
+    --use_concat_heads \
+    --use_peri_ln \
+    --use_qk_norm \
+    --use_qk_norm_scale \
+    --max_iters 800 \
+    --eval_interval 800 \
     --compile
 else
   echo "Found existing checkpoint at $OUT_DIR/ckpt.pt; skipping training."
