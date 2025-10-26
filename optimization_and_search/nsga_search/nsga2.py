@@ -437,6 +437,23 @@ class Population:
         self.gen += 1
         print(f"Generated {self.n_offspring} offspring for generation {self.gen}")
         return
+    
+    def generate_offspring_random(self) -> None:
+        """Generate offspring randomly from the search space."""
+        if self.search_space is None:
+            raise ValueError("Search space is not defined for sampling.")
+        offspring = []
+        for _ in range(self.n_offspring):
+            child = self.search_space.sample()
+            print("Generated random offspring:")
+            child.print_individual()
+            offspring.append(child)
+
+        self.offspring = offspring
+        self.offspring_evaluations = []
+        self.gen += 1
+        print(f"Generated {self.n_offspring} random offspring for generation {self.gen}")
+        return
 
     def update_elimination(self, verbose: bool = False) -> None:
         if self.offspring_evaluations is None or not self.offspring_evaluations:

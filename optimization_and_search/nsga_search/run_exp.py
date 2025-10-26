@@ -107,6 +107,8 @@ def main():
     print("Using search space:")
     print(search_space.print_search_space())
 
+    exp_name = args.exp_name
+
     # initial evaluation
     if args.resume_ckpt is not None:
         if os.path.exists(args.resume_ckpt):
@@ -123,7 +125,7 @@ def main():
         population.delete_duplicates()  # Remove duplicates if any
 
         # initial evaluation
-        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, conda_env=args.conda_env, max_iters=args.max_iters)
+        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters)
         population.print_summary()
 
     # nsga parameters defined here
@@ -133,7 +135,6 @@ def main():
     population.mutation_rate = args.mutation_rate
 
     # save initial checkpoint
-    exp_name = args.exp_name
     run_time = time.strftime("%m%d_%H%M", time.localtime())
     if args.resume_ckpt is None:
         population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{population.gen}.json")
