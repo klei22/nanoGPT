@@ -7,12 +7,14 @@ import json
 import re
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 METRICS_BEGIN = "EXECUTORCH_METRICS_BEGIN"
 METRICS_END = "EXECUTORCH_METRICS_END"
+BROADCAST_SENTINEL = "adb:broadcast"
 
 
 @dataclass(slots=True)
@@ -65,7 +67,38 @@ def _format_summary(summary: MetricsSummary) -> str:
     )
 
 
-def profile(args: argparse.Namespace) -> None:
+def _run_broadcast(args: argparse.Namespace) -> str:
+    print("[INFO] Clearing NanoGPTTemplate logcat buffer")
+    _adb_cmd(["logcat", "-c"], serial=args.serial)
+    broadcast_cmd = [
+        "shell",
+        "am",
+        "broadcast",
+        "-a",
+        "com.nanogpt.executorch.template.GENERATE",
+        "--es",
+        "prompt",
+        args.prompt or "Hello",
+        "--ei",
+        "max_tokens",
+        str(args.max_tokens),
+    ]
+    if args.context_length is not None:
+        broadcast_cmd += ["--ei", "context_length", str(args.context_length)]
+    if args.context_sweep:
+        broadcast_cmd += ["--es", "context_sweep", args.context_sweep]
+
+    print("[INFO] Dispatching broadcast intent via adb")
+    _adb_cmd(broadcast_cmd, serial=args.serial)
+    wait_seconds = max(args.wait_seconds, 0.5)
+    print(f"[INFO] Waiting {wait_seconds:.1f}s for generation to complete")
+    time.sleep(wait_seconds)
+    print("[INFO] Dumping NanoGPTTemplate logs")
+    result = _adb_cmd(["logcat", "-d", "-s", "NanoGPTTemplate"], serial=args.serial)
+    return result.stdout
+
+
+def _run_binary(args: argparse.Namespace) -> str:
     remote_dir = Path(args.remote_dir)
     remote_dir_str = str(remote_dir)
     remote_runner = remote_dir / Path(args.runner).name
@@ -86,7 +119,17 @@ def profile(args: argparse.Namespace) -> None:
 
     print(f"[INFO] Launching runner via adb shell: {runner_invocation}")
     result = _adb_cmd(["shell", runner_invocation], serial=args.serial)
-    stdout = result.stdout
+    return result.stdout
+
+
+def profile(args: argparse.Namespace) -> None:
+    if args.runner.startswith(BROADCAST_SENTINEL):
+        stdout = _run_broadcast(args)
+    else:
+        if not args.pte:
+            raise ValueError("--pte is required when using a native runner")
+        stdout = _run_binary(args)
+
     if stdout:
         print("[DEVICE OUTPUT]")
         print(stdout)
@@ -106,12 +149,12 @@ def profile(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runner", required=True, help="Path to the compiled ExecuTorch runner binary.")
-    parser.add_argument("--pte", required=True, help="Path to the exported ExecuTorch .pte program.")
+    parser.add_argument("--runner", required=True, help="Path to the compiled ExecuTorch runner binary or 'adb:broadcast'.")
+    parser.add_argument("--pte", help="Path to the exported ExecuTorch .pte program (native runner mode only).")
     parser.add_argument(
         "--remote-dir",
         default="/data/local/tmp/nanogpt",
-        help="Directory on the device where artifacts will be staged.",
+        help="Directory on the device where artifacts will be staged (native runner mode).",
     )
     parser.add_argument(
         "--prompt",
@@ -120,6 +163,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--serial",
         help="Optional adb serial number when multiple devices are connected.",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=32,
+        help="Maximum number of tokens to generate when using the broadcast template app.",
+    )
+    parser.add_argument(
+        "--context-length",
+        type=int,
+        help="Context window size for single-run broadcast invocations.",
+    )
+    parser.add_argument(
+        "--context-sweep",
+        help="Comma-separated list of context window sizes for broadcast sweeps.",
+    )
+    parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=5.0,
+        help="Seconds to wait after dispatching the broadcast before collecting logcat output.",
     )
     return parser.parse_args()
 
@@ -133,6 +197,8 @@ def main() -> None:
     except subprocess.CalledProcessError as exc:
         print("[ERROR] adb command failed:")
         print(exc.stderr)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}")
 
 
 if __name__ == "__main__":
