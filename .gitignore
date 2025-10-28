@@ -33,5 +33,6 @@ optimization_and_search/nsga_search/tests/
 optimization_and_search/nsga_search/utils/
 optimization_and_search/nsga_search/ref_models
 optimization_and_search/nsga_search/*.bash
+/home/xinting/Evo_GPT/optimization_and_search/nsga_search/hw_eval/runs
 
 venv/*
