@@ -1,0 +1,29 @@
+variables:
+  version: 0.4
+  global_cycle_seconds: 1e-9
+  technology: "32nm"
+  #latency: "1ns"
+
+  # defaults for BERT-base
+  #EMBEDDING: 768
+  #SEQ_LENGTH: 512
+  #HEADS: 12
+  #FF_DIM: 3072
+  #EMBEDDING_HEADS: 64
+  #EMBEDDING_3: 2304
+
+  # defaults for BERT-large
+  EMBEDDING: 1024
+  SEQ_LENGTH: 4096
+  HEADS: 16
+  FF_DIM: 4096
+  EMBEDDING_HEADS: 64
+  EMBEDDING_3: 3072
+
+  # for MAESTRO-BLAS GEMMs:
+  MB_D: 1
+  MB_E: 1
+  MB_L: 1
+
+#b8f3e5c cacti
+#9a8dc0d accelergy

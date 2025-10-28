@@ -1,0 +1,65 @@
+problem:
+  version: 0.4
+  instance:
+    N: 1                   # Batch size
+
+    E: EMBEDDING           # (C) Input channels / (E) INNER MATMUL DIM
+    H: 1                   # Input height
+    W: 1                   # Input width
+    G: 1                   # Groups
+
+    R: 1                   # Weight height
+    S: 1                   # Weight width
+    Hdilation: 1           # (Conv) Height dilation
+    Hstride: 1             # (Conv) Height stride
+    Wdilation: 1           # (Conv) Width dilation
+    Wstride: 1             # (Conv) Width stride
+
+    D: EMBEDDING_3         # (M) Output channels / (D) WEIGHTs and OUTPUTs HEIGHT MATMUL DIM
+    L: SEQ_LENGTH          # (P) Output height / (L) INPUTs and OUTPUTs WIDTH MATMUL DIM
+    Q: 1                   # Output width
+  shape:
+    name: KQV_matmul_encoder
+    coefficients:
+    - {name: Wstride, default: 1}
+    - {name: Hstride, default: 1}
+    - {name: Wdilation, default: 1}
+    - {name: Hdilation, default: 1}
+    data_spaces:
+    - name: Weights
+      projection:
+      - - - E
+      - - - D
+      - - - R
+      - - - S
+      - - - G
+    - name: Inputs
+      projection:
+      - - - N
+      - - - E
+      - - - R
+          - Wdilation
+        - - L
+          - Wstride
+      - - - S
+          - Hdilation
+        - - Q
+          - Hstride
+      - - - G
+    - name: Outputs
+      projection:
+      - - - N
+      - - - D
+      - - - Q
+      - - - L
+      - - - G
+      read_write: true
+    dimensions:
+    - E
+    - D
+    - R
+    - S
+    - N
+    - L
+    - Q
+    - G
