@@ -9,7 +9,7 @@ import argparse
 from typing import Dict, List
 
 import torch
-from datasets import Dataset, load_dataset
+from datasets import Dataset, load_dataset, load_dataset_builder
 from transformers import (
     AutoConfig,
     AutoTokenizer,
@@ -77,7 +77,20 @@ def main(args: argparse.Namespace) -> None:
     model.resize_token_embeddings(len(tokenizer))
 
     print("Loading FineWeb dataset...")
-    dataset = load_dataset("HuggingFaceFW/fineweb", args.fineweb_subset, split=args.dataset_split)
+    subset = args.fineweb_subset or None
+    try:
+        dataset = load_dataset("HuggingFaceFW/fineweb", subset, split=args.dataset_split)
+    except ValueError as err:
+        if "BuilderConfig" in str(err):
+            builder = load_dataset_builder("HuggingFaceFW/fineweb")
+            available = ", ".join(sorted(builder.builder_configs))
+            raise ValueError(
+                "Unknown FineWeb subset '{subset_name}'. Available configurations: {options}".format(
+                    subset_name=args.fineweb_subset,
+                    options=available,
+                )
+            ) from err
+        raise
 
     print("Splitting dataset...")
     if args.eval_fraction > 0:
@@ -166,8 +179,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--fineweb_subset",
         type=str,
-        default="medium",
-        help="Subset configuration of FineWeb to load (e.g., 'medium', 'small').",
+        default="sample-10BT",
+        help=(
+            "Subset configuration of FineWeb to load. Use an empty string to select the default dataset "
+            "configuration."
+        ),
     )
     parser.add_argument(
         "--eval_fraction",
