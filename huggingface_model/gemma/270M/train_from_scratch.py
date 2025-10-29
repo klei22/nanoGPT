@@ -268,11 +268,12 @@ def main(args: argparse.Namespace) -> None:
 
     eval_strategy = "steps" if args.eval_interval > 0 else "no"
     logging_steps = args.log_interval if args.log_interval > 0 else args.eval_interval
+    if logging_steps <= 0:
+        logging_steps = 50
 
-    training_args = TrainingArguments(
+    training_args_kwargs = dict(
         output_dir=args.output_dir,
         max_steps=args.max_steps,
-        evaluation_strategy=eval_strategy,
         save_strategy="steps" if args.save_interval > 0 else "no",
         logging_strategy="steps",
         logging_steps=logging_steps,
@@ -295,6 +296,18 @@ def main(args: argparse.Namespace) -> None:
         seed=args.seed,
         max_grad_norm=args.max_grad_norm,
     )
+
+    # Older versions of ``transformers`` used ``evaluation_strategy`` while newer
+    # releases renamed the argument to ``eval_strategy``. Introspect the
+    # signature at runtime so the script remains compatible across versions.
+    try:
+        init_params = TrainingArguments.__init__.__code__.co_varnames
+    except AttributeError:
+        init_params = ()
+    key = "evaluation_strategy" if "evaluation_strategy" in init_params else "eval_strategy"
+    training_args_kwargs[key] = eval_strategy
+
+    training_args = TrainingArguments(**training_args_kwargs)
 
     loss_config = LOSS_REGISTRY[args.loss_function]
     loss_kwargs = create_loss_kwargs(args.loss_function, args)
