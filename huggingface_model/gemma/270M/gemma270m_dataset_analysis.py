@@ -238,11 +238,13 @@ def main() -> None:
         prompt_len = _ensure_prefix(input_ids, prompt_enc["input_ids"][0])
 
         inputs = {k: v.to(device) for k, v in enc.items()}
-        autocast_ctx = (
-            torch.cuda.amp.autocast(device_type="cuda", dtype=dtype)
-            if device.type == "cuda" and args.dtype != "float32"
-            else nullcontext()
-        )
+        if device.type == "cuda" and args.dtype != "float32":
+            if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+                autocast_ctx = torch.amp.autocast("cuda", dtype=dtype)
+            else:
+                autocast_ctx = torch.cuda.amp.autocast(dtype=dtype)
+        else:
+            autocast_ctx = nullcontext()
 
         with autocast_ctx:
             outputs = model(**inputs, output_hidden_states=args.activation_view != "none")
