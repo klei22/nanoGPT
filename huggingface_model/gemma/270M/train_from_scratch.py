@@ -3,7 +3,8 @@
 import os
 
 # Prevent GPU OOM on some systems
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("WANDB_MODE", "offline")
 
 import argparse
 from typing import Dict, List
@@ -71,9 +72,15 @@ def main(args: argparse.Namespace) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    if args.precision in {"fp16", "bf16"} and not torch.cuda.is_available():
+        raise ValueError("Mixed precision training requires CUDA availability.")
+
+    if args.precision == "bf16" and not torch.cuda.is_bf16_supported():
+        raise ValueError("The current CUDA device does not support bfloat16 training.")
+
     print("Building model configuration and initializing weights from scratch...")
     config = AutoConfig.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_config(config)
+    model = AutoModelForCausalLM.from_config(config, attn_implementation="eager")
     model.resize_token_embeddings(len(tokenizer))
 
     print("Loading FineWeb dataset...")
@@ -131,6 +138,9 @@ def main(args: argparse.Namespace) -> None:
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
+    use_fp16 = args.precision == "fp16"
+    use_bf16 = args.precision == "bf16"
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         max_steps=args.total_iterations,
@@ -146,7 +156,8 @@ def main(args: argparse.Namespace) -> None:
         weight_decay=args.weight_decay,
         warmup_steps=args.warmup_steps,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        fp16=torch.cuda.is_available(),
+        fp16=use_fp16,
+        bf16=use_bf16,
         push_to_hub=False,
     )
 
@@ -244,6 +255,16 @@ if __name__ == "__main__":
         type=float,
         default=0.1,
         help="Weight decay coefficient.",
+    )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        choices=("none", "fp16", "bf16"),
+        default="none",
+        help=(
+            "Mixed precision mode to use. Set to 'fp16' or 'bf16' to enable the corresponding"
+            " autocast, or leave as 'none' for full float32 training."
+        ),
     )
     parser.add_argument(
         "--sample_prompt",
