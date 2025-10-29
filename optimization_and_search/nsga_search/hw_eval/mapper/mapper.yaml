@@ -12,9 +12,9 @@ mapper:
   # sync_interval: 2500
 
   # DEFAULTS:
-  num_threads: 32
-  timeout: 200
-  victory_condition: 200
+  num_threads: 36
+  timeout: 720
+  victory_condition: 100
   sync_interval: 0
 
   # EXHAUSTIVE:
