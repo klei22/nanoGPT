@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
+import torch.nn as nn
 import tiktoken
 from collections import OrderedDict
 from rich import print
@@ -109,6 +110,32 @@ def parse_args():
     parser.add_argument('--lsv_scaling_factor',  type=float, default=None, help="scaling factor")
     parser.add_argument('--lsv_mixture',  type=float, nargs='+', default=None, help="scaling factor mixture")
 
+    # Hypersphere grid snapping options
+    parser.add_argument('--hypersphere_grid_path', type=str, default=None,
+                        help="Optional .npy file containing a hypersphere grid of shape (num_vectors, n_embd)")
+    parser.add_argument('--hypersphere_grid_size', type=int, default=None,
+                        help="Number of grid vectors to generate when --hypersphere_grid_path is not provided")
+    parser.add_argument('--hypersphere_grid_method', type=str, default='random', choices=['random'],
+                        help="Construction method for the hypersphere grid. Currently only 'random' is implemented")
+    parser.add_argument('--hypersphere_grid_mean', type=float, default=0.0,
+                        help="Mean of the Gaussian used for random grid generation")
+    parser.add_argument('--hypersphere_grid_std', type=float, default=0.02,
+                        help="Standard deviation of the Gaussian used for random grid generation")
+    parser.add_argument('--hypersphere_grid_seed', type=int, default=0,
+                        help="Seed used when generating a random hypersphere grid")
+    parser.add_argument('--hypersphere_grid_targets', type=str, nargs='+',
+                        choices=['block', 'attn', 'mlp'], default=['block', 'attn', 'mlp'],
+                        help="Transformer pre-normalization modules to snap to the hypersphere grid")
+    parser.add_argument('--hypersphere_grid_match_norm', default=True, action=argparse.BooleanOptionalAction,
+                        help="Rescale snapped vectors to preserve the input norm from the pre-normalization output")
+    parser.add_argument('--hypersphere_grid_normalize', default=True, action=argparse.BooleanOptionalAction,
+                        help="Normalize grid vectors to unit norm before snapping")
+    parser.add_argument('--hypersphere_grid_dtype', type=str, default=None,
+                        choices=['float32', 'float16', 'bfloat16'],
+                        help="Override dtype for the hypersphere grid tensor")
+    parser.add_argument('--hypersphere_grid_chunk_size', type=int, default=65536,
+                        help="Chunk size used when computing overlaps with the hypersphere grid")
+
     # Multicontext Related
     parser.add_argument('--multicontext', action=argparse.BooleanOptionalAction, help="multicontext mode inference")
     parser.add_argument('--multicontext_datasets',  type=str, nargs='+', default=None, help="list of dataset names")
@@ -134,6 +161,187 @@ def parse_args():
                         help="Batch size to use for evaluation")
 
     return parser.parse_args()
+
+
+
+def _resolve_grid_dtype(dtype_name: Optional[str], fallback: torch.dtype) -> torch.dtype:
+    if dtype_name is None:
+        return fallback
+    mapping = {
+        'float32': torch.float32,
+        'float16': torch.float16,
+        'bfloat16': torch.bfloat16,
+    }
+    if dtype_name not in mapping:
+        raise ValueError(f"Unsupported hypersphere grid dtype: {dtype_name}")
+    return mapping[dtype_name]
+
+
+def generate_hypersphere_grid(
+    num_vectors: int,
+    n_embd: int,
+    *,
+    method: str = 'random',
+    mean: float = 0.0,
+    std: float = 0.02,
+    seed: int = 0,
+    device: Union[str, torch.device] = 'cpu',
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    if num_vectors <= 0:
+        raise ValueError("num_vectors must be positive")
+    if method != 'random':
+        raise ValueError(f"Unsupported hypersphere grid generation method: {method}")
+
+    generator = torch.Generator(device='cpu')
+    generator.manual_seed(seed)
+    grid = torch.randn((num_vectors, n_embd), generator=generator, dtype=torch.float32)
+    grid.mul_(std).add_(mean)
+    grid = grid.to(device=device, dtype=dtype, non_blocking=False)
+    return grid.contiguous()
+
+
+class HypersphereGridSnap(nn.Module):
+    def __init__(
+        self,
+        module: nn.Module,
+        grid: torch.Tensor,
+        *,
+        match_input_norm: bool = True,
+        normalize_grid: bool = True,
+        chunk_size: Optional[int] = None,
+        eps: float = 1e-12,
+    ) -> None:
+        super().__init__()
+        self.module = module
+        self.grid = F.normalize(grid, dim=-1) if normalize_grid else grid
+        self.match_input_norm = match_input_norm
+        self.chunk_size = max(int(chunk_size), 1) if chunk_size else self.grid.shape[0]
+        self.eps = eps
+
+    def _snap(self, x: torch.Tensor) -> torch.Tensor:
+        orig_shape = x.shape
+        x_flat = x.reshape(-1, x.shape[-1])
+
+        original_norm = None
+        if self.match_input_norm:
+            original_norm = x_flat.norm(dim=-1, keepdim=True).clamp_min(self.eps)
+
+        grid = self.grid
+        best_scores: Optional[torch.Tensor] = None
+        best_indices: Optional[torch.Tensor] = None
+
+        for start in range(0, grid.shape[0], self.chunk_size):
+            end = min(start + self.chunk_size, grid.shape[0])
+            chunk = grid[start:end]
+            scores = torch.matmul(x_flat, chunk.t())
+            local_scores, local_indices = scores.max(dim=-1)
+            local_indices = local_indices + start
+
+            if best_scores is None:
+                best_scores = local_scores
+                best_indices = local_indices
+            else:
+                update = local_scores > best_scores
+                best_scores = torch.where(update, local_scores, best_scores)
+                best_indices = torch.where(update, local_indices, best_indices)  # type: ignore[arg-type]
+
+        assert best_indices is not None, "Hypersphere grid snapping received an empty grid"
+
+        snapped_flat = grid.index_select(0, best_indices)
+
+        if self.match_input_norm and original_norm is not None:
+            snapped_norm = snapped_flat.norm(dim=-1, keepdim=True).clamp_min(self.eps)
+            snapped_flat = snapped_flat / snapped_norm * original_norm
+
+        return snapped_flat.reshape(orig_shape)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.module(x)
+        return self._snap(x)
+
+
+def apply_hypersphere_grid_snap(
+    model: nn.Module,
+    grid: Optional[torch.Tensor],
+    *,
+    targets: Sequence[str],
+    match_input_norm: bool,
+    normalize_grid: bool,
+    chunk_size: int,
+    eps: float = 1e-12,
+) -> List[tuple[int, str]]:
+    if grid is None:
+        return []
+
+    if not hasattr(model, 'transformer') or not hasattr(model.transformer, 'h'):
+        raise AttributeError("Model does not expose transformer blocks via model.transformer.h")
+
+    target_map = {
+        'block': 'pre_ln',
+        'attn': 'pre_ln_attn',
+        'mlp': 'pre_ln_mlp',
+    }
+
+    applied: List[tuple[int, str]] = []
+    for block_idx, block in enumerate(model.transformer.h):
+        for target in targets:
+            attr = target_map.get(target)
+            if attr is None:
+                continue
+            module = getattr(block, attr, None)
+            if module is None:
+                continue
+            if isinstance(module, HypersphereGridSnap):
+                continue
+            wrapper = HypersphereGridSnap(
+                module,
+                grid,
+                match_input_norm=match_input_norm,
+                normalize_grid=normalize_grid,
+                chunk_size=chunk_size,
+                eps=eps,
+            )
+            setattr(block, attr, wrapper)
+            applied.append((block_idx, attr))
+    return applied
+
+
+def maybe_build_hypersphere_grid(
+    args: argparse.Namespace,
+    config,
+    *,
+    device: Union[str, torch.device],
+    fallback_dtype: torch.dtype,
+) -> Optional[torch.Tensor]:
+    grid: Optional[torch.Tensor] = None
+
+    if args.hypersphere_grid_path:
+        grid_np = np.load(args.hypersphere_grid_path)
+        grid = torch.from_numpy(grid_np)
+    elif args.hypersphere_grid_size:
+        grid = generate_hypersphere_grid(
+            args.hypersphere_grid_size,
+            config.n_embd,
+            method=args.hypersphere_grid_method,
+            mean=args.hypersphere_grid_mean,
+            std=args.hypersphere_grid_std,
+            seed=args.hypersphere_grid_seed,
+            device='cpu',
+            dtype=torch.float32,
+        )
+
+    if grid is None:
+        return None
+
+    if grid.shape[-1] != config.n_embd:
+        raise ValueError(
+            f"Hypersphere grid embedding dimension mismatch: expected {config.n_embd}, got {grid.shape[-1]}"
+        )
+
+    dtype = _resolve_grid_dtype(args.hypersphere_grid_dtype, fallback_dtype)
+    grid = grid.to(device=device, dtype=dtype)
+    return grid.contiguous()
 
 
 
@@ -1229,6 +1437,26 @@ def main():
                 "The provided --start text resulted in an empty context. "
                 "Please supply a non-empty prompt or comma-separated values for numerical tokenizers."
             )
+
+    hypersphere_grid = maybe_build_hypersphere_grid(
+        args,
+        model.config,
+        device=args.device,
+        fallback_dtype=ptdtype,
+    )
+    applied_grid_modules = apply_hypersphere_grid_snap(
+        model,
+        hypersphere_grid,
+        targets=args.hypersphere_grid_targets,
+        match_input_norm=args.hypersphere_grid_match_norm,
+        normalize_grid=args.hypersphere_grid_normalize,
+        chunk_size=args.hypersphere_grid_chunk_size,
+    )
+    if applied_grid_modules:
+        num_vectors = int(hypersphere_grid.shape[0]) if hypersphere_grid is not None else 0
+        module_list = ", ".join(f"block{idx}:{attr}" for idx, attr in applied_grid_modules)
+        print(f"Applied hypersphere grid snapping with {num_vectors} vectors to modules: {module_list}")
+
     model.eval()
     model.to(args.device)
 
