@@ -347,7 +347,7 @@ class Population:
 
         return hw_data
 
-    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str, max_iters: int = 10000, conda_env: str = "reallmforge") -> None:
+    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str, max_iters: int = 10000, conda_env: str = "reallmforge", sw_only: bool = False) -> None:
         # send the training work to worker nodes and wait for results
         train_yaml_path = self.to_yaml(save_path="train")
         trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
@@ -355,11 +355,14 @@ class Population:
         time.sleep(5)  # wait a bit before polling
         trainer.poll_jobs() 
         # start hw eval while waiting for training
-        start_time = time.time()
-        hw_data = self.hw_eval()
-        elapsed_time = time.time() - start_time
-        print(f"Finished HW evaluation for generation {self.gen} in {elapsed_time:.1f}s")
-        print("====================================================")
+        if sw_only:
+            hw_data = []
+        else:
+            start_time = time.time()
+            hw_data = self.hw_eval()
+            elapsed_time = time.time() - start_time
+            print(f"Finished HW evaluation for generation {self.gen} in {elapsed_time:.1f}s")
+            print("====================================================")
         trainer.wait_for_all(poll_interval=120, timeout=10000, verbose=True)
         data_csv = trainer.fetch_results(local_dir="train", gen=self.gen)
         # read the csv and populate self.evaluations

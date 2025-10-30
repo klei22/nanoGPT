@@ -8,7 +8,7 @@ import logging
 import time
 import os
 import argparse
-
+import random
 
 # Configure logging to only show INFO:root messages
 logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s: %(message)s')
@@ -88,15 +88,13 @@ def main():
     )
     args = parser.parse_args()
 
+    # set random seed for reproducibility
+    random.seed(45)
+
     hosts = load_hosts_from_file(args.hosts_file)
     logging.info(f"Loaded {len(hosts)} hosts from {args.hosts_file}")
     user = args.user
     key_filename = args.key
-    exp_name = args.exp_name
-
-    # update the working directory on remote hosts
-    trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
-    trainer.perform_git_pull(remote_work_dir=f"/home/{user}/Evo_GPT")
 
     init_population_size = args.pop_size
     max_n_layer = args.max_layers
@@ -112,6 +110,8 @@ def main():
     print("Using search space:")
     print(search_space.print_search_space())
 
+    exp_name = args.exp_name
+
     # initial evaluation
     if args.resume_ckpt is not None:
         if os.path.exists(args.resume_ckpt):
@@ -124,7 +124,13 @@ def main():
     else:
         # initialize Population class from nsga.py with individuals randomly
         individuals = [search_space.sample() for _ in range(init_population_size)]
-        population = Population(individuals, search_space=search_space)
+        objs = ["val_loss", "token_delay", "energy_per_token_uJ"]  # Minimize validation loss and number of parameters
+        cons = {
+            "params": 800_000_000,  # 800 million params
+            "val_loss": 3.6,  # 3.6
+            }
+
+        population = Population(individuals, search_space=search_space, objs_settings=objs, cons_settings=cons)
         population.delete_duplicates()  # Remove duplicates if any
 
         # initial evaluation
@@ -143,14 +149,17 @@ def main():
         population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{population.gen}.json")
         population.save_checkpoint_pkl(f"ckpts/{exp_name}/pkl/{run_time}_pop_gen{population.gen}.pkl")
 
+    # update the working directory on remote hosts
+    trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
+    trainer.perform_git_pull(remote_work_dir=f"/home/{user}/Evo_GPT")
+
     # run_time = time.strftime("%m%d_%H%M", time.localtime())
     n_gen = args.generations
     for i in range(0, n_gen):
-        # generate random individuals as offspring
         population.generate_offspring_random()
         gen = population.gen
         print(f"\n\n================ Generation {gen} ================\n")
-        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters)
+        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters, sw_only=True)
         population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_offspring_gen{gen}.json")
         population.update_elimination()
         population.print_summary()
@@ -159,6 +168,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
 
 
 

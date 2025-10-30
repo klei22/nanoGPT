@@ -22,7 +22,7 @@ def main():
     parser.add_argument(
         "--hosts",
         type=str,
-        default="../host_configs/host_east4.yaml",
+        default="../host_configs/host_no_east4.yaml",
         help="Path to YAML file listing remote hosts",
     )
     parser.add_argument(
