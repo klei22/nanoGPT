@@ -1,0 +1,30 @@
+# residual_dual_comparison.yaml
+---
+# Shared configuration for both runs
+max_iters: [10000]
+eval_interval: [1000]
+dataset: ["minipile"]
+block_size: [512]
+n_layer: [12]
+n_head: [12]
+n_embd: [768]
+batch_size: ["64"]
+device: ["cuda"]
+dtype: ["bfloat16"]
+compile: [true]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+
+# Compare default Pre-LN against ResiDual dual residual configuration
+parameter_groups:
+  - run_name: ["preln_baseline"]
+    use_pre_ln: [true]
+    use_post_ln: [false]
+    use_dual_residual: [false]
+  - run_name: ["residual_dual"]
+    use_pre_ln: [true]
+    use_post_ln: [true]
+    use_dual_residual: [true]
+    dual_residual_norm_variant: ["rmsnorm"]
