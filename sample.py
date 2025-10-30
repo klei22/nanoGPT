@@ -10,13 +10,14 @@ from datetime import datetime
 
 # from __future__ import annotations
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import io
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
+import torch.nn as nn
 import tiktoken
 from collections import OrderedDict
 from rich import print
@@ -28,10 +29,133 @@ from torch.nn import functional as F
 from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
+from variations.norm_variations import HyperSphereNorm
 
 import lm_eval
 from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
 from benchmarks import run_all
+
+
+def prepare_hypersphere_grid_tensor(
+    grid: Union[np.ndarray, torch.Tensor],
+    n_embd: int,
+) -> torch.Tensor:
+    """Validate and reshape a hypersphere grid to ``(num_vectors, n_embd)``."""
+
+    tensor = torch.as_tensor(grid, dtype=torch.float32)
+    if tensor.ndim != 2:
+        raise ValueError(
+            f"Hypersphere grid must be 2-D, got tensor with shape {tuple(tensor.shape)}"
+        )
+
+    if tensor.shape[1] == n_embd:
+        return tensor.contiguous()
+    if tensor.shape[0] == n_embd:
+        return tensor.t().contiguous()
+
+    raise ValueError(
+        "Hypersphere grid shape is incompatible with model embedding size "
+        f"{n_embd}: received {tuple(tensor.shape)}"
+    )
+
+
+def generate_random_hypersphere_grid(
+    num_vectors: int,
+    n_embd: int,
+    *,
+    mean: float = 0.0,
+    std: float = 0.02,
+    generator: Optional[torch.Generator] = None,
+) -> torch.Tensor:
+    """Generate a random Gaussian hypersphere grid on the CPU."""
+
+    if num_vectors <= 0:
+        raise ValueError("num_vectors must be positive")
+    base = torch.normal(
+        mean=mean,
+        std=std,
+        size=(num_vectors, n_embd),
+        generator=generator,
+    )
+    return base.to(dtype=torch.float32)
+
+
+def _hypersphere_grid_hook_factory(model: GPT):
+    """Create a forward hook that projects activations onto the hypersphere grid."""
+
+    def hook(module: nn.Module, inputs: Tuple[torch.Tensor, ...], output: torch.Tensor):
+        grid = getattr(model, "hypersphere_grid_vectors", None)
+        if grid is None:
+            return output
+        if grid.numel() == 0:
+            return output
+
+        cache: Dict[Tuple[torch.device, torch.dtype], torch.Tensor] = getattr(
+            model, "_hypersphere_grid_cache", {}
+        )
+        key = (output.device, output.dtype)
+        grid_on_device = cache.get(key)
+        if grid_on_device is None or grid_on_device.shape != grid.shape:
+            grid_on_device = grid.to(device=output.device, dtype=output.dtype)
+            cache[key] = grid_on_device
+            model._hypersphere_grid_cache = cache
+
+        with torch.no_grad():
+            original_shape = output.shape
+            flat = output.reshape(-1, original_shape[-1])
+            scores = torch.matmul(flat, grid_on_device.t())
+            best_indices = scores.argmax(dim=-1)
+            replaced = grid_on_device.index_select(0, best_indices)
+            replaced = replaced.reshape(original_shape)
+        return replaced
+
+    return hook
+
+
+def _register_hypersphere_grid_hooks(model: GPT) -> None:
+    """Register projection hooks on all hypersphere pre-norm modules."""
+
+    if hasattr(model, "_hypersphere_grid_handles"):
+        return
+
+    handles = []
+    blocks = model.transformer['h'] if 'h' in model.transformer else []
+    for block in blocks:
+        for attr in ("pre_ln", "pre_ln_attn", "pre_ln_mlp"):
+            module = getattr(block, attr, None)
+            if module is None:
+                continue
+            if not isinstance(module, HyperSphereNorm):
+                continue
+            handles.append(module.register_forward_hook(_hypersphere_grid_hook_factory(model)))
+
+    model._hypersphere_grid_handles = handles
+    if not handles:
+        print(
+            "[hypersphere_grid] Warning: No hypersphere pre-norm modules found to attach hooks."
+        )
+
+
+def set_hypersphere_grid(
+    model: GPT,
+    grid_tensor: Optional[torch.Tensor],
+    *,
+    normalize: bool = True,
+) -> None:
+    """Attach or update the hypersphere grid used for activation projection."""
+
+    if grid_tensor is None:
+        model.hypersphere_grid_vectors = None
+        model._hypersphere_grid_cache = {}
+        return
+
+    grid = grid_tensor.to(dtype=torch.float32, device="cpu").contiguous()
+    if normalize:
+        grid = F.normalize(grid, p=2, dim=-1)
+
+    model.hypersphere_grid_vectors = grid
+    model._hypersphere_grid_cache = {}
+    _register_hypersphere_grid_hooks(model)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
@@ -119,6 +243,21 @@ def parse_args():
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
+
+    # Hypersphere grid projection
+    parser.add_argument("--hypersphere_grid_path", type=str, default=None,
+                        help="Path to a NumPy file containing the hypersphere grid vectors")
+    parser.add_argument("--hypersphere_grid_size", type=int, default=None,
+                        help="If provided, generate a random hypersphere grid with this many vectors")
+    parser.add_argument("--hypersphere_grid_mean", type=float, default=0.0,
+                        help="Mean for randomly generated hypersphere grid vectors")
+    parser.add_argument("--hypersphere_grid_std", type=float, default=0.02,
+                        help="Standard deviation for randomly generated hypersphere grid vectors")
+    parser.add_argument("--hypersphere_grid_seed", type=int, default=None,
+                        help="Seed for hypersphere grid random generation")
+    parser.add_argument("--hypersphere_grid_normalize", default=True,
+                        action=argparse.BooleanOptionalAction,
+                        help="L2-normalize grid vectors before projection (default: True)")
 
     # lm_eval Benchmarking Related
     parser.add_argument('--lm_eval_tasks', type=str, default=None,
@@ -1170,6 +1309,34 @@ def main():
         for k, v in variation_dict.items():
             setattr(gptconf, k, v)
         model = GPT.from_pretrained(gptconf, model_type=args.init_from)
+
+    grid_tensor: Optional[torch.Tensor] = None
+    if args.hypersphere_grid_path:
+        loaded_grid = np.load(args.hypersphere_grid_path)
+        grid_tensor = prepare_hypersphere_grid_tensor(loaded_grid, model.config.n_embd)
+    elif args.hypersphere_grid_size:
+        grid_generator = torch.Generator()
+        if args.hypersphere_grid_seed is not None:
+            grid_generator.manual_seed(args.hypersphere_grid_seed)
+        grid_tensor = generate_random_hypersphere_grid(
+            args.hypersphere_grid_size,
+            model.config.n_embd,
+            mean=args.hypersphere_grid_mean,
+            std=args.hypersphere_grid_std,
+            generator=grid_generator,
+        )
+
+    if grid_tensor is not None:
+        set_hypersphere_grid(
+            model,
+            grid_tensor,
+            normalize=args.hypersphere_grid_normalize,
+        )
+        print(
+            f"[hypersphere_grid] Activated projection with grid shape {tuple(grid_tensor.shape)}"
+        )
+    else:
+        set_hypersphere_grid(model, None)
 
     if args.init_from == 'resume' and args.multicontext is None:
         args.multicontext = bool(getattr(model.config, "multicontext", False))
