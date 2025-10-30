@@ -695,7 +695,7 @@ def main():
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
     parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium/ckpt_gen", help="Path to the evolution log file")
     parser.add_argument("--start_gen", type=int, default=0, help="Starting generation index")
-    parser.add_argument("--end_gen", type=int, default=8, help="Ending generation index")
+    parser.add_argument("--end_gen", type=int, default=150, help="Ending generation index")
     parser.add_argument("--output", type=str, default="htmls/interactive_generational_scatter.html", help="Output HTML file path")
     args = parser.parse_args()
     

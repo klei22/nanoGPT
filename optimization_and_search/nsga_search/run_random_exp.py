@@ -92,6 +92,11 @@ def main():
     logging.info(f"Loaded {len(hosts)} hosts from {args.hosts_file}")
     user = args.user
     key_filename = args.key
+    exp_name = args.exp_name
+
+    # update the working directory on remote hosts
+    trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
+    trainer.perform_git_pull(remote_work_dir=f"/home/{user}/Evo_GPT")
 
     init_population_size = args.pop_size
     max_n_layer = args.max_layers
@@ -133,15 +138,10 @@ def main():
     population.mutation_rate = args.mutation_rate
 
     # save initial checkpoint
-    exp_name = args.exp_name
     run_time = time.strftime("%m%d_%H%M", time.localtime())
     if args.resume_ckpt is None:
         population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_gen{population.gen}.json")
         population.save_checkpoint_pkl(f"ckpts/{exp_name}/pkl/{run_time}_pop_gen{population.gen}.pkl")
-
-    # update the working directory on remote hosts
-    trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
-    trainer.perform_git_pull(remote_work_dir=f"/home/{user}/Evo_GPT")
 
     # run_time = time.strftime("%m%d_%H%M", time.localtime())
     n_gen = args.generations

@@ -21,6 +21,7 @@ def plot_gen_scatter(
     save_path: str,
     start_gen: int,
     end_gen: int,
+    ckpt_gen: int,
     x_axis: str = 'params',
     y_axis: str = 'validation_loss',
     color_axis: str = 'generation',
@@ -63,7 +64,7 @@ def plot_gen_scatter(
 
     df_pop = pd.DataFrame(pop_data)
 
-    # based on the x_axis and y_axis, slect the design on the first pareto front and highlight them
+    # based on the x_axis and y_axis, select the design on the first pareto front and highlight them
     if x_axis not in df_pop.columns or y_axis not in df_pop.columns or color_axis not in df_pop.columns:
         exit(f"❌ Invalid axis names. Available columns: {df_pop.columns.tolist()}")
 
@@ -87,17 +88,43 @@ def plot_gen_scatter(
         cmap_vals
     )
 
-    # plot all designs
-    scatter = ax.scatter(
-        df_pop[x_axis],
-        df_pop[y_axis],
-        c=df_pop[color_axis],
-        cmap=truncated_cmap,
-        vmin=vmin,
-        vmax=vmax,
-        s=point_size,
-        label='NSGA-II searched architectures'
-    )
+    # Split generations: <= ckpt_gen use blue map, > ckpt_gen use red map for contrast
+    mask_late = (df_pop[color_axis] > ckpt_gen) & (df_pop[color_axis] <= end_gen)
+    mask_early = ~mask_late
+
+    scatter = None
+
+    if mask_early.any():
+        scatter = ax.scatter(
+            df_pop.loc[mask_early, x_axis],
+            df_pop.loc[mask_early, y_axis],
+            c=df_pop.loc[mask_early, color_axis],
+            cmap=truncated_cmap,
+            vmin=vmin,
+            vmax=vmax,
+            s=point_size,
+            label=f'Generations ≤ {ckpt_gen}' if ckpt_gen < end_gen else f'Generations'
+        )
+
+    if mask_late.any():
+        base_red_cmap = plt.get_cmap('Reds')
+        red_vals = base_red_cmap(np.linspace(max(0.0, cmap_min), min(1.0, cmap_max), 256))
+        truncated_red_cmap = mcolors.LinearSegmentedColormap.from_list(
+            f"{getattr(base_red_cmap, 'name', 'Reds')}_trunc",
+            red_vals
+        )
+        scatter_late = ax.scatter(
+            df_pop.loc[mask_late, x_axis],
+            df_pop.loc[mask_late, y_axis],
+            c=df_pop.loc[mask_late, color_axis],
+            cmap=truncated_red_cmap,
+            vmin=vmin,
+            vmax=vmax,
+            s=point_size,
+            label=f'Generations > {ckpt_gen}'
+        )
+        if scatter is None:
+            scatter = scatter_late
 
     # Highlight Pareto front designs with red hollow star markers
     # pareto_scatter = ax.scatter(
@@ -128,14 +155,20 @@ def plot_gen_scatter(
     # set axis ranges
     # ax.set_xlim(right=130)
     ax.set_ylim(top=3.1)
+    ax.set_ylim(bottom=2.7)
+
 
     # ax.set_xlabel(x_axis)
     ax.set_xlabel("Size (M)")
     ax.set_ylabel("Validation Loss")
 
-    # use blue (light to dark) for color axis (colorbar from full population scatter)
-    cbar = plt.colorbar(scatter, ax=ax)
-    cbar.set_label(color_axis)
+    # use colorbar from whichever scatter was created
+    if scatter is not None:
+        cbar = plt.colorbar(scatter, ax=ax)
+        if mask_early.any() and mask_late.any():
+            cbar.set_label(f"{color_axis} (blue ≤ {ckpt_gen}, red > {ckpt_gen})")
+        else:
+            cbar.set_label(color_axis)
     plt.title("Optimizing Accuracy and Size")
     plt.savefig(save_path)
     plt.close()
@@ -149,10 +182,10 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium/ckpt_gen", help="Path to the evolution log file")
-    parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index (default: 1)")
-    # parser.add_argument("--ckpt_gen", type=int, default=50, help="Checkpoint generation index (default: 50)")
-    parser.add_argument("--end_gen", type=int, default=100, help="Ending generation index ")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium_random/1027_0559_ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--start_gen", type=int, default=0, help="Starting generation index (default: 1)")
+    parser.add_argument("--ckpt_gen", type=int, default=100, help="Checkpoint generation index (default: 50)")
+    parser.add_argument("--end_gen", type=int, default=27, help="Ending generation index ")
     parser.add_argument("--output", type=str, default="plots/gen_scatter.png", help="Output png file path")
     args = parser.parse_args()
     
@@ -162,7 +195,7 @@ def main():
     output_path = args.output
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    plot_gen_scatter(file_name_base, output_path, start_gen, end_gen)
+    plot_gen_scatter(file_name_base, output_path, start_gen, end_gen, args.ckpt_gen)
 
     # Print completion message
     print(f"✅ Generational scatter plot saved to {output_path}")

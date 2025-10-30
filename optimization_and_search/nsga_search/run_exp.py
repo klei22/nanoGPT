@@ -8,7 +8,7 @@ import logging
 import time
 import os
 import argparse
-
+import random
 
 # Configure logging to only show INFO:root messages
 logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s: %(message)s')
@@ -88,6 +88,9 @@ def main():
     )
     args = parser.parse_args()
 
+    # set random seed for reproducibility
+    random.seed(45)
+
     hosts = load_hosts_from_file(args.hosts_file)
     logging.info(f"Loaded {len(hosts)} hosts from {args.hosts_file}")
     user = args.user
@@ -121,7 +124,13 @@ def main():
     else:
         # initialize Population class from nsga.py with individuals randomly
         individuals = [search_space.sample() for _ in range(init_population_size)]
-        population = Population(individuals, search_space=search_space)
+        objs = ["val_loss", "token_delay", "energy_per_token_uJ"]  # Minimize validation loss and number of parameters
+        cons = {
+            "params": 800_000_000,  # 800 million params
+            "val_loss": 3.6,  # 3.6
+            }
+
+        population = Population(individuals, search_space=search_space, objs_settings=objs, cons_settings=cons)
         population.delete_duplicates()  # Remove duplicates if any
 
         # initial evaluation
