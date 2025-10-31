@@ -398,7 +398,70 @@ class KAL_Net(nn.Module):
             x = self.base_activation(layer_norm(combined_output))
 
         return x
-    
+
+
+class PKLLinear(nn.Module):
+    """Linear layer that represents weights as a + b * scale."""
+
+    def __init__(self, in_features, out_features, config=None, method=None, bits=None, bias=None, scale=None, **kwargs):
+        super().__init__()
+
+        self.in_features = in_features
+        self.out_features = out_features
+
+        default_scale = math.sqrt(2.0)
+        if scale is None and config is not None:
+            default_scale = getattr(config, "pkl_linear_scale", default_scale)
+        elif scale is not None:
+            default_scale = scale
+
+        self.register_buffer("scale", torch.tensor(default_scale, dtype=torch.float32))
+
+        self.linear_a = nn.Linear(in_features, out_features, bias=False)
+        self.linear_b = nn.Linear(in_features, out_features, bias=False)
+        self.bias = None
+
+    @property
+    def weight(self):
+        scale = self.scale.to(self.linear_b.weight.dtype)
+        return self.linear_a.weight + scale * self.linear_b.weight
+
+    def forward(self, x):
+        out_a = self.linear_a(x)
+        out_b = self.linear_b(x)
+        scale = self.scale.to(out_b.dtype)
+        return out_a + scale * out_b
+
+
+class PKLEmbedding(nn.Module):
+    """Embedding layer that represents weights as a + b * scale."""
+
+    def __init__(self, num_embeddings, embedding_dim, scale=None, config=None):
+        super().__init__()
+
+        default_scale = math.sqrt(2.0)
+        if scale is None and config is not None:
+            default_scale = getattr(config, "pkl_wte_scale", default_scale)
+        elif scale is not None:
+            default_scale = scale
+
+        self.register_buffer("scale", torch.tensor(default_scale, dtype=torch.float32))
+
+        self.embedding_a = nn.Embedding(num_embeddings, embedding_dim)
+        self.embedding_b = nn.Embedding(num_embeddings, embedding_dim)
+
+    @property
+    def weight(self):
+        scale = self.scale.to(self.embedding_b.weight.dtype)
+        return self.embedding_a.weight + scale * self.embedding_b.weight
+
+    def forward(self, x):
+        emb_a = self.embedding_a(x)
+        emb_b = self.embedding_b(x)
+        scale = self.scale.to(emb_b.dtype)
+        return emb_a + scale * emb_b
+
+
 def wrap_with_flashnorm(linear_cls, config):
     """
     Wraps any linear class with FlashNorm-style deferred RMS normalization.
@@ -428,10 +491,15 @@ def wrap_with_flashnorm(linear_cls, config):
         
         def _fuse_gain_into_weights(self):
             """Merge gain into weight matrix: W* = W @ diag(gain)"""
-            if hasattr(self.linear, 'weight') and self.linear.weight is not None:
+            gain = self.gain.unsqueeze(0)
+            if hasattr(self.linear, 'linear_a') and hasattr(self.linear, 'linear_b'):
+                with torch.no_grad():
+                    self.linear.linear_a.weight.data = self.linear.linear_a.weight.data * gain
+                    self.linear.linear_b.weight.data = self.linear.linear_b.weight.data * gain
+            elif hasattr(self.linear, 'weight') and self.linear.weight is not None:
                 with torch.no_grad():
                     # Broadcast multiply: each output row scaled by corresponding gain
-                    self.linear.weight.data = self.linear.weight.data * self.gain.unsqueeze(0)
+                    self.linear.weight.data = self.linear.weight.data * gain
         
         def forward(self, x):
             rms = x.norm(2, dim=-1, keepdim=True) / math.sqrt(x.size(-1))
@@ -454,4 +522,5 @@ linear_dictionary = {
     "bitlinear_1p58": BitLinear1p58,
     "kan": KAL_Net,
     "quantized_linear": QuantizedLinear,
+    "pkl_linear": PKLLinear,
 }

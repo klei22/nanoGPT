@@ -833,7 +833,7 @@ def parse_args():
     model_group.add_argument("--ssm_io_bias",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="adds biases for nn.linear() of both in_proj and out_proj")
 
     # LINEAR VARIATIONS
-    linear_variants = ["linear", "bitlinear", "bitlinear_1p58", "bitlinear_optimized", "kan","quantized_linear"]
+    linear_variants = ["linear", "bitlinear", "bitlinear_1p58", "bitlinear_optimized", "kan", "quantized_linear", "pkl_linear"]
     model_group.add_argument("--linear_variant_attn", type=str, default="linear", choices=linear_variants)
     model_group.add_argument("--linear_variant_q", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_q in attention (takes precedence over linear_variant_attn)")
     model_group.add_argument("--linear_variant_k", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_k in attention (takes precedence over linear_variant_attn)")
@@ -842,6 +842,11 @@ def parse_args():
     model_group.add_argument("--linear_variant_mlp", type=str, default="linear", choices=linear_variants)
     model_group.add_argument("--linear_variant_mlp_up", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_fc in mlp (takes precedence over linear_variant_mlp)")
     model_group.add_argument("--linear_variant_mlp_down", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_proj in mlp (takes precedence over linear_variant_mlp)")
+    model_group.add_argument("--pkl_linear_scale", type=float, default=math.sqrt(2.0), help="Scaling factor for the b component in PKL linear layers.")
+    model_group.add_argument("--use_pkl_wte", default=False, action=argparse.BooleanOptionalAction, help="Use PKL-number embeddings (a + b * scale) for the token embedding table.")
+    model_group.add_argument("--pkl_wte_scale", type=float, default=math.sqrt(2.0), help="Scaling factor applied to the b component of PKL token embeddings.")
+    model_group.add_argument("--use_pkl_lm_head", default=False, action=argparse.BooleanOptionalAction, help="Use PKL-number weights for the LM head.")
+    model_group.add_argument("--pkl_lm_head_scale", type=float, default=math.sqrt(2.0), help="Scaling factor applied to the b component of the PKL LM head.")
     ## Linear Weight Initialization Options
     model_group.add_argument( "--linear_mean_init", type=float, default=0.0)
     model_group.add_argument( "--linear_std_init", type=float, default=0.02)
