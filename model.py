@@ -45,6 +45,7 @@ from initializations.initialization_variations import init_dictionary
 
 from shared_param_utils import SharedParamGroupCreator
 from variations.block_variations import Block
+from utils.snap_to_grid import SnapToGridRegistry
 
 class LearnedPositionEmbedding(nn.Module):
     """
@@ -68,7 +69,7 @@ class LearnedPositionEmbedding(nn.Module):
 
         self.drop = nn.Dropout(config.dropout)
         # reuse the same Block init as GPT.transformer.h
-        self.blocks = nn.ModuleList([Block(self.lpe_config) for _ in range(self.lpe_config.n_layer)])
+        self.blocks = nn.ModuleList([Block(self.lpe_config, layer_idx=i) for i in range(self.lpe_config.n_layer)])
 
     def forward(self, b, t, x, iter_num=None):
         # add absolute position embeddings if used
@@ -195,8 +196,22 @@ class GPT(nn.Module):
 
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
-        self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
+        if getattr(config, "enable_snap_to_grid", False) and getattr(config, "snap_to_grid_registry", None) is None:
+            config.snap_to_grid_registry = SnapToGridRegistry()
+
+        self.transformer['h'] = nn.ModuleList([
+            Block(config, layer_idx=i, mlp=shared_mlp_array[i], attn=shared_attn_array[i])
+            for i in range(config.n_layer)
+        ])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
+
+        self.snap_to_grid_registry = getattr(config, "snap_to_grid_registry", None)
+
+    def set_snap_to_grid_registry(self, registry: SnapToGridRegistry | None) -> None:
+        self.snap_to_grid_registry = registry
+        self.config.snap_to_grid_registry = registry
+        for block in self.transformer['h']:
+            block.snap_to_grid_registry = registry
 
         # Optional post-embedding normalizations
         if self.config.norm_variant_wte is not None:
