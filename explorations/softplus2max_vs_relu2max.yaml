@@ -1,0 +1,47 @@
+# explorations/softplus2max_vs_relu2max.yaml
+---
+
+# Compare Softplus-squared attention weights against ReLU-squared under qk norm.
+parameter_groups:
+  - softmax_variant_attn: ["softplus2max"]
+    softplus2max_divisor: [256.0]
+    softplus2max_beta: [1.0]
+    softplus2max_threshold: [20.0]
+  - softmax_variant_attn: ["relu2max"]
+    relu2max_divisor: [256.0]
+
+# base hyperparameters
+activation_variant: ["squared_softplus"]
+max_iters: [10000]
+lr_decay_iters: [10000]
+warmup_iters: [1000]
+eval_interval: [2000]
+eta_variant: ["iteration"]
+n_layer: [12]
+n_head: [12]
+n_embd: [768]
+block_size: [1024]
+batch_size: [16]
+device: ["cuda"]
+dtype: ["bfloat16"]
+dataset: ["minipile"]
+learning_rate: ["6e-4"]
+min_lr: ["6e-5"]
+beta1: [0.9]
+beta2: [0.95]
+decay_lr: [true]
+
+# attention configuration
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+
+# logging
+compute_model_stats: [true]
+print_model_stats_table: ["./print_stats/${RUN_NAME}.csv"]
+tensorboard_log: [false]
+
+# training utilities
+never_save_checkpoint: [true]
+compile: [true]
