@@ -441,6 +441,11 @@ class GPTConfig:
     linear_variant_attn_proj: str = None
     linear_variant_mlp_up: str = None
     linear_variant_mlp_down: str = None
+    pkl_linear_scale: float = math.sqrt(2.0)
+    use_pkl_wte: bool = False
+    pkl_wte_scale: float = math.sqrt(2.0)
+    use_pkl_lm_head: bool = False
+    pkl_lm_head_scale: float = math.sqrt(2.0)
 
     ## Linear Initialization Options
     linear_mean_init: float= 0.0

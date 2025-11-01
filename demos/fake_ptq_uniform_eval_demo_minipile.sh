@@ -1,20 +1,23 @@
 #!/bin/bash
-# demos/fake_ptq_uniform_eval_demo.sh
+# demos/fake_ptq_uniform_eval_demo_minipile.sh
 #
-# Runs the fake PTQ pipeline across a sweep of uniform bit-widths and records
-# validation loss for each configuration. The script prepares the Shakespeare
-# dataset, trains a compact reference model (if necessary), quantizes the
-# checkpoint across a configurable bit-width range, evaluates each checkpoint
-# with `train.py --eval_only`, and plots the resulting validation loss curve.
+# Runs fake PTQ sweeps for both baseline and PKL-parameterized minipile models.
+# The script prepares the dataset, trains (or reuses) each reference model,
+# quantizes checkpoints across a configurable bit-width range, evaluates every
+# quantized checkpoint, and plots validation loss, angular drift, and size trends
+# against the integer precision level.
 
 set -euo pipefail
 
 EVAL_DATASET_DIR="data/minipile"
-OUT_DIR="out_fake_ptq_minipile"
-SWEEP_ROOT="${OUT_DIR}_uniform_sweep"
+BASE_OUT_DIR="out_fake_ptq_minipile"
+PKL_OUT_DIR="out_fake_ptq_minipile_pkl"
+BASE_SWEEP_ROOT="${BASE_OUT_DIR}_uniform_sweep"
+PKL_SWEEP_ROOT="${PKL_OUT_DIR}_uniform_sweep"
 EVAL_ITERS=200
 BATCH_SIZE=64
 BLOCK_SIZE=256
+PKL_SCALE="1.4142135623730951"
 
 BIT_START=16
 BIT_STOP=3
@@ -71,7 +74,13 @@ echo "Sweeping uniform weight bit-widths: ${BITS[*]}"
 
 mkdir -p "$EVAL_DATASET_DIR"
 
-echo "=== Step 1: Prepare the minipile dataset ==="
+step=1
+log_step() {
+  echo "=== Step ${step}: $* ==="
+  step=$((step + 1))
+}
+
+log_step "Prepare the minipile dataset"
 pushd "$EVAL_DATASET_DIR" > /dev/null
 if [ ! -f "train.bin" ] || [ ! -f "val.bin" ] || [ ! -f "meta.pkl" ]; then
   bash get_dataset.sh
@@ -81,13 +90,11 @@ else
 fi
 popd > /dev/null
 
-mkdir -p "$SWEEP_ROOT"
-
-echo "=== Step 2: Train a reference model on minipile (if needed) ==="
-if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
+log_step "Train a baseline (non-PKL) reference model on minipile (if needed)"
+if [ ! -f "$BASE_OUT_DIR/ckpt.pt" ]; then
   python3 train.py \
     --dataset minipile \
-    --out_dir "$OUT_DIR" \
+    --out_dir "$BASE_OUT_DIR" \
     --n_layer 6 \
     --n_head 6 \
     --n_embd 384 \
@@ -104,74 +111,218 @@ if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
     --eta_variant "iteration" \
     --compile
 else
-  echo "Found existing checkpoint at $OUT_DIR/ckpt.pt; skipping training."
+  echo "Found existing checkpoint at $BASE_OUT_DIR/ckpt.pt; skipping training."
 fi
 
-echo "=== Step 3: Evaluate the baseline (fp32) checkpoint ==="
-python3 sample.py \
-  --out_dir "$OUT_DIR" \
-  --eval_only \
-  --eval_dataset minipile
+log_step "Train a PKL-parameterized reference model on minipile (if needed)"
+if [ ! -f "$PKL_OUT_DIR/ckpt.pt" ]; then
+  python3 train.py \
+    --dataset minipile \
+    --out_dir "$PKL_OUT_DIR" \
+    --n_layer 6 \
+    --n_head 6 \
+    --n_embd 384 \
+    --use_rotary_embeddings \
+    --no-use_abs_pos_embeddings \
+    --use_qk_norm \
+    --use_qk_norm_scale \
+    --use_peri_ln \
+    --block_size "$BLOCK_SIZE" \
+    --batch_size "$BATCH_SIZE" \
+    --max_iters 10000 \
+    --eval_interval 10000 \
+    --eval_iters "$EVAL_ITERS" \
+    --eta_variant "iteration" \
+    --compile \
+    --linear_variant_attn "pkl_linear" \
+    --linear_variant_mlp "pkl_linear" \
+    --use_pkl_wte \
+    --use_pkl_lm_head \
+    --pkl_linear_scale "$PKL_SCALE" \
+    --pkl_wte_scale "$PKL_SCALE" \
+    --pkl_lm_head_scale "$PKL_SCALE"
+else
+  echo "Found existing checkpoint at $PKL_OUT_DIR/ckpt.pt; skipping training."
+fi
 
-step=4
-for bit in "${BITS[@]}"; do
-  QUANT_OUT_DIR="${SWEEP_ROOT}/${bit}bit"
-  mkdir -p "$QUANT_OUT_DIR"
+run_sweep() {
+  local label="$1"
+  local reference_dir="$2"
+  local sweep_root="$3"
+  shift 3
+  local -a bits=("$@")
 
-  echo "=== Step ${step}: Quantize to ${bit}-bit weights ==="
-  if [ ! -f "$QUANT_OUT_DIR/ckpt.pt" ]; then
-    python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
-      --out_dir "$QUANT_OUT_DIR" \
-      --num_bits "$bit"
-  else
-    echo "Found existing ${bit}-bit checkpoint at $QUANT_OUT_DIR/ckpt.pt; skipping quantization."
-  fi
+  mkdir -p "$sweep_root"
 
-  step=$((step + 1))
-
-  echo "=== Step ${step}: Evaluate the ${bit}-bit checkpoint ==="
+  log_step "Evaluate the ${label} fp32 checkpoint"
   python3 sample.py \
-    --out_dir "$QUANT_OUT_DIR" \
+    --out_dir "$reference_dir" \
     --eval_only \
-    --eval_dataset minipile
+    --eval_dataset minipile \
+    --eval_iters "$EVAL_ITERS"
 
-  step=$((step + 1))
-done
+  for bit in "${bits[@]}"; do
+    local quant_out_dir="${sweep_root}/${bit}bit"
+    mkdir -p "$quant_out_dir"
 
-python3 - "$OUT_DIR" "$SWEEP_ROOT" "${BITS[@]}" <<'PY'
+    log_step "Quantize the ${label} checkpoint to ${bit}-bit weights"
+    if [ ! -f "$quant_out_dir/ckpt.pt" ]; then
+      python3 quantizations/ptq/fake_quantize_ckpt.py "$reference_dir" \
+        --out_dir "$quant_out_dir" \
+        --num_bits "$bit"
+    else
+      echo "Found existing ${bit}-bit checkpoint at $quant_out_dir/ckpt.pt; skipping quantization."
+    fi
+
+    log_step "Evaluate the ${label} ${bit}-bit checkpoint"
+    python3 sample.py \
+      --out_dir "$quant_out_dir" \
+      --eval_only \
+      --eval_dataset minipile \
+      --eval_iters "$EVAL_ITERS"
+  done
+
+  log_step "Summarize ${label} quantization sweep results"
+  python3 - "$reference_dir" "$sweep_root" "${bits[@]}" <<'PY'
 import json
+import math
 import os
 import sys
+from typing import Dict, Iterable
 
-out_dir = os.path.abspath(sys.argv[1])
+import torch
+
+
+def load_vector(path: str) -> torch.Tensor:
+    checkpoint = torch.load(path, map_location="cpu")
+    if isinstance(checkpoint, dict) and "model" in checkpoint:
+        state_obj = checkpoint["model"]
+    else:
+        state_obj = checkpoint
+
+    if isinstance(state_obj, dict):
+        tensors = []
+        for value in state_obj.values():
+            if torch.is_tensor(value):
+                tensors.append(value.float().reshape(-1))
+        if not tensors:
+            raise RuntimeError(f"No tensors found in checkpoint: {path}")
+        return torch.cat(tensors)
+
+    to_state_dict = getattr(state_obj, "state_dict", None)
+    if to_state_dict is None:
+        raise RuntimeError("Checkpoint object does not provide state_dict()")
+    tensor_values: Dict[str, torch.Tensor] = {
+        k: v.float().reshape(-1)
+        for k, v in to_state_dict().items()
+        if torch.is_tensor(v)
+    }
+    if not tensor_values:
+        raise RuntimeError(f"No tensors found in checkpoint: {path}")
+    return torch.cat(list(tensor_values.values()))
+
+
+def cosine_and_angle(vec_a: torch.Tensor, vec_b: torch.Tensor) -> tuple[float, float]:
+    a = vec_a.double()
+    b = vec_b.double()
+    dot = torch.dot(a, b).item()
+    denom = max(a.norm().item() * b.norm().item(), 1e-12)
+    cosine = max(min(dot / denom, 1.0), -1.0)
+    angle = math.degrees(math.acos(cosine))
+    return cosine, angle
+
+
+def levels_for_bits(bits: int) -> float:
+    return float("inf") if bits <= 0 else float(2**bits)
+
+
+reference_dir = os.path.abspath(sys.argv[1])
 sweep_root = os.path.abspath(sys.argv[2])
 sweep_bits = [int(arg) for arg in sys.argv[3:]]
 
-if not sweep_bits:
-    raise SystemExit("No bit-width sweep values provided to plotting helper")
-
-entries = [("fp32", 32, os.path.join(out_dir, "eval_loss.txt"))]
+entries = [("fp32", 32, os.path.join(reference_dir, "eval_loss.txt"), reference_dir)]
 for bit in sweep_bits:
-    entries.append((f"{bit}-bit", bit, os.path.join(sweep_root, f"{bit}bit", "eval_loss.txt")))
+    quant_dir = os.path.join(sweep_root, f"{bit}bit")
+    entries.append((f"{bit}-bit", bit, os.path.join(quant_dir, "eval_loss.txt"), quant_dir))
+
+baseline_ckpt = os.path.join(reference_dir, "ckpt.pt")
+if not os.path.exists(baseline_ckpt):
+    raise SystemExit(f"Missing baseline checkpoint at {baseline_ckpt}")
+
+baseline_vec = load_vector(baseline_ckpt)
 
 results = []
-for label, bit, path in entries:
-    if not os.path.exists(path):
-        raise SystemExit(f"Missing evaluation summary at {path}")
-    with open(path, encoding="utf-8") as fh:
+baseline_loss = None
+
+for label, bit, eval_path, ckpt_dir in entries:
+    if not os.path.exists(eval_path):
+        raise SystemExit(f"Missing evaluation summary at {eval_path}")
+    if not os.path.exists(os.path.join(ckpt_dir, "ckpt.pt")):
+        raise SystemExit(f"Missing checkpoint at {ckpt_dir}/ckpt.pt")
+
+    with open(eval_path, encoding="utf-8") as fh:
         data = json.load(fh)
     val = data.get("val")
     if val is None:
-        raise SystemExit(f"No 'val' key found in {path}")
-    results.append((bit, float(val), label))
+        raise SystemExit(f"No 'val' key found in {eval_path}")
 
-results.sort(key=lambda item: item[0], reverse=True)
+    vec = load_vector(os.path.join(ckpt_dir, "ckpt.pt"))
+    if vec.numel() != baseline_vec.numel():
+        raise SystemExit(
+            "Checkpoint parameter size mismatch when computing angular metrics: "
+            f"baseline has {baseline_vec.numel()} elements, {label} has {vec.numel()} elements"
+        )
+    cosine, angle = cosine_and_angle(baseline_vec, vec)
+    size_bytes = os.path.getsize(os.path.join(ckpt_dir, "ckpt.pt"))
+    result = {
+        "bits": bit,
+        "label": label,
+        "val_loss": float(val),
+        "cosine_similarity": float(cosine),
+        "angle_degrees": float(angle),
+        "checkpoint_bytes": int(size_bytes),
+        "int_levels": levels_for_bits(bit),
+    }
+    results.append(result)
+    if label.lower() == "fp32":
+        baseline_loss = result["val_loss"]
+
+if baseline_loss is None:
+    raise SystemExit("Unable to find baseline loss entry")
+
+for result in results:
+    result["delta_val_loss"] = result["val_loss"] - baseline_loss
+    result["checkpoint_megabytes"] = result["checkpoint_bytes"] / (1024.0 * 1024.0)
+
+results.sort(key=lambda item: item["bits"], reverse=True)
 
 csv_path = os.path.join(sweep_root, "uniform_quantization_eval.csv")
 with open(csv_path, "w", encoding="utf-8") as csv_file:
-    csv_file.write("bits,label,val_loss\n")
-    for bit, loss, label in results:
-        csv_file.write(f"{bit},{label},{loss:.8f}\n")
+    headers = [
+        "bits",
+        "label",
+        "val_loss",
+        "delta_val_loss",
+        "cosine_similarity",
+        "angle_degrees",
+        "checkpoint_bytes",
+        "checkpoint_megabytes",
+        "int_levels",
+    ]
+    csv_file.write(",".join(headers) + "\n")
+    for entry in results:
+        row = [
+            str(entry["bits"]),
+            entry["label"],
+            f"{entry['val_loss']:.8f}",
+            f"{entry['delta_val_loss']:.8f}",
+            f"{entry['cosine_similarity']:.8f}",
+            f"{entry['angle_degrees']:.8f}",
+            str(entry["checkpoint_bytes"]),
+            f"{entry['checkpoint_megabytes']:.4f}",
+            f"{entry['int_levels']:.0f}" if math.isfinite(entry["int_levels"]) else "inf",
+        ]
+        csv_file.write(",".join(row) + "\n")
 print(f"Wrote summary CSV to {csv_path}")
 
 try:
@@ -179,43 +330,68 @@ try:
 except ImportError:
     print("matplotlib is not installed; skipping plot generation.")
 else:
-    baseline = next((item for item in results if item[2].lower() == "fp32"), None)
-    quantized = [item for item in results if item is not baseline]
+    baseline_entry = next((entry for entry in results if entry["label"].lower() == "fp32"), None)
+    quantized_entries = [entry for entry in results if entry is not baseline_entry]
 
-    bits = [item[0] for item in quantized]
-    losses = [item[1] for item in quantized]
+    def make_plot(y_key: str, *, ylabel: str, title_suffix: str, filename: str) -> None:
+        xs = [entry["bits"] for entry in quantized_entries]
+        ys = [entry[y_key] for entry in quantized_entries]
+        labels = [entry["label"] for entry in quantized_entries]
 
-    plt.figure(figsize=(8, 4.5))
-    line_handle = None
-    if bits:
-        (line_handle,) = plt.plot(bits, losses, marker="o", label="Quantized checkpoints")
-    baseline_handle = None
-    if baseline is not None:
-        baseline_handle = plt.axhline(
-            baseline[1], linestyle="--", color="tab:orange", label=f"{baseline[2]} loss"
-        )
-    plt.gca().invert_xaxis()
-    if bits:
-        plt.xticks(bits, [item[2] for item in quantized])
-    plt.xlabel("Uniform weight bit-width")
-    plt.ylabel("Validation loss")
-    plt.title("Validation loss vs quantization bit-width")
-    plt.grid(True, linestyle="--", alpha=0.4)
-    legend_handles = []
-    legend_labels = []
-    if line_handle is not None:
-        legend_handles.append(line_handle)
-        legend_labels.append("Quantized checkpoints")
-    if baseline_handle is not None:
-        legend_handles.append(baseline_handle)
-        legend_labels.append(f"{baseline[2]} loss")
-    if legend_handles:
-        plt.legend(legend_handles, legend_labels)
-    plt.tight_layout()
+        plt.figure(figsize=(8, 4.5))
+        line_handle = None
+        if xs:
+            (line_handle,) = plt.plot(xs, ys, marker="o", label="Quantized checkpoints")
 
-    plot_path = os.path.join(sweep_root, "uniform_quantization_eval.png")
-    plt.savefig(plot_path, dpi=200)
-    print(f"Wrote plot to {plot_path}")
+        tick_bits = []
+        tick_labels = []
+        if baseline_entry is not None:
+            tick_bits.append(baseline_entry["bits"])
+            tick_labels.append(baseline_entry["label"])
+        tick_bits.extend(xs)
+        tick_labels.extend(labels)
+
+        plt.gca().invert_xaxis()
+        if tick_bits:
+            plt.xticks(tick_bits, tick_labels, rotation=30)
+        plt.xlabel("Integer level (bits)")
+        plt.ylabel(ylabel)
+        plt.title(f"{title_suffix} vs integer level")
+        plt.grid(True, linestyle="--", alpha=0.4)
+
+        baseline_handle = None
+        legend_handles = []
+        legend_labels = []
+        if line_handle is not None:
+            legend_handles.append(line_handle)
+            legend_labels.append("Quantized checkpoints")
+        if baseline_entry is not None:
+            baseline_value = baseline_entry[y_key]
+            baseline_handle = plt.axhline(
+                baseline_value,
+                linestyle="--",
+                color="tab:orange",
+                label="fp32 baseline",
+            )
+            legend_handles.append(baseline_handle)
+            legend_labels.append("fp32 baseline")
+        if legend_handles:
+            plt.legend(legend_handles, legend_labels)
+
+        plt.tight_layout()
+        plot_path = os.path.join(sweep_root, filename)
+        plt.savefig(plot_path, dpi=200)
+        print(f"Wrote plot to {plot_path}")
+        plt.close()
+
+    make_plot("val_loss", ylabel="Validation loss", title_suffix="Validation loss", filename="uniform_quantization_eval.png")
+    make_plot("delta_val_loss", ylabel="Δ validation loss", title_suffix="Loss delta", filename="uniform_quantization_eval_delta.png")
+    make_plot("angle_degrees", ylabel="Angle (degrees)", title_suffix="Angle", filename="uniform_quantization_eval_angle.png")
+    make_plot("checkpoint_megabytes", ylabel="Checkpoint size (MB)", title_suffix="Checkpoint size", filename="uniform_quantization_eval_size.png")
 PY
+}
 
-echo "Sweep complete. Evaluation summaries live in $SWEEP_ROOT."
+run_sweep "baseline" "$BASE_OUT_DIR" "$BASE_SWEEP_ROOT" "${BITS[@]}"
+run_sweep "PKL" "$PKL_OUT_DIR" "$PKL_SWEEP_ROOT" "${BITS[@]}"
+
+echo "Sweep complete. Baseline results live in $BASE_SWEEP_ROOT; PKL results live in $PKL_SWEEP_ROOT."

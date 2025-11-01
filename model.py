@@ -35,7 +35,7 @@ from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
 from variations.activation_variations import activation_dictionary
-from variations.linear_variations import linear_dictionary
+from variations.linear_variations import linear_dictionary, PKLEmbedding, PKLLinear
 from variations.router_variations import router_dictionary
 from variations.output_vector_variants import output_vector_variant_dict
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
@@ -168,6 +168,9 @@ class GPT(nn.Module):
 
         self.transformer = nn.ModuleDict(dict())
         # Configure wte, with optional quantization and factoring
+        if config.use_pkl_wte and config.quantize_wte:
+            raise ValueError("PKL-number embeddings do not support quantized WTE at this time.")
+
         if config.quantize_wte:
             if config.n_embd_wte:
                 # If factorization is set
@@ -179,18 +182,30 @@ class GPT(nn.Module):
         else:
             if config.n_embd_wte:
                 # If factorization is set
-                word_embd = nn.Embedding(config.vocab_size, config.n_embd_wte)
+                if config.use_pkl_wte:
+                    word_embd = PKLEmbedding(config.vocab_size, config.n_embd_wte, config=config)
+                else:
+                    word_embd = nn.Embedding(config.vocab_size, config.n_embd_wte)
                 self.transformer['wte'] = word_embd
             else:
                 #TODO: currently multicontext is in own category, add support later for WTE factorization
                 if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                     for i, vocab_size in enumerate(self.config.vocab_sizes):
-                        embedding_layer = nn.Embedding(vocab_size, config.n_embd)
+                        if config.use_pkl_wte:
+                            embedding_layer = PKLEmbedding(vocab_size, config.n_embd, config=config)
+                        else:
+                            embedding_layer = nn.Embedding(vocab_size, config.n_embd)
                         self.transformer[f'wte_{i}'] = embedding_layer
-                        self.transformer[f'lm_head_{i}'] = nn.Linear(config.n_embd, vocab_size, bias=False)
+                        if config.use_pkl_lm_head:
+                            self.transformer[f'lm_head_{i}'] = PKLLinear(config.n_embd, vocab_size, config=config, scale=config.pkl_lm_head_scale)
+                        else:
+                            self.transformer[f'lm_head_{i}'] = nn.Linear(config.n_embd, vocab_size, bias=False)
                 else:
                     # no factorization
-                    word_embd = nn.Embedding(config.vocab_size, config.n_embd)
+                    if config.use_pkl_wte:
+                        word_embd = PKLEmbedding(config.vocab_size, config.n_embd, config=config)
+                    else:
+                        word_embd = nn.Embedding(config.vocab_size, config.n_embd)
                     self.transformer['wte'] = word_embd
 
 
@@ -217,14 +232,21 @@ class GPT(nn.Module):
             self.softmax_layer_output = softmax_dictionary[config.softmax_variant_output](config)
 
         if config.n_embd_wte:
-            self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
+            if config.use_pkl_lm_head:
+                self.lm_head = PKLLinear(config.n_embd_wte, config.vocab_size, config=config, scale=config.pkl_lm_head_scale)
+            else:
+                self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
         else:
             #TODO: currently multicontext is in own category, add support later for WTE factorization
             if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
-                    self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
+                    if not config.use_pkl_lm_head:
+                        self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
-                self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+                if config.use_pkl_lm_head:
+                    self.lm_head = PKLLinear(config.n_embd, config.vocab_size, config=config, scale=config.pkl_lm_head_scale)
+                else:
+                    self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # Initialize and possibly import scale_up and scale_down matrices, if factorization is set
         if self.n_embd_wte:
@@ -248,11 +270,24 @@ class GPT(nn.Module):
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         if self.wte_weight_tying:
+            if config.use_pkl_wte != config.use_pkl_lm_head:
+                raise ValueError("Weight tying with PKL numbers requires both WTE and LM head to use PKL representations.")
+
             if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
-                    self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
+                    if config.use_pkl_lm_head:
+                        lm_head = self.transformer[f'lm_head_{i}']
+                        wte = self.transformer[f'wte_{i}']
+                        lm_head.linear_a.weight = wte.embedding_a.weight
+                        lm_head.linear_b.weight = wte.embedding_b.weight
+                    else:
+                        self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
-                self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
+                if config.use_pkl_lm_head:
+                    self.lm_head.linear_a.weight = self.transformer.wte.embedding_a.weight
+                    self.lm_head.linear_b.weight = self.transformer.wte.embedding_b.weight
+                else:
+                    self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
 
         # import wte
         if self.config.import_wte_npy:
@@ -362,6 +397,9 @@ class GPT(nn.Module):
     def import_wte(self, file_path):
         """ Replace wte with values from numpy and retie weights """
 
+        if isinstance(self.transformer.wte, PKLEmbedding):
+            raise ValueError("Importing WTE from numpy is not supported for PKL embeddings.")
+
         #Load and format weights
         initial_embeddings = np.load(self.config.import_wte_npy)
         initial_embeddings_tensor = torch.from_numpy(initial_embeddings).float()
@@ -373,6 +411,9 @@ class GPT(nn.Module):
                 )
 
         # Redo the Weight tying
+        if isinstance(self.lm_head, PKLLinear):
+            raise ValueError("Importing WTE is not supported when the LM head uses PKL weights.")
+
         self.lm_head.weight = self.transformer.wte.weight
 
     def export_wte(self, file_path):

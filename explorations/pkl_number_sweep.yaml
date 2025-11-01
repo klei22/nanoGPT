@@ -1,0 +1,56 @@
+# pkl_number_sweep.yaml
+# Compare standard linear layers and embeddings against PKL-number parameterization options
+---
+
+# Shared training configuration
+common_group:
+  dataset: ["shakespeare_char"]
+  block_size: [256]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  batch_size: [64]
+  max_iters: [100000]
+  eval_interval: [250]
+  patience: [10]
+  device: ["cuda"]
+  dtype: ["float16"]
+  compile: [true]
+  tensorboard_run_name: ["pkl_number_sweep"]
+
+# Static groupings toggle the linear/embedding implementations
+named_static_groups:
+  - named_group: "baseline_linear"
+    linear_variant_attn: ["linear"]
+    linear_variant_mlp: ["linear"]
+    use_pkl_wte: [false]
+    use_pkl_lm_head: [false]
+  - named_group: "pkl_numberized"
+    linear_variant_attn: ["pkl_linear"]
+    linear_variant_mlp: ["pkl_linear"]
+    use_pkl_wte: [true]
+    use_pkl_lm_head: [true]
+
+# Variations explore alternative scaling factors for PKL components
+named_variation_groups:
+  - named_group: "pkl_linear_scale_settings"
+    parameter_groups:
+      - pkl_linear_scale: [1.4142135623730951]
+      - pkl_linear_scale: [1.0]
+      - pkl_linear_scale: [1.25]
+  - named_group: "pkl_embedding_head_scale_settings"
+    parameter_groups:
+      - pkl_wte_scale: [1.4142135623730951]
+        pkl_lm_head_scale: [1.4142135623730951]
+      - pkl_wte_scale: [1.0]
+        pkl_lm_head_scale: [1.0]
+      - pkl_wte_scale: [1.25]
+        pkl_lm_head_scale: [1.25]
+
+# Parameter groups combine the above named groupings for concrete runs
+parameter_groups:
+  - named_group_static: ["baseline_linear"]
+  - named_group_static: ["pkl_numberized"]
+    named_group_variations:
+      - "pkl_linear_scale_settings"
+      - "pkl_embedding_head_scale_settings"
