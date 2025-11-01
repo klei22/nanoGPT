@@ -9,6 +9,7 @@ from tokenizers import (
     CustomTokenizer,
     ByteTokenizer,
     CharTokenizer,
+    CharBPETokenizerWithByteFallback,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
     SineWaveTokenizer,
@@ -28,7 +29,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "sinewave"],
+                       choices=["sentencepiece", "tiktoken", "char", "char_bpe", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "sinewave"],
                        default="tiktoken", help="Tokenization method")
 
     # Sine wave tokenizer arguments
@@ -107,6 +108,8 @@ def main():
         tokenizer = ByteTokenizer(args)
     elif args.method == "char":
         tokenizer = CharTokenizer(args, train_data, val_data)
+    elif args.method == "char_bpe":
+        tokenizer = CharBPETokenizerWithByteFallback(args, train_data, val_data)
     elif args.method == "custom_char_byte_fallback":
         tokenizer = CustomCharTokenizerWithByteFallback(args)
     elif args.method == "json_byte_fallback":

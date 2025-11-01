@@ -989,6 +989,63 @@ def byte_decode(ids: list[int]) -> str:
     """Decode a list of raw byte values back into text."""
     return bytes(ids).decode("utf-8", errors="replace")
 
+
+def char_bpe_encode(text: str, stoi: dict, sorted_tokens: list[str]) -> list[int]:
+    if not text:
+        return []
+
+    ids: list[int] = []
+    i = 0
+    text_len = len(text)
+
+    while i < text_len:
+        matched = False
+        for token in sorted_tokens:
+            if text.startswith(token, i):
+                token_id = stoi.get(token)
+                if token_id is not None:
+                    ids.append(token_id)
+                    i += len(token)
+                    matched = True
+                    break
+        if matched:
+            continue
+
+        ch = text[i]
+        token_id = stoi.get(ch)
+        if token_id is not None:
+            ids.append(token_id)
+        else:
+            for byte in ch.encode('utf-8'):
+                ids.append(stoi[bytes([byte])])
+        i += 1
+
+    return ids
+
+
+def char_bpe_decode(ids: list[int], itos: dict) -> str:
+    pieces: list[str] = []
+    byte_buffer: list[bytes] = []
+
+    for token_id in ids:
+        token = itos.get(token_id)
+        if token is None:
+            continue
+
+        if isinstance(token, bytes):
+            byte_buffer.append(token)
+        else:
+            if byte_buffer:
+                pieces.append(b"".join(byte_buffer).decode('utf-8', errors='replace'))
+                byte_buffer = []
+            pieces.append(token)
+
+    if byte_buffer:
+        pieces.append(b"".join(byte_buffer).decode('utf-8', errors='replace'))
+
+    return ''.join(pieces)
+
+
 def get_tokenizer_functions(meta):
     """Get encode/decode functions based on tokenizer metadata"""
     if 'tokenizer' not in meta:
@@ -1018,6 +1075,19 @@ def get_tokenizer_functions(meta):
 
     if meta['tokenizer'] == 'byte':
         return byte_encode, byte_decode
+
+    if meta['tokenizer'] == 'char_bpe':
+        stoi, itos = meta['stoi'], meta['itos']
+        sorted_tokens = meta.get('char_tokens_sorted')
+        if sorted_tokens is None:
+            sorted_tokens = sorted(
+                [token for token in stoi if isinstance(token, str)],
+                key=len,
+                reverse=True,
+            )
+        encode = lambda s: char_bpe_encode(s, stoi, sorted_tokens)
+        decode = lambda l: char_bpe_decode(l, itos)
+        return encode, decode
 
     if meta['tokenizer'] == 'custom_char_with_byte_fallback':
         stoi, itos = meta['stoi'], meta['itos']
