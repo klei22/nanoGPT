@@ -216,7 +216,7 @@ def main(yaml_path, base, args) -> int:
         # Start with the config from YAML
         dynamic_cfg = config.copy()
 
-        block_size = dynamic_cfg.get("block_size", 0)
+        block_size = dynamic_cfg.get("block_size", 512)
         batch_size = 512 * 64 // block_size
 
         # Ensure required training runtime parameters are set/overridden locally.
