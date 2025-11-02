@@ -55,25 +55,20 @@ class Population:
             # Show objective statistics
             objs = [ev.objs for ev in self.evaluations]
             if objs:
-                val_losses = [obj[0] for obj in objs]
-                energy_per_token = [obj[1] for obj in objs]
-                ttft = [obj[2] for obj in objs]
-                
                 print(f"\nObjective Statistics:")
-                print(f"  Validation Loss: {min(val_losses):.3f} - {max(val_losses):.3f} (avg: {sum(val_losses)/len(val_losses):.3f})")
-                print(f"  Energy/Token:    {min(energy_per_token):.3f} - {max(energy_per_token):.3f} (avg: {sum(energy_per_token)/len(energy_per_token):.3f})")
-                print(f"  TTFT:           {min(ttft):.3f} - {max(ttft):.3f} (avg: {sum(ttft)/len(ttft):.3f})")
-                
-                # Show constraint violations
-                cons = [ev.cons for ev in self.evaluations]
-                if cons:
-                    param_violations = sum(1 for c in cons if c[0] > 0)
-                    mem_violations = sum(1 for c in cons if c[1] > 0)
-                    # latency_violations = sum(1 for c in cons if c[2] > 0)
-                    print(f"\nConstraint Violations:")
-                    print(f"  Parameter budget: {param_violations}/{len(cons)} individuals")
-                    print(f"  Memory budget:    {mem_violations}/{len(cons)} individuals")
-                    # print(f"  Latency limit:    {latency_violations}/{len(cons)} individuals")
+                # do not hardcode
+                for i, obj_name in enumerate(self.objs_settings):
+                    values = [o[i] for o in objs]
+                    print(f"  {obj_name}: {min(values):.3f} - {max(values):.3f} (avg: {sum(values)/len(values):.3f})")
+
+            # Show constraint violations
+            cons = [ev.cons for ev in self.evaluations]
+            if cons:
+                print(f"\nConstraint Violations:")
+                for i, con_name in enumerate(self.cons_settings.keys()):
+                    values = [c[i] for c in cons]
+                    violations = [v for v in values if v > 0]
+                    print(f"  {con_name}: {len(violations)}/{len(values)} violated (max violation: {max(violations) if violations else 0:.3f})")
         else:
             print("No evaluations completed yet")
         
@@ -375,17 +370,6 @@ class Population:
         else:
             self.offspring_evaluations = []
 
-        self.aggregate_hw_sw_eval(sw_data, hw_data)
-        return
-    
-    def aggregate_hw_sw_eval(self, sw_data: list, hw_data: list) -> None:
-        """Aggregate software and hardware evaluation results."""
-        if not sw_data or not hw_data:
-            raise ValueError("Both SW and HW data must be provided.")
-        
-        # gather a list of metrics
-        metrics = list(hw_data[0].keys()) + ["val_loss", "mem_bytes", "flops", "params"]
-
         if (self.objs_settings is None): 
             # set val_loss and params as default objectives
             self.objs_settings = ["val_loss", "params"]
@@ -395,6 +379,48 @@ class Population:
                 "params": 800_000_000,  # 800 million params
                 "val_loss": 3.6,  # 3.6 
             }
+
+        if sw_only:
+            print("Software-only evaluation completed.")
+            # just agregate sw data
+            # aggregate evaluations
+            for i, ind in enumerate(self.individuals if self.gen == 0 else self.offspring):
+                sw_res = sw_data[i+1] # idx in csv starts from 1
+                params = ind.estimate_params()
+                mem_bytes = ind.estimate_mem_access()
+                flops = ind.estimate_flops()
+                kv_cache_size = ind.estimate_kv_cache_size()
+                auxs = {
+                    "val_loss": sw_res,
+                    "params": params/1e6,
+                    "mem_bytes": mem_bytes,
+                    "flops": flops/1e3,
+                    "kv_cache_size": kv_cache_size/1e6,
+                }
+                objs = [float(auxs[obj]) for obj in self.objs_settings]
+                cons = [float(auxs[con]) - self.cons_settings[con] for con in self.cons_settings.keys()]
+
+                eval_res = EvaluationResult(objs, cons, auxs)
+                if self.gen == 0:
+                    self.evaluations.append(eval_res)
+                else:
+                    self.offspring_evaluations.append(eval_res)
+
+                ind.print_individual()
+                print(f"gen {self.gen} individual {i+1}: objs={objs}, cons={cons}, auxs={auxs}")
+        else:
+            self.aggregate_hw_sw_eval(sw_data, hw_data)
+
+
+        return
+    
+    def aggregate_hw_sw_eval(self, sw_data: list, hw_data: list) -> None:
+        """Aggregate software and hardware evaluation results."""
+        if not sw_data or not hw_data:
+            raise ValueError("Both SW and HW data must be provided.")
+        
+        # gather a list of metrics
+        metrics = list(hw_data[0].keys()) + ["val_loss", "mem_bytes", "flops", "params"]
 
         # check if the chosen objs and cons are in the metrics
         for obj in self.objs_settings:
@@ -600,6 +626,14 @@ def fast_non_dominated_sort(objs, cons):
 
 def crowding_distance(front, objs):
     if not front: return {}
+    # verify objs are of the same len
+    n_objs = len(objs[0])
+    for i, obj in enumerate(objs):
+        if len(obj) != n_objs:
+            raise ValueError(f"Objective length mismatch at index {i}: got {len(obj)}, expected {n_objs}")
+        if any(x is None or (isinstance(x, float) and (x != x)) for x in obj):
+            raise ValueError(f"Invalid objective value (None/NaN) at index {i}: {obj}")
+
     m = len(objs[0])
     dist = {i: 0.0 for i in front}
     for k in range(m):

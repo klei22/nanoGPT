@@ -112,6 +112,12 @@ def main():
 
     exp_name = args.exp_name
 
+    objs = ["val_loss", "token_delay", "energy_per_token_uJ"]  # Minimize validation loss and number of parameters
+    cons = {
+        "params": 800_000_000,  # 800 million params
+        "val_loss": 3.6,  # 3.6
+        }
+
     # initial evaluation
     if args.resume_ckpt is not None:
         if os.path.exists(args.resume_ckpt):
@@ -121,14 +127,12 @@ def main():
             raise FileNotFoundError(f"Checkpoint file not found: {args.resume_ckpt}")
         population.search_space = search_space  # Ensure search space is set
         population.print_summary()
+
+        population.objs_settings = objs
+        population.cons_settings = cons
     else:
         # initialize Population class from nsga.py with individuals randomly
         individuals = [search_space.sample() for _ in range(init_population_size)]
-        objs = ["val_loss", "token_delay", "energy_per_token_uJ"]  # Minimize validation loss and number of parameters
-        cons = {
-            "params": 800_000_000,  # 800 million params
-            "val_loss": 3.6,  # 3.6
-            }
 
         population = Population(individuals, search_space=search_space, objs_settings=objs, cons_settings=cons)
         population.delete_duplicates()  # Remove duplicates if any

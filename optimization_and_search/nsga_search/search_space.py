@@ -194,6 +194,40 @@ class Individual(dict):
 
             cost += attn_cost + mlp
         return cost
+    
+    def estimate_kv_cache_size(self, seq_len: int = 512) -> int:
+        x = self
+        g = x["globals"]
+        d = g.get("n_embd", g.get("d_model", 768))
+        seq = int(g.get("block_size", 512))
+        total = 0.0
+
+        mask = g.get("layer_mask", [True] * len(x["layers"]))
+        indices = [i for i, active in enumerate(mask) if active and i < len(x["layers"])]
+        for i in indices:
+            li = x["layers"][i]
+            if li.get("attention_variant", g.get("attention_variant", "mha")) == "infinite":
+                qk = int(li.get("n_qk_head_dim", None))
+                v = int(li.get("n_v_head_dim", None))
+                n_kv_group = int(li.get("n_kv_group", None))
+
+                # KV cache size
+                k_size = seq * (n_kv_group * qk)
+                v_size = seq * (n_kv_group * v)
+                total += k_size + v_size
+
+            elif li.get("attention_variant", g.get("attention_variant", "mha")) == "mha":
+                n_kv_group = int(li.get("n_kv_group", int(li.get("n_head", None))))
+
+                # KV cache size
+                k_size = seq * (n_kv_group * qk)
+                v_size = seq * (n_kv_group * v)
+                total += k_size + v_size
+            elif li.get("attention_variant", g.get("attention_variant", "mha")) == "identity":
+                # no kv cache needed
+                continue
+
+        return int(total)
         
     
 

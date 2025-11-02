@@ -209,14 +209,20 @@ def main(yaml_path, base, args) -> int:
         # Parse user-provided overrides once; CLI should have highest precedence
         cli_overrides = _parse_override_args(getattr(args, "override_args", None))
 
+        # get block size from yaml 
+        block_size = config.get("block_size", 512)
+
     any_failed = False
+
+    # calculate batch size based on block size
+    batch_size = 512 * 64 // block_size
     for row_index, config in enumerate(configs):
             # Start with the config from YAML
             dynamic_cfg = config.copy()
 
             # Ensure required training runtime parameters are set/overridden locally.
             overrides = {
-                "batch_size": 64,  # Reduced from 128 to save memory
+                "batch_size": batch_size,  # Reduced from 128 to save memory
                 "device": "cuda",
                 "dataset": "minipile",
                 "eval_iters": 50,  # Reduced from default to save memory
