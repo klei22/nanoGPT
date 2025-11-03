@@ -141,6 +141,16 @@ def parse_args():
             "asymmetric unsigned"
         ),
     )
+    parser.add_argument(
+        "--granularity",
+        type=str,
+        choices=("tensor", "vector"),
+        default="tensor",
+        help=(
+            "Quantization granularity: per-tensor (default) or per-vector. "
+            "Per-vector mode groups vectors following the JL transform initialization heuristics."
+        ),
+    )
     args = parser.parse_args()
     if args.num_bits < 0:
         parser.error("--num_bits must be non-negative")
@@ -1655,9 +1665,95 @@ def fake_quant_tensor(
     raise ValueError(f"Unsupported quantization scheme: {scheme}")
 
 
+def _quantize_vectors_along_axis(
+    tensor: torch.Tensor, num_bits: int, scheme: str, axis: int
+) -> torch.Tensor:
+    """Apply fake quantization independently to vectors along ``axis``."""
+
+    if tensor.numel() == 0:
+        return tensor
+
+    axis = axis % tensor.ndim
+    moved = torch.movedim(tensor, axis, -1).contiguous()
+    if moved.shape[-1] == 0:
+        return tensor
+
+    flat = moved.reshape(-1, moved.shape[-1])
+    if flat.numel() == 0:
+        return tensor
+
+    for row_idx in range(flat.shape[0]):
+        flat[row_idx] = fake_quant_tensor(flat[row_idx], num_bits, scheme)
+
+    return torch.movedim(moved, -1, axis)
+
+
+def fake_quant_tensor_per_vector(
+    tensor: torch.Tensor,
+    num_bits: int,
+    scheme: str,
+    embedding_dim: Optional[int],
+) -> torch.Tensor:
+    """Apply fake quantization per vector using JL transform heuristics."""
+
+    if embedding_dim is None or tensor.ndim == 0:
+        return fake_quant_tensor(tensor, num_bits, scheme)
+
+    applied = False
+    result = tensor
+
+    if tensor.ndim >= 1 and tensor.shape[-1] == embedding_dim:
+        result = _quantize_vectors_along_axis(result, num_bits, scheme, -1)
+        applied = True
+
+    if tensor.ndim > 1 and tensor.shape[0] == embedding_dim:
+        result = _quantize_vectors_along_axis(result, num_bits, scheme, 0)
+        applied = True
+    elif tensor.ndim == 1 and tensor.shape[0] == embedding_dim:
+        if not applied:
+            result = fake_quant_tensor(result, num_bits, scheme)
+            applied = True
+
+    if not applied:
+        result = fake_quant_tensor(result, num_bits, scheme)
+
+    return result
+
+
 def iter_state_tensors(state_dict) -> Iterable[torch.Tensor]:
     for _, tensor in iter_state_items(state_dict):
         yield tensor
+
+
+def infer_embedding_dimension(checkpoint, state_dict) -> Optional[int]:
+    """Best-effort inference of the model embedding dimension."""
+
+    for container_name in ("model_args", "config"):
+        container = getattr(checkpoint, "get", None)
+        if callable(container):
+            container = checkpoint.get(container_name)
+        else:
+            container = None
+        if isinstance(container, dict):
+            value = container.get("n_embd")
+            if isinstance(value, int):
+                return value
+
+    state_get = getattr(state_dict, "get", None)
+    for search_key in (
+        "transformer.wte.weight",
+        "wte.weight",
+        "tok_embeddings.weight",
+    ):
+        tensor = state_get(search_key) if callable(state_get) else None
+        if torch.is_tensor(tensor) and tensor.ndim == 2:
+            return int(tensor.shape[1])
+
+    for name, tensor in iter_state_items(state_dict):
+        if name.endswith("wte.weight") and torch.is_tensor(tensor) and tensor.ndim == 2:
+            return int(tensor.shape[1])
+
+    return None
 
 
 def estimate_checkpoint_sizes(
@@ -2004,6 +2100,19 @@ def main():
         state_dict, args.num_bits, tensor_bitwidths
     )
 
+    embedding_dim: Optional[int] = None
+    if args.granularity == "vector":
+        embedding_dim = infer_embedding_dimension(checkpoint, state_dict)
+        if embedding_dim is None:
+            _print_warning(
+                "Per-vector quantization requested but embedding dimension "
+                "could not be inferred. Falling back to per-tensor quantization."
+            )
+        else:
+            _print_info(
+                f"Using per-vector quantization with embedding dimension {embedding_dim}."
+            )
+
     applied_tensor_bits: Dict[str, int] = {}
     for key, value in state_dict.items():
         if not torch.is_tensor(value):
@@ -2014,7 +2123,12 @@ def main():
         applied_tensor_bits[key] = bits
         if bits is None or bits <= 0:
             continue
-        state_dict[key] = fake_quant_tensor(value, int(bits), args.quantization)
+        if args.granularity == "vector" and embedding_dim is not None:
+            state_dict[key] = fake_quant_tensor_per_vector(
+                value, int(bits), args.quantization, embedding_dim
+            )
+        else:
+            state_dict[key] = fake_quant_tensor(value, int(bits), args.quantization)
 
     if applied_tensor_bits:
         quantized_count = sum(
