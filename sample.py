@@ -32,6 +32,10 @@ from variations.model_variations import model_variation_dictionary
 import lm_eval
 from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
 from benchmarks import run_all
+from benchmarks.inference_score_variations import (
+    available_score_variations,
+    compute_scores,
+)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
@@ -40,6 +44,7 @@ def parse_args():
     parser.add_argument("--quantization_data_file", type=str, default=None, help="File name to export the quantized weights/activations, scale factor, and zero point")
     parser.add_argument("--init_from", type=str, default="resume", help="Either 'resume' (from an out_dir) or a GPT-2 variant (e.g., 'gpt2-xl')")
     parser.add_argument("--start", type=str, default="\n", help="Start text for generation. Can specify a file using 'FILE:prompt.txt'")
+    parser.add_argument("--prompt_json", type=str, default=None, help="Path to a JSON file containing prompts and optional targets for batched inference.")
     parser.add_argument("--num_samples", type=int, default=3, help="Number of inference streams to draw")
     parser.add_argument("--max_new_tokens", type=int, default=500, help="Number of tokens to generate in each sample")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for predictions (1.0 = no change, < 1.0 = less random, > 1.0 = more random)")
@@ -57,6 +62,8 @@ def parse_args():
     parser.add_argument('--rope_length', type=int, default=None, help="Number of embeddings to rotate (must be an even number <= total embedding size)")
     parser.add_argument('--token_boundary', type=str, default=None, help="optional separator between emitted tokens")
     parser.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction, help="print info about model before infernece")
+    parser.add_argument('--score_variations', type=str, nargs='+', default=None, help="Names of inference score variations to compute for prompts loaded from --prompt_json.")
+    parser.add_argument('--score_stop_string', type=str, default='\n', help="Stop string used to truncate generations before scoring variations.")
 
     parser.add_argument(
         '--cosine_penalty',
@@ -174,6 +181,89 @@ def append_to_sample_file(sample_file, output_line, start_token, k_tag, iter_num
             output_line = convert_rich_renderable_to_ansi(output_line)
 
         file.write(header + output_line + '\n\n')
+
+
+def load_prompt_entries(path: str) -> List[Dict[str, Optional[str]]]:
+    """Load and normalise prompt entries from ``path``."""
+    with open(os.path.expanduser(path), "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+
+    if isinstance(data, dict):
+        prompts = data.get("prompts")
+        if prompts is None:
+            raise ValueError("Prompt JSON must contain a 'prompts' key when using a dictionary structure.")
+    elif isinstance(data, list):
+        prompts = data
+    else:
+        raise TypeError("Prompt JSON must be a list or a dictionary containing a 'prompts' list.")
+
+    normalised: List[Dict[str, Optional[str]]] = []
+    for idx, entry in enumerate(prompts):
+        if not isinstance(entry, dict):
+            raise TypeError(f"Prompt entry at index {idx} must be a JSON object.")
+        prompt = entry.get("input") or entry.get("prompt")
+        if not isinstance(prompt, str) or not prompt:
+            raise ValueError(f"Prompt entry at index {idx} is missing a non-empty 'input'.")
+        target = entry.get("target_output")
+        if target is not None and not isinstance(target, str):
+            raise TypeError(f"'target_output' for entry {idx} must be a string when provided.")
+        stop_string = entry.get("stop_string") or entry.get("stop")
+        if stop_string is not None and not isinstance(stop_string, str):
+            raise TypeError(f"'stop_string' for entry {idx} must be a string when provided.")
+
+        normalised.append(
+            {
+                "input": prompt,
+                "target_output": target,
+                "stop_string": stop_string,
+            }
+        )
+
+    return normalised
+
+
+def resolve_score_variations(requested: Optional[Sequence[str]]) -> List[str]:
+    """Validate requested score variations and return them in order."""
+    available = {name for name in available_score_variations()}
+    if not requested:
+        return ["net_token_diff"]
+
+    deduped: List[str] = []
+    for name in requested:
+        if name not in available:
+            raise ValueError(
+                f"Unknown score variation '{name}'. Available: {', '.join(sorted(available))}"
+            )
+        if name not in deduped:
+            deduped.append(name)
+    return deduped
+
+
+def score_generation_outputs(
+    generated_texts: Dict[str, List[str]],
+    target: Optional[str],
+    encode: Callable[[str], Sequence[int]],
+    variations: Sequence[str],
+    stop_string: str,
+) -> List[Dict[str, object]]:
+    """Compute requested score variations for each generated sample."""
+    if target is None:
+        return []
+
+    results: List[Dict[str, object]] = []
+    for k_tag, texts in generated_texts.items():
+        for sample_index, generated in enumerate(texts, start=1):
+            scores = compute_scores(variations, generated, target, encode, stop_string)
+            results.append(
+                {
+                    "label": f"{k_tag}#{sample_index}",
+                    "scores": scores,
+                    "generated": generated,
+                    "top_k": k_tag,
+                    "sample_index": sample_index,
+                }
+            )
+    return results
 
 def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
@@ -502,6 +592,7 @@ def sample_with_existing_model(
     """
 
     console = console or Console()
+    generated_outputs: Dict[str, List[str]] = {}
 
     # Determine sampling strategy. Softmax threshold overrides top_k.
     if args.softmax_threshold is not None:
@@ -694,6 +785,8 @@ def sample_with_existing_model(
             if token_boundary is not None:
                 plain_text = plain_text.replace(token_boundary, " ")
 
+            generated_outputs.setdefault(k_tag, []).append(plain_text)
+
             if args and getattr(args, "sample_metrics", False):
                 metrics = run_all(plain_text)
                 metric_str = ", ".join(f"{k}={v:.3f}" for k, v in metrics.items())
@@ -779,6 +872,8 @@ def sample_with_existing_model(
                     best_val_loss,
                     f"{run_name}_{k_tag}" if run_name else k_tag,
                 )
+
+    return generated_outputs
 
 
 def interactive_generation(model, start_ids, device, max_new_tokens, temperature, top_k, stop_string, decode, encode):
@@ -1322,6 +1417,76 @@ def main():
                 idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
                 logits, _ = model(idx_cond, dataset_idx=dataset_idx)
         print(f"Obtained vector saved to {args.save_avg_vector}")
+
+    prompt_entries: List[Dict[str, Optional[str]]] = []
+    if args.prompt_json:
+        prompt_entries = load_prompt_entries(args.prompt_json)
+
+    if prompt_entries:
+        variations = resolve_score_variations(args.score_variations)
+        prompt_console = Console()
+        for idx, entry in enumerate(prompt_entries, start=1):
+            prompt_text = entry["input"]
+            target_text = entry.get("target_output")
+            stop_string = entry.get("stop_string") or args.score_stop_string
+
+            prompt_console.rule(f"[bold cyan]Prompt {idx}[/bold cyan]")
+            prompt_console.print(f"[bold white]Input:[/bold white] {prompt_text!r}")
+            if target_text is not None:
+                prompt_console.print(f"[bold white]Target:[/bold white] {target_text!r}")
+
+            prompt_ids = encode(prompt_text)
+            if len(prompt_ids) == 0:
+                raise ValueError(
+                    f"Prompt {idx} produced no tokens. Provide a non-empty prompt for inference."
+                )
+
+            generated_map = sample_with_existing_model(
+                model,
+                torch.tensor(prompt_ids, dtype=torch.long, device=args.device)[None, ...],
+                decode,
+                device=args.device,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_k=args.top_k,
+                num_samples=args.num_samples,
+                colorize_output=args.colorize_output,
+                colorize_mode=args.colorize_mode,
+                token_boundary=args.token_boundary,
+                show_heatmaps=args.show_heatmaps,
+                chart_type=args.chart_type,
+                last_k_tokens=args.last_k_tokens,
+                out_dir=out_dir,
+                sample_file=args.sample_file,
+                args=args,
+            )
+
+            score_rows = score_generation_outputs(
+                generated_map,
+                target_text,
+                encode,
+                variations,
+                stop_string,
+            )
+
+            if target_text is None:
+                prompt_console.print("[yellow]No target output provided; skipping score computation.[/yellow]")
+            elif score_rows:
+                table = Table(title=f"Scores for prompt {idx}")
+                table.add_column("Sample")
+                for name in variations:
+                    table.add_column(name, justify="right")
+                for row in score_rows:
+                    formatted = [row["label"]]
+                    for name in variations:
+                        value = row["scores"].get(name, math.nan)
+                        formatted.append("nan" if math.isnan(value) else f"{value:.3f}")
+                    table.add_row(*formatted)
+                prompt_console.print(table)
+            else:
+                prompt_console.print("[yellow]Scores could not be computed for this prompt.[/yellow]")
+
+        return
 
     if args.interactive:
         interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_strings, decode, encode)

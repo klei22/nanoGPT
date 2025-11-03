@@ -153,6 +153,9 @@ def parse_args():
     training_group.add_argument('--sample_only', default=False, action=argparse.BooleanOptionalAction, help="Run only the sampling process and exit")
     training_group.add_argument('--dataset_benchmarks', default=False, action=argparse.BooleanOptionalAction, help="Run dataset benchmark metrics on a random slice after each validation")
     training_group.add_argument('--sample_metrics', default=False, action=argparse.BooleanOptionalAction, help="Display sample metrics like spelling correctness during sampling")
+    training_group.add_argument('--prompt_json', type=str, default=None, help="Path to a JSON file with prompts and optional targets for evaluation during sampling.")
+    training_group.add_argument('--score_variations', type=str, nargs='+', default=None, help="Inference score variations to compute for prompts loaded from --prompt_json.")
+    training_group.add_argument('--score_stop_string', type=str, default='\n', help="Stop string used to truncate model outputs before scoring variations.")
 
     # Checkpoint args
     training_group.add_argument('--save_major_ckpt_interval', default=None, type=int, help="Interval for saving major checkpoints.")
