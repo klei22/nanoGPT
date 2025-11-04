@@ -7,6 +7,12 @@ from matplotlib.colors import Normalize, LogNorm
 import plotly.graph_objects as go
 import healpy as hp
 
+# Golden ratio in regular floating point
+PHI = (1.0 + np.sqrt(5.0)) / 2.0
+
+def _int_range(bits):
+    """Symmetric signed integer range for a given bit width."""
+    return np.arange(-(1 << (bits - 1)), 1 << (bits - 1), dtype=np.float64)
 
 def float_subset_values(exp_bits, mant_bits):
     """Generate all finite values for a custom floating point format.
@@ -36,7 +42,7 @@ def float_subset_values(exp_bits, mant_bits):
     return np.array(sorted(set(float(v) for v in vals)), dtype=np.float64)
 
 
-def get_values(num_format, exp_bits=None, mant_bits=None):
+def get_values(num_format, exp_bits=None, mant_bits=None, phi_int_bits=None):
     """Return representable numbers for the given format."""
     if num_format == "int3":
         return np.arange(-4, 4, dtype=np.float64)
@@ -58,6 +64,28 @@ def get_values(num_format, exp_bits=None, mant_bits=None):
         exp_bits = exp_bits or 5
         mant_bits = mant_bits or 10
         return float_subset_values(exp_bits, mant_bits)
+
+    if num_format == "phi":
+        has_int = phi_int_bits is not None
+        has_float = (exp_bits is not None and mant_bits is not None)
+        if has_int and has_float:
+            raise ValueError("phi: specify either --phi_int_bits OR both --exp and --mant, not both.")
+        if not has_int and not has_float:
+            raise ValueError("phi: must set either --phi_int_bits for integer base or --exp/--mant for floating base.")
+
+        if has_int:
+            base = _int_range(phi_int_bits)
+        else:
+            base = float_subset_values(exp_bits, mant_bits)
+
+        # Build { a + b*PHI | a,b in base }
+        vals = set()
+        # Using Python loop is fine here—the typical base sets (e2m2, int5) are small.
+        for a in base:
+            for b in base:
+                vals.add(float(a + b * PHI))
+        return np.array(sorted(vals), dtype=np.float64)
+
     raise ValueError(f"unsupported format {num_format}")
 
 
@@ -233,16 +261,21 @@ def plot_healpix_distribution(hist, nside, out_html="healpix_output.html", title
     histograms = hist if is_binned else [hist]
 
     for idx, h in enumerate(histograms):
+        # Use raw bin counts for coloring so the scale is [0, max_count],
+        # instead of normalizing to [0, 1].
         if flatten:
+            # Binary occupancy map; still expose scale [0, 1].
             intensity_values = (h > 0).astype(float)
+            max_val = float(intensity_values.max()) if intensity_values.size else 1.0
             colorscale = [[0, 'rgb(255,255,255)'], [1, 'rgb(255,0,0)']]
-            showscale = False
+            showscale = True
         else:
-            min_val, max_val = h.min(), h.max()
-            if max_val > min_val:
-                intensity_values = (h - min_val) / (max_val - min_val)
-            else:
-                intensity_values = np.zeros_like(h, dtype=float)
+            # Raw counts
+            max_val = float(h.max()) if h.size else 1.0
+            # Avoid degenerate cmin==cmax which breaks colorbar rendering
+            if max_val <= 0:
+                max_val = 1.0
+            intensity_values = h.astype(float)
             colorscale = 'Hot'
             showscale = True
 
@@ -259,6 +292,9 @@ def plot_healpix_distribution(hist, nside, out_html="healpix_output.html", title
                 flatshading=True,
                 hoverinfo='skip',
                 showscale=showscale,
+                # Set color range explicitly to [0, max_count] (or [0, 1] for flatten)
+                cmin=0.0,
+                cmax=max_val,
                 visible=(idx == 0)
             )
         )
@@ -403,7 +439,7 @@ def plot_scatter_3d(vectors, out_html, title="3D Scatter Plot of Vectors"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Vector distribution analysis")
-    parser.add_argument('--format', choices=['int3', 'int4', 'int5', 'int6', 'int7', 'int8', 'e4m3', 'e5m2', 'fp16'], required=True)
+    parser.add_argument('--format', choices=['int3', 'int4', 'int5', 'int6', 'int7', 'int8', 'e4m3', 'e5m2', 'fp16', 'phi'], required=True)
     parser.add_argument('--mode', choices=['exhaustive', 'random', 'gaussian'],
                         default='exhaustive')
     parser.add_argument('--num', type=int,
@@ -417,8 +453,11 @@ if __name__ == "__main__":
     parser.add_argument('--healpix', action='store_true', help='use HEALPix projection for 3D binning and visualization')
     parser.add_argument('--nside', type=int, default=16, help='HEALPix resolution (power of 2)')
 
-    parser.add_argument('-e', '--exp', type=int, dest='exp_bits', help='number of exponent bits for floating formats')
-    parser.add_argument('-m', '--mant', type=int, dest='mant_bits', help='number of mantissa bits for floating formats')
+    parser.add_argument('-e', '--exp', type=int, dest='exp_bits', help='number of exponent bits for floating formats (also used when --format phi with floating base)')
+    parser.add_argument('-m', '--mant', type=int, dest='mant_bits', help='number of mantissa bits for floating formats (also used when --format phi with floating base)')
+
+    parser.add_argument('--phi_int_bits', type=int, default=None, help='When --format phi: use integer base with this bit width for both a and b. ' 'If omitted, you must provide --exp and --mant for a floating base (e.g., e2m2 via --exp 2 --mant 2).')
+
     parser.add_argument('--out', default='images/heatmap.png', help='output 2D heatmap path')
     parser.add_argument('--out3d', default=None,
                         help='optional 3D heatmap output path. Use a .html '
@@ -444,7 +483,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    values = get_values(args.format, exp_bits=args.exp_bits, mant_bits=args.mant_bits)
+    values = get_values(args.format,
+                    exp_bits=args.exp_bits,
+                    mant_bits=args.mant_bits,
+                    phi_int_bits=args.phi_int_bits)
+
     
     if args.points_3d:
         normalize_vectors = args.points_3d_normalize
