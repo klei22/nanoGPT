@@ -1,0 +1,32 @@
+# explorations/repeat_penalty_minipile.yaml
+---
+# Compare the repeat-penalty loss against the standard cross-entropy baseline on minipile.
+
+common_group:
+  dataset: ["minipile"]
+  max_iters: [8000]
+  eval_interval: [500]
+  log_interval: [50]
+  block_size: [256]
+  batch_size: [48]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  lr_decay_iters: [8000]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  sample_each_eval: [true]
+  max_sample_tokens: ["256"]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  - loss_fn: ["cross_entropy"]
+
+  - loss_fn: ["repeat_penalty"]
+    repeat_penalty_strength: [0.1, 0.2]
+    repeat_penalty_window: [3, 5]
