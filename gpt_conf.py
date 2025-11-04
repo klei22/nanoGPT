@@ -441,6 +441,7 @@ class GPTConfig:
     linear_variant_attn_proj: str = None
     linear_variant_mlp_up: str = None
     linear_variant_mlp_down: str = None
+    phi_linear_phi: float | str = "sqrt2"
 
     ## Linear Initialization Options
     linear_mean_init: float= 0.0

@@ -19,6 +19,18 @@ parameter_groups:
     quant_scheduler: ["static"]
     quantization_warmup_iters: [0]
 
+  # Symmetric 4-bit phi-linear sweep across different phi scalars
+  - tensorboard_run_name: ["minipile_phi_linear"]
+    linear_variant_attn: ["phi_linear"]
+    linear_variant_mlp: ["phi_linear"]
+    quantize_linear_method: ["symmetric_quant"]
+    quantize_linear_bits: [4]
+    full_quant_iteration: [10000]
+    start_quant_level: [1.0]
+    quant_scheduler: ["static"]
+    quantization_warmup_iters: [0]
+    phi_linear_phi: ["sqrt2", "golden_ratio", "pi", "e", 1, 2, 3, 4, 5]
+
 # Shared training configuration
 max_iters: [10000]
 lr_decay_iters: [10000]
