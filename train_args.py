@@ -833,7 +833,15 @@ def parse_args():
     model_group.add_argument("--ssm_io_bias",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="adds biases for nn.linear() of both in_proj and out_proj")
 
     # LINEAR VARIATIONS
-    linear_variants = ["linear", "bitlinear", "bitlinear_1p58", "bitlinear_optimized", "kan","quantized_linear"]
+    linear_variants = [
+        "linear",
+        "bitlinear",
+        "bitlinear_1p58",
+        "bitlinear_optimized",
+        "kan",
+        "quantized_linear",
+        "phi_linear",
+    ]
     model_group.add_argument("--linear_variant_attn", type=str, default="linear", choices=linear_variants)
     model_group.add_argument("--linear_variant_q", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_q in attention (takes precedence over linear_variant_attn)")
     model_group.add_argument("--linear_variant_k", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_k in attention (takes precedence over linear_variant_attn)")
@@ -842,6 +850,12 @@ def parse_args():
     model_group.add_argument("--linear_variant_mlp", type=str, default="linear", choices=linear_variants)
     model_group.add_argument("--linear_variant_mlp_up", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_fc in mlp (takes precedence over linear_variant_mlp)")
     model_group.add_argument("--linear_variant_mlp_down", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_proj in mlp (takes precedence over linear_variant_mlp)")
+    model_group.add_argument(
+        "--phi_linear_phi",
+        type=str,
+        default="sqrt2",
+        help="Scaling constant for phi_linear (sqrt2, golden_ratio, pi, e, or numeric literal such as 1-5)",
+    )
     ## Linear Weight Initialization Options
     model_group.add_argument( "--linear_mean_init", type=float, default=0.0)
     model_group.add_argument( "--linear_std_init", type=float, default=0.02)

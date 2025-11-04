@@ -99,6 +99,119 @@ class QuantizedLinear(nn.Linear):
             out = self.inference_quantized_forward(input)
         return out
 
+
+class PhiLinear(nn.Module):
+    """Linear layer that blends two quantized projections using a configurable phi."""
+
+    _PHI_ALIASES = {
+        "sqrt2": math.sqrt(2.0),
+        "sqrt_2": math.sqrt(2.0),
+        "golden_ratio": (1.0 + math.sqrt(5.0)) / 2.0,
+        "phi": (1.0 + math.sqrt(5.0)) / 2.0,
+        "pi": math.pi,
+        "e": math.e,
+        "euler": math.e,
+        "eulers_number": math.e,
+    }
+
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        config=None,
+        method=None,
+        bits=None,
+        bias=True,
+        **kwargs,
+    ):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+
+        self.quant_method = method if method is not None else getattr(config, "quantize_linear_method", None)
+        self.weight_bits = bits if bits is not None else getattr(config, "quantize_linear_bits", None)
+        self.start_quant_level = getattr(config, "start_quant_level", 0)
+        self.quant_scheduler = getattr(config, "quant_scheduler", None)
+        self.full_quant_iteration = getattr(config, "full_quant_iteration", None)
+        self.eval_interval = getattr(config, "eval_interval", 250)
+        self.warmup_step = getattr(config, "quantization_warmup_iters", 0)
+
+        self._quantization_enabled = self.quant_method is not None and self.weight_bits is not None
+        if self._quantization_enabled and self.weight_bits < 1:
+            raise ValueError(f"weight_bits={self.weight_bits} must be higher than 0")
+
+        self.register_buffer("_step", torch.zeros(1))
+
+        self.weight_a = nn.Parameter(torch.empty(out_features, in_features))
+        self.weight_b = nn.Parameter(torch.empty(out_features, in_features))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features))
+        else:
+            self.register_parameter("bias", None)
+
+        self.reset_parameters()
+
+        phi_setting = getattr(config, "phi_linear_phi", "sqrt2") if config is not None else "sqrt2"
+        self.phi_value = self._resolve_phi(phi_setting)
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.weight_a, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.weight_b, a=math.sqrt(5))
+        if self.bias is not None:
+            bound = 1 / math.sqrt(self.in_features) if self.in_features > 0 else 0
+            nn.init.uniform_(self.bias, -bound, bound)
+
+    @classmethod
+    def _resolve_phi(cls, value):
+        if isinstance(value, (float, int)):
+            return float(value)
+
+        if isinstance(value, str):
+            key = value.strip().lower()
+            if key in cls._PHI_ALIASES:
+                return cls._PHI_ALIASES[key]
+            try:
+                return float(key)
+            except ValueError as err:
+                valid = sorted({"sqrt2", "golden_ratio", "pi", "e", "1", "2", "3", "4", "5"})
+                raise ValueError(
+                    f"Unsupported phi_linear_phi value '{value}'. Supported aliases: {valid} or a numeric literal."
+                ) from err
+
+        raise TypeError("phi_linear_phi must be a string or numeric value")
+
+    def _maybe_quantize(self, tensor):
+        if not self._quantization_enabled:
+            return tensor
+
+        return _fake_quantize(
+            tensor,
+            self.training,
+            self.quant_scheduler,
+            self.start_quant_level,
+            self.full_quant_iteration,
+            self.eval_interval,
+            self._step.item(),
+            self.weight_bits,
+            self.quant_method,
+        )
+
+    def forward(self, input):
+        if self.training and self._step <= self.warmup_step:
+            weight_a = self.weight_a
+            weight_b = self.weight_b
+        else:
+            weight_a = self._maybe_quantize(self.weight_a)
+            weight_b = self._maybe_quantize(self.weight_b)
+
+        blended_weight = weight_a + (self.phi_value * weight_b)
+        out = F.linear(input, blended_weight, self.bias)
+
+        if self.training:
+            self._step += 1
+
+        return out
+
 class BitLinear1p58(nn.Linear):
     """ BitLinear from Era of 1.58 LLMs Paper
     Source: https://huggingface.co/1bitLLM/bitnet_b1_58-large/blob/main/utils_quant.py
@@ -454,4 +567,5 @@ linear_dictionary = {
     "bitlinear_1p58": BitLinear1p58,
     "kan": KAL_Net,
     "quantized_linear": QuantizedLinear,
+    "phi_linear": PhiLinear,
 }
