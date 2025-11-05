@@ -411,6 +411,9 @@ class Trainer:
 
         self.raw_model = self.model.module if self.ddp else self.model
 
+        if hasattr(self.loss_fn, "set_model"):
+            self.loss_fn.set_model(self.raw_model)
+
         timestamp_prefix = time.strftime("%Y%m%d-%H%M%S")
         if self.args.timestamp:
             timestamp_prefix = self.args.timestamp
@@ -1203,6 +1206,53 @@ class Trainer:
                               dynamic_axes={'input': {0: 'batch_size', 1: 'sequence_length'},
                                             'output': {0: 'batch_size', 1: 'sequence_length'}})
 
+    def _loss_bit_statistics(self):
+        stats_getter = getattr(self.loss_fn, "bit_statistics", None)
+        if not callable(stats_getter):
+            return None
+        stats = stats_getter()
+        if not stats:
+            return None
+        total_bits = stats.get("total_bits")
+        penalty = stats.get("bit_penalty_term")
+        if total_bits is None and penalty is None:
+            return None
+        return stats
+
+    def _log_bit_metrics(self, target_dataset: str, tokens_trained: float) -> None:
+        if not self.args.tensorboard_log or self.writer is None:
+            return
+        stats = self._loss_bit_statistics()
+        if not stats:
+            return
+
+        total_bits = stats.get("total_bits")
+        normalized_bits = stats.get("normalized_bits")
+        penalty_term = stats.get("bit_penalty_term")
+
+        if total_bits is not None:
+            self.writer.add_scalar(f"{target_dataset}/bit_total_bits", total_bits, self.iter_num)
+            self.writer.add_scalar(f"{target_dataset}/bit_total_bits_tokens", total_bits, tokens_trained)
+
+        if (
+            normalized_bits is not None
+            and (total_bits is None or not math.isclose(normalized_bits, total_bits))
+        ):
+            self.writer.add_scalar(
+                f"{target_dataset}/bit_normalized_bits", normalized_bits, self.iter_num
+            )
+            self.writer.add_scalar(
+                f"{target_dataset}/bit_normalized_bits_tokens", normalized_bits, tokens_trained
+            )
+
+        if penalty_term is not None:
+            self.writer.add_scalar(
+                f"{target_dataset}/bit_loss_penalty", penalty_term, self.iter_num
+            )
+            self.writer.add_scalar(
+                f"{target_dataset}/bit_loss_penalty_tokens", penalty_term, tokens_trained
+            )
+
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance):
 
         if self.iter_num == 0 and self.args.tensorboard_log and self.args.export_model_graph == True  and self.args.compile == False:
@@ -1282,6 +1332,8 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
 
+            self._log_bit_metrics(target_dataset, tokens_trained)
+
 
         if self.args.csv_log:
             # concise training metrics
@@ -1351,6 +1403,8 @@ class Trainer:
             if self.args.gns_type is not None:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
+
+            self._log_bit_metrics(target_dataset, tokens_trained)
 
     def write_to_csv(self, *args, prefix=""):
         args = list(args)

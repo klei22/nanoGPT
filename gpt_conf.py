@@ -442,6 +442,12 @@ class GPTConfig:
     linear_variant_mlp_up: str = None
     linear_variant_mlp_down: str = None
 
+    adaptive_linear_init_bits: float = 8.0
+    adaptive_linear_min_bits: float = 1.0
+    adaptive_linear_max_bits: float = 8.0
+    adaptive_linear_activation_bits: float = 8.0
+    adaptive_linear_quantize_input: bool = True
+
     ## Linear Initialization Options
     linear_mean_init: float= 0.0
     linear_std_init: float= 0.02
