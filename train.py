@@ -97,6 +97,7 @@ class Trainer:
         self.grad_norm = None
         self.grad_std = None
         self.tokens_trained = 0
+        self.best_tokens = 0
         self.peak_gpu_usage = 0.0
         self.total_training_time_ms: float = 0.0   # total run-time from start of training
         self.time_remaining_ms: float= 0.0
@@ -114,6 +115,8 @@ class Trainer:
         self.latest_target_left_prob = float('nan')
         self.latest_rank_95 = float('nan')
         self.latest_left_prob_95 = float('nan')
+        self.latest_ln_f_cosine = float('nan')
+        self.latest_ln_f_cosine_95 = float('nan')
 
         # store overall statistics for weights and activations
         self.latest_overall_weight_stats = {
@@ -140,6 +143,18 @@ class Trainer:
         self.stats_device = torch.device("cuda") if stats_dev_flag == "gpu" else torch.device("cpu")
 
         self.stats_csv_path = getattr(self.args, "print_model_stats_table", None)
+        if self.stats_csv_path:
+            self.stats_csv_path = os.path.expanduser(self.stats_csv_path)
+            stats_dir = os.path.dirname(self.stats_csv_path)
+            if stats_dir and not os.path.exists(stats_dir):
+                os.makedirs(stats_dir, exist_ok=True)
+
+        # Ensure the sample file directory exists if a path is provided
+        if getattr(self.args, "sample_file", None):
+            self.args.sample_file = os.path.expanduser(self.args.sample_file)
+            sample_dir = os.path.dirname(self.args.sample_file)
+            if sample_dir and not os.path.exists(sample_dir):
+                os.makedirs(sample_dir, exist_ok=True)
 
         # calculation on end time via eval cycle
         self.eval_cycle_window = deque(maxlen=self.args.eval_cycle_window)
@@ -275,6 +290,7 @@ class Trainer:
             self.iter_num = 0 # for starting from scratch
             self.best_val_loss = 1e9 # really big number
             self.best_iter = 0 # for starting from scratch
+            self.best_tokens = 0
 
             self.optimizer = self.create_optimizer()
             self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
@@ -312,6 +328,7 @@ class Trainer:
             self.model.load_state_dict(state_dict)
             self.best_val_loss = checkpoint['best_val_loss']
             self.best_iter = checkpoint['best_iter']
+            self.best_tokens = checkpoint.get('best_tokens', 0)
             if self.args.lsv_focused_training:
                 self.model.freeze_non_lsv_parameters()
 
@@ -340,6 +357,7 @@ class Trainer:
             self.iter_num = 0 # for starting from scratch
             self.best_val_loss = 1e9 # really big number
             self.best_iter = 0 # really big number
+            self.best_tokens = 0
 
             variation_dict = model_variation_dictionary[self.args.gpt2_type]
             # NOTE: the hierarchy of parameters goes: 1)variation_dict >> 2)cmd-line args >> 3)GPTConfig defaults
@@ -898,9 +916,14 @@ class Trainer:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
+                ln_f_cosines = []
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
+                        ln_f_out: list[torch.Tensor] = []
+                        handle = self.model.transformer.ln_f.register_forward_hook(
+                            lambda _m, _i, o: ln_f_out.append(o.detach())
+                        )
                         with self.ctx:
                             idx = self.args.dataset_list.index(dataset)
                             logits, loss = self.model(
@@ -910,6 +933,7 @@ class Trainer:
                                 dataset_idx=idx if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
+                        handle.remove()
                         dataset_losses[split][k] = loss.item()
                         if split == 'val':
                             probs = F.softmax(logits, dim=-1)
@@ -924,6 +948,16 @@ class Trainer:
                             left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
                             target_left_probs.append(left_prob)
                             left_inclusive_probs.append(left_prob + target_prob)
+                            lm_head = (
+                                self.model.transformer[f'lm_head_{idx}']
+                                if self.args.multidataset_wte
+                                else self.model.lm_head
+                            )
+                            target_vecs = lm_head.weight[Y]
+                            cos = F.cosine_similarity(
+                                ln_f_out[0].float(), target_vecs.float(), dim=-1
+                            )
+                            ln_f_cosines.append(cos)
                 out['datasets'][dataset] = {
                         'train': dataset_losses['train'].mean(),
                         'train_std': dataset_losses['train'].std(),
@@ -936,6 +970,8 @@ class Trainer:
                         'target_prob': torch.cat(target_probs).mean() if target_probs else torch.tensor(float('nan')),
                         'target_rank_95': torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan')),
                         'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
+                        'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
+                        'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
                         }
             out['val'] = out['datasets'][self.args.dataset]['val']
             out['val_std'] = out['datasets'][self.args.dataset]['val_std']
@@ -948,6 +984,8 @@ class Trainer:
             out['target_prob'] = out['datasets'][self.args.dataset]['target_prob']
             out['target_rank_95'] = out['datasets'][self.args.dataset]['target_rank_95']
             out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
+            out['ln_f_cosine'] = out['datasets'][self.args.dataset]['ln_f_cosine']
+            out['ln_f_cosine_95'] = out['datasets'][self.args.dataset]['ln_f_cosine_95']
         elif self.args.training_mode == "multicontext":
             for i, dataset in enumerate(self.args.multicontext_datasets):
                 out['datasets'][dataset] = {}
@@ -996,8 +1034,13 @@ class Trainer:
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
+                ln_f_cosines = []
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
+                    ln_f_out: list[torch.Tensor] = []
+                    handle = self.model.transformer.ln_f.register_forward_hook(
+                        lambda _m, _i, o: ln_f_out.append(o.detach())
+                    )
                     with self.ctx:
                         logits, loss = self.model(
                             X,
@@ -1006,6 +1049,7 @@ class Trainer:
                             dataset_idx=0 if self.args.multidataset_wte else None,
                             loss_fn=self.loss_fn,
                         )
+                    handle.remove()
                     losses[k] = loss.item()
                     if split == 'val':
                         probs = F.softmax(logits, dim=-1)
@@ -1020,6 +1064,16 @@ class Trainer:
                         left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
                         target_left_probs.append(left_prob)
                         left_inclusive_probs.append(left_prob + target_prob)
+                        lm_head = (
+                            self.model.transformer['lm_head_0']
+                            if self.args.multidataset_wte
+                            else self.model.lm_head
+                        )
+                        target_vecs = lm_head.weight[Y]
+                        cos = F.cosine_similarity(
+                            ln_f_out[0].float(), target_vecs.float(), dim=-1
+                        )
+                        ln_f_cosines.append(cos)
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
                 if split == 'val':
@@ -1030,6 +1084,8 @@ class Trainer:
                     out['target_prob'] = torch.cat(target_probs).mean() if target_probs else torch.tensor(float('nan'))
                     out['target_rank_95'] = torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan'))
                     out['left_prob_95'] = torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan'))
+                    out['ln_f_cosine'] = torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan'))
+                    out['ln_f_cosine_95'] = torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan'))
 
         # compute statistics from a single validation batch
         if self.compute_model_stats:
@@ -1268,6 +1324,9 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/avg_target_prob", losses['target_prob'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/target_rank_95", losses['target_rank_95'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/left_prob_95", losses['left_prob_95'], self.iter_num)
+            if 'ln_f_cosine' in losses:
+                self.writer.add_scalar(f"{target_dataset}/avg_ln_f_cosine", losses['ln_f_cosine'], self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/ln_f_cosine_95", losses['ln_f_cosine_95'], self.iter_num)
 
             if self.args.gns_type is not None:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
@@ -1425,6 +1484,7 @@ class Trainer:
                 'iter_num': self.iter_num,
                 'best_val_loss': self.best_val_loss,
                 'best_iter': self.best_iter,
+                'best_tokens': self.best_tokens,
                 'config': vars(self.args),
                 }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
@@ -1460,7 +1520,7 @@ class Trainer:
                 BarColumn(),
                 TaskProgressColumn(),
                 TimeRemainingColumn(compact=False),
-                TextColumn("-- [bold dark_cyan]BestIter:[/bold dark_cyan]{task.fields[best_iter]} [bold dark_cyan]BestValLoss:[/bold dark_cyan]{task.fields[best_val_loss]}"),
+                TextColumn("-- [bold dark_cyan]BestIter:[/bold dark_cyan]{task.fields[best_iter]} [bold dark_cyan]BestValLoss:[/bold dark_cyan]{task.fields[best_val_loss]} [bold dark_cyan]BestTokens:[/bold dark_cyan]{task.fields[best_tokens]}"),
                 TextColumn("-- [bold purple3]ETA:[/bold purple3]{task.fields[eta]}"),
                 TextColumn("[bold purple3]Remaining:[/bold purple3]{task.fields[hour]}h{task.fields[min]}m"),
                 TextColumn("[bold purple3]total_est:[/bold purple3]{task.fields[total_hour]}h{task.fields[total_min]}m"),
@@ -1473,6 +1533,8 @@ class Trainer:
                 TextColumn("[bold dark_magenta]TLP:[/bold dark_magenta]{task.fields[tlp]}"),
                 TextColumn("[bold dark_magenta]R95:[/bold dark_magenta]{task.fields[r95]}"),
                 TextColumn("[bold dark_magenta]P95:[/bold dark_magenta]{task.fields[p95]}"),
+                TextColumn("-- [bold dark_cyan]LnFcos:[/bold dark_cyan]{task.fields[lnf_cos]}"),
+                TextColumn("[bold dark_cyan]LnFcos95:[/bold dark_cyan]{task.fields[lnf_cos95]}") ,
                 console=self.console
                 )
 
@@ -1487,6 +1549,7 @@ class Trainer:
                     min=f"{int((self.time_remaining_ms // 60000) % 60):02d}",
                     best_val_loss=f"{self.best_val_loss:.3f}",
                     best_iter=f"{self.best_iter}",
+                    best_tokens=f"{self.best_tokens}",
                     iter_latency=f"{self.iter_latency_avg:.1f}",
                     peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
                     t1p=f"{self.latest_top1_prob:.6f}",
@@ -1496,6 +1559,8 @@ class Trainer:
                     tlp=f"{self.latest_target_left_prob:.6f}",
                     r95=f"{self.latest_rank_95:.2f}",
                     p95=f"{self.latest_left_prob_95:.6f}",
+                    lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
+                    lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
                     )
 
             while True:
@@ -1515,6 +1580,8 @@ class Trainer:
                     self.latest_target_left_prob = losses.get('target_left_prob', float('nan'))
                     self.latest_rank_95 = losses.get('target_rank_95', float('nan'))
                     self.latest_left_prob_95 = losses.get('left_prob_95', float('nan'))
+                    self.latest_ln_f_cosine = losses.get('ln_f_cosine', float('nan'))
+                    self.latest_ln_f_cosine_95 = losses.get('ln_f_cosine_95', float('nan'))
 
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
@@ -1601,6 +1668,7 @@ class Trainer:
                         if losses['val'] < self.best_val_loss:
                             self.best_val_loss = losses['val']
                             self.best_iter = self.iter_num
+                            self.best_tokens = self.tokens_trained
                             # Save best validation loss
                             peak_mb = self.peak_gpu_usage / (1024 ** 2)
                             with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
@@ -1608,6 +1676,7 @@ class Trainer:
                                 metrics = [
                                         f"{self.best_val_loss.item()}",
                                         f"{self.iter_num}",
+                                        f"{self.best_tokens}",
                                         f"{self.model.num_param}",
                                         f"{chance_ratio:.3e}",
                                         f"{chance_ratio/self.model.num_param:.3e}",
@@ -1620,6 +1689,8 @@ class Trainer:
                                         f"{losses.get('target_prob', float('nan')):.6f}",
                                         f"{losses.get('target_rank_95', float('nan')):.2f}",
                                         f"{losses.get('left_prob_95', float('nan')):.6f}",
+                                        f"{losses.get('ln_f_cosine', float('nan')):.6f}",
+                                        f"{losses.get('ln_f_cosine_95', float('nan')):.6f}",
                                         f"{self.latest_overall_weight_stats['stdev']:.6f}",
                                         f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
                                         f"{self.latest_overall_weight_stats['max']:.6f}",
@@ -1704,7 +1775,7 @@ class Trainer:
                                 loss_fn=self.loss_fn,
                             )
 
-                        if hasattr(self.optimizer, "set_entropy"):
+                        if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                             with torch.no_grad():
                                 probs = torch.softmax(logits, dim=-1)
                                 ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
@@ -1867,6 +1938,7 @@ class Trainer:
                         min=f"{int((self.time_remaining_ms // 60_000) % 60):02d}",
                         best_val_loss=f"{self.best_val_loss:.3f}",
                         best_iter=f"{self.best_iter}",
+                        best_tokens=f"{self.best_tokens}",
                         iter_latency=f"{self.iter_latency_avg:.1f}",
                         peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
                         t1p=f"{self.latest_top1_prob:.6f}",
@@ -1876,12 +1948,14 @@ class Trainer:
                         tlp=f"{self.latest_target_left_prob:.6f}",
                         r95=f"{self.latest_rank_95:.2f}",
                         p95=f"{self.latest_left_prob_95:.6f}",
+                        lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
+                        lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
-                    print(self.best_val_loss, self.best_iter)
+                    print(self.best_val_loss, self.best_iter, self.best_tokens)
                     if self.args.only_save_checkpoint_at_end:
                         if not self.args.never_save_checkpoint:
                             self.save_checkpoint('ckpt.pt')

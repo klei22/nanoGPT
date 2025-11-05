@@ -1,0 +1,106 @@
+# uneven_gqa_minipile.yaml
+---
+
+common_group:
+  # GPT-2 sized backbone on MiniPile
+  n_layer: [12]
+  n_embd: [768]
+  dataset: ["minipile"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  batch_size: [64]
+  max_iters: [10000]
+  eval_interval: [10000]
+  eta_variant: ["iteration"]
+  compile: [true]
+  never_save_checkpoint: [true]
+
+  # normalization + rotary options
+  use_pre_ln: [true]
+  use_peri_ln: [true]
+  use_post_ln: [false]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+
+block_size: [512]
+
+named_static_groups:
+  # QK Norm
+  - named_group: "causal"
+    attention_variant: ["causal"]
+  - named_group: "inf32"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [32]
+    n_v_head_dim: [32]
+    use_concat_head: [true]
+  - named_group: "inf64"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [64]
+    n_v_head_dim: [64]
+    use_concat_head: [true]
+  - named_group: "inf96"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [96]
+    n_v_head_dim: [96]
+    use_concat_head: [true]
+  - named_group: "inf128"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [128]
+    n_v_head_dim: [128]
+    use_concat_head: [true]
+  - named_group: "inf160"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [160]
+    n_v_head_dim: [160]
+    use_concat_head: [true]
+  - named_group: "inf192"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [192]
+    n_v_head_dim: [192]
+    use_concat_head: [true]
+  - named_group: "inf224"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [224]
+    n_v_head_dim: [224]
+    use_concat_head: [true]
+  - named_group: "inf256"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [256]
+    n_v_head_dim: [256]
+    use_concat_head: [true]
+  - named_group: "inf288"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [288]
+    n_v_head_dim: [288]
+    use_concat_head: [true]
+  - named_group: "inf320"
+    attention_variant: ["infinite"]
+    n_qk_head_dim: [320]
+    n_v_head_dim: [320]
+    use_concat_head: [true]
+
+# Sweep over head / kv-group combinations (including uneven groupings)
+parameter_groups:
+  - n_head: [6]
+    n_kv_group:
+      range:
+        start: 1
+        end: 6
+        step: 1
+    named_group_alternates: ["causal", "inf32", "inf64", "inf96", "inf128", "inf160", "inf192", "inf224", "inf256", "inf288", "inf320"]
+  - n_head: [8]
+    n_kv_group:
+      range:
+        start: 1
+        end: 8
+        step: 1
+    named_group_alternates: ["causal", "inf32", "inf64", "inf96", "inf128", "inf160", "inf192", "inf224", "inf256", "inf288", "inf320"]
+  - n_head: [12]
+    n_kv_group:
+      range:
+        start: 1
+        end: 12
+        step: 1
+    named_group_alternates: ["causal", "inf32", "inf64", "inf96", "inf128", "inf160", "inf192", "inf224", "inf256", "inf288", "inf320"]

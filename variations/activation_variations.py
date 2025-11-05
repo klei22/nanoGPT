@@ -10,6 +10,14 @@ class SquaredReLU(nn.Module):
     def forward(self, x):
         return torch.pow(torch.relu(x), 2)
 
+class SquaredGELU(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.gelu = nn.GELU()
+
+    def forward(self, x):
+        return torch.sign(x)*self.gelu(x)*self.gelu(x)
+
 class GELUShifted(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -342,6 +350,7 @@ activation_dictionary = {
     "softsign": Softsign_Config,
     "softshrink": Softshrink_Config,
     "squared_relu": SquaredReLU,
+    "squared_gelu": SquaredGELU,
     "tanh": Tanh_Config,
     "identity": Identity_Config,
 }
