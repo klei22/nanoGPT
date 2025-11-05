@@ -524,6 +524,9 @@ class GPTConfig:
     quantize_linear_mlp_down_method: str = None
     quantize_linear_mlp_down_bits: int = None
     quantization_warmup_iters: int = 100
+    grad_fake_quant: bool = False
+    grad_fake_quant_exp_bits: int = None
+    grad_fake_quant_mant_bits: int = None
 
     @classmethod
     def from_json(cls, filename: str):
