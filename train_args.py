@@ -4,6 +4,9 @@ import math
 import re
 
 from train_variations.loss_variants import LOSS_VARIANTS
+from train_variations.distillation_loss_variants import (
+    DISTILLATION_LOSS_VARIANTS,
+)
 
 def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
@@ -156,6 +159,39 @@ def parse_args():
         type=float,
         default=0.0,
         help='Strength of distance-based attenuation in distance_attenuated_top1 loss.',
+    )
+
+    # Distillation options
+    training_group.add_argument(
+        '--distillation_teacher_ckpt',
+        type=str,
+        default=None,
+        help='Path to a teacher checkpoint (ckpt.pt) for knowledge distillation.',
+    )
+    training_group.add_argument(
+        '--distillation_loss',
+        type=str,
+        default=None,
+        choices=sorted(DISTILLATION_LOSS_VARIANTS.keys()),
+        help='Distillation loss variant applied when a teacher checkpoint is provided.',
+    )
+    training_group.add_argument(
+        '--distillation_weight',
+        type=float,
+        default=1.0,
+        help='Scaling factor applied to the distillation loss before combining with the student loss.',
+    )
+    training_group.add_argument(
+        '--distillation_temperature',
+        type=float,
+        default=1.0,
+        help='Logit temperature used when computing distillation losses.',
+    )
+    training_group.add_argument(
+        '--distillation_eps',
+        type=float,
+        default=1e-8,
+        help='Numerical stability epsilon for distillation losses.',
     )
 
     # Sample args
@@ -668,10 +704,12 @@ def parse_args():
     model_group.add_argument("--norm_wte_radius", type=float, default=None)
     model_group.add_argument("--norm_wte_scale", type=float, default=None)
     model_group.add_argument("--norm_wte_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--norm_wte_radius_learning", type=bool, default=None, action=argparse.BooleanOptionalAction)
 
     model_group.add_argument("--norm_abs_radius", type=float, default=None)
     model_group.add_argument("--norm_abs_scale", type=float, default=None)
     model_group.add_argument("--norm_abs_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--norm_abs_radius_learning", type=bool, default=None, action=argparse.BooleanOptionalAction)
 
     ## Layernorm
     model_group.add_argument('--bias', default=False, action=argparse.BooleanOptionalAction, help="only used for layernorm variation option")

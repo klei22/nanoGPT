@@ -24,6 +24,7 @@ from train_variations.optimizer_variants import (
 )
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 from train_variations.loss_variants import build_loss_function
+from train_variations.distillation_loss_variants import build_distillation_loss
 
 from utils.gpu_monitoring import get_gpu_memory_info
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated
@@ -184,6 +185,12 @@ class Trainer:
 
         # Loss function (potentially scheduled)
         self.loss_fn = build_loss_function(self.args)
+        self.distillation_loss_fn = build_distillation_loss(self.args)
+        self.distillation_weight = getattr(self.args, "distillation_weight", 1.0)
+        self.teacher_model = None
+        self.latest_distillation_loss = float('nan')
+        if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
+            raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
 
         # Learning Rate Settings
         self.lr = self.args.learning_rate
@@ -376,6 +383,8 @@ class Trainer:
             self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
             self.scheduler = self.create_scheduler()
 
+        self._initialize_teacher_if_needed()
+
         if self.args.block_size < self.model.config.block_size:
             self.model.crop_block_size(self.args.block_size)
             self.model_args['block_size'] = self.args.block_size
@@ -441,6 +450,50 @@ class Trainer:
             self.args.csv_name = wandb_run_name
             wandb.init(project=self.args.wandb_project, name=self.args.wandb_run_name, config=self.args)
         self.load_tokenizer()
+
+
+    def _initialize_teacher_if_needed(self):
+        teacher_path = getattr(self.args, "distillation_teacher_ckpt", None)
+        if not teacher_path:
+            if self.distillation_loss_fn is not None:
+                raise ValueError(
+                    "A distillation loss was selected but no teacher checkpoint was provided via --distillation_teacher_ckpt."
+                )
+            return
+
+        if self.distillation_loss_fn is None:
+            raise ValueError(
+                "A teacher checkpoint was supplied without selecting a distillation loss variant. Use --distillation_loss."
+            )
+
+        expanded = os.path.expanduser(teacher_path)
+        if not os.path.exists(expanded):
+            candidate = os.path.join(self.args.out_dir, teacher_path)
+            if os.path.exists(candidate):
+                expanded = candidate
+
+        checkpoint = torch.load(expanded, map_location=self.device)
+        teacher_args = checkpoint.get('model_args')
+        if teacher_args is None:
+            raise ValueError("Teacher checkpoint does not contain 'model_args'.")
+
+        teacher_config = GPTConfig(**teacher_args)
+        teacher_model = GPT(teacher_config)
+
+        state_dict = checkpoint['model']
+        for key in list(state_dict.keys()):
+            if key.startswith('_orig_mod.'):
+                state_dict[key[len('_orig_mod.'):]] = state_dict.pop(key)
+
+        teacher_model.load_state_dict(state_dict)
+        teacher_model.to(self.device)
+        teacher_model.eval()
+        for param in teacher_model.parameters():
+            param.requires_grad_(False)
+
+        self.teacher_model = teacher_model
+        if self.master_process:
+            print(f"Loaded teacher checkpoint from {expanded}")
 
 
     def create_optimizer(self):
@@ -1316,6 +1369,13 @@ class Trainer:
             self.writer.add_scalar(f"{target_dataset}/std_val_iters", losses['val_std'].item(), self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/std_val_tokens", losses['val_std'].item(), tokens_trained)
 
+            if not math.isnan(self.latest_distillation_loss):
+                self.writer.add_scalar(
+                    f"{target_dataset}/distillation_loss",
+                    self.latest_distillation_loss,
+                    self.iter_num,
+                )
+
             if 'top1_prob' in losses:
                 self.writer.add_scalar(f"{target_dataset}/avg_top1_prob", losses['top1_prob'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/avg_top1_correct", losses['top1_correct'], self.iter_num)
@@ -1391,6 +1451,13 @@ class Trainer:
 
             self.writer.add_scalar(f"{target_dataset}/batch_size_iter", self.args.batch_size, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/batch_size_tokens", self.args.batch_size, tokens_trained)
+
+            if not math.isnan(self.latest_distillation_loss):
+                self.writer.add_scalar(
+                    f"{target_dataset}/distillation_loss",
+                    self.latest_distillation_loss,
+                    self.iter_num,
+                )
 
             if self.args.log_grad_norm:
                 self.writer.add_scalar(f"{target_dataset}/grad_norm_iters", self.grad_norm, self.iter_num)
@@ -1775,14 +1842,43 @@ class Trainer:
                                 loss_fn=self.loss_fn,
                             )
 
-                        if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
-                            with torch.no_grad():
-                                probs = torch.softmax(logits, dim=-1)
-                                ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
-                                ent = ent / math.log(logits.size(-1))
-                            self.optimizer.set_entropy(float(ent))
+                    if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
+                        with torch.no_grad():
+                            probs = torch.softmax(logits, dim=-1)
+                            ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
+                            ent = ent / math.log(logits.size(-1))
+                        self.optimizer.set_entropy(float(ent))
 
-                        loss = loss / self.args.gradient_accumulation_steps
+                    distill_component = None
+                    if (
+                        self.teacher_model is not None
+                        and self.distillation_loss_fn is not None
+                        and self.args.training_mode != 'multicontext'
+                    ):
+                        with torch.no_grad():
+                            teacher_logits, _ = self.teacher_model(
+                                self.X,
+                                targets=self.Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                loss_fn=None,
+                            )
+                        distill_component = self.distillation_loss_fn(
+                            logits,
+                            teacher_logits,
+                            self.Y,
+                            iter_num=self.iter_num,
+                        )
+                        distill_component = distill_component.to(loss.dtype)
+                        loss = loss + self.distillation_weight * distill_component
+
+                    self.latest_distillation_loss = (
+                        float(distill_component.detach().float().item())
+                        if distill_component is not None
+                        else float('nan')
+                    )
+
+                    loss = loss / self.args.gradient_accumulation_steps
 
                     prior_dataset = current_dataset
                     tokens_trained_this_batch = self.args.batch_size * self.args.block_size
