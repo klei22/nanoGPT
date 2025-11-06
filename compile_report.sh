@@ -29,12 +29,16 @@ defaults=(./out ./logs ./csv_logs ./exploration_logs ./rem* ./*.csv ./*.yaml ./v
 # Expand defaults and collect existing items
 dirs_and_files_to_include=()
 for item in "${defaults[@]}"; do
+    # Rely on shell expansion for globs here
     for match in $item; do
         if [ -e "$match" ]; then
             dirs_and_files_to_include+=("$match")
             echo "[OK] Adding: $match"
         else
-            echo "[SKIP] Not found: $item"
+            # This handles cases where a glob didn't match anything and remains literal
+            if [ "$match" == "$item" ]; then
+                 echo "[SKIP] Not found: $item"
+            fi
         fi
     done
 done
@@ -66,13 +70,28 @@ echo "To inspect: tar -tzf ${report_name}.tar.gz"
 
 if [ "$cleanup_requested" = true ]; then
     echo "=== Cleanup requested: removing archived items ==="
+    
+    # Check if we are in a git repo once, before the loop.
+    # We also check if the 'git' command exists to avoid errors on minimal systems.
+    in_git_repo=false
+    if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        in_git_repo=true
+    fi
+
     for item in "${dirs_and_files_to_include[@]}"; do
         if [ ! -e "$item" ]; then
             echo "[SKIP] Already removed or missing: $item"
             continue
         fi
 
-        if git ls-files --error-unmatch "$item" >/dev/null 2>&1; then
+        # Safety guardrails: Prevent deletion of current/parent dirs or root
+        if [[ "$item" == "." || "$item" == ".." || "$item" == "/" ]]; then
+             echo "[SKIP] Dangerous path detected, not deleting: $item"
+             continue
+        fi
+
+        # Only check git tracking if we are definitely in a repo
+        if [ "$in_git_repo" = true ] && git ls-files --error-unmatch "$item" >/dev/null 2>&1; then
             echo "[SKIP] Tracked by git, not deleting: $item"
             continue
         fi
@@ -81,4 +100,3 @@ if [ "$cleanup_requested" = true ]; then
         echo "[DELETE] Removed: $item"
     done
 fi
-
