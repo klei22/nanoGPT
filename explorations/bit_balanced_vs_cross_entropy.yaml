@@ -5,31 +5,43 @@ parameter_groups:
   - loss_fn: ["bit_balanced_cross_entropy"]
     bit_loss_weight: [1.0e-6, 5.0e-6, 1.0e-5]
     bit_loss_normalize: [false, true]
-
+    named_group_static: ["adaptive_settings"]
+    named_group_variations: ["act_bits", "input_quant"]
+  # Baseline cross-entropy objective
+  - loss_fn: ["cross_entropy"]
+    named_group_static: ["adaptive_settings"]
+    named_group_variations: ["act_bits", "input_quant"]
   # Baseline cross-entropy objective
   - loss_fn: ["cross_entropy"]
 
-# Shared model hyperparameters
-linear_variant_attn: ["adaptive_bit_linear"]
-linear_variant_mlp: ["adaptive_bit_linear"]
-adaptive_linear_init_bits: [6.0]
-adaptive_linear_min_bits: [2.0]
-adaptive_linear_max_bits: [8.0]
-adaptive_linear_activation_bits: [8.0]
-adaptive_linear_quantize_input: [true]
+named_static_groups:
+  - named_group: "adaptive_settings"
+    linear_variant_attn: ["adaptive_bit_linear"]
+    linear_variant_mlp: ["adaptive_bit_linear"]
+    adaptive_linear_init_bits: [8.0]
+    adaptive_linear_min_bits: [2.0]
+    adaptive_linear_max_bits: [8.0]
 
-# Optimization setup
-max_iters: [2000]
-eval_interval: [200]
-log_interval: [50]
-learning_rate: [3.0e-4]
-batch_size: [32]
-dataset: ["minipile"]
-device: ["cuda"]
-dtype: ["float16"]
+named_variation_groups:
+  - named_group: "act_bits"
+    adaptive_linear_activation_bits: [8.0, 16.0, 32.0]
+  - named_group: "input_quant"
+    adaptive_linear_quantize_input: [true, false]
 
-# Misc training controls
-eval_iters: [100]
-block_size: [256]
-compile: [false]
-never_save_checkpoint: [true]
+common_group:
+  # Optimization setup
+  max_iters: [10000]
+  dataset: ["minipile"]
+  device: ["cuda"]
+  dtype: ["float16"]
+
+  # Modern Architecture
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  use_peri_ln: [true]
+
+  # Misc training controls
+  compile: [false]
+  never_save_checkpoint: [true]
