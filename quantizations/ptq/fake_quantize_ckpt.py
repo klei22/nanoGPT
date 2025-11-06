@@ -135,10 +135,28 @@ def parse_args():
         "--quantization",
         type=str,
         default="symmetric",
-        choices=("symmetric", "asymmetric"),
+        choices=("symmetric", "asymmetric", "float"),
         help=(
-            "Quantization scheme to use: symmetric signed (two's complement) or "
-            "asymmetric unsigned"
+            "Quantization scheme to use: symmetric signed (two's complement), "
+            "asymmetric unsigned, or floating-point (specify exponent/mantissa bits)."
+        ),
+    )
+    parser.add_argument(
+        "--float-exp-bits",
+        type=int,
+        default=None,
+        help=(
+            "Number of exponent bits for floating-point fake quantization. "
+            "Requires --quantization float."
+        ),
+    )
+    parser.add_argument(
+        "--float-man-bits",
+        type=int,
+        default=None,
+        help=(
+            "Number of mantissa bits for floating-point fake quantization. "
+            "Requires --quantization float."
         ),
     )
     args = parser.parse_args()
@@ -152,6 +170,21 @@ def parse_args():
         parser.error("--min-bits cannot exceed --max-bits")
     if args.tui_page_size <= 0:
         parser.error("--tui-page-size must be positive")
+    if args.quantization == "float":
+        if args.float_exp_bits is None or args.float_man_bits is None:
+            parser.error(
+                "--quantization float requires both --float-exp-bits and --float-man-bits"
+            )
+        if args.float_exp_bits <= 0:
+            parser.error("--float-exp-bits must be positive")
+        if args.float_man_bits < 0:
+            parser.error("--float-man-bits must be non-negative")
+        args.num_bits = 1 + args.float_exp_bits + args.float_man_bits
+    else:
+        if args.float_exp_bits is not None or args.float_man_bits is not None:
+            parser.error(
+                "--float-exp-bits/--float-man-bits are only valid with --quantization float"
+            )
     return args
 
 
@@ -1636,8 +1669,93 @@ def _fake_quant_asymmetric(tensor: torch.Tensor, num_bits: int) -> torch.Tensor:
     return ((q - zero_point) * scale).to(tensor.dtype)
 
 
+def _fake_quant_float(
+    tensor: torch.Tensor, exp_bits: int, man_bits: int
+) -> torch.Tensor:
+    if exp_bits <= 0:
+        raise ValueError("Floating-point quantization requires exp_bits > 0")
+    if man_bits < 0:
+        raise ValueError("Floating-point quantization requires man_bits >= 0")
+
+    if tensor.numel() == 0:
+        return tensor
+
+    max_mantissa = 2.0 - math.pow(2.0, -man_bits)
+    max_exp = (1 << (exp_bits - 1)) - 1
+    min_exp = -(1 << (exp_bits - 1))
+    max_value = math.ldexp(max_mantissa, max_exp)
+
+    original_dtype = tensor.dtype
+    working = tensor.to(torch.float64)
+    finite_mask = torch.isfinite(working)
+    if not finite_mask.any():
+        return tensor
+
+    result = torch.zeros_like(working)
+    # Preserve NaNs/Infs exactly as they appear in the original tensor.
+    result[~finite_mask] = working[~finite_mask]
+
+    finite_values = working[finite_mask]
+    if finite_values.numel() == 0:
+        return result.to(original_dtype)
+
+    sign = torch.sign(finite_values)
+    abs_vals = finite_values.abs()
+    quantized_abs = torch.zeros_like(abs_vals)
+
+    nonzero_mask = abs_vals > 0
+    if nonzero_mask.any():
+        nz_vals = abs_vals[nonzero_mask]
+        mantissa, exponent = torch.frexp(nz_vals)
+        significand = mantissa * 2.0
+        exponent_int = exponent.to(torch.int32) - 1
+
+        overflow_mask = exponent_int > max_exp
+        underflow_mask = exponent_int < min_exp
+        valid_mask = ~(overflow_mask | underflow_mask)
+
+        quantized_nz = torch.zeros_like(nz_vals)
+
+        if overflow_mask.any():
+            quantized_nz[overflow_mask] = max_value
+
+        if valid_mask.any():
+            exp_valid = exponent_int[valid_mask]
+            frac = significand[valid_mask] - 1.0
+            if man_bits > 0:
+                levels = 1 << man_bits
+                scaled = torch.round(frac * levels).to(torch.int32)
+                mantissa_overflow = scaled == levels
+                scaled = torch.where(
+                    mantissa_overflow, torch.zeros_like(scaled), scaled
+                )
+                exp_valid = exp_valid + mantissa_overflow.to(exp_valid.dtype)
+                mantissa_q = scaled.to(torch.float64) / levels
+            else:
+                mantissa_q = torch.zeros_like(frac)
+            exp_valid_overflow = exp_valid > max_exp
+            exp_valid = torch.clamp(exp_valid, min=min_exp, max=max_exp)
+            values = (1.0 + mantissa_q) * torch.pow(
+                2.0, exp_valid.to(torch.float64)
+            )
+            if exp_valid_overflow.any():
+                overflow_values = torch.full_like(values, max_value)
+                values = torch.where(exp_valid_overflow, overflow_values, values)
+            quantized_nz[valid_mask] = values
+
+        quantized_abs[nonzero_mask] = quantized_nz
+
+    result[finite_mask] = sign * quantized_abs
+    return result.to(original_dtype)
+
+
 def fake_quant_tensor(
-    tensor: torch.Tensor, num_bits: int, scheme: str
+    tensor: torch.Tensor,
+    num_bits: int,
+    scheme: str,
+    *,
+    float_exp_bits: Optional[int] = None,
+    float_man_bits: Optional[int] = None,
 ) -> torch.Tensor:
     """Uniform quantize then dequantize a tensor."""
 
@@ -1651,6 +1769,12 @@ def fake_quant_tensor(
         return _fake_quant_symmetric(tensor, num_bits)
     if scheme == "asymmetric":
         return _fake_quant_asymmetric(tensor, num_bits)
+    if scheme == "float":
+        if float_exp_bits is None or float_man_bits is None:
+            raise ValueError(
+                "Floating-point quantization requires exponent and mantissa bit counts"
+            )
+        return _fake_quant_float(tensor, float_exp_bits, float_man_bits)
 
     raise ValueError(f"Unsupported quantization scheme: {scheme}")
 
@@ -1725,7 +1849,17 @@ def print_quantization_summary(
     original_bytes: float,
     quantized_bytes: float,
     tensor_bitwidths: Optional[Dict[str, int]] = None,
+    *,
+    float_exp_bits: Optional[int] = None,
+    float_man_bits: Optional[int] = None,
 ) -> None:
+    if scheme == "float" and float_exp_bits is not None and float_man_bits is not None:
+        scheme_label = (
+            f"{scheme} (sign=1, exp={float_exp_bits}, man={float_man_bits}, "
+            f"total={num_bits}-bit)"
+        )
+    else:
+        scheme_label = f"{scheme} ({num_bits}-bit)"
     bit_counts: Counter[int] = Counter()
     skipped_count = 0
     if tensor_bitwidths:
@@ -1736,7 +1870,6 @@ def print_quantization_summary(
                 bit_counts[int(bits)] += 1
 
     if _RICH_CONSOLE:
-        scheme_label = f"{scheme} ({num_bits}-bit)"
         table = Table(
             title="Quantization Summary",
             title_style="bold magenta",
@@ -1822,7 +1955,7 @@ def print_quantization_summary(
 
     # Plain-text fallback when rich is unavailable.
     print("Quantization summary:")
-    print(f"  Scheme: {scheme}, bits: {num_bits}")
+    print(f"  Scheme: {scheme_label}")
     print("  Estimated checkpoint size before quantization:")
     print(f"    {format_size(original_bytes)}")
     print("  Estimated checkpoint size after quantization:")
@@ -2014,7 +2147,13 @@ def main():
         applied_tensor_bits[key] = bits
         if bits is None or bits <= 0:
             continue
-        state_dict[key] = fake_quant_tensor(value, int(bits), args.quantization)
+        state_dict[key] = fake_quant_tensor(
+            value,
+            int(bits),
+            args.quantization,
+            float_exp_bits=args.float_exp_bits,
+            float_man_bits=args.float_man_bits,
+        )
 
     if applied_tensor_bits:
         quantized_count = sum(
@@ -2054,6 +2193,8 @@ def main():
         original_bytes,
         quantized_bytes,
         applied_tensor_bits if applied_tensor_bits else None,
+        float_exp_bits=args.float_exp_bits,
+        float_man_bits=args.float_man_bits,
     )
 
     if _RICH_CONSOLE:
