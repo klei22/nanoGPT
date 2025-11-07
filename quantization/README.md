@@ -69,6 +69,11 @@ python3 quantization/visualize.py \
 - **Global Linear Variant for Attention Layers**:
   - `--linear_variant_attn`: Sets the linear variant for all attention layers.
 
+- **Gradient Fake Quantization for QuantizedLinear**:
+  - `--quantize_linear_grad_exponent_bits`: Number of exponent bits used to fake quantize gradients during the backward pass. Requires `--quantize_linear_grad_mantissa_bits`.
+  - `--quantize_linear_grad_mantissa_bits`: Number of mantissa bits used for gradient fake quantization. Requires `--quantize_linear_grad_exponent_bits`.
+  - When both options are provided, gradients of quantized linear weights are simulated using a floating-point format with 1 sign bit, the specified exponent bits, and mantissa bits.
+
 - **Specific Linear Variants for Attention Sub-layers**:
   - `--linear_variant_q`: Linear variant for the query projection (`c_attn_q`).
   - `--linear_variant_k`: Linear variant for the key projection (`c_attn_k`).
