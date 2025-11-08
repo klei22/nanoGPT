@@ -1,16 +1,16 @@
 #!/bin/bash
-# demos/fake_ptq_vector_eval_demo_shakespeare_char.sh
+# demos/fake_ptq_vector_eval_demo_minipile.sh
 #
 # Runs the fake PTQ pipeline using per-vector quantization heuristics inspired by
 # the JL transform initialization script. For each bit-width in the sweep the
 # script quantizes the checkpoint with both per-vector and per-tensor
-# granularities, evaluates the model on shakespeare_char, and records validation loss
+# granularities, evaluates the model on minipile, and records validation loss
 # plus angle statistics relative to the fp32 baseline checkpoint.
 
 set -euo pipefail
 
-EVAL_DATASET_DIR="data/shakespeare_char"
-OUT_DIR="out_fake_ptq_shakespeare_char"
+EVAL_DATASET_DIR="data/minipile"
+OUT_DIR="out_fake_ptq_minipile"
 VECTOR_SWEEP_ROOT="${OUT_DIR}_vector_sweep"
 TENSOR_SWEEP_ROOT="${OUT_DIR}_tensor_sweep"
 SUMMARY_ROOT="${OUT_DIR}_quantization_summaries"
@@ -24,7 +24,7 @@ BIT_STEP=-1
 
 usage() {
   cat <<'USAGE'
-Usage: demos/fake_ptq_vector_eval_demo_shakespeare_char.sh [--bit-start N] [--bit-stop N] [--bit-step N]
+Usage: demos/fake_ptq_vector_eval_demo_minipile.sh [--bit-start N] [--bit-stop N] [--bit-step N]
 
   --bit-start  Starting bit-width for the sweep (default: 16)
   --bit-stop   Final bit-width for the sweep (default: 3)
@@ -73,7 +73,7 @@ echo "Sweeping weight bit-widths: ${BITS[*]}"
 
 mkdir -p "$EVAL_DATASET_DIR"
 
-echo "=== Step 1: Prepare the shakespeare_char dataset ==="
+echo "=== Step 1: Prepare the minipile dataset ==="
 pushd "$EVAL_DATASET_DIR" > /dev/null
 if [ ! -f "train.bin" ] || [ ! -f "val.bin" ] || [ ! -f "meta.pkl" ]; then
   bash get_dataset.sh
@@ -85,10 +85,10 @@ popd > /dev/null
 
 mkdir -p "$VECTOR_SWEEP_ROOT" "$TENSOR_SWEEP_ROOT" "$SUMMARY_ROOT"
 
-echo "=== Step 2: Train a reference model on shakespeare_char (if needed) ==="
+echo "=== Step 2: Train a reference model on minipile (if needed) ==="
 if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
   python3 train.py \
-    --dataset shakespeare_char \
+    --dataset minipile \
     --out_dir "$OUT_DIR" \
     --n_layer 6 \
     --n_head 6 \
@@ -113,7 +113,7 @@ echo "=== Step 3: Evaluate the baseline (fp32) checkpoint ==="
 python3 sample.py \
   --out_dir "$OUT_DIR" \
   --eval_only \
-  --eval_dataset shakespeare_char
+  --eval_dataset minipile
 
 PATTERN='transformer\.h\.[0-9]+\.(attn\.(c_attn|c_proj)|mlp\.(c_fc|c_proj))\.weight'
 
@@ -156,7 +156,7 @@ for bit in "${BITS[@]}"; do
     python3 sample.py \
       --out_dir "$QUANT_OUT_DIR" \
       --eval_only \
-      --eval_dataset shakespeare_char
+      --eval_dataset minipile
 
     step=$((step + 1))
 
