@@ -1,4 +1,4 @@
-import json, logging, threading, time, uuid, tempfile
+import json, logging, threading, time, uuid, tempfile, math
 import yaml
 import os
 from dataclasses import dataclass, field
@@ -398,7 +398,6 @@ fi
                     else:
                         job.status = JobStatus.FAILED
                         logging.error(f"\033[31mJob {job.id}@{job.host} failed.\033[0m")
-                        exit()  # early exit on failure
                     job.finished_at = time.time()
                     # stop heartbeat
                     if job.heartbeat_stop:
@@ -524,6 +523,25 @@ fi
                 except Exception:
                     pass
 
+                job_idx_set = set()
+                recorded_idx = set()
+                # Fetch the configuration slice to know which indices were expected on this host
+                try:
+                    local_slice_path = logs_local_dir / f"{job.id}.slice.yaml"
+                    conn.get(job.yaml_path, local=str(local_slice_path))
+                    with local_slice_path.open("r") as slice_file:
+                        slice_docs = yaml.safe_load(slice_file) or []
+                    if not isinstance(slice_docs, list):
+                        slice_docs = []
+                    for cfg in slice_docs:
+                        if isinstance(cfg, dict) and "idx" in cfg:
+                            try:
+                                job_idx_set.add(int(cfg["idx"]))
+                            except (TypeError, ValueError):
+                                continue
+                except Exception:
+                    logging.warning(f"\033[33mUnable to fetch config slice for {job.id}@{job.host}\033[0m")
+
                 r = conn.run(f"test -f {remote_logs_path}", hide=True, warn=True)
                 if r.ok:
                     # Download the YAML results file locally
@@ -538,23 +556,57 @@ fi
                         for doc in docs:
                             if not isinstance(doc, dict):
                                 continue
-                            # Append to aggregate.yaml
+                            config = doc.get("config") or {}
+                            if "idx" not in config:
+                                continue
+                            idx = config["idx"]
+                            try:
+                                idx_value = int(idx)
+                            except (TypeError, ValueError):
+                                logging.warning(f"\033[33mSkipping result without valid idx from {job.id}@{job.host}: {idx}\033[0m")
+                                continue
+                            raw_bvl = doc.get("best_val_loss")
+                            try:
+                                bvl = float(raw_bvl)
+                            except (TypeError, ValueError):
+                                bvl = float("inf")
+                            if not math.isfinite(bvl):
+                                bvl = float("inf")
+                            doc["best_val_loss"] = bvl
+                            name = doc.get("formatted_name", "")
+                            # Append to aggregate.yaml with sanitized loss
                             with agg_yaml_path.open("a") as fa:
                                 yaml.safe_dump(doc, fa, explicit_start=True, sort_keys=False, width=4096)
-                            # Append best_val_loss to CSV if present
-                            idx = doc["config"]["idx"]
-                            bvl = doc.get("best_val_loss")
-                            name = doc.get("formatted_name", "")
-                            if bvl is not None:
-                                with summary_csv_path.open("a") as fc:
-                                    fc.write(f"{gen},{job.id},{name},{bvl}\n")
-                                with gen_csv_path.open("a") as fc:
-                                    fc.write(f"{idx},{bvl}\n")
+                            bvl_str = "inf" if math.isinf(bvl) else f"{bvl}"
+                            with summary_csv_path.open("a") as fc:
+                                fc.write(f"{gen},{job.id},{name},{bvl_str}\n")
+                            with gen_csv_path.open("a") as fc:
+                                fc.write(f"{idx_value},{bvl_str}\n")
+                            recorded_idx.add(idx_value)
                         logging.info(f"\033[32mFetched results from {job.id}@{job.host}\033[0m")
                     except Exception as ye:
                         logging.error(f"\033[31mYAML parse error for results from {job.id}@{job.host}: {ye}\033[0m")
                 else:
                     logging.warning(f"\033[33mNo results YAML found at {remote_logs_path} for {job.id}@{job.host}\033[0m")
+
+                # For any configs that failed before producing results, emit a fallback record with inf loss
+                missing_idx = sorted(job_idx_set - recorded_idx)
+                if missing_idx:
+                    for idx_value in missing_idx:
+                        name = f"{job.id}-idx{idx_value}"
+                        fallback_doc = {
+                            "formatted_name": name,
+                            "config": {"idx": idx_value},
+                            "best_val_loss": float("inf"),
+                            "status": job.status,
+                        }
+                        with agg_yaml_path.open("a") as fa:
+                            yaml.safe_dump(fallback_doc, fa, explicit_start=True, sort_keys=False, width=4096)
+                        with summary_csv_path.open("a") as fc:
+                            fc.write(f"{gen},{job.id},{name},inf\n")
+                        with gen_csv_path.open("a") as fc:
+                            fc.write(f"{idx_value},inf\n")
+                    logging.warning(f"\033[33mRecorded fallback inf losses for {len(missing_idx)} configs from {job.id}@{job.host}\033[0m")
             except Exception as e:
                 logging.error(f"Fetch failed for {job.id}@{job.host}: {e}")
             finally:
