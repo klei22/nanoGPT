@@ -52,6 +52,10 @@ def plot_gen_scatter(
         min_len = min(len(val_loss_vals), len(energy_vals), len(ttft_vals))
         
         for i in range(min_len):
+            size = float(population.evaluations[i].aux.get('params', np.nan))
+            if size < 1000:
+                # fix the unit issue
+                size *= 1e6
             pop_data.append({
                 'generation': gen,
                 'validation_loss': val_loss_vals[i],
@@ -59,7 +63,7 @@ def plot_gen_scatter(
                 'ttft': ttft_vals[i],
                 'perplexity': perplexity[i],
                 'individual_id': i,
-                'params': float(population.evaluations[i].aux.get('params', np.nan)) / 1e6,  # in millions
+                'params': size / 1e6,  # in millions
             })
 
     df_pop = pd.DataFrame(pop_data)
@@ -182,11 +186,11 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium_random/1027_0559_ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium_random/ckpt_gen", help="Path to the evolution log file")
     parser.add_argument("--start_gen", type=int, default=0, help="Starting generation index (default: 1)")
     parser.add_argument("--ckpt_gen", type=int, default=100, help="Checkpoint generation index (default: 50)")
-    parser.add_argument("--end_gen", type=int, default=27, help="Ending generation index ")
-    parser.add_argument("--output", type=str, default="plots/gen_scatter.png", help="Output png file path")
+    parser.add_argument("--end_gen", type=int, default=50, help="Ending generation index ")
+    parser.add_argument("--output", type=str, default="plots/gen_scatter_random.png", help="Output png file path")
     args = parser.parse_args()
     
     file_name_base = args.ckpt_base

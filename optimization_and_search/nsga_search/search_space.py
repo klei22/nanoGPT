@@ -55,7 +55,7 @@ class Individual(dict):
                     cproj_params = n_cproj * (v * d)
 
                 attn_cost = q_params + k_params + v_params + cproj_params
-            elif attn_variant == "mha":
+            elif attn_variant == "causal" or attn_variant == "mha":
                 # QKV projection weights
                 qkv_params = d * (h * (qk + qk + v))
                 # Output projection params
@@ -115,7 +115,7 @@ class Individual(dict):
 
                 attn_cost = q_proj + k_proj + v_proj + attn_core + outp
                 
-            elif attn_variant == "mha":
+            elif attn_variant == "causal" or attn_variant == "mha":
                 # QKV projections
                 qkv_proj = 2.0 * seq * d * (h * (qk + qk + v))
                 # Attention core
@@ -175,7 +175,7 @@ class Individual(dict):
 
                 attn_cost = q_proj + k_proj + v_proj + attn_core + outp
 
-            elif attn_variant == "mha":
+            elif attn_variant == "causal" or attn_variant == "mha":
                 # QKV projections
                 qkv_proj = 2.0 * seq * d * (h * (qk + qk + v))
                 # Attention core
@@ -216,12 +216,13 @@ class Individual(dict):
                 v_size = seq * (n_kv_group * v)
                 total += k_size + v_size
 
-            elif li.get("attention_variant", g.get("attention_variant", "mha")) == "mha":
-                n_kv_group = int(li.get("n_kv_group", int(li.get("n_head", None))))
+            elif li.get("attention_variant", g.get("attention_variant", "mha")) == "causal":
+                n_head = int(li.get("n_head", 2**li.get("n_head_exp", 1)))
+                n_kv_group = int(li.get("n_kv_group", 2**li.get("n_kv_group_exp", 1)))
 
                 # KV cache size
-                k_size = seq * (n_kv_group * qk)
-                v_size = seq * (n_kv_group * v)
+                k_size = seq * (n_kv_group * (d // n_head))
+                v_size = seq * (n_kv_group * (d // n_head))
                 total += k_size + v_size
             elif li.get("attention_variant", g.get("attention_variant", "mha")) == "identity":
                 # no kv cache needed
@@ -472,6 +473,11 @@ class HeteroSearchSpace:
                         li["n_head"] = closest
                     else:
                         li["n_head"] = 1  # fallback
+            elif attn_type == "causal":
+                n_head_exp = li.get("n_head_exp")
+                n_kv_group_exp = li.get("n_kv_group_exp")
+                if n_kv_group_exp > n_head_exp:
+                    li["n_kv_group_exp"] = n_head_exp  # clamp to n_head_exp
                         
             # if n_kv_group is defined, ensure it divides n_head
             if "n_kv_group" in li:

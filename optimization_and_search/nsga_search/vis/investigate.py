@@ -4,6 +4,22 @@ from nsga2 import Population
 import json, os
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+def _limit_colormap_lightness(colors: np.ndarray, max_lightness: float = 0.82) -> np.ndarray:
+    """Clamp overly bright colors to avoid near-white regions in plots."""
+
+    if colors.ndim != 2 or colors.shape[1] < 3:
+        return colors
+    rgb = colors[:, :3]
+    # Perceptual luminance weights for RGB (sRGB)
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=float)
+    lightness = rgb @ weights
+    mask = lightness > max_lightness
+    if np.any(mask):
+        scale = (max_lightness / lightness[mask]).reshape(-1, 1)
+        rgb[mask] = np.clip(rgb[mask] * scale, 0.0, 1.0)
+        colors[:, :3] = rgb
+    return colors
+
 
 
 def get_pareto_front(obj1, obj2):
@@ -112,6 +128,7 @@ def _compute_layer_stats(cfg: dict) -> dict:
     gqa_flags = []
     head_group_ratios = []
     identity_flags = []
+    qk_v_ratios = []
     for layer in layers:
         if not isinstance(layer, dict):
             continue
@@ -140,6 +157,12 @@ def _compute_layer_stats(cfg: dict) -> dict:
                 gqa_flags.append(0.0)
         elif attn_active:
             gqa_flags.append(0.0)
+
+        if attn_active and isinstance(qk_dim, (int, float)) and isinstance(v_dim, (int, float)):
+            qk = float(qk_dim)
+            v = float(v_dim)
+            if v > 0.0:
+                qk_v_ratios.append(qk*h / (v*kv))
     head_arr = np.array(heads, dtype=float) if heads else np.array([])
     mlp_arr = np.array(mlps, dtype=float) if mlps else np.array([])
     _, head_front = _compute_frontness(head_arr) if head_arr.size else (0.0, 0.0)
@@ -150,6 +173,8 @@ def _compute_layer_stats(cfg: dict) -> dict:
     identity_arr = np.array(identity_flags, dtype=float) if identity_flags else np.array([])
     identity_fraction = float(identity_arr.mean()) if identity_arr.size else 0.0
     _, identity_front = _compute_frontness(identity_arr) if identity_arr.size and identity_arr.sum() > 0 else (0.0, 0.0)
+    qk_v_arr = np.array(qk_v_ratios, dtype=float) if qk_v_ratios else np.array([])
+    _, qk_v_front = _compute_frontness(qk_v_arr) if qk_v_arr.size else (0.0, 0.0)
 
     return {
         "head_counts": heads,
@@ -162,6 +187,8 @@ def _compute_layer_stats(cfg: dict) -> dict:
         "gqa_fraction": gqa_fraction,
         "identity_fraction": identity_fraction,
         "identity_frontness": identity_front,
+        "qk_v_ratio_distribution": qk_v_ratios,
+        "qk_v_frontness": qk_v_front,
     }
 
 def analyze_individual(individual):
@@ -228,6 +255,8 @@ def analyze_individual(individual):
         "gqa_fraction": layer_stats["gqa_fraction"],
         "identity_fraction": layer_stats["identity_fraction"],
         "identity_frontness": layer_stats["identity_frontness"],
+        "qk_v_ratio_distribution": layer_stats["qk_v_ratio_distribution"],
+        "qk_v_frontness": layer_stats["qk_v_frontness"],
     }
 
 
@@ -272,7 +301,7 @@ def plot_scatter(
     color_axis: str = 'generation',
     cmap: str = 'Blues',           # blue (light to dark) sequential colormap
     fix_color_scale: bool = True,  # normalize color scale using global min/max
-    point_size: float = 10,       # size of scatter markers (points^2)
+    point_size: float = 2,       # size of scatter markers (points^2)
     cmap_min: float = 0.2,        # lower bound of colormap (0..1); raise to avoid too-light colors
     cmap_max: float = 1.0         # upper bound of colormap (0..1)
 ):
@@ -287,17 +316,24 @@ def plot_scatter(
                 
         population = Population.load_checkpoint(json_file_name, from_pkl=False)
 
-        val_loss_vals = [eva.objs[0] for eva in population.evaluations ]
-        energy_vals = [eva.objs[1] for eva in population.evaluations ]
-        ttft_vals = [eva.objs[2] for eva in population.evaluations ]
+        evaluations = [ev for ev in (population.evaluations or []) if ev is not None]
+        offspring_evals = [ev for ev in (population.offspring_evaluations or []) if ev is not None]
+        all_evals = evaluations + offspring_evals
+
+        individuals = list(population.individuals or []) + list(getattr(population, "offspring", []) or [])
+
+        val_loss_vals = [ev.objs[0] for ev in all_evals if ev.objs and len(ev.objs) > 0]
+        energy_vals = [ev.objs[1] for ev in all_evals if ev.objs and len(ev.objs) > 1]
+        ttft_vals = [ev.objs[2] for ev in all_evals if ev.objs and len(ev.objs) > 2]
 
         perplexity = [np.exp(va) for va in val_loss_vals]
 
         # Ensure all lists have the same length
-        min_len = min(len(val_loss_vals), len(energy_vals), len(ttft_vals))
+        min_len = min(len(val_loss_vals), len(energy_vals), len(ttft_vals), len(all_evals), len(individuals))
         
         for i in range(min_len):
-            head_metrics = analyze_individual(population.individuals[i]) if i < len(population.individuals) else {}
+            head_metrics = analyze_individual(individuals[i]) if i < len(individuals) else {}
+            aux = getattr(all_evals[i], "aux", {}) or {}
             pop_data.append({
                 'generation': gen,
                 'validation_loss': val_loss_vals[i],
@@ -305,7 +341,7 @@ def plot_scatter(
                 'ttft': ttft_vals[i],
                 'perplexity': perplexity[i],
                 'individual_id': i,
-                'params': float(population.evaluations[i].aux.get('params', np.nan)) / 1e6,  # in millions
+                'params': float(aux.get('params', np.nan)) / 1e6 if aux.get('params', np.nan) > 1000 else aux.get('params', np.nan),  # in millions
                 'n_heads_mean': head_metrics.get('n_heads_mean'),
                 'n_heads_std': head_metrics.get('n_heads_std'),
                 'n_heads_min': head_metrics.get('n_heads_min'),
@@ -322,9 +358,13 @@ def plot_scatter(
                 'gqa_fraction': head_metrics.get('gqa_fraction'),
                 'identity_fraction': head_metrics.get('identity_fraction'),
                 'identity_frontness': head_metrics.get('identity_frontness'),
+                'qk_v_ratio_distribution': head_metrics.get('qk_v_ratio_distribution'),
+                'qk_v_frontness': head_metrics.get('qk_v_frontness'),
             })
 
     df_pop = pd.DataFrame(pop_data)
+    design_count = len(df_pop)
+    print(f"📊 Total designs plotted: {design_count}")
 
     # based on the x_axis and y_axis, slect the design on the first pareto front and highlight them
     if x_axis not in df_pop.columns or y_axis not in df_pop.columns or color_axis not in df_pop.columns:
@@ -339,12 +379,17 @@ def plot_scatter(
 
     # Create scatter plot
     fig, ax = plt.subplots(dpi=400)
-    # Normalize color scale across all points so the colorbar is consistent
-    vmin = df_pop[color_axis].min() if fix_color_scale else None
-    vmax = df_pop[color_axis].max() if fix_color_scale else None
+    # Normalize color scale across all points; enforce symmetric bounds when requested
+    if fix_color_scale:
+        vmin, vmax = -1.0, 1.0
+    else:
+        vmin = df_pop[color_axis].min()
+        vmax = df_pop[color_axis].max()
+    color_values = df_pop[color_axis]
     # Build a truncated colormap to avoid overly light tones
     base_cmap = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
     cmap_vals = base_cmap(np.linspace(max(0.0, cmap_min), min(1.0, cmap_max), 256))
+    cmap_vals = _limit_colormap_lightness(cmap_vals)
     truncated_cmap = mcolors.LinearSegmentedColormap.from_list(
         f"{getattr(base_cmap, 'name', 'cmap')}_trunc",
         cmap_vals
@@ -354,7 +399,7 @@ def plot_scatter(
     scatter = ax.scatter(
         df_pop[x_axis],
         df_pop[y_axis],
-        c=df_pop[color_axis],
+        c=color_values,
         cmap=truncated_cmap,
         vmin=vmin,
         vmax=vmax,
@@ -367,7 +412,7 @@ def plot_scatter(
 
     # set axis ranges
     # ax.set_xlim(right=130)
-    ax.set_ylim(top=3.1)
+    ax.set_ylim(top=3.3, bottom=2.7)
 
     # ax.set_xlabel(x_axis)
     ax.set_xlabel("Size (M)")
@@ -389,16 +434,16 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium/ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium_random/ckpt_offspring_gen", help="Path to the evolution log file")
     parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index (default: 1)")
     # parser.add_argument("--ckpt_gen", type=int, default=50, help="Checkpoint generation index (default: 50)")
-    parser.add_argument("--end_gen", type=int, default=100, help="Ending generation index ")
+    parser.add_argument("--end_gen", type=int, default=91, help="Ending generation index ")
     parser.add_argument("--output", type=str, default="plots/gen_scatter_analysis.png", help="Output png file path")
     parser.add_argument(
         "--frontness",
         type=str,
-        default="params",
-        choices=["params", "n_heads", "mlp", "gqa", "identity"],
+        default="mlp",
+        choices=["params", "n_heads", "mlp", "gqa", "identity", "qk_v_ratio"],
         help="Which frontness metric to use for color coding",
     )
     args = parser.parse_args()
@@ -415,6 +460,7 @@ def main():
         "mlp": "mlp_frontness",
         "gqa": "gqa_frontness",
         "identity": "identity_frontness",
+        "qk_v_ratio": "qk_v_frontness",
     }[args.frontness]
 
     plot_scatter(

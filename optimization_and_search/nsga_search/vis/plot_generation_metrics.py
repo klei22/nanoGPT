@@ -137,9 +137,9 @@ def parse_metrics_arg(raw: str) -> List[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plot per-generation metrics from NSGA-II checkpoints")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium/ckpt_gen", help="Base path to generation checkpoints (exclude generation number)")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium_random/ckpt_gen", help="Base path to generation checkpoints (exclude generation number)")
     parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index")
-    parser.add_argument("--end_gen", type=int, default=100, help="Ending generation index")
+    parser.add_argument("--end_gen", type=int, default=50, help="Ending generation index")
     parser.add_argument("--metrics", type=str, default=",".join(DEFAULT_METRICS), help="Comma-separated list of metrics to plot")
     parser.add_argument("--output", type=str, default="plots/generation_metrics.png", help="Output image file path")
     parser.add_argument("--csv", type=str, default="logs/generation_metrics.csv", help="Optional CSV path to save aggregated metrics")

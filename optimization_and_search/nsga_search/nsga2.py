@@ -5,6 +5,7 @@ from search_space import HeteroSearchSpace, Individual
 import hashlib, json, csv
 from remote_trainer import RemoteTrainer
 from hw_exp import evaluate_population
+from hardware_search import evaluate_individual_on_hardware
 
 # -----------------------------
 # Problem with proxy evaluation
@@ -215,11 +216,19 @@ class Population:
             # Build lists for active layers
             for key, _ in layers[0].items():
                 layerlist = []
-                arg = f"{key}_layerlist"
-                for j in active_indices:
-                    if j < len(layers):
-                        layer = layers[j]
-                        layerlist.append(layer.get(key))
+                # if key ends with "_exp", convert to actual value
+                if key.endswith("_exp"):
+                    arg = f"{key[:-4]}_layerlist"
+                    for j in active_indices:
+                        if j < len(layers):
+                            layer = layers[j]
+                            layerlist.append(2 ** layer.get(key))
+                else:
+                    arg = f"{key}_layerlist"
+                    for j in active_indices:
+                        if j < len(layers):
+                            layer = layers[j]
+                            layerlist.append(layer.get(key))
                 yaml_lines.append(f"  {arg}: {layerlist}")
 
             yaml_lines.append(f"# n_layers: {len(active_indices)}")
@@ -342,7 +351,7 @@ class Population:
 
         return hw_data
 
-    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str, max_iters: int = 10000, conda_env: str = "reallmforge", sw_only: bool = False) -> None:
+    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str, max_iters: int = 10000, conda_env: str = "reallmforge", sw_only: bool = False, hw_eval_on_reallmasic: bool = False) -> None:
         # send the training work to worker nodes and wait for results
         train_yaml_path = self.to_yaml(save_path="train")
         trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
@@ -351,7 +360,10 @@ class Population:
         trainer.poll_jobs() 
         # start hw eval while waiting for training
         if sw_only:
-            hw_data = []
+            if hw_eval_on_reallmasic:
+                hw_data = [evaluate_individual_on_hardware(ind) for ind in (self.individuals if self.gen == 0 else self.offspring)]
+            else:
+                hw_data = []
         else:
             start_time = time.time()
             hw_data = self.hw_eval()
@@ -382,21 +394,31 @@ class Population:
 
         if sw_only:
             print("Software-only evaluation completed.")
-            # just agregate sw data
-            # aggregate evaluations
+            # just aggregate sw data (optionally merge HW metrics if provided)
             for i, ind in enumerate(self.individuals if self.gen == 0 else self.offspring):
-                sw_res = sw_data[i+1] # idx in csv starts from 1
+                sw_res = sw_data.get(i+1, float("inf"))
                 params = ind.estimate_params()
                 mem_bytes = ind.estimate_mem_access()
                 flops = ind.estimate_flops()
                 kv_cache_size = ind.estimate_kv_cache_size()
+                hw_res = hw_data[i] if hw_data and i < len(hw_data) and hw_data[i] else {}
                 auxs = {
                     "val_loss": sw_res,
                     "params": params/1e6,
                     "mem_bytes": mem_bytes,
                     "flops": flops/1e3,
                     "kv_cache_size": kv_cache_size/1e6,
+                    **hw_res,
                 }
+
+                # Ensure all objectives/constraints exist; fall back to +inf if missing
+                for key in self.objs_settings:
+                    if key not in auxs or auxs[key] is None:
+                        auxs[key] = float("inf")
+                for key in self.cons_settings.keys():
+                    if key not in auxs or auxs[key] is None:
+                        auxs[key] = float("inf")
+
                 objs = [float(auxs[obj]) for obj in self.objs_settings]
                 cons = [float(auxs[con]) - self.cons_settings[con] for con in self.cons_settings.keys()]
 
