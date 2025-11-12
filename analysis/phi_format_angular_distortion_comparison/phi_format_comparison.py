@@ -236,7 +236,7 @@ def run_trials_for_bits_one_const(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         use_torch = (device.type == "cuda")
     if use_cuda and not use_torch:
-        print("[info] CUDA requested but not available; falling back to NumPy/CPU.]")
+        print("[info] CUDA requested but not available; falling back to NumPy/CPU.")
 
     phi_cos_vals, int_cos_vals, rphi_cos_vals = [], [], []
 
