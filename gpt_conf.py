@@ -380,11 +380,13 @@ class GPTConfig:
     norm_wte_radius: float | None = None
     norm_wte_scale: float | None = None
     norm_wte_gain: bool | None = None
+    norm_wte_radius_learning: bool | None = None
 
     norm_variant_abs: str | None = None
     norm_abs_radius: float | None = None
     norm_abs_scale: float | None = None
     norm_abs_gain: bool | None = None
+    norm_abs_radius_learning: bool | None = None
 
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     prmsnorm_pct: float = 0.0625
@@ -441,6 +443,12 @@ class GPTConfig:
     linear_variant_attn_proj: str = None
     linear_variant_mlp_up: str = None
     linear_variant_mlp_down: str = None
+
+    adaptive_linear_init_bits: float = 8.0
+    adaptive_linear_min_bits: float = 1.0
+    adaptive_linear_max_bits: float = 8.0
+    adaptive_linear_activation_bits: float = 8.0
+    adaptive_linear_quantize_input: bool = True
 
     ## Linear Initialization Options
     linear_mean_init: float= 0.0
