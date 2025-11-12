@@ -713,7 +713,7 @@ class GPT(nn.Module):
             tok_emb = tok_emb * self.embedding_scale
 
         if self.config.norm_variant_wte is not None:
-            tok_emb = self.post_embedding_norm(tok_emb)
+            tok_emb = self.transformer.post_embedding_norm(tok_emb)
 
         if self.config.use_abs_pos_embeddings:
             t = idx.size(1)
