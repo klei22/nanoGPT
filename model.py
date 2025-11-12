@@ -719,8 +719,8 @@ class GPT(nn.Module):
             t = idx.size(1)
             pos = torch.arange(0, t, dtype=torch.long, device=device)
             tok_emb = tok_emb + self.transformer.wpe(pos)
-            if self.post_abs_pos_embedding_norm is not None:
-                tok_emb = self.post_abs_pos_embedding_norm(tok_emb)
+            if self.transformer.post_abs_norm is not None:
+                tok_emb = self.transformer.post_abs_norm(tok_emb)
 
 
         return self.transformer.drop(tok_emb)
