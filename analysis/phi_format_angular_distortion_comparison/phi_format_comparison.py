@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-phi_angle_eval_sweep.py
+phi_format_comparison.py
 
 Enhancements:
 - Sweep over multiple constants for "phi numbers" via --phi-consts (comma-separated list).
