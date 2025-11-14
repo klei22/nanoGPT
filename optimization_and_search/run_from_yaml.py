@@ -60,6 +60,9 @@ def format_run_name(combo: dict, base: str, prefix: str, row_index: int) -> str:
     Preferred scheme (stable, short): <base><prefix>-row<row_index>
     Fallback if row_index is None: concatenate parameter values (legacy behavior).
     """
+    if 'out_dir' in combo and combo['out_dir'] is not None:
+        # If out_dir is specified, use it to derive a stable name
+        return combo['out_dir']
     return f"{prefix}-row{row_index}"
 
 
