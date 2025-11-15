@@ -12,6 +12,7 @@ from tokenizers import (
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
     SineWaveTokenizer,
+    AudioFFTTokenizer,
 )
 from tqdm import tqdm
 import pickle
@@ -28,7 +29,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "sinewave"],
+                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "sinewave", "audio_fft"],
                        default="tiktoken", help="Tokenization method")
 
     # Sine wave tokenizer arguments
@@ -62,6 +63,22 @@ def parse_arguments():
     parser.add_argument("--custom_chars_file", type=str, default=None, help="Path to the file containing custom characters for the tokenizer")
     parser.add_argument("--json_tokens_file", type=str, default=None, help="Path to JSON file containing tokens for json_byte_fallback tokenizer")
 
+    # Audio FFT tokenizer arguments
+    parser.add_argument("--audio_fft_sample_rate", type=int, default=16000, help="Target sample rate for audio tokenization")
+    parser.add_argument("--audio_fft_n_fft", type=int, default=400, help="FFT window size (Whisper uses 400)")
+    parser.add_argument("--audio_fft_hop_length", type=int, default=160, help="FFT hop length (Whisper uses 160)")
+    parser.add_argument("--audio_fft_n_mels", type=int, default=80, help="Number of mel bins before grouping")
+    parser.add_argument("--audio_fft_channel_splits", type=str, default=None,
+                        help="Comma separated mel bin counts per channel (defaults to 5 equal groups)")
+    parser.add_argument("--audio_fft_channel_reduction", type=str, default="mean", choices=["mean", "max"],
+                        help="Reduction to apply inside each mel group")
+    parser.add_argument("--audio_fft_quantization_bits", type=int, default=16,
+                        help="Number of bits to quantize normalized log-mel values (<=16)")
+    parser.add_argument("--audio_fft_pad_to_samples", type=int, default=None,
+                        help="Pad/trim audio to this many samples (Whisper encoder uses 480000 for 30s)")
+    parser.add_argument("--audio_fft_output_root", type=str, default=None,
+                        help="Optional directory where per-channel outputs will be written (defaults to current folder)")
+
     # Additional options
     parser.add_argument("-T", "--track_token_counts", action="store_true", help="Track how often each token appears and store in meta.pkl")
 
@@ -83,6 +100,20 @@ def main():
     if args.method == "sinewave":
         train_data = None
         val_data = None
+    elif args.method == "audio_fft":
+        tokenizer = AudioFFTTokenizer(args)
+        train_wave = AudioFFTTokenizer._load_audio(
+            args.train_input,
+            args.audio_fft_sample_rate,
+            args.audio_fft_pad_to_samples,
+        )
+        val_wave = None
+        if args.val_input:
+            val_wave = AudioFFTTokenizer._load_audio(
+                args.val_input,
+                args.audio_fft_sample_rate,
+                args.audio_fft_pad_to_samples,
+            )
     else:
         with open(args.train_input, 'r') as f:
             train_data = f.read()
@@ -97,7 +128,73 @@ def main():
                 val_data = None
 
     # Initialize tokenizer based on method
-    if args.method == "sentencepiece":
+    if args.method == "audio_fft":
+        channel_tokens, channel_metas = tokenizer.tokenize(train_wave)
+        if args.val_input:
+            val_channel_tokens, _ = tokenizer.tokenize(val_wave)
+        else:
+            val_channel_tokens = {}
+            train_channel_tokens = {}
+            for name, seq in channel_tokens.items():
+                split_idx = int(len(seq) * args.percentage_train)
+                train_channel_tokens[name] = seq[:split_idx]
+                val_channel_tokens[name] = seq[split_idx:] if args.percentage_train < 1.0 else []
+            channel_tokens = train_channel_tokens
+
+        dtype = np.uint16
+        output_root = args.audio_fft_output_root or os.getcwd()
+        os.makedirs(output_root, exist_ok=True)
+
+        manifest = {
+            "tokenizer": "audio_fft",
+            "sample_rate": args.audio_fft_sample_rate,
+            "n_fft": args.audio_fft_n_fft,
+            "hop_length": args.audio_fft_hop_length,
+            "n_mels": args.audio_fft_n_mels,
+            "quantization_bits": args.audio_fft_quantization_bits,
+            "has_validation": bool(args.val_input) or args.percentage_train < 1.0,
+            "channels": [],
+        }
+
+        write_val = bool(args.val_input) or args.percentage_train < 1.0
+
+        for name in tokenizer.channel_names:
+            channel_dir = os.path.join(output_root, name)
+            os.makedirs(channel_dir, exist_ok=True)
+
+            train_tokens = channel_tokens[name]
+            if len(train_tokens) == 0:
+                raise ValueError(f"Channel {name} produced no training tokens")
+
+            val_tokens = val_channel_tokens.get(name, [])
+            if write_val and len(val_tokens) == 0:
+                # Ensure validation files are non-empty for downstream memmaps.
+                val_tokens = [train_tokens[-1]]
+                print(f"Warning: validation split for {name} was empty; duplicating last training frame.")
+
+            save_tokens(train_tokens, os.path.join(channel_dir, "train.bin"), dtype)
+            if write_val:
+                save_tokens(val_tokens, os.path.join(channel_dir, "val.bin"), dtype)
+
+            with open(os.path.join(channel_dir, "meta.pkl"), "wb") as f:
+                pickle.dump(channel_metas[name], f)
+
+            manifest["channels"].append({
+                "name": name,
+                "relative_path": os.path.relpath(channel_dir, output_root),
+                "train_tokens": len(train_tokens),
+                "val_tokens": len(val_tokens) if write_val else 0,
+                "mel_bins": channel_metas[name]["mel_bins"],
+            })
+
+        manifest_path = os.path.join(output_root, "audio_fft_manifest.json")
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        print("Audio FFT tokenization complete. Per-channel data saved to:", output_root)
+        print("Manifest written to:", manifest_path)
+        return
+    elif args.method == "sentencepiece":
         tokenizer = SentencePieceTokenizer(args, input_files=args.train_input)
     elif args.method == "tiktoken":
         tokenizer = TiktokenTokenizer(args)

@@ -9,6 +9,7 @@ from collections import defaultdict
 import json
 import math
 import numpy as np
+from typing import Dict, List, Tuple, Optional
 
 
 class Tokenizer:
@@ -576,6 +577,230 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
             out_pieces.append(all_bytes.decode('utf-8', errors='replace'))
 
         return ''.join(out_pieces)
+
+
+class AudioFFTTokenizer(Tokenizer):
+    """Tokenize audio into quantized log-mel channels inspired by Whisper."""
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.sample_rate = getattr(args, "audio_fft_sample_rate", 16000)
+        self.n_fft = getattr(args, "audio_fft_n_fft", 400)
+        self.hop_length = getattr(args, "audio_fft_hop_length", 160)
+        self.n_mels = getattr(args, "audio_fft_n_mels", 80)
+        self.quantization_bits = getattr(args, "audio_fft_quantization_bits", 16)
+        self.pad_to_samples = getattr(args, "audio_fft_pad_to_samples", None)
+        self.channel_reduction = getattr(args, "audio_fft_channel_reduction", "mean")
+        channel_splits = getattr(args, "audio_fft_channel_splits", None)
+
+        if channel_splits:
+            try:
+                self.channel_sizes = [int(x) for x in channel_splits.split(',') if x.strip()]
+            except ValueError as exc:
+                raise ValueError("audio_fft_channel_splits must be a comma separated list of integers") from exc
+            if sum(self.channel_sizes) != self.n_mels:
+                raise ValueError(
+                    "Sum of audio_fft_channel_splits must equal audio_fft_n_mels "
+                    f"(got {sum(self.channel_sizes)} vs {self.n_mels})"
+                )
+        else:
+            # Default to 5 equally sized groups (80 -> 5x16)
+            group_size = max(1, self.n_mels // 5)
+            self.channel_sizes = [group_size] * (self.n_mels // group_size)
+            remainder = self.n_mels - sum(self.channel_sizes)
+            if remainder:
+                self.channel_sizes[-1] += remainder
+
+        self.channel_slices: List[Tuple[int, int]] = []
+        start = 0
+        for size in self.channel_sizes:
+            end = start + size
+            self.channel_slices.append((start, min(end, self.n_mels)))
+            start = end
+
+        self.channel_names = [f"channel_{i:02d}" for i in range(len(self.channel_slices))]
+        self.quantization_levels = 2 ** self.quantization_bits
+        if self.quantization_levels > 2 ** 16:
+            raise ValueError("audio_fft_quantization_bits must be <= 16 for uint16 output")
+
+    # ------------------ Audio utilities ------------------
+    @staticmethod
+    def _load_audio(path: str, target_sr: int, pad_to: Optional[int] = None) -> np.ndarray:
+        """Load audio file as mono float32 waveform, resampling if needed."""
+        audio: np.ndarray
+        sr: int
+        try:
+            import soundfile as sf  # type: ignore
+
+            audio, sr = sf.read(path)
+        except Exception:
+            import wave
+
+            with wave.open(path, "rb") as wf:
+                sr = wf.getframerate()
+                frames = wf.readframes(wf.getnframes())
+                audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+                max_val = float(np.max(np.abs(audio)))
+                if max_val == 0.0:
+                    max_val = 1.0
+                audio = audio / max_val
+
+        if audio.ndim > 1:
+            audio = audio.mean(axis=-1)
+
+        if sr != target_sr:
+            audio = AudioFFTTokenizer._resample(audio, sr, target_sr)
+
+        if pad_to is not None:
+            audio = AudioFFTTokenizer._pad_or_trim(audio, pad_to)
+
+        return audio.astype(np.float32)
+
+    @staticmethod
+    def _resample(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+        if orig_sr == target_sr:
+            return audio
+        duration = audio.shape[0] / float(orig_sr)
+        target_len = int(round(duration * target_sr))
+        x_old = np.linspace(0.0, duration, num=audio.shape[0], endpoint=False)
+        x_new = np.linspace(0.0, duration, num=target_len, endpoint=False)
+        return np.interp(x_new, x_old, audio).astype(np.float32)
+
+    @staticmethod
+    def _pad_or_trim(audio: np.ndarray, target_len: int) -> np.ndarray:
+        if audio.shape[0] > target_len:
+            return audio[:target_len]
+        if audio.shape[0] < target_len:
+            pad_width = target_len - audio.shape[0]
+            return np.pad(audio, (0, pad_width))
+        return audio
+
+    @staticmethod
+    def _mel_filterbank(
+        sr: int,
+        n_fft: int,
+        n_mels: int,
+        f_min: float = 0.0,
+        f_max: Optional[float] = None,
+    ) -> np.ndarray:
+        if f_max is None:
+            f_max = sr / 2
+
+        def hz_to_mel(freq: np.ndarray) -> np.ndarray:
+            return 2595.0 * np.log10(1.0 + freq / 700.0)
+
+        def mel_to_hz(mels: np.ndarray) -> np.ndarray:
+            return 700.0 * (10 ** (mels / 2595.0) - 1.0)
+
+        mel_min = hz_to_mel(np.array([f_min]))[0]
+        mel_max = hz_to_mel(np.array([f_max]))[0]
+        mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
+        hz_points = mel_to_hz(mel_points)
+        fft_bins = np.floor((n_fft + 1) * hz_points / sr).astype(int)
+
+        filterbank = np.zeros((n_mels, n_fft // 2 + 1), dtype=np.float32)
+        for i in range(1, n_mels + 1):
+            left = fft_bins[i - 1]
+            center = fft_bins[i]
+            right = fft_bins[i + 1]
+            if center <= left:
+                continue
+            filterbank[i - 1, left:center] = (
+                np.arange(left, center) - left
+            ) / float(center - left)
+            if right <= center:
+                continue
+            filterbank[i - 1, center:right] = (
+                right - np.arange(center, right)
+            ) / float(right - center)
+
+        return filterbank
+
+    def _stft(self, audio: np.ndarray) -> np.ndarray:
+        frame_length = self.n_fft
+        hop = self.hop_length
+        if audio.shape[0] < frame_length:
+            audio = np.pad(audio, (0, frame_length - audio.shape[0]))
+
+        audio = np.ascontiguousarray(audio)
+        num_frames = 1 + (len(audio) - frame_length) // hop
+        strides = (audio.strides[0] * hop, audio.strides[0])
+        frames = np.lib.stride_tricks.as_strided(
+            audio,
+            shape=(num_frames, frame_length),
+            strides=strides,
+            writeable=False,
+        )
+        window = np.hanning(frame_length).astype(np.float32)
+        windowed = frames * window
+        stft_matrix = np.fft.rfft(windowed, n=frame_length, axis=-1)
+        return stft_matrix.T  # (n_fft//2+1, frames)
+
+    def _log_mel(self, audio: np.ndarray) -> Tuple[np.ndarray, float]:
+        stft_matrix = self._stft(audio)
+        magnitudes = np.abs(stft_matrix) ** 2
+        mel_filters = self._mel_filterbank(self.sample_rate, self.n_fft, self.n_mels)
+        mel_spec = mel_filters @ magnitudes
+        mel_spec = np.maximum(mel_spec, 1e-10)
+        log_spec = np.log10(mel_spec)
+        # Mirror Whisper's dynamic range compression: clamp to (max - 8), shift by +4, scale by 1/4.
+        log_spec = np.maximum(log_spec, log_spec.max() - 8.0)
+        normalized = (log_spec + 4.0) / 4.0
+        normalized = np.clip(normalized, 0.0, 1.0)
+        return normalized.astype(np.float32), float(log_spec.max())
+
+    def _aggregate_channels(self, log_mel: np.ndarray) -> Dict[str, np.ndarray]:
+        channels: Dict[str, np.ndarray] = {}
+        for (start, end), name in zip(self.channel_slices, self.channel_names):
+            slice_view = log_mel[start:end]
+            if self.channel_reduction == "max":
+                agg = slice_view.max(axis=0)
+            else:
+                agg = slice_view.mean(axis=0)
+            channels[name] = agg
+        return channels
+
+    def _quantize(self, values: np.ndarray) -> np.ndarray:
+        quantized = np.rint(values * (self.quantization_levels - 1)).astype(np.int32)
+        return np.clip(quantized, 0, self.quantization_levels - 1)
+
+    def tokenize(self, data):
+        if isinstance(data, str):
+            audio = self._load_audio(data, self.sample_rate, self.pad_to_samples)
+        elif isinstance(data, np.ndarray):
+            audio = data
+        else:
+            raise TypeError("AudioFFTTokenizer expects a file path or numpy array")
+
+        log_mel, log_max = self._log_mel(audio)
+        aggregated = self._aggregate_channels(log_mel)
+
+        channel_tokens: Dict[str, List[int]] = {}
+        channel_metas: Dict[str, dict] = {}
+        for idx, name in enumerate(self.channel_names):
+            quantized = self._quantize(aggregated[name])
+            channel_tokens[name] = quantized.astype(int).tolist()
+            meta = {
+                "tokenizer": "audio_fft",
+                "vocab_size": self.quantization_levels,
+                "channel_index": idx,
+                "channel_name": name,
+                "mel_bins": self.channel_slices[idx],
+                "n_mels": self.n_mels,
+                "sample_rate": self.sample_rate,
+                "n_fft": self.n_fft,
+                "hop_length": self.hop_length,
+                "frame_hop_seconds": self.hop_length / float(self.sample_rate),
+                "num_frames": int(quantized.shape[0]),
+                "quantization_bits": self.quantization_bits,
+                "log_mel_max": log_max,
+                "normalization_offset": 4.0,
+                "normalization_scale": 4.0,
+                "channel_reduction": self.channel_reduction,
+            }
+            channel_metas[name] = meta
+
+        return channel_tokens, channel_metas
 
 
 class SineWaveTokenizer:
