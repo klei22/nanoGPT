@@ -14,9 +14,12 @@ OUT_DIR="out_fake_ptq_minipile"
 VECTOR_SWEEP_ROOT="${OUT_DIR}_vector_sweep"
 TENSOR_SWEEP_ROOT="${OUT_DIR}_tensor_sweep"
 SUMMARY_ROOT="${OUT_DIR}_quantization_summaries"
+ANGLE_SWEEP_ROOT="${OUT_DIR}_vector_angle_target_sweep"
 EVAL_ITERS=200
 BATCH_SIZE=64
 BLOCK_SIZE=256
+SCALAR_FALLBACK_BITS=8
+VECTOR_TARGET_ANGLES=(12 6 3 1.5)
 
 BIT_START=8
 BIT_STOP=3
@@ -83,7 +86,7 @@ else
 fi
 popd > /dev/null
 
-mkdir -p "$VECTOR_SWEEP_ROOT" "$TENSOR_SWEEP_ROOT" "$SUMMARY_ROOT"
+mkdir -p "$VECTOR_SWEEP_ROOT" "$TENSOR_SWEEP_ROOT" "$SUMMARY_ROOT" "$ANGLE_SWEEP_ROOT"
 
 echo "=== Step 2: Train a reference model on minipile (if needed) ==="
 if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
@@ -175,19 +178,60 @@ for bit in "${BITS[@]}"; do
   done
 done
 
-python3 - "$OUT_DIR" "$VECTOR_SWEEP_ROOT" "$TENSOR_SWEEP_ROOT" "$SUMMARY_ROOT" "${BITS[@]}" <<'PY'
+echo "=== Step ${step}: Sweep per-vector target angle thresholds ==="
+for target_angle in "${VECTOR_TARGET_ANGLES[@]}"; do
+  TARGET_DIR="${ANGLE_SWEEP_ROOT}/${target_angle}deg"
+  mkdir -p "$TARGET_DIR"
+  echo "=== Step ${step}: Quantize with target angle ${target_angle} degrees ==="
+  if [ ! -f "$TARGET_DIR/ckpt.pt" ]; then
+    python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
+      --out_dir "$TARGET_DIR" \
+      --num_bits "$SCALAR_FALLBACK_BITS" \
+      --granularity vector \
+      --vector-target-angle-deg "$target_angle" \
+      --vector-fallback-bits "$SCALAR_FALLBACK_BITS"
+  else
+    echo "Found existing checkpoint at $TARGET_DIR/ckpt.pt; skipping quantization."
+  fi
+
+  step=$((step + 1))
+
+  echo "=== Step ${step}: Evaluate target angle ${target_angle} degrees checkpoint ==="
+  python3 sample.py \
+    --out_dir "$TARGET_DIR" \
+    --eval_only \
+    --eval_dataset minipile
+
+  step=$((step + 1))
+done
+
+python3 - "$OUT_DIR" "$VECTOR_SWEEP_ROOT" "$TENSOR_SWEEP_ROOT" "$SUMMARY_ROOT" "$ANGLE_SWEEP_ROOT" "$SCALAR_FALLBACK_BITS" "${BITS[@]}" -- "${VECTOR_TARGET_ANGLES[@]}" <<'PY'
 import csv
 import json
 import math
 import os
-import statistics
 import sys
+
+import statistics
 
 out_dir = os.path.abspath(sys.argv[1])
 vector_root = os.path.abspath(sys.argv[2])
 tensor_root = os.path.abspath(sys.argv[3])
 summary_root = os.path.abspath(sys.argv[4])
-sweep_bits = [int(arg) for arg in sys.argv[5:]]
+angle_root = os.path.abspath(sys.argv[5])
+scalar_fallback_bits = int(sys.argv[6])
+raw_args = sys.argv[7:]
+
+if "--" in raw_args:
+    angle_split = raw_args.index("--")
+    bit_args = raw_args[:angle_split]
+    angle_args = raw_args[angle_split + 1 :]
+else:
+    bit_args = raw_args
+    angle_args = []
+
+sweep_bits = [int(arg) for arg in bit_args]
+angle_targets = [(label, float(label)) for label in angle_args]
 
 if not sweep_bits:
     raise SystemExit("No bit-width sweep values provided to summary helper")
@@ -257,6 +301,46 @@ def load_sweep(root: str, granularity: str) -> list[dict[str, object]]:
                 "mean_angle": None if angle_summary is None else angle_summary["mean_angle"],
                 "median_angle": None if angle_summary is None else angle_summary["median_angle"],
                 "mean_cosine": None if angle_summary is None else angle_summary["mean_cosine"],
+            }
+        )
+
+    return entries
+
+
+def load_angle_sweep(root: str, targets: list[tuple[str, float]]) -> list[dict[str, object]]:
+    if not targets:
+        return []
+
+    entries: list[dict[str, object]] = []
+    for label, numeric in targets:
+        run_dir = os.path.join(root, f"{label}deg")
+        loss_path = os.path.join(run_dir, "eval_loss.txt")
+        stats_path = os.path.join(run_dir, "vector_precision_stats.json")
+        if not os.path.exists(loss_path):
+            raise SystemExit(f"Missing evaluation summary at {loss_path}")
+        if not os.path.exists(stats_path):
+            raise SystemExit(f"Missing vector precision stats at {stats_path}")
+
+        with open(loss_path, encoding="utf-8") as fh:
+            eval_data = json.load(fh)
+        loss = eval_data.get("val")
+        if loss is None:
+            raise SystemExit(f"No 'val' key found in {loss_path}")
+
+        with open(stats_path, encoding="utf-8") as fh:
+            stats_data = json.load(fh)
+
+        mean_bits = stats_data.get("mean_bits")
+        std_bits = stats_data.get("std_bits")
+        target_angle = stats_data.get("target_angle_degrees", numeric)
+        entries.append(
+            {
+                "label": label,
+                "target_angle": float(target_angle),
+                "val_loss": float(loss),
+                "mean_bits": float(mean_bits),
+                "std_bits": float(std_bits),
+                "vectors_quantized": int(stats_data.get("vectors_quantized", 0)),
             }
         )
 
@@ -353,6 +437,73 @@ fig.savefig(plot_path, dpi=200)
 
 print(f"Wrote summary CSV to {csv_path}")
 print(f"Wrote comparison plot to {plot_path}")
+
+angle_entries = load_angle_sweep(angle_root, angle_targets)
+if angle_entries:
+    angle_entries.sort(key=lambda item: item["target_angle"])
+    angle_csv_path = os.path.join(summary_root, "vector_angle_target_summary.csv")
+    with open(angle_csv_path, "w", newline="", encoding="utf-8") as csv_out:
+        fieldnames = [
+            "target_angle_deg",
+            "mean_bits",
+            "std_bits",
+            "vectors_quantized",
+            "val_loss",
+        ]
+        writer = csv.DictWriter(csv_out, fieldnames=fieldnames)
+        writer.writeheader()
+        for entry in angle_entries:
+            writer.writerow(
+                {
+                    "target_angle_deg": f"{entry['target_angle']:.4f}",
+                    "mean_bits": f"{entry['mean_bits']:.4f}",
+                    "std_bits": f"{entry['std_bits']:.4f}",
+                    "vectors_quantized": entry["vectors_quantized"],
+                    "val_loss": f"{entry['val_loss']:.8f}",
+                }
+            )
+
+    fig_angle, ax_bits = plt.subplots(1, 1, figsize=(7, 5))
+    targets = [entry["target_angle"] for entry in angle_entries]
+    mean_bits = [entry["mean_bits"] for entry in angle_entries]
+    std_bits = [entry["std_bits"] for entry in angle_entries]
+    losses = [entry["val_loss"] for entry in angle_entries]
+
+    bits_line = ax_bits.errorbar(
+        targets,
+        mean_bits,
+        yerr=std_bits,
+        marker="o",
+        color="tab:blue",
+        label="Mean integer precision",
+    )
+    ax_bits.set_xlabel("Target angle (degrees)")
+    ax_bits.set_ylabel("Mean integer precision (bits)")
+    ax_bits.grid(True, which="both", linestyle=":", linewidth=0.5)
+
+    ax_loss_curve = ax_bits.twinx()
+    loss_line = ax_loss_curve.plot(
+        targets,
+        losses,
+        marker="s",
+        color="tab:red",
+        label="Validation loss",
+    )
+    ax_loss_curve.set_ylabel("Validation loss")
+    fig_angle.suptitle(
+        "Per-vector target angle sweep (fallback {}-bit)".format(scalar_fallback_bits)
+    )
+
+    lines = [bits_line[0], loss_line[0]]
+    labels = [line.get_label() for line in lines]
+    ax_bits.legend(lines, labels, loc="best")
+
+    angle_plot_path = os.path.join(summary_root, "vector_angle_target_summary.png")
+    fig_angle.tight_layout()
+    fig_angle.savefig(angle_plot_path, dpi=200)
+
+    print(f"Wrote vector angle sweep CSV to {angle_csv_path}")
+    print(f"Wrote vector angle sweep plot to {angle_plot_path}")
 PY
 
 echo "Quantization sweeps complete. Evaluation summaries live in $SUMMARY_ROOT."

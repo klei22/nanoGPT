@@ -9,7 +9,7 @@ import sys
 import textwrap
 from collections import Counter
 from collections.abc import MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple
 
 import torch
@@ -151,6 +151,24 @@ def parse_args():
             "Per-vector mode groups vectors following the JL transform initialization heuristics."
         ),
     )
+    parser.add_argument(
+        "--vector-target-angle-deg",
+        type=float,
+        default=None,
+        help=(
+            "When using per-vector quantization, search for the minimum integer precision per "
+            "vector whose angular distortion (degrees) does not exceed this target."
+        ),
+    )
+    parser.add_argument(
+        "--vector-fallback-bits",
+        type=int,
+        default=None,
+        help=(
+            "Fallback precision to use if the angular distortion target cannot be met; also the "
+            "maximum bit-width considered during the search (defaults to --num_bits)."
+        ),
+    )
     args = parser.parse_args()
     if args.num_bits < 0:
         parser.error("--num_bits must be non-negative")
@@ -162,6 +180,18 @@ def parse_args():
         parser.error("--min-bits cannot exceed --max-bits")
     if args.tui_page_size <= 0:
         parser.error("--tui-page-size must be positive")
+    if args.vector_target_angle_deg is not None:
+        if args.vector_target_angle_deg <= 0:
+            parser.error("--vector-target-angle-deg must be positive")
+        if args.granularity != "vector":
+            parser.error("--vector-target-angle-deg requires --granularity vector")
+        if args.vector_fallback_bits is None and args.num_bits <= 0:
+            parser.error(
+                "--vector-target-angle-deg requires --num_bits > 0 or "
+                "an explicit --vector-fallback-bits"
+            )
+    if args.vector_fallback_bits is not None and args.vector_fallback_bits <= 0:
+        parser.error("--vector-fallback-bits must be positive")
     return args
 
 
@@ -174,6 +204,55 @@ class TensorConfigEntry:
     default_bits: int
     bits: int
     prior_bits: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class VectorAngleSearchConfig:
+    target_angle_deg: float
+    fallback_bits: int
+    search_bits: Tuple[int, ...]
+
+
+@dataclass
+class VectorPrecisionTracker:
+    histogram: Counter = field(default_factory=Counter)
+    count: int = 0
+    sum_bits: float = 0.0
+    sum_sq_bits: float = 0.0
+
+    def update(self, bits: int) -> None:
+        if bits <= 0:
+            return
+        self.count += 1
+        self.sum_bits += float(bits)
+        self.sum_sq_bits += float(bits) * float(bits)
+        self.histogram[int(bits)] += 1
+
+    def to_summary(self, config: Optional[VectorAngleSearchConfig]) -> Optional[Dict[str, object]]:
+        if self.count == 0:
+            return None
+        mean_bits = self.sum_bits / float(self.count)
+        variance = max(0.0, self.sum_sq_bits / float(self.count) - mean_bits**2)
+        std_bits = math.sqrt(variance)
+        histogram = {str(bit): count for bit, count in sorted(self.histogram.items())}
+        summary: Dict[str, object] = {
+            "mode": "vector_target_angle",
+            "vectors_quantized": self.count,
+            "mean_bits": mean_bits,
+            "std_bits": std_bits,
+            "histogram": histogram,
+            "min_bits": min(self.histogram) if self.histogram else None,
+            "max_bits": max(self.histogram) if self.histogram else None,
+        }
+        if config is not None:
+            summary.update(
+                {
+                    "target_angle_degrees": config.target_angle_deg,
+                    "fallback_bits": config.fallback_bits,
+                    "search_bits": list(config.search_bits),
+                }
+            )
+        return summary
 
 
 LAST_QUANTIZATION_BASENAME = "last_fake_ptq_quantization.yaml"
@@ -1665,8 +1744,55 @@ def fake_quant_tensor(
     raise ValueError(f"Unsupported quantization scheme: {scheme}")
 
 
+def _safe_vector_angle_degrees(reference: torch.Tensor, candidate: torch.Tensor) -> float:
+    """Compute the angle between two vectors in degrees, guarding edge cases."""
+
+    ref_norm = torch.linalg.vector_norm(reference).item()
+    cand_norm = torch.linalg.vector_norm(candidate).item()
+    if ref_norm == 0.0 or cand_norm == 0.0 or not (
+        math.isfinite(ref_norm) and math.isfinite(cand_norm)
+    ):
+        return 0.0
+
+    dot = torch.dot(reference, candidate).item()
+    if not math.isfinite(dot):
+        return 0.0
+    cosine = dot / (ref_norm * cand_norm)
+    cosine = max(-1.0, min(1.0, cosine))
+    return math.degrees(math.acos(cosine))
+
+
+def _quantize_vector_with_angle_target(
+    vector: torch.Tensor,
+    scheme: str,
+    config: VectorAngleSearchConfig,
+) -> Tuple[torch.Tensor, int]:
+    """Quantize ``vector`` searching for the minimum precision that meets the target."""
+
+    reference = vector.detach()
+    last_quantized: Optional[torch.Tensor] = None
+    last_bits = config.fallback_bits
+    for bits in config.search_bits:
+        quantized = fake_quant_tensor(reference, bits, scheme)
+        last_quantized = quantized
+        last_bits = bits
+        angle = _safe_vector_angle_degrees(reference, quantized)
+        if angle <= config.target_angle_deg:
+            return quantized, bits
+
+    if last_quantized is None or last_bits != config.fallback_bits:
+        last_quantized = fake_quant_tensor(reference, config.fallback_bits, scheme)
+        last_bits = config.fallback_bits
+    return last_quantized, last_bits
+
+
 def _quantize_vectors_along_axis(
-    tensor: torch.Tensor, num_bits: int, scheme: str, axis: int
+    tensor: torch.Tensor,
+    num_bits: int,
+    scheme: str,
+    axis: int,
+    search_config: Optional[VectorAngleSearchConfig] = None,
+    precision_tracker: Optional[VectorPrecisionTracker] = None,
 ) -> torch.Tensor:
     """Apply fake quantization independently to vectors along ``axis``."""
 
@@ -1683,7 +1809,16 @@ def _quantize_vectors_along_axis(
         return tensor
 
     for row_idx in range(flat.shape[0]):
-        flat[row_idx] = fake_quant_tensor(flat[row_idx], num_bits, scheme)
+        if search_config is not None:
+            original_row = flat[row_idx].clone()
+            quantized_row, bits_used = _quantize_vector_with_angle_target(
+                original_row, scheme, search_config
+            )
+            flat[row_idx] = quantized_row
+            if precision_tracker is not None:
+                precision_tracker.update(bits_used)
+        else:
+            flat[row_idx] = fake_quant_tensor(flat[row_idx], num_bits, scheme)
 
     return torch.movedim(moved, -1, axis)
 
@@ -1693,6 +1828,8 @@ def fake_quant_tensor_per_vector(
     num_bits: int,
     scheme: str,
     embedding_dim: Optional[int],
+    search_config: Optional[VectorAngleSearchConfig] = None,
+    precision_tracker: Optional[VectorPrecisionTracker] = None,
 ) -> torch.Tensor:
     """Apply fake quantization per vector using JL transform heuristics."""
 
@@ -1703,15 +1840,34 @@ def fake_quant_tensor_per_vector(
     result = tensor
 
     if tensor.ndim >= 1 and tensor.shape[-1] == embedding_dim:
-        result = _quantize_vectors_along_axis(result, num_bits, scheme, -1)
+        result = _quantize_vectors_along_axis(
+            result,
+            num_bits,
+            scheme,
+            -1,
+            search_config=search_config,
+            precision_tracker=precision_tracker,
+        )
         applied = True
 
     if tensor.ndim > 1 and tensor.shape[0] == embedding_dim:
-        result = _quantize_vectors_along_axis(result, num_bits, scheme, 0)
+        result = _quantize_vectors_along_axis(
+            result,
+            num_bits,
+            scheme,
+            0,
+            search_config=search_config,
+            precision_tracker=precision_tracker,
+        )
         applied = True
     elif tensor.ndim == 1 and tensor.shape[0] == embedding_dim:
         if not applied:
-            result = fake_quant_tensor(result, num_bits, scheme)
+            quantized, bits_used = _quantize_vector_with_angle_target(
+                result, scheme, search_config
+            ) if search_config is not None else (fake_quant_tensor(result, num_bits, scheme), num_bits)
+            result = quantized
+            if search_config is not None and precision_tracker is not None:
+                precision_tracker.update(bits_used)
             applied = True
 
     if not applied:
@@ -2101,6 +2257,9 @@ def main():
     )
 
     embedding_dim: Optional[int] = None
+    vector_angle_config: Optional[VectorAngleSearchConfig] = None
+    vector_precision_tracker: Optional[VectorPrecisionTracker] = None
+    vector_precision_summary: Optional[Dict[str, object]] = None
     if args.granularity == "vector":
         embedding_dim = infer_embedding_dimension(checkpoint, state_dict)
         if embedding_dim is None:
@@ -2112,6 +2271,21 @@ def main():
             _print_info(
                 f"Using per-vector quantization with embedding dimension {embedding_dim}."
             )
+            if args.vector_target_angle_deg is not None:
+                fallback_bits = args.vector_fallback_bits or args.num_bits
+                if fallback_bits is None or fallback_bits <= 0:
+                    raise SystemExit(
+                        "Unable to determine fallback precision for vector angle search"
+                    )
+                fallback_bits = int(fallback_bits)
+                search_start = 1
+                search_bits = tuple(range(search_start, fallback_bits + 1))
+                vector_angle_config = VectorAngleSearchConfig(
+                    target_angle_deg=float(args.vector_target_angle_deg),
+                    fallback_bits=fallback_bits,
+                    search_bits=search_bits,
+                )
+                vector_precision_tracker = VectorPrecisionTracker()
 
     applied_tensor_bits: Dict[str, int] = {}
     for key, value in state_dict.items():
@@ -2125,7 +2299,12 @@ def main():
             continue
         if args.granularity == "vector" and embedding_dim is not None:
             state_dict[key] = fake_quant_tensor_per_vector(
-                value, int(bits), args.quantization, embedding_dim
+                value,
+                int(bits),
+                args.quantization,
+                embedding_dim,
+                search_config=vector_angle_config,
+                precision_tracker=vector_precision_tracker,
             )
         else:
             state_dict[key] = fake_quant_tensor(value, int(bits), args.quantization)
@@ -2141,6 +2320,17 @@ def main():
             f"Configured per-tensor bit-widths for {len(applied_tensor_bits)} tensor(s): "
             f"{quantized_count} quantized, {skipped_count} kept as fp32."
         )
+
+    if vector_precision_tracker is not None:
+        vector_precision_summary = vector_precision_tracker.to_summary(
+            vector_angle_config
+        )
+        if vector_precision_summary is not None:
+            _print_info(
+                "Per-vector target angle search quantized "
+                f"{vector_precision_summary['vectors_quantized']} vector(s) "
+                f"with mean precision {vector_precision_summary['mean_bits']:.3f} bits."
+            )
 
     out_dir = args.out_dir or f"{args.ckpt_dir}_ptq"
     os.makedirs(out_dir, exist_ok=True)
@@ -2177,6 +2367,20 @@ def main():
         )
     else:
         print(f"Saved quantized checkpoint to {os.path.abspath(out_dir)}")
+
+    if vector_precision_summary is not None:
+        stats_path = os.path.join(out_dir, "vector_precision_stats.json")
+        try:
+            with open(stats_path, "w", encoding="utf-8") as fh:
+                json.dump(vector_precision_summary, fh, indent=2, sort_keys=True)
+        except OSError as exc:
+            _print_warning(
+                f"Unable to write per-vector precision summary to {stats_path}: {exc}"
+            )
+        else:
+            _print_info(
+                f"Recorded per-vector precision summary in {os.path.abspath(stats_path)}."
+            )
 
 if __name__ == "__main__":
     main()
