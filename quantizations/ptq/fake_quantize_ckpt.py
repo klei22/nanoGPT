@@ -9,7 +9,7 @@ import sys
 import textwrap
 from collections import Counter
 from collections.abc import MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple
 
 import torch
@@ -151,6 +151,26 @@ def parse_args():
             "Per-vector mode groups vectors following the JL transform initialization heuristics."
         ),
     )
+    parser.add_argument(
+        "--vector-target-angle",
+        type=float,
+        default=None,
+        metavar="DEGREES",
+        help=(
+            "Target maximum angular distortion (in degrees) for per-vector quantization. "
+            "When provided, each vector is assigned the smallest integer bit-width that "
+            "keeps the angle between the original and quantized vectors within this threshold."
+        ),
+    )
+    parser.add_argument(
+        "--scalar-fallback-bits",
+        type=int,
+        default=8,
+        help=(
+            "Bit-width to use for tensors that cannot be grouped into vectors during per-vector "
+            "quantization (for example RMSNorm scale parameters)."
+        ),
+    )
     args = parser.parse_args()
     if args.num_bits < 0:
         parser.error("--num_bits must be non-negative")
@@ -162,6 +182,15 @@ def parse_args():
         parser.error("--min-bits cannot exceed --max-bits")
     if args.tui_page_size <= 0:
         parser.error("--tui-page-size must be positive")
+    if args.scalar_fallback_bits < 0:
+        parser.error("--scalar-fallback-bits must be non-negative")
+    if args.vector_target_angle is not None:
+        if args.vector_target_angle < 0.0:
+            parser.error("--vector-target-angle must be non-negative")
+        if args.vector_target_angle > 180.0:
+            parser.error("--vector-target-angle cannot exceed 180 degrees")
+        if args.granularity != "vector":
+            parser.error("--vector-target-angle can only be used with --granularity vector")
     return args
 
 
@@ -174,6 +203,120 @@ class TensorConfigEntry:
     default_bits: int
     bits: int
     prior_bits: Optional[int] = None
+
+
+@dataclass
+class TensorVectorReport:
+    name: str
+    total_vectors: int = 0
+    total_elements: int = 0
+    bit_counts: Counter = field(default_factory=Counter)
+    required_bits_total: float = 0.0
+    applied_bits_total: float = 0.0
+    applied_tensor_bits: int = 0
+
+    def record(self, bits: int, vector_length: int) -> None:
+        effective_bits = bits if bits > 0 else 32
+        self.total_vectors += 1
+        self.required_bits_total += float(vector_length * effective_bits)
+        self.bit_counts[effective_bits] += 1
+
+    def finalize_applied_bits(self, bits: int) -> None:
+        self.applied_tensor_bits = bits
+        effective_bits = bits if bits > 0 else 32
+        self.applied_bits_total = float(self.total_elements * effective_bits)
+
+    @property
+    def average_bits(self) -> float:
+        if self.total_elements <= 0:
+            return 0.0
+        if self.applied_bits_total <= 0.0:
+            return 0.0
+        return self.applied_bits_total / float(self.total_elements)
+
+    @property
+    def average_required_bits(self) -> float:
+        if self.total_elements <= 0:
+            return 0.0
+        if self.required_bits_total <= 0.0:
+            return 0.0
+        return self.required_bits_total / float(self.total_elements)
+
+
+def _counter_to_histogram(counter: Counter) -> Dict[int, int]:
+    return {
+        int(bits): int(count)
+        for bits, count in sorted(counter.items(), key=lambda item: int(item[0]))
+    }
+
+
+def _bit_histogram_stats(counter: Counter) -> Tuple[float, float]:
+    total = sum(counter.values())
+    if total <= 0:
+        return 0.0, 0.0
+    mean = sum(int(bits) * count for bits, count in counter.items()) / float(total)
+    variance = sum(count * ((int(bits) - mean) ** 2) for bits, count in counter.items()) / float(total)
+    variance = max(variance, 0.0)
+    return mean, math.sqrt(variance)
+
+
+def build_vector_quantization_stats(
+    reports: Dict[str, "TensorVectorReport"], metadata: Optional[Dict[str, object]] = None
+) -> Dict[str, object]:
+    per_tensor: Dict[str, Dict[str, object]] = {}
+    aggregate_counter: Counter = Counter()
+    total_vectors = 0
+    total_elements = 0
+    total_applied_bits = 0.0
+    total_required_bits = 0.0
+
+    for name, report in reports.items():
+        histogram = _counter_to_histogram(report.bit_counts)
+        mean_bits, std_bits = _bit_histogram_stats(report.bit_counts)
+        per_tensor[name] = {
+            "total_vectors": report.total_vectors,
+            "bit_histogram": histogram,
+            "mean_bits_per_vector": mean_bits,
+            "std_bits_per_vector": std_bits,
+            "applied_tensor_bits": report.applied_tensor_bits,
+            "total_elements": report.total_elements,
+            "avg_bits_per_element": report.average_bits,
+            "avg_required_bits_per_element": report.average_required_bits,
+        }
+        aggregate_counter.update(report.bit_counts)
+        total_vectors += report.total_vectors
+        total_elements += report.total_elements
+        total_applied_bits += report.applied_bits_total
+        total_required_bits += report.required_bits_total
+
+    aggregate_mean, aggregate_std = _bit_histogram_stats(aggregate_counter)
+    aggregate_histogram = _counter_to_histogram(aggregate_counter)
+    aggregate_entry = {
+        "total_vectors": total_vectors,
+        "bit_histogram": aggregate_histogram,
+        "mean_bits_per_vector": aggregate_mean,
+        "std_bits_per_vector": aggregate_std,
+        "total_elements": total_elements,
+        "avg_bits_per_element": (total_applied_bits / total_elements)
+        if total_elements
+        else 0.0,
+        "avg_required_bits_per_element": (total_required_bits / total_elements)
+        if total_elements
+        else 0.0,
+    }
+
+    data: Dict[str, object] = {"per_tensor": per_tensor, "aggregate": aggregate_entry}
+    if metadata:
+        data["metadata"] = metadata
+    return data
+
+
+def save_vector_quantization_stats(
+    path: str, reports: Dict[str, "TensorVectorReport"], metadata: Optional[Dict[str, object]] = None
+) -> None:
+    stats = build_vector_quantization_stats(reports, metadata=metadata)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(stats, handle, indent=2)
 
 
 LAST_QUANTIZATION_BASENAME = "last_fake_ptq_quantization.yaml"
@@ -1720,6 +1863,123 @@ def fake_quant_tensor_per_vector(
     return result
 
 
+def _angle_between_vectors_degrees(
+    original: torch.Tensor, quantized: torch.Tensor
+) -> float:
+    if original.numel() == 0:
+        return 0.0
+    original_vec = original.reshape(-1).to(torch.float64)
+    quantized_vec = quantized.reshape(-1).to(torch.float64)
+    original_norm = torch.linalg.norm(original_vec)
+    quantized_norm = torch.linalg.norm(quantized_vec)
+    if original_norm == 0 and quantized_norm == 0:
+        return 0.0
+    if original_norm == 0 or quantized_norm == 0:
+        return 180.0
+    cosine = torch.dot(original_vec, quantized_vec) / (original_norm * quantized_norm)
+    cosine = torch.clamp(cosine, -1.0, 1.0)
+    return math.degrees(float(torch.arccos(cosine)))
+
+
+def _choose_minimum_bits_for_vector(
+    vector: torch.Tensor, max_bits: int, target_angle: float, scheme: str
+) -> Tuple[int, bool]:
+    if max_bits is None or max_bits <= 0:
+        return 0, False
+
+    best_bits = max_bits
+    satisfied = False
+    best_angle = None
+
+    for bits in range(1, max_bits + 1):
+        quantized = fake_quant_tensor(vector, bits, scheme)
+        angle = _angle_between_vectors_degrees(vector, quantized)
+        if angle <= target_angle:
+            return bits, True
+        if best_angle is None or angle < best_angle:
+            best_bits = bits
+            best_angle = angle
+
+    return best_bits, satisfied
+
+
+def fake_quant_tensor_per_vector_with_angle(
+    tensor: torch.Tensor,
+    max_bits: int,
+    scheme: str,
+    embedding_dim: Optional[int],
+    target_angle: float,
+    scalar_fallback_bits: int,
+) -> Tuple[torch.Tensor, TensorVectorReport, int]:
+    report = TensorVectorReport(name="", total_elements=tensor.numel())
+
+    if tensor.numel() == 0:
+        report.finalize_applied_bits(0)
+        return tensor, report, 0
+
+    if embedding_dim is None or tensor.ndim == 0:
+        bits = scalar_fallback_bits
+        quantized = tensor if bits <= 0 else fake_quant_tensor(tensor, bits, scheme)
+        report.record(bits, max(tensor.numel(), 1))
+        report.finalize_applied_bits(bits)
+        return quantized, report, bits
+
+    axis: Optional[int] = None
+    if tensor.ndim >= 1 and tensor.shape[-1] == embedding_dim:
+        axis = -1
+    elif tensor.ndim > 1 and tensor.shape[0] == embedding_dim:
+        axis = 0
+
+    if axis is None:
+        bits = scalar_fallback_bits
+        quantized = tensor if bits <= 0 else fake_quant_tensor(tensor, bits, scheme)
+        report.record(bits, max(tensor.numel(), 1))
+        report.finalize_applied_bits(bits)
+        return quantized, report, bits
+
+    moved = torch.movedim(tensor, axis, -1).contiguous()
+    flat = moved.reshape(-1, moved.shape[-1])
+
+    if flat.numel() == 0:
+        report.finalize_applied_bits(0)
+        return tensor, report, 0
+
+    per_vector_bits: List[int] = []
+    max_used_bits = 0
+    unsatisfied_vectors = 0
+
+    for row_idx in range(flat.shape[0]):
+        original_row = flat[row_idx]
+        bits, satisfied = _choose_minimum_bits_for_vector(
+            original_row, max_bits, target_angle, scheme
+        )
+        per_vector_bits.append(bits)
+        report.record(bits, original_row.numel())
+        if bits > 0:
+            max_used_bits = max(max_used_bits, bits)
+        if not satisfied:
+            unsatisfied_vectors += 1
+
+    tensor_bits = max_used_bits
+    if tensor_bits == 0 and per_vector_bits:
+        tensor_bits = max(per_vector_bits)
+
+    if tensor_bits <= 0:
+        result = tensor
+    else:
+        result = fake_quant_tensor_per_vector(tensor, tensor_bits, scheme, embedding_dim)
+
+    report.finalize_applied_bits(tensor_bits)
+
+    if unsatisfied_vectors > 0:
+        _print_warning(
+            "Some vectors could not reach the requested angle target with the "
+            f"available {max_bits}-bit budget: {unsatisfied_vectors} / {flat.shape[0]}"
+        )
+
+    return result, report, tensor_bits
+
+
 def iter_state_tensors(state_dict) -> Iterable[torch.Tensor]:
     for _, tensor in iter_state_items(state_dict):
         yield tensor
@@ -1779,7 +2039,7 @@ def estimate_checkpoint_sizes(
             if bits is None or bits <= 0:
                 quantized_bytes += original
             else:
-                quantized_bytes += numel * int(bits) / 8.0
+                quantized_bytes += numel * float(bits) / 8.0
         else:
             quantized_bytes += original
 
@@ -2096,10 +2356,6 @@ def main():
     else:
         tensor_bitwidths = {entry.name: entry.bits for entry in entries}
 
-    original_bytes, quantized_bytes = estimate_checkpoint_sizes(
-        state_dict, args.num_bits, tensor_bitwidths
-    )
-
     embedding_dim: Optional[int] = None
     if args.granularity == "vector":
         embedding_dim = infer_embedding_dimension(checkpoint, state_dict)
@@ -2108,27 +2364,71 @@ def main():
                 "Per-vector quantization requested but embedding dimension "
                 "could not be inferred. Falling back to per-tensor quantization."
             )
+            vector_target_angle = None
         else:
             _print_info(
                 f"Using per-vector quantization with embedding dimension {embedding_dim}."
             )
 
     applied_tensor_bits: Dict[str, int] = {}
+    size_bitwidths: Dict[str, float] = {}
+    tensor_vector_reports: Dict[str, TensorVectorReport] = {}
+    vector_target_angle = (
+        args.vector_target_angle if args.granularity == "vector" else None
+    )
     for key, value in state_dict.items():
         if not torch.is_tensor(value):
             continue
         if not torch.is_floating_point(value):
             continue
-        bits = tensor_bitwidths.get(key, args.num_bits)
-        applied_tensor_bits[key] = bits
-        if bits is None or bits <= 0:
+
+        requested_bits = tensor_bitwidths.get(key, args.num_bits)
+        if requested_bits is None:
+            requested_bits = args.num_bits
+
+        if vector_target_angle is not None and embedding_dim is not None:
+            if requested_bits is None or requested_bits <= 0:
+                applied_tensor_bits[key] = 0
+                size_bitwidths[key] = 0.0
+                report = TensorVectorReport(name=key, total_elements=value.numel())
+                if value.numel() > 0:
+                    report.record(0, max(value.numel(), 1))
+                tensor_vector_reports[key] = report
+                continue
+
+            max_bits = int(requested_bits)
+            scalar_bits = args.scalar_fallback_bits
+            override_bits = valid_overrides.get(key)
+            if override_bits is not None and override_bits > 0:
+                scalar_bits = int(override_bits)
+
+            quantized_tensor, report, tensor_bits = fake_quant_tensor_per_vector_with_angle(
+                value,
+                max_bits,
+                args.quantization,
+                embedding_dim,
+                vector_target_angle,
+                scalar_bits,
+            )
+            report.name = key
+            tensor_vector_reports[key] = report
+            state_dict[key] = quantized_tensor
+            size_bitwidths[key] = report.average_bits
+            applied_tensor_bits[key] = tensor_bits
+            continue
+
+        effective_bits = int(requested_bits) if requested_bits is not None else args.num_bits
+        applied_tensor_bits[key] = effective_bits
+        if requested_bits is None or requested_bits <= 0:
+            size_bitwidths[key] = 0.0
             continue
         if args.granularity == "vector" and embedding_dim is not None:
             state_dict[key] = fake_quant_tensor_per_vector(
-                value, int(bits), args.quantization, embedding_dim
+                value, int(requested_bits), args.quantization, embedding_dim
             )
         else:
-            state_dict[key] = fake_quant_tensor(value, int(bits), args.quantization)
+            state_dict[key] = fake_quant_tensor(value, int(requested_bits), args.quantization)
+        size_bitwidths[key] = float(requested_bits)
 
     if applied_tensor_bits:
         quantized_count = sum(
@@ -2141,6 +2441,11 @@ def main():
             f"Configured per-tensor bit-widths for {len(applied_tensor_bits)} tensor(s): "
             f"{quantized_count} quantized, {skipped_count} kept as fp32."
         )
+
+    summary_bitwidths = size_bitwidths if size_bitwidths else tensor_bitwidths
+    original_bytes, quantized_bytes = estimate_checkpoint_sizes(
+        state_dict, args.num_bits, summary_bitwidths
+    )
 
     out_dir = args.out_dir or f"{args.ckpt_dir}_ptq"
     os.makedirs(out_dir, exist_ok=True)
@@ -2170,6 +2475,25 @@ def main():
         applied_tensor_bits if applied_tensor_bits else None,
     )
 
+    if tensor_vector_reports:
+        print_vector_quantization_report(tensor_vector_reports)
+        stats_path = os.path.join(out_dir, "vector_quantization_stats.json")
+        metadata = {
+            "vector_target_angle_degrees": vector_target_angle,
+            "scalar_fallback_bits": args.scalar_fallback_bits,
+            "quantization_scheme": args.quantization,
+        }
+        try:
+            save_vector_quantization_stats(stats_path, tensor_vector_reports, metadata=metadata)
+        except OSError as exc:
+            _print_warning(
+                f"Unable to save vector quantization stats to {os.path.abspath(stats_path)}: {exc}"
+            )
+        else:
+            _print_info(
+                f"Saved vector quantization stats to {os.path.abspath(stats_path)}"
+            )
+
     if _RICH_CONSOLE:
         _RICH_CONSOLE.print(
             f"[cyan]Saved quantized checkpoint to[/cyan] "
@@ -2177,6 +2501,60 @@ def main():
         )
     else:
         print(f"Saved quantized checkpoint to {os.path.abspath(out_dir)}")
+
+
+def _format_bit_label(bits: int) -> str:
+    return "fp32" if bits >= 32 else f"int{bits}"
+
+
+def print_vector_quantization_report(
+    reports: Dict[str, TensorVectorReport]
+) -> None:
+    if not reports:
+        return
+
+    print("Per-vector quantization bit allocation report:")
+
+    total_counter: Counter = Counter()
+    total_vectors = 0
+    total_bits = 0.0
+
+    for name in sorted(reports):
+        report = reports[name]
+        total_vectors += report.total_vectors
+        total_bits += report.applied_bits_total
+        total_counter.update(report.bit_counts)
+
+        print(f"- {name}:")
+        print(f"    total vectors: {report.total_vectors}")
+        if report.total_vectors:
+            for bits, count in sorted(report.bit_counts.items(), reverse=True):
+                label = _format_bit_label(bits)
+                pct = (count / report.total_vectors) * 100.0
+                print(f"    {label}: {count} ({pct:.2f}%)")
+        applied_bits_value = report.applied_tensor_bits or 32
+        print(f"    applied tensor bits: {_format_bit_label(applied_bits_value)}")
+        print(f"    total bits (applied): {report.applied_bits_total:,.0f}")
+        if report.total_elements > 0:
+            print(f"    avg bits/element (applied): {report.average_bits:.4f}")
+            print(
+                f"    avg bits/element (required): {report.average_required_bits:.4f}"
+            )
+
+    if total_vectors:
+        print("Aggregate vector usage:")
+        for bits, count in sorted(total_counter.items(), reverse=True):
+            label = _format_bit_label(bits)
+            pct = (count / total_vectors) * 100.0
+            print(f"  {label}: {count} ({pct:.2f}%)")
+
+    print(
+        f"Estimated total model bits after quantization: {total_bits:,.0f}"
+    )
+    print(
+        f"Estimated total model bytes after quantization: {total_bits / 8.0:,.0f}"
+    )
+
 
 if __name__ == "__main__":
     main()
