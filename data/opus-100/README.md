@@ -48,6 +48,26 @@ Batch process into single set of train.bin and val.bin files:
 python3 batch_prepare.py --input_dir interleaved_files --prepare_script prepare.py --tokenizer sentencepiece
 ```
 
+### Augmenting with translate-shell
+
+You can enrich OPUS-100 JSON outputs with per-word translations from
+[`translate-shell`](https://github.com/soimort/translate-shell) and emit a text dataset
+that contains the source sentence, each word translation, and the original target
+sentence. First install `translate-shell` (provides the `trans` command) and make sure it
+is available on your `$PATH`, then run:
+
+```bash
+python3 augment_with_translate_shell.py \
+  --input_json json_output/en-es-train.json \
+  --output_json augmented_translate_shell.json \
+  --output_text_file augmented_translate_shell.txt \
+  -f en -t es \
+  --max_items 100
+```
+
+The optional `--max_items` flag lets you sample a subset of entries to keep runtime
+manageable when experimenting.
+
 ### Phoneme workflow
 
 Get dataset and split into to and from txt files:
