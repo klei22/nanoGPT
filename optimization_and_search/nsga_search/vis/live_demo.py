@@ -366,7 +366,13 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
         f.write(html_str)
 
 
-def create_interactive_generational_scatter(file_name_base: str, output_path: str = "htmls/interactive_generational_scatter.html", start_gen: int = 0, end_gen: int = 10):
+def create_interactive_generational_scatter(
+    file_name_base: str,
+    output_path: str = "htmls/interactive_generational_scatter.html",
+    start_gen: int = 0,
+    end_gen: int = 10,
+    server_port: int = 8000,
+):
     
     pop_data = []
     generations = list(range(start_gen, end_gen + 1))
@@ -427,7 +433,7 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
     _write_2d_html_with_details(fig_2d, out2d, div_id="gen2d")
     print(f"✅ Interactive 2D scatter plot (Size vs Val Loss) saved to: {out2d}")
     try:
-        _serve_and_open(out2d)
+        _serve_and_open(out2d, port=server_port)
     except Exception as e:
         print(f"⚠️ Could not auto-launch local server: {e}")
     
@@ -538,7 +544,9 @@ def _serve_and_open(html_path: str, port: int = 8000):
         return httpd
 
     httpd = None
-    for p in (port, port+1, port+2):
+    candidate_ports = [port, port + 1, port + 2]
+    tried = []
+    for p in candidate_ports:
         try:
             httpd = try_server(p)
             url = f"http://localhost:{p}/{filename}"
@@ -556,133 +564,9 @@ def _serve_and_open(html_path: str, port: int = 8000):
                 httpd.server_close()
             return
         except OSError:
+            tried.append(p)
             continue
-    raise RuntimeError("Unable to bind a local HTTP port (tried 8000-8002)")
-
-
-def create_3d_plot(df, generations):
-    """Create 3D scatter plot with generation slider"""
-    
-    fig = go.Figure()
-    
-    # Color scheme
-    highlight_color = 'red'
-    faded_color = 'lightgray'
-    
-    # Add background traces for all generations (always visible, faded)
-    for gen in generations:
-        gen_data = df[df['generation'] == gen]
-        
-        if gen_data.empty:
-            continue
-            
-        fig.add_trace(
-            go.Scatter3d(
-                x=gen_data['energy_per_token'],
-                y=gen_data['ttft'],
-                z=gen_data['validation_loss'],
-                mode='markers',
-                marker=dict(
-                    size=5,
-                    color=faded_color,
-                    opacity=0.3,
-                    line=dict(width=1, color='gray')
-                ),
-                name=f'Gen {gen} (background)',
-                text=[f'Gen {gen}, Individual {i}' for i in gen_data['individual_id']],
-                hovertemplate='<b>%{text}</b><br>' +
-                             'Energy/Token: %{x:.3f}<br>' +
-                             'TTFT: %{y:.3f}<br>' +
-                             'Validation Loss: %{z:.3f}<extra></extra>',
-                visible=True,
-                showlegend=False
-            )
-        )
-    
-    # Add highlighted traces for each generation (controlled by slider)
-    for i, gen in enumerate(generations):
-        gen_data = df[df['generation'] == gen]
-        
-        if gen_data.empty:
-            continue
-        
-        visible = True if i == 0 else False
-        
-        fig.add_trace(
-            go.Scatter3d(
-                x=gen_data['energy_per_token'],
-                y=gen_data['ttft'],
-                z=gen_data['validation_loss'],
-                mode='markers',
-                marker=dict(
-                    size=8,
-                    color=highlight_color,
-                    opacity=0.8,
-                    line=dict(width=2, color='darkred')
-                ),
-                name=f'Current: Gen {gen}',
-                text=[f'Gen {gen}, Individual {i}' for i in gen_data['individual_id']],
-                hovertemplate='<b>%{text}</b><br>' +
-                             'Energy/Token: %{x:.3f}<br>' +
-                             'TTFT: %{y:.3f}<br>' +
-                             'Validation Loss: %{z:.3f}<extra></extra>',
-                visible=visible,
-                showlegend=True if i == 0 else False
-            )
-        )
-    
-    # Create slider steps
-    steps = []
-    num_generations = len(generations)
-    
-    for i, gen in enumerate(generations):
-        # Background traces always visible, highlight only current generation
-        visible_list = [True] * num_generations  # Background traces
-        visible_list.extend([j == i for j in range(num_generations)])  # Highlighted traces
-        step = dict(
-            method="update",
-            args=[{"visible": visible_list}],
-            label=""
-        )
-        steps.append(step)
-    
-    # Add slider
-    sliders = [dict(
-        active=0,
-        currentvalue={"prefix": "Current Generation: "},
-        pad={"t": 50},
-        steps=steps
-    )]
-    
-    fig.update_layout(
-        sliders=sliders,
-        title=dict(
-            text="Interactive Generational Evolution - 3D View<br><sub>Use slider to highlight different generations</sub>",
-            x=0.5,
-            font=dict(size=16)
-        ),
-        scene=dict(
-            xaxis_title='Energy per Token',
-            yaxis_title='TTFT',
-            zaxis_title='Validation Loss',
-            camera=dict(
-                up=dict(x=0, y=0, z=1),
-                center=dict(x=0, y=0, z=0),
-                eye=dict(x=1.5, y=1.5, z=1.5)
-            )
-        ),
-        height=600,
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        )
-    )
-    
-    return fig
+    raise RuntimeError(f"Unable to bind a local HTTP port (tried {tried})")
 
 
 def main():
@@ -693,10 +577,11 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium_random/ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_medium/ckpt_gen", help="Path to the evolution log file")
     parser.add_argument("--start_gen", type=int, default=0, help="Starting generation index")
-    parser.add_argument("--end_gen", type=int, default=20, help="Ending generation index")
-    parser.add_argument("--output", type=str, default="htmls/interactive_generational_scatter.html", help="Output HTML file path")
+    parser.add_argument("--end_gen", type=int, default=100, help="Ending generation index")
+    parser.add_argument("--output", type=str, default="htmls/live_demo.html", help="Output HTML file path")
+    parser.add_argument("--port", type=int, default=8000, help="Preferred local server port (falls back to +1/+2 if busy)")
     args = parser.parse_args()
     
     file_name_base = args.ckpt_base
@@ -704,7 +589,13 @@ def main():
     end_gen = args.end_gen
     output_path = args.output
 
-    create_interactive_generational_scatter(file_name_base, output_path, start_gen, end_gen)
+    create_interactive_generational_scatter(
+        file_name_base,
+        output_path,
+        start_gen,
+        end_gen,
+        server_port=args.port,
+    )
 
     print("\n✅ Live demo ready!")
     print("📁 File created:")

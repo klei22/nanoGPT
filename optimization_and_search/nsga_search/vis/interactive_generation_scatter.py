@@ -367,7 +367,7 @@ def _write_2d_html_with_details(fig: go.Figure, output_path: str, div_id: str = 
         f.write(html_str)
 
 
-def create_interactive_generational_scatter(file_name_base: str, output_path: str = "htmls/interactive_generational_scatter.html", start_gen: int = 0, end_gen: int = 10, list_metrics: list = None):
+def create_interactive_generational_scatter(file_name_base: str, output_path: str = "htmls/interactive_generational_scatter.html", start_gen: int = 0, end_gen: int = 10, list_metrics: list = None, port: int = 8000):
     
     pop_data = []
     generations = list(range(start_gen, end_gen + 1))
@@ -414,7 +414,7 @@ def create_interactive_generational_scatter(file_name_base: str, output_path: st
     _write_2d_html_with_details(fig_2d, out2d, div_id="gen2d")
     print(f"✅ Interactive 2D scatter plot saved to: {out2d}")
     try:
-        _serve_and_open(out2d)
+        _serve_and_open(out2d, port=port)
     except Exception as e:
         print(f"⚠️ Could not auto-launch local server: {e}")
     
@@ -588,7 +588,10 @@ def _serve_and_open(html_path: str, port: int = 8000):
         return httpd
 
     httpd = None
-    for p in (port, port+1, port+2):
+    tried_ports = []
+    for offset in range(3):
+        p = port + offset
+        tried_ports.append(p)
         try:
             httpd = try_server(p)
             url = f"http://localhost:{p}/{filename}"
@@ -607,7 +610,7 @@ def _serve_and_open(html_path: str, port: int = 8000):
             return
         except OSError:
             continue
-    raise RuntimeError("Unable to bind a local HTTP port (tried 8000-8002)")
+    raise RuntimeError(f"Unable to bind a local HTTP port (tried {', '.join(str(tp) for tp in tried_ports)})")
 
 
 def main():
@@ -618,11 +621,14 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Create Interactive Generational Scatter Plots")
-    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_flex_kv_size/ckpt_gen", help="Path to the evolution log file")
-    parser.add_argument("--start_gen", type=int, default=0, help="Starting generation index")
-    parser.add_argument("--end_gen", type=int, default=50, help="Ending generation index")
-    parser.add_argument("--metrics", type=str, nargs='+', default=["params", "val_loss", "kv_cache_size"], help="List of metrics to plot")
+    parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_hw_medium_corrected/ckpt_gen", help="Path to the evolution log file")
+    # parser.add_argument("--ckpt_base", type=str, default="ckpts/infi_hw_med_continue/1117_0732_ckpt_gen", help="Path to the evolution log file")
+    parser.add_argument("--start_gen", type=int, default=1, help="Starting generation index")
+    parser.add_argument("--end_gen", type=int, default=60, help="Ending generation index")
+    parser.add_argument("--metrics", type=str, nargs='+', default=["params", "val_loss", "energy_per_token_uJ", "token_delay"], help="List of metrics to plot")
+    # parser.add_argument("--metrics", type=str, nargs='+', default=["params", "val_loss", "kv_cache_size"], help="List of metrics to plot")
     parser.add_argument("--output", type=str, default="htmls/interactive_generational_scatter.html", help="Output HTML file path")
+    parser.add_argument("--port", type=int, default=8002, help="Preferred local port for serving the interactive plot")
     args = parser.parse_args()
     
     file_name_base = args.ckpt_base
@@ -630,7 +636,7 @@ def main():
     end_gen = args.end_gen
     output_path = args.output
 
-    create_interactive_generational_scatter(file_name_base, output_path, start_gen, end_gen, list_metrics=args.metrics)
+    create_interactive_generational_scatter(file_name_base, output_path, start_gen, end_gen, list_metrics=args.metrics, port=args.port)
 
     print("\n✅ Live demo ready!")
     print("📁 File created:")

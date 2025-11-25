@@ -35,5 +35,6 @@ optimization_and_search/nsga_search/ref_models
 optimization_and_search/nsga_search/*.bash
 optimization_and_search/nsga_search/hw_eval/runs
 optimization_and_search/nsga_search/search_space_def/
+optimization_and_search/nsga_search/plots_paper/
 
 venv/*

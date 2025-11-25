@@ -161,7 +161,7 @@ def main():
     # run_time = time.strftime("%m%d_%H%M", time.localtime())
     n_gen = args.generations
     for i in range(0, n_gen):
-        population.generate_offspring_random()
+        population.generate_offspring()
         gen = population.gen
         print(f"\n\n================ Generation {gen} ================\n")
         population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters, sw_only=True, hw_eval_on_reallmasic=True)
