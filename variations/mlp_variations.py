@@ -9,6 +9,16 @@ from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from quantization.quantize import fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
+
+def _maybe_log_mlp_l2_dim(name: str, module: nn.Linear, dim_choice: str, enabled: bool, print_flag: bool):
+    if enabled and print_flag and hasattr(module, "weight"):
+        dim_index = 1 if dim_choice == "embed" else 0
+        print(
+            f"{name} L2-normalizing over dim '{dim_choice}' "
+            f"(size {module.weight.shape[dim_index]})"
+        )
+
+
 class OriginalMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -29,6 +39,7 @@ class OriginalMLP(nn.Module):
         self.l2_norm_mlp_down = config.l2_norm_mlp_down
         self.l2_norm_mlp_up_dim = config.l2_norm_mlp_up_dim
         self.l2_norm_mlp_down_dim = config.l2_norm_mlp_down_dim
+        self.l2_norm_print_dim = config.l2_norm_print_dim
 
         # Add learnable or fixed offsets for the activation function
         if config.learn_mlp_x_offset:
@@ -92,6 +103,9 @@ class OriginalMLP(nn.Module):
             self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
             bias=use_down_bias,
         )
+
+        _maybe_log_mlp_l2_dim("MLP c_fc", self.c_fc, self.l2_norm_mlp_up_dim, self.l2_norm_mlp_up, self.l2_norm_print_dim)
+        _maybe_log_mlp_l2_dim("MLP c_proj", self.c_proj, self.l2_norm_mlp_down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dim)
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
         self.cproj_scale = config.mlp_cproj_scale
@@ -329,6 +343,8 @@ class DualPathMLP(nn.Module):
         self.l2_norm_mlp_up_dim = config.l2_norm_mlp_up_dim
         self.l2_norm_mlp_down_dim = config.l2_norm_mlp_down_dim
 
+        self.l2_norm_print_dim = config.l2_norm_print_dim
+
         # Dual path specific parameters
         if config.learn_mlp_x_offset:
             self.activation_x_offset = nn.Parameter(torch.tensor(config.mlp_x_offset))
@@ -396,6 +412,15 @@ class DualPathMLP(nn.Module):
             self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
             bias=config.mlp_down_bias
         )
+
+        _maybe_log_mlp_l2_dim("DualPathSwiglu c_fc_in1", self.c_fc_in1, self.l2_norm_mlp_up_dim, self.l2_norm_mlp_up, self.l2_norm_print_dim)
+        _maybe_log_mlp_l2_dim("DualPathSwiglu c_fc_in2", self.c_fc_in2, self.l2_norm_mlp_up_dim, self.l2_norm_mlp_up, self.l2_norm_print_dim)
+        _maybe_log_mlp_l2_dim("DualPathSwiglu c_proj1", self.c_proj1, self.l2_norm_mlp_down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dim)
+        _maybe_log_mlp_l2_dim("DualPathSwiglu c_proj2", self.c_proj2, self.l2_norm_mlp_down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dim)
+
+        _maybe_log_mlp_l2_dim("DualPathMLP c_fc", self.c_fc, self.l2_norm_mlp_up_dim, self.l2_norm_mlp_up, self.l2_norm_print_dim)
+        _maybe_log_mlp_l2_dim("DualPathMLP c_proj1", self.c_proj1, self.l2_norm_mlp_down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dim)
+        _maybe_log_mlp_l2_dim("DualPathMLP c_proj2", self.c_proj2, self.l2_norm_mlp_down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dim)
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
         self.cproj_scale = config.mlp_cproj_scale
@@ -494,6 +519,8 @@ class Swiglu(nn.Module):
         self.l2_norm_mlp_up_dim = config.l2_norm_mlp_up_dim
         self.l2_norm_mlp_down_dim = config.l2_norm_mlp_down_dim
 
+        self.l2_norm_print_dim = config.l2_norm_print_dim
+
         # Add learnable or fixed offsets for the activation function
         if config.learn_mlp_x_offset:
             self.activation_x_offset = nn.Parameter(torch.tensor(config.mlp_x_offset))
@@ -565,6 +592,11 @@ class Swiglu(nn.Module):
             self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
             bias=use_down_bias,
         )
+
+
+        _maybe_log_mlp_l2_dim("Swiglu c_fc_in1", self.c_fc_in1, self.l2_norm_mlp_up_dim, self.l2_norm_mlp_up, self.l2_norm_print_dim)
+        _maybe_log_mlp_l2_dim("Swiglu c_fc_in2", self.c_fc_in2, self.l2_norm_mlp_up_dim, self.l2_norm_mlp_up, self.l2_norm_print_dim)
+        _maybe_log_mlp_l2_dim("Swiglu c_fc_out", self.c_fc_out, self.l2_norm_mlp_down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dim)
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
         self.cproj_scale = config.mlp_cproj_scale
@@ -652,6 +684,8 @@ class DualPathSwiglu(nn.Module):
         self.l2_norm_mlp_down = config.l2_norm_mlp_down
         self.l2_norm_mlp_up_dim = config.l2_norm_mlp_up_dim
         self.l2_norm_mlp_down_dim = config.l2_norm_mlp_down_dim
+
+        self.l2_norm_print_dim = config.l2_norm_print_dim
 
         # Dual path specific parameters
         if config.learn_mlp_x_offset:

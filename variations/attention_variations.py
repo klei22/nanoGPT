@@ -15,6 +15,15 @@ from variations.softmax_variations import softmax_dictionary
 from variations.triadic_modulation_variations import mod_fn_dict
 
 
+def _maybe_log_l2_dim(name: str, module: nn.Linear, dim_choice: str, enabled: bool, print_flag: bool):
+    if enabled and print_flag and hasattr(module, "weight"):
+        dim_index = 1 if dim_choice == "embed" else 0
+        print(
+            f"{name} L2-normalizing over dim '{dim_choice}' "
+            f"(size {module.weight.shape[dim_index]})"
+        )
+
+
 def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
     """Return per-group head counts and mapping from head index to kv group."""
     if n_kv_group <= 0:
@@ -1026,6 +1035,17 @@ class InfiniteHeadAttention(nn.Module):
         self.use_qk_norm_scale  = config.use_qk_norm_scale
         self.use_v_norm         = config.use_v_norm
 
+        # L2 normalization options
+        self.l2_norm_attn_q = config.l2_norm_attn_q
+        self.l2_norm_attn_k = config.l2_norm_attn_k
+        self.l2_norm_attn_v = config.l2_norm_attn_v
+        self.l2_norm_attn_cproj = config.l2_norm_attn_cproj
+        self.l2_norm_attn_q_dim = config.l2_norm_attn_q_dim
+        self.l2_norm_attn_k_dim = config.l2_norm_attn_k_dim
+        self.l2_norm_attn_v_dim = config.l2_norm_attn_v_dim
+        self.l2_norm_attn_cproj_dim = config.l2_norm_attn_cproj_dim
+        self.l2_norm_print_dim = config.l2_norm_print_dim
+
         # Flash Lobo
         self.use_flash_lobo          = config.use_flash_lobo
         self.use_flash_lobo_per_head = config.use_flash_lobo_per_head
@@ -1074,6 +1094,23 @@ class InfiniteHeadAttention(nn.Module):
                 ]
             )
 
+        _maybe_log_l2_dim("Attention Wq", self.c_attn_q, self.l2_norm_attn_q_dim, self.l2_norm_attn_q, self.l2_norm_print_dim)
+        _maybe_log_l2_dim("Attention Wk", self.c_attn_k, self.l2_norm_attn_k_dim, self.l2_norm_attn_k, self.l2_norm_print_dim)
+        _maybe_log_l2_dim("Attention Wv", self.c_attn_v, self.l2_norm_attn_v_dim, self.l2_norm_attn_v, self.l2_norm_print_dim)
+
+        if self.use_concat_heads or self.n_cproj == 1:
+            target_proj = self.c_proj
+            _maybe_log_l2_dim(
+                "Attention c_proj", target_proj, self.l2_norm_attn_cproj_dim,
+                self.l2_norm_attn_cproj, self.l2_norm_print_dim
+            )
+        else:
+            for idx, proj in enumerate(self.c_proj_list):
+                _maybe_log_l2_dim(
+                    f"Attention c_proj[{idx}]", proj, self.l2_norm_attn_cproj_dim,
+                    self.l2_norm_attn_cproj, self.l2_norm_print_dim
+                )
+
         # option to turn off flash attention
         self.disable_flash_attention = config.disable_flash_attention
 
@@ -1121,9 +1158,26 @@ class InfiniteHeadAttention(nn.Module):
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
-        q = self.c_attn_q(x)
-        k = self.c_attn_k(x)
-        v = self.c_attn_v(x)
+        if self.l2_norm_attn_q:
+            q_dim = 1 if self.l2_norm_attn_q_dim == 'embed' else 0
+            q_weight = F.normalize(self.c_attn_q.weight, p=2, dim=q_dim)
+            q = F.linear(x, q_weight, self.c_attn_q.bias)
+        else:
+            q = self.c_attn_q(x)
+
+        if self.l2_norm_attn_k:
+            k_dim = 1 if self.l2_norm_attn_k_dim == 'embed' else 0
+            k_weight = F.normalize(self.c_attn_k.weight, p=2, dim=k_dim)
+            k = F.linear(x, k_weight, self.c_attn_k.bias)
+        else:
+            k = self.c_attn_k(x)
+
+        if self.l2_norm_attn_v:
+            v_dim = 1 if self.l2_norm_attn_v_dim == 'embed' else 0
+            v_weight = F.normalize(self.c_attn_v.weight, p=2, dim=v_dim)
+            v = F.linear(x, v_weight, self.c_attn_v.bias)
+        else:
+            v = self.c_attn_v(x)
 
         q = q.view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2) # (B, n_h, T, hs)
         k = k.view(B, T, self.n_kv_group, self.n_qk_head_dim).transpose(1, 2) # (B, n_kv, T, hs)
@@ -1218,17 +1272,35 @@ class InfiniteHeadAttention(nn.Module):
             # (B, nh, T, v_dim) → (B, T, nh*v_dim); avoid extra .contiguous()
             # flatten heads → (B, T, n_head * n_v_head_dim)
             y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
-            y = self.c_proj(y)
+            if self.l2_norm_attn_cproj:
+                cproj_dim = 1 if self.l2_norm_attn_cproj_dim == 'embed' else 0
+                cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=cproj_dim)
+                y = F.linear(y, cproj_weight, self.c_proj.bias)
+            else:
+                y = self.c_proj(y)
         elif self.n_cproj == 1:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y = y.sum(dim=1)
-            y = self.c_proj(y)
+            if self.l2_norm_attn_cproj:
+                cproj_dim = 1 if self.l2_norm_attn_cproj_dim == 'embed' else 0
+                cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=cproj_dim)
+                y = F.linear(y, cproj_weight, self.c_proj.bias)
+            else:
+                y = self.c_proj(y)
         else:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y_sum = y.sum(dim=1)
 
             # Parallel small projections then fuse; avoids Python-level loop
-            y = torch.stack([proj(y_sum) for proj in self.c_proj_list ], dim=0).sum(dim=0)
+            if self.l2_norm_attn_cproj:
+                cproj_dim = 1 if self.l2_norm_attn_cproj_dim == 'embed' else 0
+                proj_outputs = [
+                    F.linear(y_sum, F.normalize(proj.weight, p=2, dim=cproj_dim), proj.bias)
+                    for proj in self.c_proj_list
+                ]
+            else:
+                proj_outputs = [proj(y_sum) for proj in self.c_proj_list]
+            y = torch.stack(proj_outputs, dim=0).sum(dim=0)
 
         # output projection
         y = self.resid_dropout(y)

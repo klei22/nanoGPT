@@ -46,6 +46,15 @@ from initializations.initialization_variations import init_dictionary
 from shared_param_utils import SharedParamGroupCreator
 from variations.block_variations import Block
 
+
+def _maybe_log_lm_head_l2_dim(weight: torch.Tensor, dim_choice: str, enabled: bool, print_flag: bool) -> None:
+    if enabled and print_flag:
+        dim_index = 1 if dim_choice == "embed" else 0
+        print(
+            f"LM Head L2-normalizing over dim '{dim_choice}' "
+            f"(size {weight.shape[dim_index]})"
+        )
+
 class LearnedPositionEmbedding(nn.Module):
     """
     Learns a position-aware residual using the same Block modules (transformer.h)
@@ -91,6 +100,9 @@ class GPT(nn.Module):
         assert config.block_size is not None
 
         self.config = config
+        self.l2_norm_lm_head = config.l2_norm_lm_head
+        self.l2_norm_lm_head_dim = config.l2_norm_lm_head_dim
+        self.l2_norm_print_dim = config.l2_norm_print_dim
 
         self.uses_numerical_multicontext = bool(config.numerical_multicontext)
         if self.uses_numerical_multicontext:
@@ -254,6 +266,14 @@ class GPT(nn.Module):
             else:
                 self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
 
+        if self.wte_weight_tying and hasattr(self, "lm_head"):
+            _maybe_log_lm_head_l2_dim(
+                self.lm_head.weight,
+                self.l2_norm_lm_head_dim,
+                self.l2_norm_lm_head,
+                self.l2_norm_print_dim,
+            )
+
         # import wte
         if self.config.import_wte_npy:
             # Replace wte with values from numpy and retie weights
@@ -405,6 +425,13 @@ class GPT(nn.Module):
 
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
+
+    def _forward_lm_head(self, x: torch.Tensor) -> torch.Tensor:
+        if self.wte_weight_tying and self.l2_norm_lm_head:
+            dim_index = 1 if self.l2_norm_lm_head_dim == "embed" else 0
+            norm_weight = F.normalize(self.lm_head.weight, p=2, dim=dim_index)
+            return F.linear(x, norm_weight, self.lm_head.bias)
+        return self.lm_head(x)
 
     def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
         if token_dict is not None:
@@ -663,7 +690,7 @@ class GPT(nn.Module):
                 if self.config.multidataset_wte and dataset_idx is not None:
                     logits = self.transformer[f'lm_head_{dataset_idx}'](x)
                 else:
-                    logits = self.lm_head(x)
+                    logits = self._forward_lm_head(x)
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -679,7 +706,7 @@ class GPT(nn.Module):
                 if self.config.multidataset_wte and dataset_idx is not None:
                     logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
                 else:
-                    logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+                    logits = self._forward_lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -764,7 +791,7 @@ class GPT(nn.Module):
         if self.config.multidataset_wte and dataset_idx is not None:
             logits = self.transformer[f'lm_head_{dataset_idx}'](x)
         else:
-            logits = self.lm_head(x)
+            logits = self._forward_lm_head(x)
         if self.final_logit_softcapping is not None:
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping
