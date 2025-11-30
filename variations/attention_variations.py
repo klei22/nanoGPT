@@ -5,6 +5,8 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.nn.utils.parametrize import is_parametrized
+from torch.nn.utils.parametrizations import weight_norm
 
 from quantization.quant_utils import create_activation_buffers, set_variant
 from quantization.quantize import fake_quantize_act
@@ -1025,6 +1027,7 @@ class InfiniteHeadAttention(nn.Module):
         self.use_qk_norm        = config.use_qk_norm
         self.use_qk_norm_scale  = config.use_qk_norm_scale
         self.use_v_norm         = config.use_v_norm
+        self.weight_norm_print_dim = getattr(config, "weight_norm_print_dim", False)
 
         # Flash Lobo
         self.use_flash_lobo          = config.use_flash_lobo
@@ -1056,15 +1059,21 @@ class InfiniteHeadAttention(nn.Module):
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
 
+        self._maybe_weight_norm(self.c_attn_q, config.wq_weight_norm, config.wq_weight_norm_dim, "c_attn_q")
+        self._maybe_weight_norm(self.c_attn_k, config.wk_weight_norm, config.wk_weight_norm_dim, "c_attn_k")
+        self._maybe_weight_norm(self.c_attn_v, config.wv_weight_norm, config.wv_weight_norm_dim, "c_attn_v")
+
         if self.use_concat_heads:
             print("use_concat_heads")
             # Usually c_proj dim are (n_head * n_head dim = n_embd), here we have to provide the factorized version
             self.c_proj = self.linear_variant_attn_proj(
                 self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias
             )
+            self._maybe_weight_norm(self.c_proj, config.cproj_weight_norm, config.cproj_weight_norm_dim, "c_proj")
         elif self.n_cproj==1:
             print("use n_cproj 1", self.n_v_head_dim, self.n_embd)
             self.c_proj = self.linear_variant_attn_proj(self.n_v_head_dim, self.n_embd, config, bias=config.bias)
+            self._maybe_weight_norm(self.c_proj, config.cproj_weight_norm, config.cproj_weight_norm_dim, "c_proj")
         else:
             print("use_cproj_list")
             self.c_proj_list = nn.ModuleList(
@@ -1073,6 +1082,8 @@ class InfiniteHeadAttention(nn.Module):
                     for _ in range(self.n_cproj)
                 ]
             )
+            for proj in self.c_proj_list:
+                self._maybe_weight_norm(proj, config.cproj_weight_norm, config.cproj_weight_norm_dim, "c_proj_list")
 
         # option to turn off flash attention
         self.disable_flash_attention = config.disable_flash_attention
@@ -1112,6 +1123,38 @@ class InfiniteHeadAttention(nn.Module):
 
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                              .view(1, 1, config.block_size, config.block_size))
+
+    def _weight_norm_dim(self, dim_choice: str) -> int:
+        if dim_choice == "hidden":
+            return 0
+        if dim_choice == "embed":
+            return 1
+        raise ValueError(f"Unsupported weight norm dimension '{dim_choice}' (expected 'hidden' or 'embed')")
+
+    def _maybe_weight_norm(self, module: nn.Module, enabled: bool, dim_choice: str, module_name: str = "module"):
+        if not enabled or module is None:
+            return
+
+        target = module
+        if not hasattr(target, "weight"):
+            target = getattr(module, "linear", None)
+
+        if target is None or not hasattr(target, "weight"):
+            return
+
+        dim = self._weight_norm_dim(dim_choice)
+
+        if is_parametrized(target, "weight"):
+            return
+
+        if self.weight_norm_print_dim:
+            try:
+                dim_size = target.weight.shape[dim]
+                print(f"Weight norm for {module_name}: normalizing over dimension size {dim_size}")
+            except Exception:
+                print(f"Weight norm for {module_name}: normalizing over dimension index {dim}")
+
+        weight_norm(target, name="weight", dim=dim)
 
     def _expand_kv(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.n_head == self.n_kv_group:
