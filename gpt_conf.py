@@ -176,6 +176,17 @@ class GPTConfig:
     use_qk_norm_scale: bool = False
     use_v_norm: bool = False
 
+    # Infinite Attention weight normalization
+    wq_weight_norm: bool = False
+    wq_weight_norm_dim: str = "hidden"
+    wk_weight_norm: bool = False
+    wk_weight_norm_dim: str = "hidden"
+    wv_weight_norm: bool = False
+    wv_weight_norm_dim: str = "hidden"
+    cproj_weight_norm: bool = False
+    cproj_weight_norm_dim: str = "hidden"
+    weight_norm_print_dim: bool = False
+
     ## SSM - Attention Varient (same as Hymba)
     ssm_mamba_expand: int = 2
     ssm_conv_kernel_size: int = 3

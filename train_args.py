@@ -869,6 +869,17 @@ def parse_args():
     model_group.add_argument("--use_qk_norm_scale",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies norm scale, preloads scale for flash attn, post qk multiplication in manual attn")
     model_group.add_argument("--use_v_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to v before attn output")
 
+    ## Infinite Attention weight normalization
+    model_group.add_argument("--wq_weight_norm", type=bool, default=False, action=argparse.BooleanOptionalAction, help="apply weight normalization to q projection in infinite attention")
+    model_group.add_argument("--wq_weight_norm_dim", type=str, default="hidden", choices=["hidden", "embed"], help="dimension to normalize q projection weights over")
+    model_group.add_argument("--wk_weight_norm", type=bool, default=False, action=argparse.BooleanOptionalAction, help="apply weight normalization to k projection in infinite attention")
+    model_group.add_argument("--wk_weight_norm_dim", type=str, default="hidden", choices=["hidden", "embed"], help="dimension to normalize k projection weights over")
+    model_group.add_argument("--wv_weight_norm", type=bool, default=False, action=argparse.BooleanOptionalAction, help="apply weight normalization to v projection in infinite attention")
+    model_group.add_argument("--wv_weight_norm_dim", type=str, default="hidden", choices=["hidden", "embed"], help="dimension to normalize v projection weights over")
+    model_group.add_argument("--cproj_weight_norm", type=bool, default=False, action=argparse.BooleanOptionalAction, help="apply weight normalization to attention output projection in infinite attention")
+    model_group.add_argument("--cproj_weight_norm_dim", type=str, default="hidden", choices=["hidden", "embed"], help="dimension to normalize output projection weights over")
+    model_group.add_argument("--weight_norm_print_dim", type=bool, default=False, action=argparse.BooleanOptionalAction, help="log the dimension size used for weight normalization in infinite attention projections")
+
     ## Flash Lobo
     model_group.add_argument("--use_flash_lobo",   type=bool, default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--use_flash_lobo_per_head",   type=bool, default=False, action=argparse.BooleanOptionalAction)
