@@ -15,10 +15,10 @@ else
 fi
 
 cmd=(
-  python3 ../utils/get_parquet_dataset.py \
+  python3 ./utils/get_parquet_dataset.py \
     --url "${DATASET_URL}" \
     --include_keys "query" "synthetic_reasoning" "synthetic_answer" \
-    --value_prefix $'#Q:\n' $'#R:\n' $'#A:\n' \
+    --value_prefix $'\n#Q:\n' $'\n#R:\n' $'\n#A:\n' \
     -o input.txt
 )
 
