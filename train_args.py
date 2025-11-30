@@ -40,6 +40,28 @@ def parse_args():
                              help="Dimension for L2-normalizing MLP up projections: 'embed' or 'hidden'")
     model_group.add_argument('--l2_norm_mlp_down_dim', type=str, default='hidden', choices=['embed', 'hidden'],
                              help="Dimension for L2-normalizing MLP down projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_q', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention q projection weights')
+    model_group.add_argument('--l2_norm_attn_k', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention k projection weights')
+    model_group.add_argument('--l2_norm_attn_v', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention v projection weights')
+    model_group.add_argument('--l2_norm_attn_cproj', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention c_proj projection weights')
+    model_group.add_argument('--l2_norm_attn_q_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention q projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_k_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention k projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_v_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention v projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_cproj_dim', type=str, default='hidden', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention c_proj projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_lm_head', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize lm_head weights in the weight-tying path')
+    model_group.add_argument('--l2_norm_lm_head_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing lm_head weights: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_print_dim', default=False, action=argparse.BooleanOptionalAction,
+                             help='Print the dimension size used for L2 normalization when enabled')
 
     # Export Args
     ## Factored WTE
