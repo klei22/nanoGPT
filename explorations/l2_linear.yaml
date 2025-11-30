@@ -1,0 +1,141 @@
+# l2_linear.yaml demonstrating named parameter group configurations
+---
+
+# Atomic Static Groupings
+named_static_groups:
+  - named_group: "use_attn_l2"
+    l2_norm_print_dims: [true]
+    l2_norm_attn_q: [true]
+    l2_norm_attn_k: [true]
+    l2_norm_attn_v: [true]
+    l2_norm_attn_cproj: [true]
+    l2_norm_attn_q_dim: ["embed"]
+    l2_norm_attn_k_dim: ["embed"]
+    l2_norm_attn_v_dim: ["embed"]
+    l2_norm_attn_cproj_dim: ["embed"]
+
+  - named_group: "no_attn_l2"
+    l2_norm_attn_q: [false]
+    l2_norm_attn_k: [false]
+    l2_norm_attn_v: [false]
+    l2_norm_attn_cproj: [false]
+
+  - named_group: "use_mlp_l2"
+    l2_norm_print_dims: [true]
+    l2_norm_mlp_up: [true]
+    l2_norm_mlp_down: [true]
+    l2_norm_mlp_up_dim: ["embed"]
+    l2_norm_mlp_down_dim: ["embed"]
+  - named_group: "no_mlp_l2"
+    l2_norm_mlp_up: [false]
+    l2_norm_mlp_down: [false]
+
+  # QK Norm
+  - named_group: "use_qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "no_qk_norm"
+    use_qk_norm: [false]
+    use_qk_norm_scale: [false]
+
+  # V Norm
+  - named_group: "use_v_norm"
+    use_v_norm: [true]
+  - named_group: "no_v_norm"
+    use_v_norm: [false]
+
+  # Norm Type
+  - named_group: "pre_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [false]
+    use_post_ln: [false]
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary_pos_enc"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # RMSNorm Variations
+  - named_group: "rmsnorm_all"
+    norm_variant_wte: ["rmsnorm"]
+    norm_variant_attn: ["rmsnorm"]
+    norm_variant_output: ["rmsnorm"]
+  - named_group: "hsnorm_wl_all"
+    norm_variant_wte: ["hyperspherenorm"]
+    norm_variant_attn: ["hyperspherenorm"]
+    norm_variant_output: ["hyperspherenorm"]
+    hsnorm_radius_learning: [true]
+    norm_wte_radius_learning: [true]
+
+  # Attention Variant
+  - named_group: "relu2max"
+    softmax_variant_attn: ["relu2max"]
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+  - named_group: "relu2"
+    activation_variant: ["squared_relu"]
+  - named_group: "gelu"
+    activation_variant: ["gelu"]
+  - named_group: "use_mlp_post_act_l2"
+    mlp_post_act_l2_norm: [true]
+  - named_group: "no_mlp_post_act_l2"
+    mlp_post_act_l2_norm: [false]
+
+# Higher Level Groupings
+named_variation_groups:
+  - named_group: "norm_arch"
+    named_group_alternates: ["pre_ln", "peri_ln"]
+  - named_group: "norm_type"
+    named_group_alternates: ["hsnorm_wl_all", "rmsnorm_all"]
+  - named_group: "attn_type"
+    named_group_alternates: ["relu2max", "softmax"]
+  - named_group: "act_type"
+    named_group_alternates: ["relu2", "gelu"]
+  - named_group: "attn_l2"
+    named_group_alternates: ["use_attn_l2", "no_attn_l2"]
+  - named_group: "mlp_l2"
+    named_group_alternates: ["use_mlp_l2", "no_mlp_l2"]
+  - named_group: "qk_norm"
+    named_group_alternates: ["use_qk_norm", "no_qk_norm"] # Found to be helpful
+  - named_group: "v_norm"
+    named_group_alternates: ["use_v_norm", "no_v_norm"] # found to be harmful in pre-ln
+  - named_group: "mlp_post_act_l2"
+    named_group_alternates: ["use_mlp_post_act_l2", "no_mlp_post_act_l2"]
+
+# Common_group: parameters applied to every run, but omitted from run names
+common_group:
+  dataset: ["minipile"]
+  n_layer: ["6"]
+  block_size: ["256"]
+  batch_size: ["64"]
+  max_iters: ["10000"]
+  eval_interval: ["2000"]
+  eta_variant: ["iteration"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  never_save_checkpoint: [true]
+  compute_model_stats: [true]
+  attention_variant: ["infinite"]
+  use_concat_heads: [true]
+  n_v_head_dim: [150]
+  n_qk_head_dim: [150]
+  n_head: [3]
+  compile: [true]
+
+print_model_stats_table: ["./print_stats/${RUN_NAME}"]
+
+# Parameter_groups: define sets of overrides to apply on top of base params
+parameter_groups:
+  - named_group_static: ["peri_ln", "softmax", "rotary_pos_enc", "use_qk_norm"]
+    named_group_variations:
+      - "norm_type"
+      - "act_type"
+      - "attn_l2"
+      - "mlp_l2"
+      - "v_norm"
+      - "mlp_post_act_l2"
