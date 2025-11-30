@@ -1,4 +1,83 @@
+from typing import Optional
+
 import torch
+
+
+def _fake_quantize_gradient_fp(
+    tensor: torch.Tensor, exp_bits: Optional[int], mantissa_bits: Optional[int]
+) -> torch.Tensor:
+    """Quantize a tensor to a custom floating point format.
+
+    Args:
+        tensor: Input gradient tensor.
+        exp_bits: Number of exponent bits to keep. If ``None`` quantization is disabled.
+        mantissa_bits: Number of mantissa bits to keep. If ``None`` quantization is disabled.
+
+    Returns:
+        The tensor quantized to the specified floating point format (sign bit preserved).
+    """
+
+    if exp_bits is None or mantissa_bits is None:
+        return tensor
+
+    if exp_bits < 1:
+        raise ValueError("exp_bits must be >= 1 when enabling gradient fake quantization")
+    if mantissa_bits < 0:
+        raise ValueError("mantissa_bits must be >= 0 when enabling gradient fake quantization")
+
+    if tensor.is_sparse:
+        raise ValueError("Sparse tensors are not supported for gradient fake quantization")
+
+    original_dtype = tensor.dtype
+    grad = tensor.to(torch.float32)
+
+    sign = torch.sign(grad)
+    abs_grad = grad.abs()
+
+    mantissa, exponent = torch.frexp(abs_grad)
+    exponent_unbiased = exponent.to(torch.int32) - 1
+
+    bias = (1 << (exp_bits - 1)) - 1
+    min_exp = 1 - bias
+    max_exp = bias
+
+    underflow_mask = exponent_unbiased < min_exp
+    overflow_mask = exponent_unbiased > max_exp
+
+    exponent_clamped = exponent_unbiased.clamp(min_exp, max_exp)
+    mantissa_norm = mantissa * 2.0
+
+    if mantissa_bits == 0:
+        mantissa_norm_q = torch.ones_like(mantissa_norm)
+    else:
+        levels = 1 << mantissa_bits
+        fraction = mantissa_norm - 1.0
+        fraction_scaled = torch.round(fraction * levels)
+        fraction_scaled = fraction_scaled.clamp(0, levels - 1)
+        mantissa_norm_q = 1.0 + fraction_scaled / levels
+
+    scale = torch.pow(
+        torch.tensor(2.0, device=grad.device, dtype=grad.dtype),
+        exponent_clamped.to(grad.dtype),
+    )
+    quantized = mantissa_norm_q * scale
+
+    max_mantissa_norm = torch.tensor(1.0, device=grad.device, dtype=grad.dtype)
+    if mantissa_bits > 0:
+        max_mantissa_norm = torch.tensor(
+            2.0 - (1.0 / (1 << mantissa_bits)), device=grad.device, dtype=grad.dtype
+        )
+    max_scale = torch.pow(
+        torch.tensor(2.0, device=grad.device, dtype=grad.dtype),
+        torch.tensor(float(max_exp), device=grad.device, dtype=grad.dtype),
+    )
+    max_value = max_mantissa_norm * max_scale
+
+    quantized = torch.where(overflow_mask, max_value, quantized)
+    quantized = torch.where(underflow_mask | (abs_grad == 0), torch.zeros_like(quantized), quantized)
+
+    result = sign * quantized
+    return result.to(original_dtype)
 
 def set_dtype(bits):
     if bits > 16:
@@ -161,7 +240,20 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input, training, quant_scheduler, start_quant_level, full_quant_iter, eval_interval, steps, bits=7, quantization_method="affine_quant"):
+    def forward(
+        ctx,
+        input,
+        training,
+        quant_scheduler,
+        start_quant_level,
+        full_quant_iter,
+        eval_interval,
+        steps,
+        bits=7,
+        quantization_method="affine_quant",
+        grad_exp_bits=None,
+        grad_mantissa_bits=None,
+    ):
         """
         Forward pass
         :param ctx: Context object to store information for the backward pass (not used in this case)
@@ -174,6 +266,8 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
         # Dequantize the quantized values using the dequantize function.
         # Return the dequantized tensor, which approximates the input tensor but includes the quantization error.
         zero_point, norm, quantized_weight = quantize_dictionary[quantization_method](input, bits)
+        ctx.grad_exp_bits = grad_exp_bits
+        ctx.grad_mantissa_bits = grad_mantissa_bits
         # If scheduler is set, then we need to calculate the current quantization level
         dequantized = dequantize(zero_point, norm, quantized_weight)
         if quant_scheduler != None:
@@ -187,9 +281,12 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         # Straight-Through Estimator (STE): passes grad_output through as the gradient with respect to the input
-        # gradient is approximated by simply passing the gradient from the output directly to the input, 
+        # gradient is approximated by simply passing the gradient from the output directly to the input,
         # ignoring the quantization operation
-        return grad_output, None, None, None, None, None, None, None, None
+        grad_exp_bits = getattr(ctx, "grad_exp_bits", None)
+        grad_mant_bits = getattr(ctx, "grad_mantissa_bits", None)
+        grad_input = _fake_quantize_gradient_fp(grad_output, grad_exp_bits, grad_mant_bits)
+        return grad_input, None, None, None, None, None, None, None, None, None, None
 
 quantize_dictionary = {
     "ternary_quant": ternary_quantize,
