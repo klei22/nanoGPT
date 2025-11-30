@@ -109,6 +109,10 @@ class CausalSelfAttention(nn.Module):
         self.resid_dropout = nn.Dropout(config.dropout)
         self.dropout = config.dropout
 
+        # Post-attention normalization/scaling (mirrors MLP behavior)
+        self.post_act_l2_norm = getattr(config, "attn_post_act_l2_norm", False)
+        self.cproj_scale = getattr(config, "attn_cproj_scale", 1.0)
+
         # Embedding
         self.n_embd = config.n_embd
         self.dropout = config.dropout
@@ -1212,6 +1216,12 @@ class InfiniteHeadAttention(nn.Module):
             att = self.attn_dropout(att)
 
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+
+        if self.post_act_l2_norm:
+            y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            y = y / self.cproj_scale
 
         # Concat Heads or Inf Concat Heads
         if self.use_concat_heads:

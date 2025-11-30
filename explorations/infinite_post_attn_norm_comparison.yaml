@@ -1,0 +1,61 @@
+# infinite_post_attn_norm_comparison.yaml
+---
+
+# Named static groupings shared by all runs
+named_static_groups:
+  - named_group: "pre_ln_relu2max"
+    use_pre_ln: [true]
+    use_peri_ln: [false]
+    use_post_ln: [false]
+    attention_variant: ["infinite"]
+    softmax_variant_attn: ["relu2max"]
+    relu2max_divisor: [256.0]
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+    use_concat_heads: [false]
+    n_head: [8]
+    n_qk_head_dim: [64]
+    n_v_head_dim: [64]
+    n_cproj: [8]
+    mlp_variant: ["mlp"]
+
+  - named_group: "mlp_relu2"
+    activation_variant: ["squared_relu"]
+
+  - named_group: "mlp_gelu"
+    activation_variant: ["gelu"]
+
+# Named variation group to swap MLP activations
+named_variation_groups:
+  - named_group: "mlp_activation"
+    named_group_alternates: ["mlp_relu2", "mlp_gelu"]
+
+# Parameters applied to every run (omitted from run names)
+common_group:
+  dataset: ["minipile"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  max_iters: [10000]
+  eval_interval: [1000]
+  lr_decay_iters: [10000]
+  warmup_iters: [1000]
+  decay_lr: [true]
+  block_size: [256]
+  batch_size: [64]
+  n_layer: [12]
+  never_save_checkpoint: [true]
+
+# Parameter groups to compare attention post-activation normalization and scaling
+parameter_groups:
+  # Baseline infinite attention without post-attention normalization
+  - attn_post_act_l2_norm: [false]
+    attn_cproj_scale: [1.0]
+    named_group_static: ["pre_ln_relu2max"]
+    named_group_variations: ["mlp_activation"]
+
+  # Enable post-attention L2 norm and allow mild scaling sweep
+  - attn_post_act_l2_norm: [true]
+    attn_cproj_scale: [1.0, 2.0]
+    named_group_static: ["pre_ln_relu2max"]
+    named_group_variations: ["mlp_activation"]

@@ -862,6 +862,10 @@ def parse_args():
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
     model_group.add_argument('--n_v_head_dim', default=None, type=int)
     model_group.add_argument('--n_cproj', default=None, type=int)
+    model_group.add_argument('--attn_cproj_scale', default=1.0, type=float,
+                             help="Scale attention outputs before c_proj (Infinite Attention)")
+    model_group.add_argument('--attn_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction,
+                             help="L2 normalize attention outputs before c_proj (Infinite Attention)")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
 
     ## qk_norm variations
