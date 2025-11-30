@@ -1086,6 +1086,10 @@ class InfiniteHeadAttention(nn.Module):
         self.resid_dropout = nn.Dropout(config.dropout)
         self.dropout = config.dropout
 
+        # Post-attention normalization/scaling (mirrors MLP behavior)
+        self.post_act_l2_norm = getattr(config, "attn_post_act_l2_norm", False)
+        self.cproj_scale = getattr(config, "attn_cproj_scale", 1.0)
+
         # Embedding
         self.n_embd = config.n_embd
 
