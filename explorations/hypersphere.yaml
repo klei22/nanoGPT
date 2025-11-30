@@ -59,10 +59,12 @@ named_static_groups:
     norm_variant_wte: ["rmsnorm"]
     norm_variant_attn: ["rmsnorm"]
     norm_variant_output: ["rmsnorm"]
-  - named_group: "hsnorm_all"
+  - named_group: "hsnorm_wl_all"
     norm_variant_wte: ["hyperspherenorm"]
     norm_variant_attn: ["hyperspherenorm"]
     norm_variant_output: ["hyperspherenorm"]
+    hsnorm_radius_learning: [true]
+    norm_wte_radius_learning: [true]
 
   # Attention Variant
   - named_group: "relu2max"
@@ -79,7 +81,7 @@ named_variation_groups:
   - named_group: "norm_arch"
     named_group_alternates: ["pre_ln", "peri_ln"]
   - named_group: "norm_type"
-    named_group_alternates: ["hsnorm_all", "rmsnorm_all"]
+    named_group_alternates: ["hsnorm_wl_all", "rmsnorm_all"]
   - named_group: "attn_type"
     named_group_alternates: ["relu2max", "softmax"]
   - named_group: "act_type"
@@ -89,9 +91,9 @@ named_variation_groups:
   - named_group: "mlp_l2"
     named_group_alternates: ["use_mlp_l2", "no_mlp_l2"]
   - named_group: "qk_norm"
-    named_group_alternates: ["use_qk_norm", "no_qk_norm"]
+    named_group_alternates: ["use_qk_norm"] # Found to be helpful
   - named_group: "v_norm"
-    named_group_alternates: ["use_v_norm", "no_v_norm"]
+    named_group_alternates: ["no_v_norm"] # found to be harmful
 
 # Common_group: parameters applied to every run, but omitted from run names
 common_group:
