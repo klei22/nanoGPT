@@ -17,6 +17,10 @@ standard deviations.
 
 ### Experiment 1 – Gaussian noise stddev sweep
 
+```markdown
+![Experiment 1: Adding random vector of stddev](images/vector_angle_noise_std.png)
+```
+
 For each dimension `d`:
 
 1. Sample a base vector  
@@ -76,12 +80,8 @@ For each dimension `d`:
 * Static PNG: `vector_angle_alpha.png`
 * Interactive HTML: `vector_angle_alpha.html`
 
-**Plot placeholder**
-
-Replace the path below with wherever you store the rendered image:
-
 ```markdown
-![Experiment 2: Angular deviation vs alpha](images/Angular_deviation_vs_alpha.png)
+![Experiment 2: Angular deviation vs alpha](images/vector_angle_alpha.png)
 ```
 
 ---
