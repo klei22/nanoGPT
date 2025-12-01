@@ -118,16 +118,6 @@ def parse_args():
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
 
-    # # lm_eval Benchmarking Related
-    # parser.add_argument('--lm_eval_tasks', type=str, default=None,
-    #                 help="Comma-separated list of tasks for lm-eval (e.g. 'arc_easy,hellaswag')")
-    # parser.add_argument(
-    #     '--lm_eval_results_output',
-    #     type=str,
-    #     default=None,
-    #     help="Where to save the lm-eval results (JSON). "
-    #          "If not set, defaults to out_dir/<timestamp>_lm_eval_results.json"
-    # )
     parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size to use for evaluation")
 
