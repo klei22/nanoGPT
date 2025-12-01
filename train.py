@@ -1657,6 +1657,7 @@ class Trainer:
                             f"{chance_ratio:.3e}",
                             f"{chance_ratio/self.model.num_param:.3e}",
                             f"{peak_mb:.1f}",
+                            f"{self.iter_latency_avg:.1f}",
                             f"{self.latest_top1_prob:.6f}",
                             f"{self.latest_top1_correct:.6f}",
                             f"{self.latest_target_rank:.2f}",
