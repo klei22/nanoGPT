@@ -1662,7 +1662,7 @@ class Trainer:
                             f"{self.latest_target_rank:.2f}",
                             f"{self.latest_target_left_prob:.6f}",
                             f"{self.latest_target_prob:.6f}",
-                            f"{self.latest_target_rank_95:.2f}",
+                            f"{self.latest_rank_95:.2f}",
                             f"{self.latest_left_prob_95:.6f}",
                             f"{self.latest_ln_f_cosine:.6f}",
                             f"{self.latest_ln_f_cosine_95:.6f}",
