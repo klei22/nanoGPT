@@ -115,7 +115,7 @@ class Trainer:
         self.latest_target_prob = float('nan')
         self.latest_target_left_prob = float('nan')
         self.latest_rank_95 = float('nan')
-        self.latest_left_prob_95 = float('nan')
+        self.latest_median_prob_rank = float('nan')
         self.latest_ln_f_cosine = float('nan')
         self.latest_ln_f_cosine_95 = float('nan')
 
@@ -968,7 +968,7 @@ class Trainer:
             for dataset in self.args.dataset_list:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
-                top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
+                top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, median_prob_ranks = [], [], [], [], [], []
                 ln_f_cosines = []
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
@@ -1000,7 +1000,10 @@ class Trainer:
                             target_probs.append(target_prob)
                             left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
                             target_left_probs.append(left_prob)
-                            left_inclusive_probs.append(left_prob + target_prob)
+                            sorted_probs, _ = probs.sort(dim=-1, descending=True)
+                            cumulative_probs = sorted_probs.cumsum(dim=-1)
+                            median_rank = (cumulative_probs < 0.5).sum(dim=-1) + 1
+                            median_prob_ranks.append(median_rank.float())
                             lm_head = (
                                 self.model.transformer[f'lm_head_{idx}']
                                 if self.args.multidataset_wte
@@ -1022,7 +1025,7 @@ class Trainer:
                         'target_left_prob': torch.cat(target_left_probs).mean() if target_left_probs else torch.tensor(float('nan')),
                         'target_prob': torch.cat(target_probs).mean() if target_probs else torch.tensor(float('nan')),
                         'target_rank_95': torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan')),
-                        'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
+                        'median_prob_rank': torch.cat(median_prob_ranks).mean() if median_prob_ranks else torch.tensor(float('nan')),
                         'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
                         'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
                         }
@@ -1036,7 +1039,7 @@ class Trainer:
             out['target_left_prob'] = out['datasets'][self.args.dataset]['target_left_prob']
             out['target_prob'] = out['datasets'][self.args.dataset]['target_prob']
             out['target_rank_95'] = out['datasets'][self.args.dataset]['target_rank_95']
-            out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
+            out['median_prob_rank'] = out['datasets'][self.args.dataset]['median_prob_rank']
             out['ln_f_cosine'] = out['datasets'][self.args.dataset]['ln_f_cosine']
             out['ln_f_cosine_95'] = out['datasets'][self.args.dataset]['ln_f_cosine_95']
         elif self.args.training_mode == "multicontext":
@@ -1086,7 +1089,7 @@ class Trainer:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
-                top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
+                top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, median_prob_ranks = [], [], [], [], [], []
                 ln_f_cosines = []
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
@@ -1116,7 +1119,10 @@ class Trainer:
                         target_probs.append(target_prob)
                         left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
                         target_left_probs.append(left_prob)
-                        left_inclusive_probs.append(left_prob + target_prob)
+                        sorted_probs, _ = probs.sort(dim=-1, descending=True)
+                        cumulative_probs = sorted_probs.cumsum(dim=-1)
+                        median_rank = (cumulative_probs < 0.5).sum(dim=-1) + 1
+                        median_prob_ranks.append(median_rank.float())
                         lm_head = (
                             self.model.transformer['lm_head_0']
                             if self.args.multidataset_wte
@@ -1136,7 +1142,7 @@ class Trainer:
                     out['target_left_prob'] = torch.cat(target_left_probs).mean() if target_left_probs else torch.tensor(float('nan'))
                     out['target_prob'] = torch.cat(target_probs).mean() if target_probs else torch.tensor(float('nan'))
                     out['target_rank_95'] = torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan'))
-                    out['left_prob_95'] = torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan'))
+                    out['median_prob_rank'] = torch.cat(median_prob_ranks).mean() if median_prob_ranks else torch.tensor(float('nan'))
                     out['ln_f_cosine'] = torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan'))
                     out['ln_f_cosine_95'] = torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan'))
 
@@ -1383,7 +1389,7 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/avg_target_left_prob", losses['target_left_prob'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/avg_target_prob", losses['target_prob'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/target_rank_95", losses['target_rank_95'], self.iter_num)
-                self.writer.add_scalar(f"{target_dataset}/left_prob_95", losses['left_prob_95'], self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/median_prob_rank", losses['median_prob_rank'], self.iter_num)
             if 'ln_f_cosine' in losses:
                 self.writer.add_scalar(f"{target_dataset}/avg_ln_f_cosine", losses['ln_f_cosine'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/ln_f_cosine_95", losses['ln_f_cosine_95'], self.iter_num)
@@ -1599,7 +1605,7 @@ class Trainer:
                 TextColumn("[bold dark_magenta]TP:[/bold dark_magenta]{task.fields[tp]}"),
                 TextColumn("[bold dark_magenta]TLP:[/bold dark_magenta]{task.fields[tlp]}"),
                 TextColumn("[bold dark_magenta]R95:[/bold dark_magenta]{task.fields[r95]}"),
-                TextColumn("[bold dark_magenta]P95:[/bold dark_magenta]{task.fields[p95]}"),
+                TextColumn("[bold dark_magenta]MedRank:[/bold dark_magenta]{task.fields[median_rank]}"),
                 TextColumn("-- [bold dark_cyan]LnFcos:[/bold dark_cyan]{task.fields[lnf_cos]}"),
                 TextColumn("[bold dark_cyan]LnFcos95:[/bold dark_cyan]{task.fields[lnf_cos95]}") ,
                 console=self.console
@@ -1625,7 +1631,7 @@ class Trainer:
                     tp=f"{self.latest_target_prob:.6f}",
                     tlp=f"{self.latest_target_left_prob:.6f}",
                     r95=f"{self.latest_rank_95:.2f}",
-                    p95=f"{self.latest_left_prob_95:.6f}",
+                    median_rank=f"{self.latest_median_prob_rank:.2f}",
                     lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
                     lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
                     )
@@ -1646,7 +1652,7 @@ class Trainer:
                     self.latest_target_prob = losses.get('target_prob', float('nan'))
                     self.latest_target_left_prob = losses.get('target_left_prob', float('nan'))
                     self.latest_rank_95 = losses.get('target_rank_95', float('nan'))
-                    self.latest_left_prob_95 = losses.get('left_prob_95', float('nan'))
+                    self.latest_median_prob_rank = losses.get('median_prob_rank', float('nan'))
                     self.latest_ln_f_cosine = losses.get('ln_f_cosine', float('nan'))
                     self.latest_ln_f_cosine_95 = losses.get('ln_f_cosine_95', float('nan'))
 
@@ -1755,7 +1761,7 @@ class Trainer:
                                         f"{losses.get('target_left_prob', float('nan')):.6f}",
                                         f"{losses.get('target_prob', float('nan')):.6f}",
                                         f"{losses.get('target_rank_95', float('nan')):.2f}",
-                                        f"{losses.get('left_prob_95', float('nan')):.6f}",
+                                        f"{losses.get('median_prob_rank', float('nan')):.2f}",
                                         f"{losses.get('ln_f_cosine', float('nan')):.6f}",
                                         f"{losses.get('ln_f_cosine_95', float('nan')):.6f}",
                                         f"{self.latest_overall_weight_stats['stdev']:.6f}",
@@ -2043,7 +2049,7 @@ class Trainer:
                         tp=f"{self.latest_target_prob:.6f}",
                         tlp=f"{self.latest_target_left_prob:.6f}",
                         r95=f"{self.latest_rank_95:.2f}",
-                        p95=f"{self.latest_left_prob_95:.6f}",
+                        median_rank=f"{self.latest_median_prob_rank:.2f}",
                         lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
                         lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
                         )
