@@ -1,6 +1,7 @@
 # train.py
 from contextlib import nullcontext
 import csv
+from typing import Optional
 import json
 import math
 import os
