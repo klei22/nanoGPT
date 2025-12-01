@@ -29,8 +29,6 @@ from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
 
-import lm_eval
-from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
 from benchmarks import run_all
 
 def parse_args():
@@ -120,16 +118,6 @@ def parse_args():
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
 
-    # lm_eval Benchmarking Related
-    parser.add_argument('--lm_eval_tasks', type=str, default=None,
-                    help="Comma-separated list of tasks for lm-eval (e.g. 'arc_easy,hellaswag')")
-    parser.add_argument(
-        '--lm_eval_results_output',
-        type=str,
-        default=None,
-        help="Where to save the lm-eval results (JSON). "
-             "If not set, defaults to out_dir/<timestamp>_lm_eval_results.json"
-    )
     parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size to use for evaluation")
 
@@ -1253,19 +1241,6 @@ def main():
     # Inference with different Rope Length
     if args.rope_length:
         model.update_rope_length(args.rope_length)
-
-    if args.lm_eval_tasks:
-        # Prepare wrapped model
-        wrapped_model = NanoGPTLM.create_model(model=model, encode_fn=encode, decode_fn=decode, args=args)
-
-        wrapped_model.evaluate_and_save(
-            tasks=args.lm_eval_tasks.split(","),
-            batch_size=args.batch_size,
-            out_dir=out_dir,
-            timestamp=timestamp,
-            results_output=args.lm_eval_results_output
-        )
-        return
 
     if args.eval_only:
         print("Running in eval_only mode...")

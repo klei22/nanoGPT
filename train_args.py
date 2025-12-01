@@ -284,7 +284,6 @@ def parse_args():
             "adams",
             "ademamix",
             "adan",
-            "apollo_adamw",
             "qhadam",
             "yogi",
             "adamp",
@@ -409,13 +408,6 @@ def parse_args():
     # Adan ---------------------------------------------------------------
     training_group.add_argument("--adan_wd", type=float, default=0.0, help="Adan weight decay.")
     training_group.add_argument("--adan_eps", type=float, default=1e-8, help="Adan epsilon.")
-    # Apollo-Adamw low-rank specific knobs
-    training_group.add_argument("--apollo_rank", type=int, default=2, help="Low-rank adaptor rank (k).")
-    training_group.add_argument("--apollo_proj", type=str, default="random", choices=["random", "hadamard", "learned"], help="Type of projection matrix used by Apollo.")
-    training_group.add_argument("--apollo_scale", type=int, default=128, help="Scale constant applied to projection (see paper).")
-    training_group.add_argument("--apollo_update_proj_gap", type=int, default=200, help="# of optimisation steps between projector refresh.")
-    training_group.add_argument("--apollo_proj_type", type=str, default="std", choices=["std", "gaussian", "rademacher"], help="Distribution for generating the projection matrix.")
-    training_group.add_argument("--apollo_apply_to_all", action=argparse.BooleanOptionalAction, default=False, help="If set, apply low-rank Apollo updates to *all* " "parameters instead of only tensors tagged with " "`.lowrank = True`.")
     training_group.add_argument("--lookahead_inner_opt",
                                 type=str,
                                 default="adamw",
