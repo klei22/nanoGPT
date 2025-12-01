@@ -14,10 +14,6 @@ try:
 except ImportError:
     Lion = None
 
-# try:
-#     from apollo_torch import APOLLOAdamW          # pip install apollo-torch
-# except ImportError as e:                           # graceful fallback
-#     APOLLOAdamW = None
 
 # Muon optimiser -----------------------------------------------------------
 # Reference: Jordan et al., 2024 (https://kellerjordan.github.io/posts/muon/)
@@ -1471,82 +1467,6 @@ def _yogi(param_groups, args):
             weight_decay=args.opt_weight_decay,
         )
 
-
-## Apollo
-
-
-# def _apollo_adamw(param_groups, args):
-#     """
-#     Returns an APOLLOAdamW optimiser that shares the *same* generic
-#     hyper-parameters (lr / betas / eps / weight_decay) as the rest of your
-#     Adam-family variants, while adding Apollo’s low-rank options.
-
-#     Required extra CLI flags
-#     ------------------------
-#     --apollo_rank                int      rank of the low-rank projector
-#     --apollo_proj                str      ['random' | 'hadamard' | 'learned']
-#     --apollo_scale               int      scaling constant for projector
-#     --apollo_update_proj_gap     int      #steps between projector refresh
-#     --apollo_proj_type           str      ['std' | 'gaussian' | 'rademacher']
-#     """
-#     if APOLLOAdamW is None:
-#         raise ImportError(
-#             "Package `apollo-torch` is not installed. "
-#             "Run `pip install apollo-torch` or switch optimiser."
-#         )
-
-#     ############################################################
-#     # 1) Split the incoming *PyTorch* param groups into
-#     #    “low-rank” and “regular” groups so that users can still
-#     #    choose which tensors use the special update.
-#     ############################################################
-#     # A parameter is tagged “low-rank” if it has attribute `lowrank=True`
-#     # **or**  if user requested global low-rank via --apollo_apply_to_all.
-#     low_groups, reg_groups = [], []
-#     apply_to_all = getattr(args, "apollo_apply_to_all", False)
-
-#     for pg in param_groups:
-#         lr_params, reg_params = [], []
-#         for p in pg["params"]:
-#             if getattr(p, "lowrank", False) or apply_to_all:
-#                 lr_params.append(p)
-#             else:
-#                 reg_params.append(p)
-
-#         # preserve original group hyper-params
-#         shared = {k: v for k, v in pg.items() if k != "params"}
-
-#         if reg_params:
-#             reg_groups.append({"params": reg_params, **shared})
-#         if lr_params:
-#             low_groups.append(
-#                 {
-#                     "params": lr_params,
-#                     "rank": args.apollo_rank,
-#                     "proj": args.apollo_proj,
-#                     "scale_type": "tensor",
-#                     "scale": args.apollo_scale,
-#                     "update_proj_gap": args.apollo_update_proj_gap,
-#                     "proj_type": args.apollo_proj_type,
-#                     **shared,
-#                 }
-#             )
-
-#     # Stitch the list back together –– Apollo can accept mixed groups.
-#     pg = reg_groups + low_groups
-
-#     ############################################################
-#     # 2) Instantiate the optimiser
-#     ############################################################
-#     opt = APOLLOAdamW(
-#         pg,
-#         lr=args.learning_rate,
-#         betas=(args.beta1, args.beta2),
-#         eps=args.adamw_eps,
-#         weight_decay=args.weight_decay,
-#     )
-#     return opt
-
 class AdaModDiffGrad(Optimizer):
     def __init__(
         self,
@@ -1688,8 +1608,6 @@ optimizer_dictionary: dict[str, callable] = {
     "adabelief": _adabelief,
     # from adan pytorch
     "adan": _adan,
-    # apollo_pytotrch
-    # "apollo_adamw": _apollo_adamw,
     # from torch-optimizer suite
     "adamp": _adamp,
     "adafactor": _adafactor,
