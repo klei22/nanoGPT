@@ -1335,8 +1335,8 @@ def main():
                 "Number of --multicontext_datasets must match number of --multicontext_start strings."
             )
 
-        dataset_names = list(args.multicontext_datasets)
-        start_strings = list(args.multicontext_start)
+        dataset_names = tuple(args.multicontext_datasets)
+        start_strings = tuple(args.multicontext_start)
 
         dataset_meta: Dict[str, Dict[str, object]] = {}
         decode_lookup: Dict[str, Callable[[Sequence[int]], str]] = {}
@@ -1350,7 +1350,7 @@ def main():
                 dataset_meta[dataset_name] = pickle.load(f)
 
             encode_i, decode_i = get_tokenizer_functions(dataset_meta[dataset_name])
-            token_ids = encode_i(start_str)
+                token_ids = encode_i(start_str)
             if len(token_ids) == 0:
                 if dataset_meta[dataset_name].get('tokenizer') == 'sinewave':
                     print(
@@ -1382,13 +1382,20 @@ def main():
 
                 token_state = {name: tensor.clone() for name, tensor in initial_tokens.items()}
 
-                for _ in range(args.max_new_tokens):
-                    idx_cond_dict = {}
-                    for name in dataset_names:
-                        tokens = token_state[name]
-                        idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
+                token_list = [token_state[name] for name in dataset_names]
 
-                    logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
+                for _ in range(args.max_new_tokens):
+                    idx_cond_list = [
+                        tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
+                        for tokens in token_list
+                    ]
+
+                    logits_list, _ = model(
+                        None,
+                        token_list=idx_cond_list,
+                        target_list=None,
+                        token_order=dataset_names,
+                    )
 
                     for i, name in enumerate(dataset_names):
                         if model.config.numerical_multicontext:
@@ -1427,7 +1434,8 @@ def main():
                             probs = F.softmax(cur_logits, dim=-1)
                             idx_next = torch.multinomial(probs, num_samples=1)
 
-                        token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
+                        token_list[i] = torch.cat((token_list[i], idx_next), dim=1)
+                        token_state[name] = token_list[i]
 
                 output_dict: Dict[str, str] = {}
                 for name in dataset_names:

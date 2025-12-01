@@ -1057,14 +1057,15 @@ class Trainer:
                 for k in range(self.args.eval_iters):
                     x_dict, y_dict, dataset_list = self.get_batch(split)
 
-                    with self.ctx:
-                        logits, loss_list = self.model(
-                            None,
-                            token_dict=x_dict,
-                            target_dict=y_dict,
-                            iter_num=self.iter_num,
-                            loss_fn=self.loss_fn,
-                        )
+                        with self.ctx:
+                            logits, loss_list = self.model(
+                                None,
+                                token_dict=x_dict,
+                                target_dict=y_dict,
+                                iter_num=self.iter_num,
+                                loss_fn=self.loss_fn,
+                                token_order=self.args.multicontext_datasets,
+                            )
                     for i in range(len(self.args.multicontext_datasets)):
                         losses[f"{i}"][k] = loss_list[i]
 
@@ -1827,6 +1828,7 @@ class Trainer:
                                 target_dict=self.Y_dict,
                                 iter_num=self.iter_num,
                                 loss_fn=self.loss_fn,
+                                token_order=self.args.multicontext_datasets,
                             )
 
                             # For multicontext training let loss = first dataset loss
