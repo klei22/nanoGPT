@@ -172,8 +172,14 @@ def main(
     append,
     list_key,
     role_prefixes,
+    max_files,
 ):
     parquet_links = find_parquet_links(url)
+
+    if max_files is not None:
+        parquet_links = parquet_links[:max_files]
+        print(f"Limiting to first {len(parquet_links)} parquet files.")
+
     download_dir = "./downloaded_parquets"
     json_dir = "./json_output"
     os.makedirs(download_dir, exist_ok=True)
@@ -284,6 +290,12 @@ if __name__ == "__main__":
         metavar=("ROLE", "PREFIX"),
         help="Specify prefixes for roles. Use the format: --role_prefixes ROLE PREFIX [ROLE PREFIX ...]",
     )
+    parser.add_argument(
+        "--max_files",
+        type=int,
+        default=None,
+        help="Optional limit on the number of parquet files to download (starting from the first).",
+    )
     args = parser.parse_args()
     main(
         args.url,
@@ -296,5 +308,6 @@ if __name__ == "__main__":
         args.append,
         args.list_key,
         args.role_prefixes,
+        args.max_files,
     )
 
