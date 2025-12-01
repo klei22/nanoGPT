@@ -17,9 +17,7 @@ standard deviations.
 
 ### Experiment 1 – Gaussian noise stddev sweep
 
-```markdown
 ![Experiment 1: Adding random vector of stddev](images/vector_angle_noise_std.png)
-```
 
 For each dimension `d`:
 
@@ -80,9 +78,7 @@ For each dimension `d`:
 * Static PNG: `vector_angle_alpha.png`
 * Interactive HTML: `vector_angle_alpha.html`
 
-```markdown
 ![Experiment 2: Angular deviation vs alpha](images/vector_angle_alpha.png)
-```
 
 ---
 
