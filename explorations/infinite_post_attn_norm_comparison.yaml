@@ -13,8 +13,8 @@ named_static_groups:
   - named_group: "peri_ln_softmax"
     softmax_variant_attn: ["softmax"]
     use_pre_ln: [true]
-    use_peri_ln: [false]
-    use_post_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
 
   # norm type
   - named_group: "hsnorm_all"
