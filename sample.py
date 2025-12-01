@@ -29,9 +29,7 @@ from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
 
-# import lm_eval
-# from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
-# from benchmarks import run_all
+from benchmarks import run_all
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
@@ -1253,19 +1251,6 @@ def main():
     # Inference with different Rope Length
     if args.rope_length:
         model.update_rope_length(args.rope_length)
-
-    # if args.lm_eval_tasks:
-    #     # Prepare wrapped model
-    #     wrapped_model = NanoGPTLM.create_model(model=model, encode_fn=encode, decode_fn=decode, args=args)
-
-    #     wrapped_model.evaluate_and_save(
-    #         tasks=args.lm_eval_tasks.split(","),
-    #         batch_size=args.batch_size,
-    #         out_dir=out_dir,
-    #         timestamp=timestamp,
-    #         results_output=args.lm_eval_results_output
-    #     )
-    #     return
 
     if args.eval_only:
         print("Running in eval_only mode...")
