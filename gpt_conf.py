@@ -49,6 +49,17 @@ class GPTConfig:
     l2_norm_mlp_down: bool = False
     l2_norm_mlp_up_dim: str = "embed"   # 'embed' or 'hidden'
     l2_norm_mlp_down_dim: str = "hidden"  # 'embed' or 'hidden'
+    l2_norm_print_dims: bool = False
+
+    # Optional L2 normalization of attention projections (Infinite attention)
+    l2_norm_attn_q: bool = False
+    l2_norm_attn_k: bool = False
+    l2_norm_attn_v: bool = False
+    l2_norm_attn_cproj: bool = False
+    l2_norm_attn_q_dim: str = "embed"     # 'embed' or 'hidden'
+    l2_norm_attn_k_dim: str = "embed"     # 'embed' or 'hidden'
+    l2_norm_attn_v_dim: str = "embed"     # 'embed' or 'hidden'
+    l2_norm_attn_cproj_dim: str = "embed" # 'embed' or 'hidden'
 
     ## MLA Variations
     mla_latent_dim: int | None = None   # d_c  (proj dimension of the shared latent)

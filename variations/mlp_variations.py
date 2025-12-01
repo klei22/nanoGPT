@@ -9,6 +9,11 @@ from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from quantization.quantize import fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
+
+def _maybe_print_l2_norm(name: str, weight: torch.Tensor, dim: int, enabled: bool, should_print: bool):
+    if enabled and should_print:
+        print(f"L2-normalizing {name} over dim {dim} (size {weight.size(dim)})")
+
 class OriginalMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -29,6 +34,7 @@ class OriginalMLP(nn.Module):
         self.l2_norm_mlp_down = config.l2_norm_mlp_down
         self.l2_norm_mlp_up_dim = config.l2_norm_mlp_up_dim
         self.l2_norm_mlp_down_dim = config.l2_norm_mlp_down_dim
+        self.l2_norm_print_dims = config.l2_norm_print_dims
 
         # Add learnable or fixed offsets for the activation function
         if config.learn_mlp_x_offset:
@@ -92,6 +98,12 @@ class OriginalMLP(nn.Module):
             self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
             bias=use_down_bias,
         )
+
+        up_dim = 1 if self.l2_norm_mlp_up_dim == 'embed' else 0
+        down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
+
+        _maybe_print_l2_norm("MLP up projection", self.c_fc.weight, up_dim, self.l2_norm_mlp_up, self.l2_norm_print_dims)
+        _maybe_print_l2_norm("MLP down projection", self.c_proj.weight, down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dims)
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
         self.cproj_scale = config.mlp_cproj_scale
@@ -396,6 +408,13 @@ class DualPathMLP(nn.Module):
             self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
             bias=config.mlp_down_bias
         )
+
+        up_dim = 1 if self.l2_norm_mlp_up_dim == 'embed' else 0
+        down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
+
+        _maybe_print_l2_norm("DualPathMLP up projection", self.c_fc.weight, up_dim, self.l2_norm_mlp_up, self.l2_norm_print_dims)
+        _maybe_print_l2_norm("DualPathMLP down projection 1", self.c_proj1.weight, down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dims)
+        _maybe_print_l2_norm("DualPathMLP down projection 2", self.c_proj2.weight, down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dims)
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
         self.cproj_scale = config.mlp_cproj_scale

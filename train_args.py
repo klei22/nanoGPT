@@ -40,6 +40,26 @@ def parse_args():
                              help="Dimension for L2-normalizing MLP up projections: 'embed' or 'hidden'")
     model_group.add_argument('--l2_norm_mlp_down_dim', type=str, default='hidden', choices=['embed', 'hidden'],
                              help="Dimension for L2-normalizing MLP down projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_print_dims', default=False, action=argparse.BooleanOptionalAction,
+                             help='Print the dimension size used for L2 normalization when enabled')
+
+    # Attention L2 Normalization options (Infinite attention)
+    model_group.add_argument('--l2_norm_attn_q', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention query projection weights')
+    model_group.add_argument('--l2_norm_attn_k', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention key projection weights')
+    model_group.add_argument('--l2_norm_attn_v', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention value projection weights')
+    model_group.add_argument('--l2_norm_attn_cproj', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention output projection weights')
+    model_group.add_argument('--l2_norm_attn_q_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention query projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_k_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention key projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_v_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention value projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_cproj_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention output projections: 'embed' or 'hidden'")
 
     # Export Args
     ## Factored WTE
