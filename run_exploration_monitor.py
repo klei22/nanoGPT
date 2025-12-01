@@ -178,8 +178,8 @@ class MonitorApp(App):
             "avg_target_rank",
             "avg_target_left_prob",
             "avg_target_prob",
+            "avg_prob_rank",
             "target_rank_95",
-            "left_prob_95",
             "avg_ln_f_cosine",
             "ln_f_cosine_95",
         ] + self.param_keys
@@ -235,8 +235,8 @@ class MonitorApp(App):
             "avg_target_rank",
             "avg_target_left_prob",
             "avg_target_prob",
+            "avg_prob_rank",
             "target_rank_95",
-            "left_prob_95",
             "avg_ln_f_cosine",
             "ln_f_cosine_95",
         ):
