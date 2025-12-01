@@ -25,9 +25,9 @@ named_static_groups:
     norm_wte_radius_learning: [true]
 
   - named_group: "rmsnorm_all"
-    norm_variant_attn: ["hyperspherenorm"]
-    norm_variant_output: ["hyperspherenorm"]
-    norm_variant_wte: ["hyperspherenorm"]
+    norm_variant_attn: ["rmsnorm"]
+    norm_variant_output: ["rmsnorm"]
+    norm_variant_wte: ["rmsnorm"]
 
   # activation
   - named_group: "mlp_relu2"
@@ -67,7 +67,7 @@ common_group:
 
   # Memory savings
   compile: [true]
-  never_save_checkpoint: [true]
+
   compute_model_stats: [true]
 
 print_model_stats_table: ["print_stats/${RUN_NAME}.csv"]
