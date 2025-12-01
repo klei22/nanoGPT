@@ -107,6 +107,8 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+        self.stop_training_after_iteration: bool = False
+        self.stop_training_reason: str = ""
 
         # track latest evaluation metrics for progress bar
         self.latest_top1_prob = float('nan')
@@ -1556,6 +1558,28 @@ class Trainer:
                 }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
+    def _maybe_mark_training_complete(self, main_epoch: float):
+        max_tokens = getattr(self.args, "max_tokens", None)
+        max_epochs = getattr(self.args, "max_epochs", None)
+        if max_tokens is None and max_epochs is None:
+            return
+
+        if self.args.dataset_list:
+            main_dataset = self.args.dataset
+            tokens_main = self.tokens_trained_dict.get(main_dataset, 0)
+        else:
+            tokens_main = self.tokens_trained
+
+        reasons = []
+        if max_tokens is not None and tokens_main >= max_tokens:
+            reasons.append(f"max_tokens={max_tokens}")
+        if max_epochs is not None and main_epoch >= max_epochs:
+            reasons.append(f"max_epochs={max_epochs}")
+
+        if reasons:
+            self.stop_training_after_iteration = True
+            self.stop_training_reason = " and ".join(reasons)
+
     def train(self):
         if self.args.training_mode == 'multicontext':
             self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
@@ -1886,15 +1910,17 @@ class Trainer:
                         # Update per–dataset count
                         self.tokens_trained_dict[current_dataset] += tokens_trained_this_batch
                         self.tokens_trained = self.tokens_trained_dict[current_dataset]
+                        current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                        self.epochs_trained_dict[current_dataset] = current_epoch
+                        main_dataset = self.args.dataset
+                        main_epoch = self.epochs_trained_dict.get(main_dataset, 0.0)
                     else:
                         self.tokens_trained += tokens_trained_this_batch
+                        # Compute epoch for logging:
+                        current_epoch = self.tokens_trained / self.dataset_size_tokens
+                        main_epoch = current_epoch
 
-                    # Compute epoch for logging:
-                        if self.args.dataset_list:
-                            current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
-                            self.epochs_trained_dict[current_dataset] = current_epoch
-                        else:
-                            current_epoch = self.tokens_trained / self.dataset_size_tokens
+                    self._maybe_mark_training_complete(main_epoch)
 
                     self.scaler.scale(loss).backward()
 
@@ -2050,6 +2076,17 @@ class Trainer:
                 live.update(Group(progress.get_renderable(), cli_text))
 
                 # End of training actions
+                if self.stop_training_after_iteration:
+                    if self.master_process:
+                        print(f"Stopping training after reaching {self.stop_training_reason}")
+                    if self.args.only_save_checkpoint_at_end and not self.args.never_save_checkpoint:
+                        self.save_checkpoint('ckpt.pt')
+                        print(f"Saved checkpoint to {self.args.out_dir}")
+                    if self.args.max_sample_tokens:
+                        live.stop()
+                        self.sample_and_print()
+                        live.start()
+                    break
                 if self.iter_num > self.args.max_iters:
                     print(self.best_val_loss, self.best_iter, self.best_tokens)
                     if self.args.only_save_checkpoint_at_end:

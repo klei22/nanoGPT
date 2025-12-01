@@ -1,0 +1,27 @@
+# main_dataset_single_limits.yaml
+#
+# Exercises max_epochs and max_tokens limits for the main dataset while
+# covering each per-batch sampling method in single-dataset training.
+---
+# Base configuration shared by all runs
+training_mode: ["single"]
+dataset: ["shakespeare_char"]
+batch_size: [64]
+block_size: [128]
+max_iters: [200]
+eval_interval: [50]
+device: ["cuda"]
+compile: [false]
+
+# Iterate over sampling methods used by get_batch
+sampling_method: ["random", "sequential", "without_replacement"]
+
+# Parameter groups cover variations of the new termination settings
+parameter_groups:
+  # Stop after a fractional epoch on the main dataset
+  - max_epochs: [0.5]
+  # Stop after a fixed token budget on the main dataset
+  - max_tokens: [20000]
+  # Provide both limits together to ensure whichever comes first ends the run
+  - max_epochs: [1.0]
+    max_tokens: [40000]

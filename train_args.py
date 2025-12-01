@@ -60,6 +60,10 @@ def parse_args():
     training_group.add_argument('--log_interval', default=10, type=int)
     training_group.add_argument('--eval_iters', default=200, type=int)
     training_group.add_argument('--eval_only', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument('--max_epochs', default=None, type=float,
+                                help='If set, stop training once the main dataset reaches this many epochs.')
+    training_group.add_argument('--max_tokens', default=None, type=int,
+                                help='If set, stop training once the main dataset sees this many tokens.')
 
     # latency / ETA estimate options
     training_group.add_argument('--eta_variant', choices=['iteration', 'eval_cycle'], default='eval_cycle', help="iteration - estimates only based on training iterations -- use if doing one eval at the end; eval_cycle -- use if doing multiple evals, will use a single cycle for the estimation.")
