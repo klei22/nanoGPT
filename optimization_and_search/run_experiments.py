@@ -34,6 +34,13 @@ METRIC_KEYS = [
     "left_prob_95",
     "avg_ln_f_cosine",
     "ln_f_cosine_95",
+    "planned_tokens",
+    "planned_epochs",
+    "best_val_epoch",
+    "trained_iters",
+    "trained_tokens",
+    "trained_epochs",
+    "stop_reason",
 ]
 
 
@@ -548,9 +555,45 @@ def read_metrics(out_dir: str) -> dict:
     line = path.read_text().strip()
     parts = [p.strip() for p in line.split(',')]
 
-    casts = [float, int, int, int, float, float, float, float, float, float, float, float, float, float, float, float, float]
+    casts = [
+        float,  # best_val_loss
+        int,    # best_val_iter
+        int,    # best_val_tokens
+        int,    # num_params
+        float,  # better_than_chance
+        float,  # btc_per_param
+        float,  # peak_gpu_mb
+        float,  # iter_latency_avg
+        float,  # avg_top1_prob
+        float,  # avg_top1_correct
+        float,  # avg_target_rank
+        float,  # avg_target_left_prob
+        float,  # avg_target_prob
+        float,  # target_rank_95
+        float,  # left_prob_95
+        float,  # avg_ln_f_cosine
+        float,  # ln_f_cosine_95
+        int,    # planned_tokens
+        float,  # planned_epochs
+        float,  # best_val_epoch
+        int,    # trained_iters
+        int,    # trained_tokens
+        float,  # trained_epochs
+        str,    # stop_reason
+    ]
 
-    return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
+    metrics: dict[str, object] = {}
+    for idx, (key, caster) in enumerate(zip(METRIC_KEYS, casts)):
+        if idx < len(parts):
+            raw_val = parts[idx]
+            try:
+                metrics[key] = caster(raw_val)
+            except (ValueError, TypeError):
+                metrics[key] = float("nan") if caster is not str else ""
+        else:
+            metrics[key] = float("nan") if caster is not str else ""
+
+    return metrics
 
 
 def completed_runs(log_file: Path) -> set[str]:

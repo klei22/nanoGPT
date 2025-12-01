@@ -85,6 +85,33 @@ import tiktoken
 
 from train_args import parse_args
 
+BEST_VAL_METRIC_KEYS = [
+    "best_val_loss",
+    "best_val_iter",
+    "best_val_tokens",
+    "num_params",
+    "better_than_chance",
+    "btc_per_param",
+    "peak_gpu_mb",
+    "iter_latency_avg",
+    "avg_top1_prob",
+    "avg_top1_correct",
+    "avg_target_rank",
+    "avg_target_left_prob",
+    "avg_target_prob",
+    "target_rank_95",
+    "left_prob_95",
+    "avg_ln_f_cosine",
+    "ln_f_cosine_95",
+    "planned_tokens",
+    "planned_epochs",
+    "best_val_epoch",
+    "trained_iters",
+    "trained_tokens",
+    "trained_epochs",
+    "stop_reason",
+]
+
 class Trainer:
 
     def __init__(self, args, model_group, training_group, logging_group):
@@ -100,6 +127,8 @@ class Trainer:
         self.tokens_trained = 0
         self.best_tokens = 0
         self.peak_gpu_usage = 0.0
+        self.planned_tokens: Optional[int] = None
+        self.planned_epochs: Optional[float] = None
         self.total_training_time_ms: float = 0.0   # total run-time from start of training
         self.time_remaining_ms: float= 0.0
         self.total_time_est_ms: float= 0.0
@@ -176,6 +205,9 @@ class Trainer:
             # Also, set self.args.dataset to the first dataset in the list
             self.args.dataset = self.args.dataset_list[0]
             print(self.args.dataset)
+            self.main_dataset = self.args.dataset
+        else:
+            self.main_dataset = self.args.dataset
 
         if self.args.training_mode == 'multicontext':
             self.vocab_sizes = {}
@@ -772,6 +804,8 @@ class Trainer:
                 self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
             # Store total token count for the single dataset.
             self.dataset_size_tokens = len(self.train_data)
+
+        self.planned_tokens, self.planned_epochs = self._compute_training_plan()
 
 
     def get_batch(self, split, target_dataset=None):
@@ -1540,6 +1574,106 @@ class Trainer:
         abbr = ''.join([part[0] for part in parts])
         return abbr
 
+    def _get_main_dataset_tokens(self):
+        if self.args.dataset_list:
+            return self.tokens_trained_dict.get(self.main_dataset, 0)
+        return self.tokens_trained
+
+    def _get_main_dataset_size(self):
+        if isinstance(self.dataset_size_tokens, dict):
+            return self.dataset_size_tokens.get(self.main_dataset, None)
+        return self.dataset_size_tokens
+
+    def _compute_training_plan(self) -> tuple[Optional[int], Optional[float]]:
+        main_dataset_size = self._get_main_dataset_size()
+        planned_tokens: Optional[int] = None
+        planned_epochs: Optional[float] = None
+
+        if self.args.max_tokens is not None:
+            planned_tokens = self.args.max_tokens
+        elif self.args.max_epochs is not None and main_dataset_size not in (None, 0):
+            planned_tokens = int(self.args.max_epochs * main_dataset_size)
+
+        if self.args.max_epochs is not None:
+            planned_epochs = float(self.args.max_epochs)
+        elif planned_tokens is not None and main_dataset_size not in (None, 0):
+            planned_epochs = planned_tokens / main_dataset_size
+
+        return planned_tokens, planned_epochs
+
+    def _reached_training_limits(self):
+        """Check whether epoch or token limits have been reached for the main dataset."""
+        if self.args.training_mode == 'multicontext':
+            return None
+        stop_reason = None
+        main_tokens = self._get_main_dataset_tokens()
+        main_dataset_size = self._get_main_dataset_size()
+
+        if self.args.max_tokens is not None and main_tokens >= self.args.max_tokens:
+            stop_reason = f"Reached max_tokens ({self.args.max_tokens}) on {self.main_dataset}"
+        elif (
+            self.args.max_epochs is not None
+            and main_dataset_size not in (None, 0)
+            and (main_tokens / main_dataset_size) >= self.args.max_epochs
+        ):
+            stop_reason = f"Reached max_epochs ({self.args.max_epochs}) on {self.main_dataset}"
+
+        return stop_reason
+
+    def _collect_best_metrics(self, stop_reason: Optional[str] = None) -> list[str]:
+        main_dataset_size = self._get_main_dataset_size()
+        peak_mb = getattr(self, "peak_gpu_usage", 0.0) / (1024 ** 2)
+        stop_reason_clean = (stop_reason or "")
+        if "," in stop_reason_clean:
+            stop_reason_clean = stop_reason_clean.replace(",", ";")
+
+        chance_ratio = self.model_args['vocab_size'] / math.exp(self.best_val_loss.item())
+        metrics_dict = {
+            "best_val_loss": float(self.best_val_loss),
+            "best_val_iter": int(self.best_iter),
+            "best_val_tokens": int(self.best_tokens),
+            "num_params": int(self.model.num_param),
+            "better_than_chance": float(chance_ratio),
+            "btc_per_param": float(chance_ratio / self.model.num_param),
+            "peak_gpu_mb": float(peak_mb),
+            "iter_latency_avg": float(self.iter_latency_avg),
+            "avg_top1_prob": float(self.latest_top1_prob),
+            "avg_top1_correct": float(self.latest_top1_correct),
+            "avg_target_rank": float(self.latest_target_rank),
+            "avg_target_left_prob": float(self.latest_target_left_prob),
+            "avg_target_prob": float(self.latest_target_prob),
+            "target_rank_95": float(self.latest_rank_95),
+            "left_prob_95": float(self.latest_left_prob_95),
+            "avg_ln_f_cosine": float(self.latest_ln_f_cosine),
+            "ln_f_cosine_95": float(self.latest_ln_f_cosine_95),
+            "planned_tokens": self.planned_tokens if self.planned_tokens is not None else float('nan'),
+            "planned_epochs": self.planned_epochs if self.planned_epochs is not None else float('nan'),
+            "best_val_epoch": (self.best_tokens / main_dataset_size) if main_dataset_size else float('nan'),
+            "trained_iters": int(self.iter_num),
+            "trained_tokens": int(self._get_main_dataset_tokens()),
+            "trained_epochs": (self._get_main_dataset_tokens() / main_dataset_size) if main_dataset_size else float('nan'),
+            "stop_reason": stop_reason_clean,
+        }
+
+        return [str(metrics_dict[key]) for key in BEST_VAL_METRIC_KEYS]
+
+    def _write_best_val_metrics(self, stop_reason: Optional[str] = None) -> None:
+        metrics = self._collect_best_metrics(stop_reason)
+        extra_stats = [
+            f"{self.latest_overall_weight_stats['stdev']:.6f}",
+            f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
+            f"{self.latest_overall_weight_stats['max']:.6f}",
+            f"{self.latest_overall_weight_stats['min']:.6f}",
+            f"{self.latest_overall_weight_stats['abs_max']:.6f}",
+            f"{self.latest_overall_activation_stats['stdev']:.6f}",
+            f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
+            f"{self.latest_overall_activation_stats['max']:.6f}",
+            f"{self.latest_overall_activation_stats['min']:.6f}",
+            f"{self.latest_overall_activation_stats['abs_max']:.6f}",
+        ]
+        with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
+            best_loss_file.write(", ".join(metrics + extra_stats) + "\n")
+
     def save_checkpoint(self, filename):
         if self.args.never_save_checkpoint:
             return
@@ -1630,6 +1764,7 @@ class Trainer:
                     lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
                     )
 
+            stop_reason = None
             while True:
                 if self.scheduler is not None:
                     self.lr = self.get_lr(self.iter_num)
@@ -1737,39 +1872,7 @@ class Trainer:
                             self.best_iter = self.iter_num
                             self.best_tokens = self.tokens_trained
                             # Save best validation loss
-                            peak_mb = self.peak_gpu_usage / (1024 ** 2)
-                            with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                                chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
-                                metrics = [
-                                        f"{self.best_val_loss.item()}",
-                                        f"{self.iter_num}",
-                                        f"{self.best_tokens}",
-                                        f"{self.model.num_param}",
-                                        f"{chance_ratio:.3e}",
-                                        f"{chance_ratio/self.model.num_param:.3e}",
-                                        f"{peak_mb:.1f}",
-                                        f"{self.iter_latency_avg:.1f}",
-                                        f"{losses.get('top1_prob', float('nan')):.6f}",
-                                        f"{losses.get('top1_correct', float('nan')):.6f}",
-                                        f"{losses.get('target_rank', float('nan')):.2f}",
-                                        f"{losses.get('target_left_prob', float('nan')):.6f}",
-                                        f"{losses.get('target_prob', float('nan')):.6f}",
-                                        f"{losses.get('target_rank_95', float('nan')):.2f}",
-                                        f"{losses.get('left_prob_95', float('nan')):.6f}",
-                                        f"{losses.get('ln_f_cosine', float('nan')):.6f}",
-                                        f"{losses.get('ln_f_cosine_95', float('nan')):.6f}",
-                                        f"{self.latest_overall_weight_stats['stdev']:.6f}",
-                                        f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
-                                        f"{self.latest_overall_weight_stats['max']:.6f}",
-                                        f"{self.latest_overall_weight_stats['min']:.6f}",
-                                        f"{self.latest_overall_weight_stats['abs_max']:.6f}",
-                                        f"{self.latest_overall_activation_stats['stdev']:.6f}",
-                                        f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
-                                        f"{self.latest_overall_activation_stats['max']:.6f}",
-                                        f"{self.latest_overall_activation_stats['min']:.6f}",
-                                        f"{self.latest_overall_activation_stats['abs_max']:.6f}",
-                                ]
-                                best_loss_file.write(", ".join(metrics) + "\n")
+                            self._write_best_val_metrics(stop_reason)
                             # Reset early exit counter
                             num_steps_with_worse_loss = 0
                         if self.iter_num > 0 and not self.args.never_save_checkpoint:
@@ -1806,11 +1909,15 @@ class Trainer:
 
                     if self.args.patience is not None and num_steps_with_worse_loss >= self.args.patience:
                         print(f"Early Stopping: loss has not decreased in {self.args.patience + 1} steps")
+                        stop_reason = stop_reason or (
+                            f"Early stopping after {self.args.patience + 1} evals with no improvement"
+                        )
                         break
                     if losses['val'] > self.best_val_loss:
                         num_steps_with_worse_loss += 1
 
                 if self.args.eval_only:
+                    stop_reason = stop_reason or "eval_only"
                     break
 
 
@@ -1886,15 +1993,15 @@ class Trainer:
                         # Update per–dataset count
                         self.tokens_trained_dict[current_dataset] += tokens_trained_this_batch
                         self.tokens_trained = self.tokens_trained_dict[current_dataset]
+                        current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                        self.epochs_trained_dict[current_dataset] = current_epoch
                     else:
                         self.tokens_trained += tokens_trained_this_batch
+                        current_epoch = self.tokens_trained / self.dataset_size_tokens
 
-                    # Compute epoch for logging:
-                        if self.args.dataset_list:
-                            current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
-                            self.epochs_trained_dict[current_dataset] = current_epoch
-                        else:
-                            current_epoch = self.tokens_trained / self.dataset_size_tokens
+                    limit_reason = self._reached_training_limits()
+                    if limit_reason:
+                        stop_reason = stop_reason or limit_reason
 
                     self.scaler.scale(loss).backward()
 
@@ -2050,7 +2157,11 @@ class Trainer:
                 live.update(Group(progress.get_renderable(), cli_text))
 
                 # End of training actions
-                if self.iter_num > self.args.max_iters:
+                if self.iter_num > self.args.max_iters or stop_reason is not None:
+                    if self.iter_num > self.args.max_iters and stop_reason is None:
+                        stop_reason = f"Reached max_iters ({self.args.max_iters})"
+                    if stop_reason and self.master_process:
+                        self.console.print(f"Stopping training: {stop_reason}")
                     print(self.best_val_loss, self.best_iter, self.best_tokens)
                     if self.args.only_save_checkpoint_at_end:
                         if not self.args.never_save_checkpoint:
@@ -2063,6 +2174,9 @@ class Trainer:
                             self.sample_and_print()
                             live.start()
                     break
+
+            final_stop_reason = stop_reason or "completed"
+            self._write_best_val_metrics(final_stop_reason)
 
             if self.args.plot_statistics:
                 plot_statistics(self.args, self.stats, graph_y_labels)
