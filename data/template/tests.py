@@ -12,6 +12,7 @@ from tokenizers import (
     CustomTokenizer,
     ByteTokenizer,
     CharTokenizer,
+    CharBPETokenizerWithByteFallback,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
 )
@@ -108,6 +109,9 @@ class TestTokenizers(unittest.TestCase):
             os.remove("meta.pkl")
         if os.path.exists("remaining.txt"):
             os.remove("remaining.txt")
+        for fname in ["char_bpe_vocab.json", "char_bpe_token_counts.json"]:
+            if os.path.exists(fname):
+                os.remove(fname)
 
     # --------------------------------------------------------------------------
     # Helper Method to Print Token Count Histogram
@@ -217,6 +221,23 @@ class TestTokenizers(unittest.TestCase):
         console.print(detokenized, style="output")
 
         self.assertEqual(self.sample_text, detokenized)
+
+    def test_char_bpe_tokenizer(self):
+        args = Namespace(vocab_size=300, track_token_counts=False)
+        tokenizer = CharBPETokenizerWithByteFallback(args, self.sample_text, None)
+        ids = tokenizer.tokenize(self.sample_text)
+        detokenized = tokenizer.detokenize(ids)
+
+        console.print("[input]Input:[/input]")
+        console.print(self.sample_text, style="input")
+        console.print("[output]Detokenized Output:[/output]")
+        console.print(detokenized, style="output")
+
+        self.assertEqual(self.sample_text, detokenized)
+        self.assertTrue(os.path.exists("char_bpe_vocab.json"))
+        with open("char_bpe_vocab.json", "r", encoding="utf-8") as f:
+            vocab_entries = json.load(f)
+        self.assertEqual(len(vocab_entries), tokenizer.vocab_size)
 
     def test_custom_char_tokenizer_with_byte_fallback(self):
         args = Namespace(custom_chars_file="custom_chars.txt")
@@ -406,6 +427,33 @@ class TestTokenizers(unittest.TestCase):
         )
         for token_id in ids:
             self.assertIn(token_id, token_counts)
+
+    def test_char_bpe_tokenizer_counts_and_fallback(self):
+        args = Namespace(vocab_size=300, track_token_counts=True)
+        tokenizer = CharBPETokenizerWithByteFallback(args, self.sample_text, None)
+        test_string = self.sample_text + " 🙂"
+        ids = tokenizer.tokenize(test_string)
+        detokenized = tokenizer.detokenize(ids)
+
+        console.print("[input]Input:[/input]")
+        console.print(test_string, style="input")
+        console.print("[output]Detokenized Output:[/output]")
+        console.print(detokenized, style="output")
+
+        self.assertEqual(test_string, detokenized)
+        self.assertTrue(any(token_id < 256 for token_id in ids))
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+        self.assertEqual(sum(token_counts.values()), len(ids))
+
+        self.assertTrue(os.path.exists("char_bpe_token_counts.json"))
+        with open("char_bpe_token_counts.json", "r", encoding="utf-8") as f:
+            counts_entries = json.load(f)
+        self.assertEqual(len(counts_entries), meta["vocab_size"])
+        byte_entries = [entry for entry in counts_entries if entry["id"] < 256]
+        self.assertTrue(any(entry["count"] > 0 for entry in byte_entries))
 
     def test_custom_char_tokenizer_with_byte_fallback_counts(self):
         args = Namespace(custom_chars_file="custom_chars.txt", track_token_counts=True)
