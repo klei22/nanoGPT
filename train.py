@@ -107,6 +107,18 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+        self.energy_monitor = None
+        self.energy_tracker = {"attn": 0.0, "mlp": 0.0, "lm_head": 0.0}
+        self.energy_totals = {"total": 0.0, "attn": 0.0, "mlp": 0.0, "lm_head": 0.0}
+        self.energy_tokens: int = 0
+        self.energy_iterations: int = 0
+        self.latest_energy_metrics = {
+            "iteration_energy": float("nan"),
+            "energy_per_token": float("nan"),
+            "attn_energy": float("nan"),
+            "mlp_energy": float("nan"),
+            "lm_head_energy": float("nan"),
+        }
 
         # track latest evaluation metrics for progress bar
         self.latest_top1_prob = float('nan')
@@ -420,6 +432,8 @@ class Trainer:
 
         self.raw_model = self.model.module if self.ddp else self.model
 
+        self._setup_energy_monitor()
+
         if hasattr(self.loss_fn, "set_model"):
             self.loss_fn.set_model(self.raw_model)
 
@@ -494,6 +508,32 @@ class Trainer:
         self.teacher_model = teacher_model
         if self.master_process:
             print(f"Loaded teacher checkpoint from {expanded}")
+
+    def _setup_energy_monitor(self):
+        if not getattr(self.args, "energy_logging", False):
+            return
+
+        if not self.master_process:
+            print("Energy logging is only enabled on the master process; skipping on this rank.")
+            return
+
+        if self.args.compile:
+            print("Energy logging is disabled because torch.compile is in use.")
+            return
+
+        try:
+            from zeus.monitor import ZeusMonitor
+        except Exception as exc:  # pragma: no cover - optional dependency
+            print(f"Could not import Zeus for energy logging: {exc}")
+            return
+
+        try:
+            self.energy_monitor = ZeusMonitor()
+            self.energy_monitor.reset_windows()
+            self.raw_model.attach_energy_monitor(self.energy_monitor, self.energy_tracker)
+        except Exception as exc:  # pragma: no cover - optional dependency
+            print(f"Failed to initialize Zeus energy logging: {exc}")
+            self.energy_monitor = None
 
 
     def create_optimizer(self):
@@ -1402,6 +1442,48 @@ class Trainer:
             # bulk metrics
             self.write_to_csv(target_dataset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
 
+    def _update_energy_stats(self, measurement, tokens_trained_this_batch: int) -> None:
+        if self.energy_monitor is None or measurement is None:
+            return
+
+        iter_energy = getattr(measurement, "total_energy", float("nan"))
+        attn_energy = self.energy_tracker.get("attn", float("nan"))
+        mlp_energy = self.energy_tracker.get("mlp", float("nan"))
+        lm_head_energy = self.energy_tracker.get("lm_head", float("nan"))
+        energy_per_token = (
+            iter_energy / tokens_trained_this_batch if tokens_trained_this_batch else float("nan")
+        )
+
+        self.energy_iterations += 1
+        self.energy_tokens += tokens_trained_this_batch
+        self.energy_totals["total"] += iter_energy
+        self.energy_totals["attn"] += attn_energy
+        self.energy_totals["mlp"] += mlp_energy
+        self.energy_totals["lm_head"] += lm_head_energy
+        self.latest_energy_metrics = {
+            "iteration_energy": iter_energy,
+            "energy_per_token": energy_per_token,
+            "attn_energy": attn_energy,
+            "mlp_energy": mlp_energy,
+            "lm_head_energy": lm_head_energy,
+        }
+
+    def _energy_summary(self) -> dict[str, float]:
+        if self.energy_monitor is None or self.energy_iterations == 0 or self.energy_tokens == 0:
+            return {
+                "avg_energy_per_token": float("nan"),
+                "attn_energy": float("nan"),
+                "mlp_energy": float("nan"),
+                "lm_head_energy": float("nan"),
+            }
+
+        return {
+            "avg_energy_per_token": self.energy_totals["total"] / self.energy_tokens,
+            "attn_energy": self.energy_totals["attn"] / self.energy_iterations,
+            "mlp_energy": self.energy_totals["mlp"] / self.energy_iterations,
+            "lm_head_energy": self.energy_totals["lm_head"] / self.energy_iterations,
+        }
+
     def log_metrics_non_validation(self, loss_training, running_mfu, epoch, tokens_trained, target_dataset, train_better_than_chance):
         if self.args.tensorboard_log:
             self.writer.add_scalars(
@@ -1438,6 +1520,20 @@ class Trainer:
                         {"train_chance": train_better_than_chance/self.model.num_param},
                         self.iter_num
                         )
+
+            if self.energy_monitor is not None:
+                energy_summary = self._energy_summary()
+                self.writer.add_scalar("energy/avg_j_per_token", energy_summary["avg_energy_per_token"], self.iter_num)
+                self.writer.add_scalars(
+                    "energy/latest_iteration",
+                    {
+                        "iteration_total_j": self.latest_energy_metrics["iteration_energy"],
+                        "attn_j": self.latest_energy_metrics["attn_energy"],
+                        "mlp_j": self.latest_energy_metrics["mlp_energy"],
+                        "lm_head_j": self.latest_energy_metrics["lm_head_energy"],
+                    },
+                    self.iter_num,
+                )
 
             self.writer.add_scalar(f"{target_dataset}/mfu_pct", running_mfu * 100, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/vram", self.vram_allocated, self.iter_num)
@@ -1641,17 +1737,18 @@ class Trainer:
                 self.save_checkpoint(major_ckpt_name)
                 print(f"Saved major checkpoint to {self.args.out_dir}/{major_ckpt_name}")
 
-        if losses['val'] < self.best_val_loss or self.args.always_save_checkpoint:
-            if losses['val'] < self.best_val_loss:
-                self.best_val_loss = losses['val']
-                self.best_iter = self.iter_num
-                self.best_tokens = self.tokens_trained
-                peak_mb = self.peak_gpu_usage / (1024 ** 2)
-                with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                    chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
-                    metrics = [
-                            f"{self.best_val_loss.item()}",
-                            f"{self.iter_num}",
+            if losses['val'] < self.best_val_loss or self.args.always_save_checkpoint:
+                if losses['val'] < self.best_val_loss:
+                    self.best_val_loss = losses['val']
+                    self.best_iter = self.iter_num
+                    self.best_tokens = self.tokens_trained
+                    peak_mb = self.peak_gpu_usage / (1024 ** 2)
+                    energy_summary = self._energy_summary()
+                    with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
+                        chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
+                        metrics = [
+                                f"{self.best_val_loss.item()}",
+                                f"{self.iter_num}",
                             f"{self.best_tokens}",
                             f"{self.model.num_param}",
                             f"{chance_ratio:.3e}",
@@ -1662,16 +1759,20 @@ class Trainer:
                             f"{self.latest_top1_correct:.6f}",
                             f"{self.latest_target_rank:.2f}",
                             f"{self.latest_target_left_prob:.6f}",
-                            f"{self.latest_target_prob:.6f}",
-                            f"{self.latest_rank_95:.2f}",
-                            f"{self.latest_left_prob_95:.6f}",
-                            f"{self.latest_ln_f_cosine:.6f}",
-                            f"{self.latest_ln_f_cosine_95:.6f}",
-                            f"{self.latest_overall_weight_stats['stdev']:.6f}",
-                            f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
-                            f"{self.latest_overall_weight_stats['max']:.6f}",
-                            f"{self.latest_overall_weight_stats['min']:.6f}",
-                            f"{self.latest_overall_weight_stats['abs_max']:.6f}",
+                                f"{self.latest_target_prob:.6f}",
+                                f"{self.latest_rank_95:.2f}",
+                                f"{self.latest_left_prob_95:.6f}",
+                                f"{self.latest_ln_f_cosine:.6f}",
+                                f"{self.latest_ln_f_cosine_95:.6f}",
+                                f"{energy_summary['avg_energy_per_token']:.6f}",
+                                f"{energy_summary['attn_energy']:.6f}",
+                                f"{energy_summary['mlp_energy']:.6f}",
+                                f"{energy_summary['lm_head_energy']:.6f}",
+                                f"{self.latest_overall_weight_stats['stdev']:.6f}",
+                                f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
+                                f"{self.latest_overall_weight_stats['max']:.6f}",
+                                f"{self.latest_overall_weight_stats['min']:.6f}",
+                                f"{self.latest_overall_weight_stats['abs_max']:.6f}",
                             f"{self.latest_overall_activation_stats['stdev']:.6f}",
                             f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
                             f"{self.latest_overall_activation_stats['max']:.6f}",
@@ -1773,6 +1874,8 @@ class Trainer:
         self.X, self.Y, current_dataset = self.get_batch('train')
         t_start = time.time()
         t0 = t_start
+        if self.energy_monitor is not None:
+            self.energy_monitor.reset_windows()
         local_iter_num = 0
         running_mfu = -1.0
         current_epoch = 0.0
@@ -1859,6 +1962,13 @@ class Trainer:
                 if self.args.eval_only:
                     break
 
+                tokens_trained_this_batch = self.args.batch_size * self.args.block_size
+                tokens_trained_this_iteration = 0
+                if self.energy_monitor is not None:
+                    self.energy_tracker = {"attn": 0.0, "mlp": 0.0, "lm_head": 0.0}
+                    self.raw_model.attach_energy_monitor(self.energy_monitor, self.energy_tracker)
+                    self.energy_monitor.begin_window("iteration")
+
 
                 for micro_step in range(self.args.gradient_accumulation_steps):
                     if self.ddp:
@@ -1934,13 +2044,14 @@ class Trainer:
                         self.tokens_trained = self.tokens_trained_dict[current_dataset]
                     else:
                         self.tokens_trained += tokens_trained_this_batch
+                    tokens_trained_this_iteration += tokens_trained_this_batch
 
                     # Compute epoch for logging:
-                        if self.args.dataset_list:
-                            current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
-                            self.epochs_trained_dict[current_dataset] = current_epoch
-                        else:
-                            current_epoch = self.tokens_trained / self.dataset_size_tokens
+                    if self.args.dataset_list:
+                        current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                        self.epochs_trained_dict[current_dataset] = current_epoch
+                    else:
+                        current_epoch = self.tokens_trained / self.dataset_size_tokens
 
                     self.scaler.scale(loss).backward()
 
@@ -2042,6 +2153,14 @@ class Trainer:
                         lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
+
+                if self.energy_monitor is not None:
+                    try:
+                        energy_measurement = self.energy_monitor.end_window("iteration")
+                    except Exception as exc:  # pragma: no cover - optional dependency
+                        print(f"Energy monitor failed to end window: {exc}")
+                        energy_measurement = None
+                    self._update_energy_stats(energy_measurement, tokens_trained_this_iteration)
 
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
