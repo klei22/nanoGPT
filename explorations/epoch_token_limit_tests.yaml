@@ -1,0 +1,36 @@
+# epoch_token_limit_tests.yaml
+# Exercises the new main-dataset token and epoch stopping controls.
+---
+# Base hyperparameters shared across all cases
+max_iters: [500000]
+eval_interval: [10000]
+log_interval: [100]
+device: ["cuda"]
+dtype: ["float16"]
+dataset: ["minipile"]
+block_size: [256]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+compile: [true]
+
+# Parameter groups cover single- and multi-dataset limit scenarios.
+parameter_groups:
+  # Single-dataset run that should halt on the explicit token cap.
+  # Expected: stop_reason="Reached max_tokens (5000) on minipile" once the main dataset accumulates ~5k tokens.
+  - max_tokens: [5000]
+    tensorboard_run_name: ["limit-single-token"]
+
+  # Single-dataset run that should halt on the epoch cap; planned tokens should reflect max_epochs * dataset_size.
+  # Expected: stop_reason="Reached max_epochs (0.05) on minipile" and planned_epochs=0.05 reported in logs/monitor.
+  - max_epochs: [0.05]
+    tensorboard_run_name: ["limit-single-epoch"]
+
+  # Multi-dataset run; limits apply to the first dataset in dataset_list (minipile).
+  # Expected: stop_reason="Reached max_tokens (8000) on minipile" with other datasets allowed but not governing the stop.
+  - dataset_list: ["minipile openwebtext"]
+    dataset_sampling_probs: ["3 1"]
+    dataset_interleaving: [true]
+    dataset_interleaving_shuffle: [true]
+    max_tokens: [8000]
+    tensorboard_run_name: ["limit-multidataset-token"]
