@@ -1,0 +1,23 @@
+# Compare standard Transformer residual path against the optional ResiDual variant
+---
+parameter_groups:
+  # Default Pre-LN stack
+  - name: "pre_ln_baseline"
+    use_residual_dual: [false]
+
+  # ResiDual: dual residual streams with post-LN main branch
+  - name: "residual_dual"
+    use_residual_dual: [true]
+
+# Shared hyperparameters
+max_iters: [3000]
+block_size: [256]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+dataset: ["minipile"]
+dtype: ["bfloat16"]
+device: ["cuda"]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+compile: [true]
