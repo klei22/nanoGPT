@@ -4,20 +4,14 @@
 # Named groupings for toggling the dual residual path
 named_static_groups:
   - named_group: "pre_ln_baseline"
-    named_group_settings:
-      use_residual_dual: [false]
-
+    use_residual_dual: [false]
   - named_group: "residual_dual"
-    named_group_settings:
-      use_residual_dual: [true]
+    use_residual_dual: [true]
 
 # Parameter groups: run both variants with the same hyperparameters
 parameter_groups:
-  - name: "pre_ln_baseline"
-    named_group_static: ["pre_ln_baseline"]
-
-  - name: "residual_dual"
-    named_group_static: ["residual_dual"]
+  - named_group_static: ["pre_ln_baseline"]
+  - named_group_static: ["residual_dual"]
 
 # Common parameters applied to all runs
 common_group:
