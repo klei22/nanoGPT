@@ -11,6 +11,7 @@ transformers
 pyspellchecker==0.8.3
 wandb==0.18.3
 onnx
+zeus
 beautifulsoup4==4.13.4
 dragonmapper==0.3.0
 huggingface_hub==0.30.2
