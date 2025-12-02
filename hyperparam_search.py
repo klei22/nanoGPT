@@ -70,8 +70,8 @@ def patched_argv(argv: List[str]):
         sys.argv = old
 
 
-def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float]:
-    """Return (best_val_loss, num_params, best_iter, peak_gpu_mb, iter_latency_ms)."""
+def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float, float, float]:
+    """Return (best_val_loss, num_params, best_iter, peak_gpu_mb, iter_latency_ms, total_energy_j, energy_per_1k_tokens)."""
     from train import Trainer
     from train_args import parse_args as parse_train_args
 
@@ -85,13 +85,23 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, flo
     best_iter = int(getattr(tr, "iter_num_best_val_loss", 0))
     peak_gpu_mb = float(getattr(tr, "peak_gpu_usage", 0.0) / (1024 ** 2))
     iter_latency_ms = float(getattr(tr, "iter_latency_avg", 0.0))
+    total_energy_j = float(getattr(tr, "energy_total_j", float("nan")))
+    energy_per_1k_tokens = float(getattr(tr, "energy_per_1k_tokens", float("nan")))
     del tr
     torch.cuda.empty_cache()
     gc.collect()
-    return loss, nparam, best_iter, peak_gpu_mb, iter_latency_ms
+    return (
+        loss,
+        nparam,
+        best_iter,
+        peak_gpu_mb,
+        iter_latency_ms,
+        total_energy_j,
+        energy_per_1k_tokens,
+    )
 
 
-def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float]:
+def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float, float, float]:
     script_dir = Path(__file__).parent
     cmd = [sys.executable, str(script_dir / "train.py")] + dict_to_cli(cfg)
     env = {k: v for k, v in os.environ.items() if k not in {"RANK", "WORLD_SIZE"}}
@@ -105,11 +115,21 @@ def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, fl
     loss = float(line[0])
     best_iter = int(line[1])
     nparam = float(line[2])
-    peak_gpu_mb = float(line[5])
-    iter_latency_ms = float(line[6])
+    peak_gpu_mb = float(line[6])
+    iter_latency_ms = float(line[7])
+    total_energy_j = float(line[8]) if len(line) > 8 else float("nan")
+    energy_per_1k_tokens = float(line[9]) if len(line) > 9 else float("nan")
     torch.cuda.empty_cache()
     gc.collect()
-    return loss, nparam, best_iter, peak_gpu_mb, iter_latency_ms
+    return (
+        loss,
+        nparam,
+        best_iter,
+        peak_gpu_mb,
+        iter_latency_ms,
+        total_energy_j,
+        energy_per_1k_tokens,
+    )
 
 
 def load_log(path: Path) -> Dict[str, Any]:
@@ -167,11 +187,12 @@ def main():
     )
     ap.add_argument(
         "--efficiency_target",
-        choices=["params", "vram", "iter"],
+        choices=["params", "vram", "iter", "energy"],
         default="params",
         help=(
             "Metric to normalize score gain: 'params' (default) for parameter count, "
-            "'vram' for peak GPU memory in MB, or 'iter' for average iteration latency in ms."
+            "'vram' for peak GPU memory in MB, 'iter' for average iteration latency in ms, "
+            "or 'energy' for total GPU Joules consumed (requires --measure_energy in train configs)."
         ),
     )
 
@@ -241,6 +262,9 @@ def main():
 
 
     # ── restore / initialise baseline ─────────────────────────
+    base_energy_j = float("nan")
+    base_energy_per_1k = float("nan")
+
     if log["iterations"]:
         last = log["iterations"][-1]
         baseline_cfg = deepcopy(last["baseline_config_after"])
@@ -249,6 +273,8 @@ def main():
         base_params = last["baseline_metrics"]["params"]
         base_gpu = last["baseline_metrics"].get("peak_gpu_mb", 0.0)
         base_iter_ms = last["baseline_metrics"].get("iter_latency_avg", 0.0)
+        base_energy_j = last["baseline_metrics"].get("energy_total_joules", float("nan"))
+        base_energy_per_1k = last["baseline_metrics"].get("energy_per_1k_tokens", float("nan"))
         cur_iter = last["iter"] + 1
         # Apply overrides to the resumed configuration for the current session
         _apply_overrides_to_active_config(baseline_cfg, args.override_cfg, "resumed baseline_cfg")
@@ -261,7 +287,15 @@ def main():
         print("[BASELINE] measuring initial config …")
         # run_fn receives a deepcopy of the (potentially overridden) baseline_cfg
 
-        base_loss, base_params, base_best_iter, base_gpu, base_iter_ms = run_fn(deepcopy(baseline_cfg))
+        (
+            base_loss,
+            base_params,
+            base_best_iter,
+            base_gpu,
+            base_iter_ms,
+            base_energy_j,
+            base_energy_per_1k,
+        ) = run_fn(deepcopy(baseline_cfg))
         base_score = 1 / math.exp(base_loss)
         log["iterations"].append(
             {
@@ -273,12 +307,17 @@ def main():
                     "peak_gpu_mb": base_gpu,
                     "iter_latency_avg": base_iter_ms,
                     "best_iter": base_best_iter,
+                    "energy_total_joules": base_energy_j,
+                    "energy_per_1k_tokens": base_energy_per_1k,
                 },
                 "baseline_config_after": deepcopy(baseline_cfg),
             }
         )
         save_log(log_path, log)
         cur_iter = 0
+
+    if args.efficiency_target == "energy" and math.isnan(base_energy_j):
+        sys.exit("Energy efficiency target requires energy metrics. Enable --measure_energy in your training config.")
 
     # ── outer greedy loop ─────────────────────────────────────
     while cur_iter < args.num_iterations:
@@ -319,7 +358,15 @@ def main():
 
                     print(f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}")
                     try:
-                        loss, nparam, best_it, peak_mb, iter_ms = run_fn(cfg_run)
+                        (
+                            loss,
+                            nparam,
+                            best_it,
+                            peak_mb,
+                            iter_ms,
+                            total_energy_j,
+                            energy_per_1k_tokens,
+                        ) = run_fn(cfg_run)
                     except Exception as exc:
                         print("   ⚠", exc)
                         return                                      # discard this candidate
@@ -331,13 +378,26 @@ def main():
                                       "score": score,
                                       "best_iter": best_it,
                                       "peak_gpu_mb": peak_mb,
-                                      "iter_latency_ms": iter_ms})
+                                      "iter_latency_ms": iter_ms,
+                                      "energy_total_j": total_energy_j,
+                                      "energy_per_1k_tokens": energy_per_1k_tokens,
+                                      })
                     scores.append(score)
 
                 # ── aggregate across seeds ───────────────────────────────────
                 avg_score  = sum(scores) / len(scores)
                 avg_peak   = sum(s["peak_gpu_mb"] for s in seed_runs) / len(seed_runs)
                 avg_iter   = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
+                energy_values = [s["energy_total_j"] for s in seed_runs if not math.isnan(s["energy_total_j"])]
+                avg_energy   = sum(energy_values) / len(energy_values) if energy_values else float("nan")
+                energy_per_token_values = [
+                    s["energy_per_1k_tokens"] for s in seed_runs if not math.isnan(s["energy_per_1k_tokens"])
+                ]
+                avg_energy_per_1k = (
+                    sum(energy_per_token_values) / len(energy_per_token_values)
+                    if energy_per_token_values
+                    else float("nan")
+                )
                 avg_loss   = -math.log(avg_score)
                 d_score    = avg_score - base_score
                 d_param    = nparam     - base_params
@@ -350,6 +410,11 @@ def main():
                     d_cost = d_vram
                 elif args.efficiency_target == "iter":
                     d_cost = d_iter
+                elif args.efficiency_target == "energy":
+                    if math.isnan(avg_energy) or math.isnan(base_energy_j):
+                        print("   ⚠ Energy metrics missing; skipping efficiency calculation for this candidate.")
+                        return
+                    d_cost = avg_energy - base_energy_j
                 else:
                     raise ValueError("Unknown efficiency target")
 
@@ -365,6 +430,8 @@ def main():
                     "num_params":    nparam,
                     "peak_gpu_mb":   avg_peak,
                     "iter_latency_avg": avg_iter,
+                    "energy_total_joules": avg_energy,
+                    "energy_per_1k_tokens": avg_energy_per_1k,
                     "delta_score":   d_score,
                     "delta_params":  d_param,
                     "delta_vram":    d_vram,
@@ -472,6 +539,8 @@ def main():
                                 "params": base_params,
                                 "peak_gpu_mb": base_gpu,
                                 "iter_latency_avg": base_iter_ms,
+                                "energy_total_joules": base_energy_j,
+                                "energy_per_1k_tokens": base_energy_per_1k,
                                 "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
                             },
                             "candidates": candidates, # Log candidates for this unproductive iteration
@@ -538,6 +607,8 @@ def main():
         base_params = chosen["num_params"]
         base_gpu = chosen.get("peak_gpu_mb", base_gpu)
         base_iter_ms = chosen.get("iter_latency_avg", base_iter_ms)
+        base_energy_j = chosen.get("energy_total_joules", base_energy_j)
+        base_energy_per_1k = chosen.get("energy_per_1k_tokens", base_energy_per_1k)
 
         # log block
         log["iterations"].append(
@@ -549,6 +620,8 @@ def main():
                     "params": base_params,
                     "peak_gpu_mb": base_gpu,
                     "iter_latency_avg": base_iter_ms,
+                    "energy_total_joules": base_energy_j,
+                    "energy_per_1k_tokens": base_energy_per_1k,
                     "best_iter": chosen["best_iter"],
                 },
                 "candidates": candidates,

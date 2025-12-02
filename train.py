@@ -12,6 +12,8 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 
+from zeus.monitor import ZeusMonitor, PowerMonitor
+
 from rich.console import Group
 from rich.console import Console
 from rich.text import Text
@@ -107,6 +109,15 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+
+        # Energy tracking
+        self.measure_energy = getattr(self.args, "measure_energy", False)
+        self.energy_monitor = None
+        self.energy_power_monitor = None
+        self.energy_measurement = None
+        self.energy_total_j = float("nan")
+        self.energy_per_1k_tokens = float("nan")
+        self.energy_monitor_start_time = None
 
         # track latest evaluation metrics for progress bar
         self.latest_top1_prob = float('nan')
@@ -240,6 +251,15 @@ class Trainer:
         self.device_type = 'cuda' if 'cuda' in self.args.device else 'cpu'
         if self.device_type == 'cuda':
             reset_peak_memory_stats(self.device)
+
+        if self.measure_energy and self.device_type == 'cuda':
+            self.energy_power_monitor = PowerMonitor()
+            self.energy_monitor = ZeusMonitor()
+            self.energy_monitor.reset_windows()
+            self.energy_monitor_start_time = time.time()
+        elif self.measure_energy:
+            print("Energy monitoring requested but CUDA is not available; disabling energy measurements.")
+            self.measure_energy = False
 
         self.ptdtype = {"bfloat16" : torch.bfloat16, "float16" : torch.float16, "float32" : torch.float32}[self.args.dtype]
         self.ctx = nullcontext() if self.device_type == 'cpu' else torch.amp.autocast(device_type=self.device_type, dtype=self.ptdtype)
@@ -1507,6 +1527,47 @@ class Trainer:
             writer.writerow(args)
 
 
+    def _write_best_metrics_file(self):
+        if math.isnan(float(self.best_val_loss)):
+            return
+
+        chance_ratio = self.model_args['vocab_size'] / math.exp(float(self.best_val_loss))
+        peak_mb = self.peak_gpu_usage / (1024 ** 2)
+        metrics = [
+            f"{float(self.best_val_loss)}",
+            f"{self.best_iter}",
+            f"{self.best_tokens}",
+            f"{self.model.num_param}",
+            f"{chance_ratio:.3e}",
+            f"{chance_ratio/self.model.num_param:.3e}",
+            f"{peak_mb:.1f}",
+            f"{self.iter_latency_avg:.1f}",
+            f"{self.energy_total_j:.6f}",
+            f"{self.energy_per_1k_tokens:.6f}",
+            f"{self.latest_top1_prob:.6f}",
+            f"{self.latest_top1_correct:.6f}",
+            f"{self.latest_target_rank:.2f}",
+            f"{self.latest_target_left_prob:.6f}",
+            f"{self.latest_target_prob:.6f}",
+            f"{self.latest_rank_95:.2f}",
+            f"{self.latest_left_prob_95:.6f}",
+            f"{self.latest_ln_f_cosine:.6f}",
+            f"{self.latest_ln_f_cosine_95:.6f}",
+            f"{self.latest_overall_weight_stats['stdev']:.6f}",
+            f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
+            f"{self.latest_overall_weight_stats['max']:.6f}",
+            f"{self.latest_overall_weight_stats['min']:.6f}",
+            f"{self.latest_overall_weight_stats['abs_max']:.6f}",
+            f"{self.latest_overall_activation_stats['stdev']:.6f}",
+            f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
+            f"{self.latest_overall_activation_stats['max']:.6f}",
+            f"{self.latest_overall_activation_stats['min']:.6f}",
+            f"{self.latest_overall_activation_stats['abs_max']:.6f}",
+        ]
+        with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
+            best_loss_file.write(", ".join(metrics) + "\n")
+
+
     def log_gamma_beta(self, gamma, beta, layer_num, head_num=None):
         if self.args.tensorboard_log:
             if head_num:
@@ -1646,40 +1707,8 @@ class Trainer:
                 self.best_val_loss = losses['val']
                 self.best_iter = self.iter_num
                 self.best_tokens = self.tokens_trained
-                peak_mb = self.peak_gpu_usage / (1024 ** 2)
-                with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                    chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
-                    metrics = [
-                            f"{self.best_val_loss.item()}",
-                            f"{self.iter_num}",
-                            f"{self.best_tokens}",
-                            f"{self.model.num_param}",
-                            f"{chance_ratio:.3e}",
-                            f"{chance_ratio/self.model.num_param:.3e}",
-                            f"{peak_mb:.1f}",
-                            f"{self.iter_latency_avg:.1f}",
-                            f"{self.latest_top1_prob:.6f}",
-                            f"{self.latest_top1_correct:.6f}",
-                            f"{self.latest_target_rank:.2f}",
-                            f"{self.latest_target_left_prob:.6f}",
-                            f"{self.latest_target_prob:.6f}",
-                            f"{self.latest_rank_95:.2f}",
-                            f"{self.latest_left_prob_95:.6f}",
-                            f"{self.latest_ln_f_cosine:.6f}",
-                            f"{self.latest_ln_f_cosine_95:.6f}",
-                            f"{self.latest_overall_weight_stats['stdev']:.6f}",
-                            f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
-                            f"{self.latest_overall_weight_stats['max']:.6f}",
-                            f"{self.latest_overall_weight_stats['min']:.6f}",
-                            f"{self.latest_overall_weight_stats['abs_max']:.6f}",
-                            f"{self.latest_overall_activation_stats['stdev']:.6f}",
-                            f"{self.latest_overall_activation_stats['kurtosis']:.6f}",
-                            f"{self.latest_overall_activation_stats['max']:.6f}",
-                            f"{self.latest_overall_activation_stats['min']:.6f}",
-                            f"{self.latest_overall_activation_stats['abs_max']:.6f}",
-                    ]
-                    best_loss_file.write(", ".join(metrics) + "\n")
                 num_steps_with_worse_loss = 0
+            self._write_best_metrics_file()
             if self.iter_num > 0 and not self.args.never_save_checkpoint:
                 print(f"saving checkpoint to {self.args.out_dir}")
                 self.save_checkpoint('ckpt.pt')
@@ -1789,6 +1818,10 @@ class Trainer:
         cli_settings = " ".join(sys.argv)
         cli_text = Text(f"CLI: {cli_settings}", style="chartreuse1")
         self.console = Console()
+
+        if self.measure_energy and self.energy_monitor is not None:
+            self.energy_monitor.begin_window("training_run")
+
         # Create progress bar with ETA and remaining time display
         progress = Progress(
                 TextColumn("[bold white]{task.description}"),
@@ -2057,6 +2090,25 @@ class Trainer:
                             self.sample_and_print()
                             live.start()
                     break
+
+            if self.measure_energy and self.energy_monitor is not None:
+                self.energy_measurement = self.energy_monitor.end_window("training_run")
+                self.energy_total_j = float(self.energy_measurement.total_energy)
+                token_denom = max(self.tokens_trained, 1)
+                self.energy_per_1k_tokens = self.energy_total_j / (token_denom / 1000.0)
+
+                if self.args.tensorboard_log and self.writer is not None:
+                    avg_power = getattr(
+                        self.energy_measurement,
+                        "avg_power",
+                        self.energy_total_j / max(self.energy_measurement.time, 1e-9),
+                    )
+                    self.writer.add_scalar("energy/total_joules", self.energy_total_j, self.iter_num)
+                    self.writer.add_scalar("energy/avg_power_w", avg_power, self.iter_num)
+                    self.writer.add_scalar(
+                        "energy/joules_per_1k_tokens", self.energy_per_1k_tokens, self.iter_num
+                    )
+                self._write_best_metrics_file()
 
             if self.args.plot_statistics:
                 plot_statistics(self.args, self.stats, graph_y_labels)
