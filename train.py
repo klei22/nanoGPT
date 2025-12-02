@@ -240,6 +240,9 @@ class Trainer:
 
         self.tokens_per_iter = self.args.gradient_accumulation_steps * self.ddp_world_size * self.args.batch_size * self.args.block_size
 
+        # Guard against zero/negative evaluation intervals (e.g., to disable evals)
+        self.eval_interval = self.args.eval_interval if self.args.eval_interval and self.args.eval_interval > 0 else None
+
         if self.master_process:
             os.makedirs(self.args.out_dir, exist_ok=True)
 
@@ -1879,8 +1882,13 @@ class Trainer:
         local_iter_num = 0
         running_mfu = -1.0
         current_epoch = 0.0
-        self.evaluations_remaining = (self.args.max_iters - self.iter_num) // self.args.eval_interval + 1
+        if self.eval_interval is None:
+            self.evaluations_remaining = 0
+        else:
+            self.evaluations_remaining = (self.args.max_iters - self.iter_num) // self.eval_interval + 1
         self.eta = build_eta_estimator(self.args, t_start, self.evaluations_remaining, self.formatted_completion_eta)
+        if self.eval_interval is None and self.master_process:
+            print("eval_interval <= 0 detected; disabling validation/eval cycles.")
         num_steps_with_worse_loss = 0
         losses = {"val": float("inf")}
         # TODO: Move statistics labels to statistics scripts
@@ -1947,7 +1955,7 @@ class Trainer:
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.lr
 
-                if self.iter_num % self.args.eval_interval == 0 and self.master_process:
+                if self.eval_interval is not None and self.iter_num % self.eval_interval == 0 and self.master_process:
 
                     losses, num_steps_with_worse_loss = self.run_validation_step(
                         running_mfu, current_epoch, current_dataset, num_steps_with_worse_loss, live
@@ -2100,7 +2108,7 @@ class Trainer:
                         iter_num=self.iter_num,
                         now=t1,
                         dt=dt,
-                        is_eval_boundary=(self.iter_num % self.args.eval_interval == 0),
+                        is_eval_boundary=(self.eval_interval is not None and self.iter_num % self.eval_interval == 0),
                         )
 
                 progress_advance = eta_update.progress_advance
