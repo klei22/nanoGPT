@@ -75,6 +75,7 @@ import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
+from zeus.monitor import PowerMonitor, ZeusMonitor
 
 from variations.model_variations import model_variation_dictionary
 
@@ -107,6 +108,15 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+        self.power_monitor: PowerMonitor | None = None
+        self.energy_monitor: ZeusMonitor | None = None
+        self.energy_window_label: str = getattr(self.args, "energy_monitor_label", "train_iteration")
+        self.total_energy_joules: float = 0.0
+        self.energy_tokens: int = 0
+        self.latest_iter_energy: float = 0.0
+        self.latest_energy_per_token: float = 0.0
+        self.energy_per_iter_joules: float = 0.0
+        self.average_energy_per_token: float = 0.0
 
         # track latest evaluation metrics for progress bar
         self.latest_top1_prob = float('nan')
@@ -156,6 +166,10 @@ class Trainer:
             sample_dir = os.path.dirname(self.args.sample_file)
             if sample_dir and not os.path.exists(sample_dir):
                 os.makedirs(sample_dir, exist_ok=True)
+
+        if getattr(self.args, "energy_monitor", False):
+            self.power_monitor = PowerMonitor()
+            self.energy_monitor = ZeusMonitor()
 
         # calculation on end time via eval cycle
         self.eval_cycle_window = deque(maxlen=self.args.eval_cycle_window)
@@ -1402,6 +1416,24 @@ class Trainer:
             # bulk metrics
             self.write_to_csv(target_dataset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
 
+    def _begin_energy_window(self) -> None:
+        if self.energy_monitor is None:
+            return
+        self.energy_monitor.begin_window(self.energy_window_label)
+
+    def _end_energy_window(self, tokens_this_iter: int) -> None:
+        if self.energy_monitor is None:
+            return
+        measurement = self.energy_monitor.end_window(self.energy_window_label)
+        self.latest_iter_energy = measurement.total_energy
+        self.total_energy_joules += measurement.total_energy
+        self.energy_tokens += tokens_this_iter
+        if self.energy_tokens:
+            self.average_energy_per_token = self.total_energy_joules / self.energy_tokens
+        if tokens_this_iter:
+            self.latest_energy_per_token = measurement.total_energy / tokens_this_iter
+        self.energy_per_iter_joules = self.total_energy_joules / max(self.iter_num + 1, 1)
+
     def log_metrics_non_validation(self, loss_training, running_mfu, epoch, tokens_trained, target_dataset, train_better_than_chance):
         if self.args.tensorboard_log:
             self.writer.add_scalars(
@@ -1472,6 +1504,14 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
 
             self._log_bit_metrics(target_dataset, tokens_trained)
+
+            if self.energy_monitor is not None:
+                self.writer.add_scalar(f"{target_dataset}/iter_energy_j", self.latest_iter_energy, self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/energy_per_token", self.latest_energy_per_token, self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/total_energy_j", self.total_energy_joules, self.iter_num)
+                self.writer.add_scalar(
+                        f"{target_dataset}/energy_per_iter", self.energy_per_iter_joules, self.iter_num
+                        )
 
     def write_to_csv(self, *args, prefix=""):
         args = list(args)
@@ -1677,6 +1717,9 @@ class Trainer:
                             f"{self.latest_overall_activation_stats['max']:.6f}",
                             f"{self.latest_overall_activation_stats['min']:.6f}",
                             f"{self.latest_overall_activation_stats['abs_max']:.6f}",
+                            f"{self.total_energy_joules:.6f}",
+                            f"{self.energy_per_iter_joules:.6f}",
+                            f"{self.average_energy_per_token:.6f}",
                     ]
                     best_loss_file.write(", ".join(metrics) + "\n")
                 num_steps_with_worse_loss = 0
@@ -1860,6 +1903,8 @@ class Trainer:
                     break
 
 
+                self._begin_energy_window()
+
                 for micro_step in range(self.args.gradient_accumulation_steps):
                     if self.ddp:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
@@ -1978,6 +2023,8 @@ class Trainer:
                         self.scheduler.step()
 
                 self.optimizer.zero_grad(set_to_none=True)
+
+                self._end_energy_window(tokens_trained_this_batch)
 
                 t1 = time.time()
                 dt = t1 - t0

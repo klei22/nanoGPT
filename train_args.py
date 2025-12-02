@@ -1338,6 +1338,12 @@ def parse_args():
     logging_group.add_argument('--tensorboard_run_name', type=str, default=None)
     logging_group.add_argument('--tensorboard_graph', default=True, action=argparse.BooleanOptionalAction)
 
+    # Energy monitoring
+    logging_group.add_argument('--energy_monitor', default=False, action=argparse.BooleanOptionalAction,
+                               help='Enable Zeus energy monitoring during training.')
+    logging_group.add_argument('--energy_monitor_label', type=str, default='train_iteration',
+                               help='Window label used for ZeusMonitor begin/end calls.')
+
     # Metric logging toggles
     logging_group.add_argument('--log_btc_train', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance training metrics')
     logging_group.add_argument('--log_btc_per_param', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance-per-parameter metrics')

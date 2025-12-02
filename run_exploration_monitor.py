@@ -182,6 +182,9 @@ class MonitorApp(App):
             "left_prob_95",
             "avg_ln_f_cosine",
             "ln_f_cosine_95",
+            "total_energy_joules",
+            "energy_per_iter_joules",
+            "energy_per_token_joules",
         ] + self.param_keys
         self.all_columns = base_cols.copy()
         self.columns = base_cols.copy()

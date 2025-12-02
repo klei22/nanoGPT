@@ -78,8 +78,11 @@ noise.
     when delta score gets too close to noise levels)
  - `results_file` where to store results for viewing with `view_hp_log.py`
   - `efficiency_target` chooses the cost metric for efficiency: `params`
-  (default), `vram` for peak GPU memory, or `iter` for average iteration
-  latency.
+  (default), `vram` for peak GPU memory, `iter` for average iteration
+  latency, or `energy` to compare score gains against Zeus-measured GPU
+  energy consumption. When targeting `energy`, set `energy_monitor: true`
+  in your baseline YAML (or pass `--override_cfg energy_monitor=true`) so
+  each candidate run records energy metrics.
 
 
 1. Run bash script from main directory
