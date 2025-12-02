@@ -1,16 +1,15 @@
 # MineRL Navigate pixel channel extraction
 
-This folder contains a helper script for generating a pixel-wise channel dataset from the [MineRL Navigate](https://pypi.org/project/minerl-navigate/) video collection. The upstream dataset exposes 64x64 RGB video clips of length 500 frames. The included script downloads the dataset via `tensorflow_datasets`, then writes per-pixel channel arrays into an organized directory structure that is easy to consume for downstream experiments.
+This folder contains a helper script for generating a pixel-wise channel dataset from the [MineRL Navigate](https://pypi.org/project/minerl-navigate/) video collection. The upstream dataset exposes 64x64 RGB video clips of length 500 frames. The included script downloads the dataset archive directly (no TensorFlow dependency) and writes per-pixel channel arrays into an organized directory structure that is easy to consume for downstream experiments.
 
 ## Requirements
 - Python 3.9+
-- `tensorflow` and `tensorflow-datasets` (required to load the dataset)
-- The `minerl-navigate` package (provides the dataset builder used by `tensorflow-datasets`)
+- `imageio[ffmpeg]` for reading MP4 videos
 
 Install the dependencies into your environment:
 
 ```bash
-pip install tensorflow tensorflow-datasets minerl-navigate
+pip install imageio[ffmpeg]
 ```
 
 ## Usage
@@ -20,11 +19,13 @@ Run the helper script to download the dataset split you care about and emit pixe
 python data/minerl_navigate/extract_minerl_navigate_pixels.py \
   --split train \
   --output_dir /path/to/output \
+  --dataset_dir ~/.cache/minerl_navigate \
   --max_videos 10
 ```
 
 Key notes:
 - Use `--split` to choose `train` or `test`.
+- Use `--dataset_dir` to control where the downloader stores/extracts the archive. If the `train/` and `test/` folders already exist there, no download occurs.
 - Use `--max_videos` to limit how many videos are processed (omit to process the entire split).
 - By default, the script creates all necessary pixel/channel directories before exporting data.
 

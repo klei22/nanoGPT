@@ -7,13 +7,14 @@
 set -euo pipefail
 
 OUTPUT_DIR=${OUTPUT_DIR:-"./minerl_navigate_output"}
+DATASET_DIR=${DATASET_DIR:-"${HOME}/.cache/minerl_navigate"}
 SPLIT=${SPLIT:-"train"}
 MAX_VIDEOS=${MAX_VIDEOS:-""}
 
 # Ensure dependencies are present
 python - <<'PY'
 import importlib
-for pkg in ["tensorflow", "tensorflow_datasets", "minerl_navigate"]:
+for pkg in ["imageio"]:
     importlib.import_module(pkg)
 PY
 
@@ -21,5 +22,6 @@ echo "Writing ${SPLIT} split pixel channels to ${OUTPUT_DIR}"
 
 python "$(dirname "$0")/extract_minerl_navigate_pixels.py" \
   --split "${SPLIT}" \
+  --dataset_dir "${DATASET_DIR}" \
   --output_dir "${OUTPUT_DIR}" \
   ${MAX_VIDEOS:+--max_videos "${MAX_VIDEOS}"}

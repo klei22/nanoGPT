@@ -2,8 +2,9 @@
 
 Each video in the dataset has shape (frames, height, width, channels) where
 height and width are 64 and channels correspond to RGB values in uint8.
-This script loads the dataset via `tensorflow_datasets`, then writes
-per-pixel channel sequences to disk. The layout looks like:
+This script downloads the dataset archive directly (no TensorFlow
+dependency), then writes per-pixel channel sequences to disk. The
+layout looks like:
 
 output_dir/
   pixel_00_00/
@@ -21,10 +22,14 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import urllib.request
+import zipfile
 from typing import Iterable, Tuple
 
+import imageio.v3 as iio
 import numpy as np
-import tensorflow_datasets as tfds
+
+DOWNLOAD_URL = "https://archive.org/download/minerl_navigate/minerl_navigate.zip"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -39,6 +44,15 @@ def parse_args() -> argparse.Namespace:
         required=True,
         type=pathlib.Path,
         help="Directory where per-pixel channel arrays will be stored.",
+    )
+    parser.add_argument(
+        "--dataset_dir",
+        type=pathlib.Path,
+        default=pathlib.Path.home() / ".cache" / "minerl_navigate",
+        help=(
+            "Directory to store or locate the extracted minerl_navigate archive. "
+            "If the train/test folders are missing, the script will download the archive."
+        ),
     )
     parser.add_argument(
         "--max_videos",
@@ -62,11 +76,48 @@ def ensure_pixel_directories(output_dir: pathlib.Path, height: int, width: int) 
                 (pixel_root / channel).mkdir(parents=True, exist_ok=True)
 
 
-def iter_dataset(split: str) -> Iterable[Tuple[int, np.ndarray]]:
+def ensure_dataset(dataset_dir: pathlib.Path) -> pathlib.Path:
+    """Download and extract the MineRL Navigate archive if needed.
+
+    Returns the path containing `train/` and `test/` subdirectories with MP4 files.
+    """
+
+    dataset_dir = dataset_dir.expanduser()
+    train_dir = dataset_dir / "train"
+    test_dir = dataset_dir / "test"
+
+    if train_dir.exists() and test_dir.exists():
+        return dataset_dir
+
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = dataset_dir / "minerl_navigate.zip"
+
+    if not zip_path.exists():
+        print(f"Downloading dataset archive to {zip_path}...")
+        urllib.request.urlretrieve(DOWNLOAD_URL, zip_path)
+
+    print(f"Extracting archive at {zip_path}...")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(dataset_dir)
+
+    extracted_root = dataset_dir / "minerl_navigate"
+    if extracted_root.exists():
+        return extracted_root
+
+    return dataset_dir
+
+
+def iter_dataset(dataset_dir: pathlib.Path, split: str) -> Iterable[Tuple[int, np.ndarray]]:
     """Yield index and video numpy array for the requested split."""
-    ds = tfds.load("minerl_navigate", split=split, shuffle_files=False)
-    for idx, example in enumerate(tfds.as_numpy(ds)):
-        yield idx, example["video"]
+
+    split_dir = dataset_dir / split
+    if not split_dir.exists():
+        raise FileNotFoundError(
+            f"Split directory {split_dir} not found. Ensure the dataset archive was extracted."
+        )
+
+    for idx, video_path in enumerate(sorted(split_dir.glob("*.mp4"))):
+        yield idx, iio.imread(video_path)
 
 
 def export_video(
@@ -79,6 +130,8 @@ def export_video(
     frames, height, width, _ = video.shape
     file_stem = f"{split}_video_{video_idx:05d}"
 
+    grayscale_frames = video.mean(axis=-1, dtype=np.float32).astype(np.float16)
+
     for row in range(height):
         for col in range(width):
             pixel_series = video[:, row, col, :]
@@ -87,9 +140,10 @@ def export_video(
             np.save(pixel_root / "r" / f"{file_stem}.npy", pixel_series[:, 0])
             np.save(pixel_root / "g" / f"{file_stem}.npy", pixel_series[:, 1])
             np.save(pixel_root / "b" / f"{file_stem}.npy", pixel_series[:, 2])
-
-    grayscale = pixel_series.mean(axis=-1, dtype=np.float32).astype(np.float16)
-    np.save(pixel_root / "grayscale" / f"{file_stem}.npy", grayscale)
+            np.save(
+                pixel_root / "grayscale" / f"{file_stem}.npy",
+                grayscale_frames[:, row, col],
+            )
 
 
 def main() -> None:
@@ -98,7 +152,9 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading MineRL Navigate {args.split} split...")
-    dataset_iter = iter_dataset(args.split)
+    dataset_root = ensure_dataset(args.dataset_dir)
+
+    dataset_iter = iter_dataset(dataset_root, args.split)
 
     # Inspect shape from first element to avoid creating 4096 directories twice.
     first_item = next(dataset_iter, None)
