@@ -532,7 +532,11 @@ class Trainer:
 
         try:
             self.energy_monitor = ZeusMonitor()
-            self.energy_monitor.reset_windows()
+            reset = getattr(self.energy_monitor, "reset_windows", None)
+            if callable(reset):
+                reset()
+            elif callable(getattr(self.energy_monitor, "reset", None)):
+                self.energy_monitor.reset()
             self.raw_model.attach_energy_monitor(self.energy_monitor, self.energy_tracker)
         except Exception as exc:  # pragma: no cover - optional dependency
             print(f"Failed to initialize Zeus energy logging: {exc}")
@@ -1878,7 +1882,11 @@ class Trainer:
         t_start = time.time()
         t0 = t_start
         if self.energy_monitor is not None:
-            self.energy_monitor.reset_windows()
+            reset = getattr(self.energy_monitor, "reset_windows", None)
+            if callable(reset):
+                reset()
+            elif callable(getattr(self.energy_monitor, "reset", None)):
+                self.energy_monitor.reset()
         local_iter_num = 0
         running_mfu = -1.0
         current_epoch = 0.0
