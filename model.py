@@ -218,13 +218,6 @@ class GPT(nn.Module):
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
-    def attach_energy_monitor(self, monitor, tracker):
-        self.energy_monitor = monitor
-        self.energy_tracker = tracker
-        for block in self.transformer['h']:
-            block.energy_monitor = monitor
-            block.energy_tracker = tracker
-
         # Optional post-embedding normalizations
         if self.config.norm_variant_wte is not None:
             self.transformer['post_embedding_norm'] = self.build_norm_from_variant(config, "norm_variant_wte", "norm_wte")
@@ -297,6 +290,19 @@ class GPT(nn.Module):
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+    def attach_energy_monitor(self, monitor, tracker):
+        self.energy_monitor = monitor
+        self.energy_tracker = tracker
+        for block in self.transformer['h']:
+            block.energy_monitor = monitor
+            block.energy_tracker = tracker
+
+    def _get_lm_head(self, dataset_idx=None):
+        if (self.config.multicontext or self.config.multidataset_wte) and not self.uses_numerical_multicontext:
+            head_idx = dataset_idx if dataset_idx is not None else 0
+            return self.transformer[f'lm_head_{head_idx}']
+        return self.lm_head
 
     def get_num_params(self, non_embedding=True):
         """
@@ -690,12 +696,9 @@ class GPT(nn.Module):
 
             if targets is not None:
                 # if we are given some desired targets also calculate the loss
-                if self.config.multidataset_wte and dataset_idx is not None:
-                    with _energy_window(self, "lm_head"):
-                        logits = self.transformer[f'lm_head_{dataset_idx}'](x)
-                else:
-                    with _energy_window(self, "lm_head"):
-                        logits = self.lm_head(x)
+                head = self._get_lm_head(dataset_idx)
+                with _energy_window(self, "lm_head"):
+                    logits = head(x)
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -708,12 +711,9 @@ class GPT(nn.Module):
                     loss = loss_fn(logits, targets, iter_num=iter_num)
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
-                if self.config.multidataset_wte and dataset_idx is not None:
-                    with _energy_window(self, "lm_head"):
-                        logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
-                else:
-                    with _energy_window(self, "lm_head"):
-                        logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+                head = self._get_lm_head(dataset_idx)
+                with _energy_window(self, "lm_head"):
+                    logits = head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -795,10 +795,7 @@ class GPT(nn.Module):
         if self.n_embd_wte:
             x = F.linear(x, self.transformer.scale_down.weight.t())
 
-        if self.config.multidataset_wte and dataset_idx is not None:
-            logits = self.transformer[f'lm_head_{dataset_idx}'](x)
-        else:
-            logits = self.lm_head(x)
+        logits = self._get_lm_head(dataset_idx)(x)
         if self.final_logit_softcapping is not None:
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping
