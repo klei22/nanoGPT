@@ -45,6 +45,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=1337, help="Seed for pseudorandom number generator")
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Torch data type for inference")
     parser.add_argument('--compile', action=argparse.BooleanOptionalAction, help="Compile the model (requires PyTorch 2.0)")
+    parser.add_argument('--use_kv_cache', default=False, action=argparse.BooleanOptionalAction, help="Enable KV caching during sampling")
     parser.add_argument('--sample_file', type=str, default=None, help="Output file for inference")
     parser.add_argument('--interactive', action=argparse.BooleanOptionalAction, help="Enable interactive generation")
     parser.add_argument('--stop_strings', nargs='+', type=str, default=['~W'], help="One or more strings to stop generation and allow user input. ""E.g. --stop_strings \"\n\n\" \".\"")
@@ -473,6 +474,7 @@ def sample_with_existing_model(
     writer: Optional[object] = None,
     dataset_idx: Optional[int] = None,
     console: Console | None = None,
+    use_kv_cache: bool = False,
 ):
     """
     Generate text from an already-loaded GPT model.
@@ -543,6 +545,7 @@ def sample_with_existing_model(
             # ------------- END LSV per-sample section -------------------
 
             x = start_ids.clone()
+            kv_cache = model.init_kv_cache() if use_kv_cache else None
 
             # storage for colouring
             tokens_for_color: List[int] = []
@@ -554,13 +557,19 @@ def sample_with_existing_model(
 
             with torch.no_grad():
                 for _step in range(max_new_tokens):
-                    idx_cond = (
-                        x
-                        if x.size(1) <= model.config.block_size
-                        else x[:, -model.config.block_size :]
-                    )
+                    if use_kv_cache and _step > 0:
+                        idx_cond = x[:, -1:]
+                    else:
+                        idx_cond = (
+                            x
+                            if x.size(1) <= model.config.block_size
+                            else x[:, -model.config.block_size :]
+                        )
 
-                    model_logits, _ = model(idx_cond, dataset_idx=dataset_idx)
+                    if use_kv_cache:
+                        model_logits, _, kv_cache = model(idx_cond, dataset_idx=dataset_idx, kv_cache=kv_cache)
+                    else:
+                        model_logits, _ = model(idx_cond, dataset_idx=dataset_idx)
                     raw_logits_row = model_logits[:, -1, :]      # Raw logits from model
 
                     # --- Apply Cosine Similarity Penalty (if enabled) ---
@@ -1439,6 +1448,7 @@ def main():
                 sample_file=args.sample_file,
                 args=args,
                 dataset_idx=0,
+                use_kv_cache=args.use_kv_cache,
                 )
 
 if __name__ == "__main__":
