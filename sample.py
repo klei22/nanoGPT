@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Union
 
 import io
+import keyword
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+import tokenize
 import torch
 import tiktoken
 from collections import OrderedDict
@@ -1099,6 +1101,84 @@ def get_tokenizer_functions(meta):
                     tokens.append('')
 
             return ''.join(tokens)
+
+        return encode, decode
+
+    if meta['tokenizer'] == 'python_programming':
+        stoi, itos = meta['stoi'], meta['itos']
+        custom_tokens = set(meta.get('custom_tokens', []))
+
+        def emit_bytes(text: str, output: list[int]) -> None:
+            for byte_val in text.encode('utf-8'):
+                output.append(stoi[bytes([byte_val])])
+
+        def emit_token(token_str: str, output: list[int]) -> None:
+            token_id = stoi.get(token_str)
+            if token_id is None:
+                emit_bytes(token_str, output)
+            else:
+                output.append(token_id)
+
+        def line_offsets(text: str) -> list[int]:
+            offsets = [0]
+            for line in text.splitlines(keepends=True):
+                offsets.append(offsets[-1] + len(line))
+            return offsets
+
+        def pos_to_index(offsets: list[int], position: tuple[int, int]) -> int:
+            line, col = position
+            return offsets[line - 1] + col
+
+        def encode(text: str) -> list[int]:
+            ids: list[int] = []
+            offsets = line_offsets(text)
+            reader = io.StringIO(text).readline
+            last_index = 0
+
+            for tok in tokenize.generate_tokens(reader):
+                start_idx = pos_to_index(offsets, tok.start)
+                end_idx = pos_to_index(offsets, tok.end)
+
+                if start_idx > last_index:
+                    emit_bytes(text[last_index:start_idx], ids)
+
+                if tok.type == tokenize.COMMENT:
+                    emit_bytes(tok.string, ids)
+                elif tok.type == tokenize.NAME:
+                    if keyword.iskeyword(tok.string):
+                        emit_token(tok.string, ids)
+                    else:
+                        emit_bytes(tok.string, ids)
+                elif tok.string in custom_tokens:
+                    emit_token(tok.string, ids)
+                else:
+                    emit_bytes(tok.string, ids)
+
+                last_index = end_idx
+
+            if last_index < len(text):
+                emit_bytes(text[last_index:], ids)
+
+            return ids
+
+        def decode(token_ids: list[int]) -> str:
+            pieces: list[str] = []
+            byte_buffer: list[bytes] = []
+
+            def flush_bytes() -> None:
+                if byte_buffer:
+                    pieces.append(b"".join(byte_buffer).decode('utf-8', errors='replace'))
+                    byte_buffer.clear()
+
+            for token_id in token_ids:
+                if token_id < 256:
+                    byte_buffer.append(itos[token_id])
+                else:
+                    flush_bytes()
+                    pieces.append(itos[token_id])
+
+            flush_bytes()
+            return ''.join(pieces)
 
         return encode, decode
 
