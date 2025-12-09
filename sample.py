@@ -18,6 +18,7 @@ import numpy as np
 import seaborn as sns
 import torch
 import tiktoken
+from torch.profiler import ProfilerActivity
 from collections import OrderedDict
 from rich import print
 from rich.console import Console
@@ -28,6 +29,7 @@ from torch.nn import functional as F
 from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
+from variations.profiling_variations import profiling_variations
 
 from benchmarks import run_all
 
@@ -113,6 +115,24 @@ def parse_args():
     parser.add_argument('--multicontext_start', type=str, nargs='+', default=None,
                         help="List of start strings, one for each context, if using --multicontext. "
                         "Must match the number/order of --multicontext_datasets.")
+
+    # Profiling
+    parser.add_argument(
+        '--profile_variation',
+        type=str,
+        choices=sorted(profiling_variations.keys()),
+        default=None,
+        help=(
+            "Selects a predefined profiling recipe defined in variations/profiling_variations.py. "
+            "When set, sampling runs under torch.profiler with the chosen CPU/GPU instrumentation."
+        ),
+    )
+    parser.add_argument(
+        '--profile_dir',
+        type=str,
+        default='profiles',
+        help="Directory to store profiler traces and tables when --profile_variation is provided.",
+    )
 
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
@@ -788,6 +808,60 @@ def save_args(args, out_dir):
         json.dump(vars(args), f, indent=4)
 
 
+def _normalized_activities(activities: Sequence[ProfilerActivity]) -> List[ProfilerActivity]:
+    normalized: List[ProfilerActivity] = []
+    for activity in activities:
+        if activity == ProfilerActivity.CUDA and not torch.cuda.is_available():
+            print("CUDA not available; skipping CUDA profiler activity.")
+            continue
+        normalized.append(activity)
+    return normalized
+
+
+def prepare_profiler(args):
+    if not args.profile_variation:
+        return None, None, None
+
+    profile_cfg = profiling_variations[args.profile_variation]
+    activities = _normalized_activities(profile_cfg.get('activities', [ProfilerActivity.CPU]))
+    if not activities:
+        print("Profiling disabled because no valid activities remain after filtering.")
+        return None, None, None
+
+    profile_dir = Path(args.profile_dir)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    trace_prefix = profile_cfg.get('trace_prefix', args.profile_variation)
+    trace_path = profile_dir / f"{trace_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    profiler = torch.profiler.profile(
+        activities=activities,
+        record_shapes=profile_cfg.get('record_shapes', False),
+        profile_memory=profile_cfg.get('profile_memory', False),
+        with_stack=profile_cfg.get('with_stack', False),
+        with_flops=profile_cfg.get('with_flops', False),
+        with_modules=profile_cfg.get('with_modules', False),
+    )
+
+    print(f"Profiling enabled with variation '{args.profile_variation}'. Output will be saved to {trace_path}.")
+    return profiler, trace_path, profile_cfg
+
+
+def finalize_profiler(profiler, trace_path: Optional[Path], profile_cfg: Optional[Dict[str, object]]) -> None:
+    if profiler is None:
+        return
+
+    profiler.export_chrome_trace(str(trace_path))
+    sort_by = None
+    row_limit = None
+    if profile_cfg:
+        sort_by = profile_cfg.get('sort_by')
+        row_limit = profile_cfg.get('row_limit')
+    if sort_by:
+        print(profiler.key_averages().table(sort_by=sort_by, row_limit=row_limit))
+    if trace_path:
+        print(f"Profiler trace saved to {trace_path}")
+
+
 def write_eval_summary(
     out_dir: Union[str, os.PathLike[str], None],
     summary: Dict[str, object],
@@ -1099,6 +1173,9 @@ def get_tokenizer_functions(meta):
 def main():
     args = parse_args()
 
+    profiler, profiler_trace_path, profile_cfg = prepare_profiler(args)
+    profile_context = profiler if profiler is not None else nullcontext()
+
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -1243,203 +1320,207 @@ def main():
         model.update_rope_length(args.rope_length)
 
     if args.eval_only:
-        print("Running in eval_only mode...")
-        dataset_name = args.eval_dataset
-        if dataset_name is None and args.init_from == 'resume':
-            dataset_name = (
-                checkpoint.get('config', {}).get('dataset')
-                if isinstance(checkpoint, dict)
-                else None
+        with profile_context:
+            print("Running in eval_only mode...")
+            dataset_name = args.eval_dataset
+            if dataset_name is None and args.init_from == 'resume':
+                dataset_name = (
+                    checkpoint.get('config', {}).get('dataset')
+                    if isinstance(checkpoint, dict)
+                    else None
+                )
+            if dataset_name is None:
+                raise ValueError(
+                    "--eval_dataset must be provided when running in eval_only mode"
+                )
+
+            print(f"Using validation dataset: {dataset_name}")
+            print(f"Model block size: {model.config.block_size}")
+            val_data = load_validation_data(model.config.block_size, dataset_name)
+            metrics = calculate_validation_loss(
+                model,
+                val_data,
+                model.config.block_size,
+                args.eval_iters,
+                args.device,
+                ptdtype,
             )
-        if dataset_name is None:
-            raise ValueError(
-                "--eval_dataset must be provided when running in eval_only mode"
+
+            val_loss = metrics.get("val", float("nan"))
+            print(f"Validation Loss: {val_loss:.4f}")
+            if metrics.get("elapsed_time_s") is not None:
+                print(f"Elapsed time: {metrics['elapsed_time_s']:.4f} seconds")
+
+            summary: Dict[str, object] = dict(metrics)
+            summary.setdefault("eval_dataset", dataset_name)
+            summary.setdefault("timestamp", timestamp)
+            summary.setdefault("out_dir", args.out_dir)
+            summary.setdefault("init_from", args.init_from)
+
+            write_eval_summary(
+                args.out_dir,
+                summary,
+                extra_dirs=[out_dir],
             )
-
-        print(f"Using validation dataset: {dataset_name}")
-        print(f"Model block size: {model.config.block_size}")
-        val_data = load_validation_data(model.config.block_size, dataset_name)
-        metrics = calculate_validation_loss(
-            model,
-            val_data,
-            model.config.block_size,
-            args.eval_iters,
-            args.device,
-            ptdtype,
-        )
-
-        val_loss = metrics.get("val", float("nan"))
-        print(f"Validation Loss: {val_loss:.4f}")
-        if metrics.get("elapsed_time_s") is not None:
-            print(f"Elapsed time: {metrics['elapsed_time_s']:.4f} seconds")
-
-        summary: Dict[str, object] = dict(metrics)
-        summary.setdefault("eval_dataset", dataset_name)
-        summary.setdefault("timestamp", timestamp)
-        summary.setdefault("out_dir", args.out_dir)
-        summary.setdefault("init_from", args.init_from)
-
-        write_eval_summary(
-            args.out_dir,
-            summary,
-            extra_dirs=[out_dir],
-        )
+        finalize_profiler(profiler, profiler_trace_path, profile_cfg)
         return
 
-    x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
-    # Obtain vector from the specified layer and save it to a file if required
-    if args.save_avg_vector:
+    with profile_context:
         x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
-        # Run the model to trigger vector extraction
-        with torch.no_grad():
-            with ctx:
-                block_size = args.block_size if args.block_size else model.config.block_size
-                idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
-                logits, _ = model(idx_cond, dataset_idx=dataset_idx)
-        print(f"Obtained vector saved to {args.save_avg_vector}")
+        # Obtain vector from the specified layer and save it to a file if required
+        if args.save_avg_vector:
+            x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
+            # Run the model to trigger vector extraction
+            with torch.no_grad():
+                with ctx:
+                    block_size = args.block_size if args.block_size else model.config.block_size
+                    idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
+                    logits, _ = model(idx_cond, dataset_idx=dataset_idx)
+            print(f"Obtained vector saved to {args.save_avg_vector}")
 
-    if args.interactive:
-        interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_strings, decode, encode)
-    elif args.multicontext:
-        if not args.multicontext_datasets:
-            raise ValueError("Must specify --multicontext_datasets when using --multicontext")
-        if args.multicontext_start is None:
-            raise ValueError("Must specify --multicontext_start when using --multicontext")
-        if len(args.multicontext_datasets) != len(args.multicontext_start):
-            raise ValueError(
-                "Number of --multicontext_datasets must match number of --multicontext_start strings."
-            )
-
-        dataset_names = list(args.multicontext_datasets)
-        start_strings = list(args.multicontext_start)
-
-        dataset_meta: Dict[str, Dict[str, object]] = {}
-        decode_lookup: Dict[str, Callable[[Sequence[int]], str]] = {}
-        initial_tokens: Dict[str, torch.Tensor] = {}
-
-        for dataset_name, start_str in zip(dataset_names, start_strings):
-            meta_path = os.path.join("data", dataset_name, "meta.pkl")
-            if not os.path.exists(meta_path):
-                raise FileNotFoundError(f"meta.pkl not found at {meta_path}")
-            with open(meta_path, "rb") as f:
-                dataset_meta[dataset_name] = pickle.load(f)
-
-            encode_i, decode_i = get_tokenizer_functions(dataset_meta[dataset_name])
-            token_ids = encode_i(start_str)
-            if len(token_ids) == 0:
-                if dataset_meta[dataset_name].get('tokenizer') == 'sinewave':
-                    print(
-                        f"Start string for dataset '{dataset_name}' produced no tokens; defaulting to '0'."
-                    )
-                    token_ids = [0]
-                else:
-                    raise ValueError(
-                        f"Start string for dataset '{dataset_name}' produced no tokens. "
-                        "Provide a valid prompt or comma-separated values for numerical tokenizers."
-                    )
-
-            token_tensor = torch.tensor(token_ids, dtype=torch.long, device=args.device)[None, ...]
-            initial_tokens[dataset_name] = token_tensor
-            decode_lookup[dataset_name] = decode_i
-
-        block_size = args.block_size if args.block_size else model.config.block_size
-        with torch.no_grad(), ctx:
-            for sample_idx in range(args.num_samples):
-                if args.use_lsv and hasattr(args, 'lsv_size'):
-                    model.set_lsv_index(sample_idx % args.lsv_size)
-                    if args.lsv_scaling_factor is not None:
-                        model.set_lsv_scaling_factor(args.lsv_scaling_factor)
-                    if args.lsv_mixture is not None:
-                        model.set_lsv_mode(2)
-                        model.set_lsv_mixture(args.lsv_mixture)
-                    else:
-                        model.set_lsv_mode(1)
-
-                token_state = {name: tensor.clone() for name, tensor in initial_tokens.items()}
-
-                for _ in range(args.max_new_tokens):
-                    idx_cond_dict = {}
-                    for name in dataset_names:
-                        tokens = token_state[name]
-                        idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
-
-                    logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
-
-                    for i, name in enumerate(dataset_names):
-                        if model.config.numerical_multicontext:
-                            preds = logits_list[i][:, -1]
-                            preds = preds.squeeze(-1)
-                            if preds.ndim == 0:
-                                preds = preds.unsqueeze(0)
-                            rounded = preds.round()
-                            min_val = 0.0
-                            max_val = None
-                            meta_info = dataset_meta.get(name, {})
-                            tokenizer_name = meta_info.get('tokenizer') if isinstance(meta_info, dict) else None
-                            if tokenizer_name == 'sinewave':
-                                max_val = 255.0
-                            elif isinstance(meta_info, dict) and 'vocab_size' in meta_info:
-                                max_val = float(meta_info['vocab_size'] - 1)
-
-                            if max_val is not None:
-                                rounded = torch.clamp(rounded, min=min_val, max=max_val)
-                            else:
-                                rounded = torch.clamp(rounded, min=min_val)
-
-                            idx_next = rounded.to(torch.long).unsqueeze(-1)
-                        else:
-                            cur_logits = logits_list[i][:, -1, :] / args.temperature
-                            if args.top_k is not None:
-                                top_k_val = (
-                                    args.top_k[0]
-                                    if isinstance(args.top_k, (list, tuple))
-                                    else args.top_k
-                                )
-                                k = min(top_k_val, cur_logits.size(-1))
-                                v, _ = torch.topk(cur_logits, k)
-                                cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
-
-                            probs = F.softmax(cur_logits, dim=-1)
-                            idx_next = torch.multinomial(probs, num_samples=1)
-
-                        token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
-
-                output_dict: Dict[str, str] = {}
-                for name in dataset_names:
-                    decode_fn = decode_lookup[name]
-                    output_dict[name] = decode_fn(token_state[name][0].tolist())
-
-                for name, text in output_dict.items():
-                    key_color = "bold light_slate_blue"
-                    text_color = "bold cyan"
-                    print(f"\n[{key_color}]{name}:[/{key_color}]\n[{text_color}]{text}[/{text_color}]")
-                print("---------------")
-
-                if args.sample_file:
-                    with open(args.sample_file, "w") as file:
-                        for name, text in output_dict.items():
-                            file.write(f"\n{name}: \n{text}\n")
-    else:
-        sample_with_existing_model(
-                model,
-                torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...],
-                decode,
-                device=args.device,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-                top_k=args.top_k,
-                num_samples=args.num_samples,
-                colorize_output=args.colorize_output,
-                colorize_mode=args.colorize_mode,
-                token_boundary=args.token_boundary,
-                show_heatmaps=args.show_heatmaps,
-                chart_type=args.chart_type,
-                last_k_tokens=args.last_k_tokens,
-                out_dir=out_dir,
-                sample_file=args.sample_file,
-                args=args,
-                dataset_idx=0,
+        if args.interactive:
+            interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_strings, decode, encode)
+        elif args.multicontext:
+            if not args.multicontext_datasets:
+                raise ValueError("Must specify --multicontext_datasets when using --multicontext")
+            if args.multicontext_start is None:
+                raise ValueError("Must specify --multicontext_start when using --multicontext")
+            if len(args.multicontext_datasets) != len(args.multicontext_start):
+                raise ValueError(
+                    "Number of --multicontext_datasets must match number of --multicontext_start strings."
                 )
+
+            dataset_names = list(args.multicontext_datasets)
+            start_strings = list(args.multicontext_start)
+
+            dataset_meta: Dict[str, Dict[str, object]] = {}
+            decode_lookup: Dict[str, Callable[[Sequence[int]], str]] = {}
+            initial_tokens: Dict[str, torch.Tensor] = {}
+
+            for dataset_name, start_str in zip(dataset_names, start_strings):
+                meta_path = os.path.join("data", dataset_name, "meta.pkl")
+                if not os.path.exists(meta_path):
+                    raise FileNotFoundError(f"meta.pkl not found at {meta_path}")
+                with open(meta_path, "rb") as f:
+                    dataset_meta[dataset_name] = pickle.load(f)
+
+                encode_i, decode_i = get_tokenizer_functions(dataset_meta[dataset_name])
+                token_ids = encode_i(start_str)
+                if len(token_ids) == 0:
+                    if dataset_meta[dataset_name].get('tokenizer') == 'sinewave':
+                        print(
+                            f"Start string for dataset '{dataset_name}' produced no tokens; defaulting to '0'."
+                        )
+                        token_ids = [0]
+                    else:
+                        raise ValueError(
+                            f"Start string for dataset '{dataset_name}' produced no tokens. "
+                            "Provide a valid prompt or comma-separated values for numerical tokenizers."
+                        )
+
+                token_tensor = torch.tensor(token_ids, dtype=torch.long, device=args.device)[None, ...]
+                initial_tokens[dataset_name] = token_tensor
+                decode_lookup[dataset_name] = decode_i
+
+            block_size = args.block_size if args.block_size else model.config.block_size
+            with torch.no_grad(), ctx:
+                for sample_idx in range(args.num_samples):
+                    if args.use_lsv and hasattr(args, 'lsv_size'):
+                        model.set_lsv_index(sample_idx % args.lsv_size)
+                        if args.lsv_scaling_factor is not None:
+                            model.set_lsv_scaling_factor(args.lsv_scaling_factor)
+                        if args.lsv_mixture is not None:
+                            model.set_lsv_mode(2)
+                            model.set_lsv_mixture(args.lsv_mixture)
+                        else:
+                            model.set_lsv_mode(1)
+
+                    token_state = {name: tensor.clone() for name, tensor in initial_tokens.items()}
+
+                    for _ in range(args.max_new_tokens):
+                        idx_cond_dict = {}
+                        for name in dataset_names:
+                            tokens = token_state[name]
+                            idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
+
+                        logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
+
+                        for i, name in enumerate(dataset_names):
+                            if model.config.numerical_multicontext:
+                                preds = logits_list[i][:, -1]
+                                preds = preds.squeeze(-1)
+                                if preds.ndim == 0:
+                                    preds = preds.unsqueeze(0)
+                                rounded = preds.round()
+                                min_val = 0.0
+                                max_val = None
+                                meta_info = dataset_meta.get(name, {})
+                                tokenizer_name = meta_info.get('tokenizer') if isinstance(meta_info, dict) else None
+                                if tokenizer_name == 'sinewave':
+                                    max_val = 255.0
+                                elif isinstance(meta_info, dict) and 'vocab_size' in meta_info:
+                                    max_val = float(meta_info['vocab_size'] - 1)
+
+                                if max_val is not None:
+                                    rounded = torch.clamp(rounded, min=min_val, max=max_val)
+                                else:
+                                    rounded = torch.clamp(rounded, min=min_val)
+
+                                idx_next = rounded.to(torch.long).unsqueeze(-1)
+                            else:
+                                cur_logits = logits_list[i][:, -1, :] / args.temperature
+                                if args.top_k is not None:
+                                    top_k_val = (
+                                        args.top_k[0]
+                                        if isinstance(args.top_k, (list, tuple))
+                                        else args.top_k
+                                    )
+                                    k = min(top_k_val, cur_logits.size(-1))
+                                    v, _ = torch.topk(cur_logits, k)
+                                    cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
+
+                                probs = F.softmax(cur_logits, dim=-1)
+                                idx_next = torch.multinomial(probs, num_samples=1)
+
+                            token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
+
+                    output_dict: Dict[str, str] = {}
+                    for name in dataset_names:
+                        decode_fn = decode_lookup[name]
+                        output_dict[name] = decode_fn(token_state[name][0].tolist())
+
+                    for name, text in output_dict.items():
+                        key_color = "bold light_slate_blue"
+                        text_color = "bold cyan"
+                        print(f"\n[{key_color}]{name}:[/{key_color}]\n[{text_color}]{text}[/{text_color}]")
+                    print("---------------")
+
+                    if args.sample_file:
+                        with open(args.sample_file, "w") as file:
+                            for name, text in output_dict.items():
+                                file.write(f"\n{name}: \n{text}\n")
+        else:
+            sample_with_existing_model(
+                    model,
+                    torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...],
+                    decode,
+                    device=args.device,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    num_samples=args.num_samples,
+                    colorize_output=args.colorize_output,
+                    colorize_mode=args.colorize_mode,
+                    token_boundary=args.token_boundary,
+                    show_heatmaps=args.show_heatmaps,
+                    chart_type=args.chart_type,
+                    last_k_tokens=args.last_k_tokens,
+                    out_dir=out_dir,
+                    sample_file=args.sample_file,
+                    args=args,
+                    dataset_idx=0,
+                    )
+    finalize_profiler(profiler, profiler_trace_path, profile_cfg)
 
 if __name__ == "__main__":
     main()
