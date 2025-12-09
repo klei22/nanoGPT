@@ -1135,26 +1135,37 @@ def get_tokenizer_functions(meta):
             reader = io.StringIO(text).readline
             last_index = 0
 
-            for tok in tokenize.generate_tokens(reader):
-                start_idx = pos_to_index(offsets, tok.start)
-                end_idx = pos_to_index(offsets, tok.end)
+            try:
+                for tok in tokenize.generate_tokens(reader):
+                    start_idx = pos_to_index(offsets, tok.start)
+                    end_idx = pos_to_index(offsets, tok.end)
 
-                if start_idx > last_index:
-                    emit_bytes(text[last_index:start_idx], ids)
+                    if start_idx > last_index:
+                        emit_bytes(text[last_index:start_idx], ids)
 
-                if tok.type == tokenize.COMMENT:
-                    emit_bytes(tok.string, ids)
-                elif tok.type == tokenize.NAME:
-                    if keyword.iskeyword(tok.string):
+                    if tok.type == tokenize.COMMENT:
+                        emit_bytes(tok.string, ids)
+                    elif tok.type == tokenize.NAME:
+                        if keyword.iskeyword(tok.string):
+                            emit_token(tok.string, ids)
+                        else:
+                            emit_bytes(tok.string, ids)
+                    elif tok.string in custom_tokens:
                         emit_token(tok.string, ids)
                     else:
                         emit_bytes(tok.string, ids)
-                elif tok.string in custom_tokens:
-                    emit_token(tok.string, ids)
-                else:
-                    emit_bytes(tok.string, ids)
 
-                last_index = end_idx
+                    last_index = end_idx
+            except tokenize.TokenError as e:
+                error_pos = e.args[1] if len(e.args) > 1 else None
+                try:
+                    error_index = pos_to_index(offsets, error_pos) if error_pos else len(text)
+                except Exception:
+                    error_index = len(text)
+                error_index = max(error_index, last_index)
+                if error_index > last_index:
+                    emit_bytes(text[last_index:error_index], ids)
+                    last_index = error_index
 
             if last_index < len(text):
                 emit_bytes(text[last_index:], ids)

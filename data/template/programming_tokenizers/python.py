@@ -87,26 +87,37 @@ class PythonProgrammingTokenizer(Tokenizer):
         last_index = 0
         reader = io.StringIO(data).readline
 
-        for tok in tokenize.generate_tokens(reader):
-            start_idx = self._pos_to_index(line_offsets, tok.start)
-            end_idx = self._pos_to_index(line_offsets, tok.end)
+        try:
+            for tok in tokenize.generate_tokens(reader):
+                start_idx = self._pos_to_index(line_offsets, tok.start)
+                end_idx = self._pos_to_index(line_offsets, tok.end)
 
-            if start_idx > last_index:
-                self._emit_bytes(data[last_index:start_idx], ids)
+                if start_idx > last_index:
+                    self._emit_bytes(data[last_index:start_idx], ids)
 
-            if tok.type == tokenize.COMMENT:
-                self._emit_bytes(tok.string, ids)
-            elif tok.type == tokenize.NAME:
-                if keyword.iskeyword(tok.string):
+                if tok.type == tokenize.COMMENT:
+                    self._emit_bytes(tok.string, ids)
+                elif tok.type == tokenize.NAME:
+                    if keyword.iskeyword(tok.string):
+                        self._emit_token(tok.string, ids)
+                    else:
+                        self._emit_bytes(tok.string, ids)
+                elif tok.string in self.custom_token_bytes:
                     self._emit_token(tok.string, ids)
                 else:
                     self._emit_bytes(tok.string, ids)
-            elif tok.string in self.custom_token_bytes:
-                self._emit_token(tok.string, ids)
-            else:
-                self._emit_bytes(tok.string, ids)
 
-            last_index = end_idx
+                last_index = end_idx
+        except tokenize.TokenError as e:
+            error_pos = e.args[1] if len(e.args) > 1 else None
+            try:
+                error_index = self._pos_to_index(line_offsets, error_pos) if error_pos else len(data)
+            except Exception:
+                error_index = len(data)
+            error_index = max(error_index, last_index)
+            if error_index > last_index:
+                self._emit_bytes(data[last_index:error_index], ids)
+                last_index = error_index
 
         if last_index < len(data):
             self._emit_bytes(data[last_index:], ids)
