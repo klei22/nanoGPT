@@ -1,0 +1,30 @@
+# Compare NanoGPT speedrun optimizer presets for Muon and AdamW on minipile.
+---
+parameter_groups:
+  - optimizer: ["adamw"]
+    optimizer_preset: ["speedrun"]
+  - optimizer: ["muon"]
+    optimizer_preset: ["speedrun"]
+    muon_momentum: [0.95]
+
+# GPT-2 architecture base hyperparameters
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+batch_size: [64]
+max_iters: [10000]
+eval_interval: [10000]
+eta_variant: ["iteration"]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["float16"]
+use_abs_pos_embeddings: [false]
+use_rotary_embeddings: [true]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+use_peri_ln: [true]
+softmax_variant_attn: ["softmax"]
+compile: [true]
+never_save_checkpoint: [true]
+tensorboard_run_name: ["muon_vs_adamw_speedrun"]
