@@ -619,10 +619,10 @@ class SOAP(Optimizer):
         self,
         params,
         lr: float = 1e-4,
-        betas: tuple[float, float] = (0.9, 0.999),   # (β₁  for m,  β₂ for Shampoo)
+        betas: tuple[float, float] = (0.9, 0.999),   # (β₁  for m,  β₂ fallback for Shampoo momentum)
         eps: float = 1e-12,
         weight_decay: float = 0.0,
-        momentum: float = 0.9,        # reused for Shampoo
+        momentum: float | None = None,        # reused for Shampoo (defaults to β₂)
         update_freq: int = 1,         # Shampoo pre-condition freq
         graft_lr: float = 1.0,        # LR multiplier after grafting
     ):
@@ -633,12 +633,14 @@ class SOAP(Optimizer):
                 "or choose a different optimiser."
             )
 
+        shampoo_momentum = betas[1] if momentum is None else momentum
+
         defaults = dict(
             lr=lr,
             betas=betas,
             eps=eps,
             weight_decay=weight_decay,
-            momentum=momentum,
+            momentum=shampoo_momentum,
             update_freq=update_freq,
             graft_lr=graft_lr,
         )
@@ -648,7 +650,7 @@ class SOAP(Optimizer):
         self._shampoo = _ToptShampoo(
             params,
             lr=1.0,                       # handled by SOAP itself
-            momentum=momentum,
+            momentum=shampoo_momentum,
             epsilon=eps,
             weight_decay=0.0,             # decay handled in outer loop
             update_freq=update_freq,
@@ -1437,10 +1439,11 @@ def _sgdw(param_groups, args):
 
 def _shampoo(param_groups, args):
     _needs_topt()
+    shampoo_momentum = 0.0 if args.shampoo_momentum is None else args.shampoo_momentum
     return topt.Shampoo(
         param_groups,
         lr=args.learning_rate,
-        momentum=args.shampoo_momentum,
+        momentum=shampoo_momentum,
         weight_decay=args.opt_weight_decay,
         epsilon=args.shampoo_eps,
         update_freq=args.shampoo_update_freq,
