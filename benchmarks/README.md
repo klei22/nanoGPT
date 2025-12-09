@@ -26,3 +26,9 @@ Each config entry defines:
   dataset to measure exact vs. regex-valid numeric answers.
 - `benchmarks/examples/opus100_translation.json` shows how to attach BLEU and
   exact match scoring for small OPUS-100 translation snippets.
+
+## Quick demo
+
+Run `demos/inference_benchmark_demo.sh` to generate the toy addition dataset,
+train a tiny model with the addition benchmark enabled, and then exercise the
+OPUS-100 translation benchmark in inference-only mode.
