@@ -1,0 +1,18 @@
+# kv_cache_sharing_sweep.yaml
+---
+
+# base hyperparameters
+max_iters: [2000]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+eval_interval: [500]
+dataset: ["minipile"]
+device: ["cuda"]
+
+# kv-cache options
+kv_cache_sharing: [true]
+kv_cache_share_every_n: [1, 2]
+kv_cache_share_sym: [false, true]
+kv_cache_global: [false, true]
