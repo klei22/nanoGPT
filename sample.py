@@ -82,6 +82,7 @@ def parse_args():
     # Visualizations
     parser.add_argument('--show_heatmaps', default=False, action=argparse.BooleanOptionalAction, help="Show heatmaps of top-k choices for each token")
     parser.add_argument('--show_minmax_chart', default=False, action=argparse.BooleanOptionalAction, help="Output a line chart of the chosen-token logits used for minmax colorization")
+    parser.add_argument('--use_kv_cache', default=False, action=argparse.BooleanOptionalAction, help="Enable key/value cache during autoregressive generation")
     parser.add_argument(
         '--softmax_threshold',
         type=float,
@@ -456,6 +457,7 @@ def sample_with_existing_model(
     top_k: Union[int, Sequence[int], None] = 200,  # list allowed
     start_tokens: Optional[Sequence[int]] = None,
     num_samples: int = 1,
+    use_kv_cache: bool = False,
     # Additional Args
     args=None,
     # ── visual / logging flags ────────────────────────────────────────────
@@ -519,6 +521,8 @@ def sample_with_existing_model(
 
 
         for sample_idx in range(num_samples):
+
+            past_key_values = None
             # ------------- LSV per-sample section -------------------
             kl_divergences = [] # To store the impact of the cosine penalty
 
@@ -554,13 +558,39 @@ def sample_with_existing_model(
 
             with torch.no_grad():
                 for _step in range(max_new_tokens):
-                    idx_cond = (
-                        x
-                        if x.size(1) <= model.config.block_size
-                        else x[:, -model.config.block_size :]
-                    )
+                    if use_kv_cache and past_key_values is not None:
+                        idx_cond = x[:, -1:]
+                    else:
+                        idx_cond = (
+                            x
+                            if x.size(1) <= model.config.block_size
+                            else x[:, -model.config.block_size :]
+                        )
 
-                    model_logits, _ = model(idx_cond, dataset_idx=dataset_idx)
+                    model_outputs = model(
+                        idx_cond,
+                        dataset_idx=dataset_idx,
+                        past_key_values=past_key_values,
+                        use_cache=use_kv_cache,
+                    )
+                    if use_kv_cache:
+                        model_logits = model_outputs[0]
+                        past_key_values = model_outputs[2]
+                        if past_key_values is not None:
+                            trimmed = []
+                            for past_k, past_v in past_key_values:
+                                if past_k is None or past_v is None:
+                                    trimmed.append((past_k, past_v))
+                                    continue
+                                trimmed.append(
+                                    (
+                                        past_k[:, :, -model.config.block_size :, :],
+                                        past_v[:, :, -model.config.block_size :, :],
+                                    )
+                                )
+                            past_key_values = trimmed
+                    else:
+                        model_logits, _ = model_outputs
                     raw_logits_row = model_logits[:, -1, :]      # Raw logits from model
 
                     # --- Apply Cosine Similarity Penalty (if enabled) ---
@@ -1439,6 +1469,7 @@ def main():
                 sample_file=args.sample_file,
                 args=args,
                 dataset_idx=0,
+                use_kv_cache=args.use_kv_cache,
                 )
 
 if __name__ == "__main__":
