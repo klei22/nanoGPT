@@ -28,11 +28,17 @@ def main():
     matches = pattern.findall(content)
 
     index = args.start_index
+    start_marker = '"""<start>'
+
     for block in matches:
+        # Only keep the portion starting from the instructions marker, if present
+        marker_pos = block.find(start_marker)
+        snippet = block[marker_pos:] if marker_pos != -1 else block
+
         filename = f"{args.prefix}{index:05d}{args.extension}"
         file_path = output_dir / filename
         with open(file_path, "w", encoding="utf-8") as snippet_file:
-            snippet_file.write(block.strip() + "\n")
+            snippet_file.write(snippet.strip() + "\n")
         index += 1
 
     print(f"Wrote {index - args.start_index} files to {output_dir}")
