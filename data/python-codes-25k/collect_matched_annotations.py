@@ -109,9 +109,9 @@ def write_mc_inputs(entries: List[dict], base_dir: Path) -> None:
         pna_chunks.append(entry["param_nesting"])
         ga_chunks.append(entry["general"])
 
-    out_path.write_text("\n\n".join(out_chunks).rstrip() + "\n", encoding="utf-8")
-    pna_path.write_text("\n\n".join(pna_chunks).rstrip() + "\n", encoding="utf-8")
-    ga_path.write_text("\n\n".join(ga_chunks).rstrip() + "\n", encoding="utf-8")
+    out_path.write_text("out:\n" + "\n\n".join(out_chunks).rstrip() + "\n\n", encoding="utf-8")
+    pna_path.write_text("pna:\n" + "\n\n".join(pna_chunks).rstrip() + "\n\n", encoding="utf-8")
+    ga_path.write_text("gen:\n" + "\n\n".join(ga_chunks).rstrip() + "\n\n", encoding="utf-8")
 
 
 def main() -> None:
