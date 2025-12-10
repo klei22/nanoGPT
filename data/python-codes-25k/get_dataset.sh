@@ -9,7 +9,7 @@ set -euo pipefail
 # 5. Set "--no_output_text" to true if you plan to process the intermediate json files in a custom manner.
 # 6. Use --outputs-only <target_dir> [raw_output_file] to emit only the "output" field and split each ```python``` block
 #    into sequential files for the programming-language tokenizer.
-# 7. Combine --outputs-only with --run-annotations to execute all code-highlighter modes and record any failures.
+# 7. Combine --outputs-only with --run-annotations to execute supported code-highlighter modes (general and param_nesting) and record any failures.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -87,6 +87,12 @@ if [[ "${1:-}" == "--outputs-only" ]]; then
     else
       echo "All annotation runs completed successfully. See ${annotation_log} for details." | tee -a "${annotation_log}"
     fi
+
+    python3 "${SCRIPT_DIR}/collect_matched_annotations.py" \
+      --outputs-dir "${target_dir_abs}" \
+      --json-out "${SCRIPT_DIR}/matched_annotations.json" \
+      --concat-out "${SCRIPT_DIR}/inputs_concat.txt" \
+      --mc-out-dir "${SCRIPT_DIR}"
   fi
 
   exit 0

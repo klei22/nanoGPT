@@ -22,10 +22,9 @@ file_base="$(basename "$filename")"
 parent_dir="$(cd "${file_dir}/.." && pwd)"
 mapped_file="${filename}.mapped"
 
-# List of every supported mode
+# List of modes to run (limited to general and param_nesting)
 MODES=(
-  general exact keywords nesting param_nesting argnum
-  dot_nesting name_kind literals semantic comments scope
+  general param_nesting
 )
 
 failures=0
