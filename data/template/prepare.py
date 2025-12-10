@@ -11,6 +11,7 @@ from tokenizers import (
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
+    PythonProgrammingTokenizer,
     SineWaveTokenizer,
 )
 from tqdm import tqdm
@@ -28,7 +29,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "sinewave"],
+                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave"],
                        default="tiktoken", help="Tokenization method")
 
     # Sine wave tokenizer arguments
@@ -76,6 +77,19 @@ def save_tokens(ids, output_file, dtype):
             batch = ids[i:i+batch_size]
             np.array(batch, dtype=dtype).tofile(f_out)
 
+def _read_input_data(path):
+    if os.path.isdir(path):
+        collected = []
+        for root, _, files in os.walk(path):
+            for name in sorted(files):
+                file_path = os.path.join(root, name)
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    collected.append(f.read())
+        return "\n".join(collected)
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        return f.read()
+
+
 def main():
     args = parse_arguments()
 
@@ -84,12 +98,10 @@ def main():
         train_data = None
         val_data = None
     else:
-        with open(args.train_input, 'r') as f:
-            train_data = f.read()
+        train_data = _read_input_data(args.train_input)
 
         if args.val_input:
-            with open(args.val_input, 'r') as f:
-                val_data = f.read()
+            val_data = _read_input_data(args.val_input)
         else:
             n = len(train_data)
             train_data, val_data = train_data[:int(n * args.percentage_train)], train_data[int(n * args.percentage_train):]
@@ -111,6 +123,8 @@ def main():
         tokenizer = CustomCharTokenizerWithByteFallback(args)
     elif args.method == "json_byte_fallback":
         tokenizer = JsonByteTokenizerWithByteFallback(args)
+    elif args.method == "python_programming":
+        tokenizer = PythonProgrammingTokenizer(args)
     elif args.method == "sinewave":
         tokenizer = SineWaveTokenizer(args)
     else:

@@ -1,5 +1,6 @@
 # sample.py
 import argparse
+import importlib.util
 import json
 import math
 import os
@@ -977,6 +978,68 @@ def byte_decode(ids: list[int]) -> str:
     """Decode a list of raw byte values back into text."""
     return bytes(ids).decode("utf-8", errors="replace")
 
+
+def json_byte_fallback_decode(token_ids, itos):
+    tokens = []
+    byte_buffer = []
+
+    for id in token_ids:
+        if id not in itos:
+            continue
+
+        token = itos[id]
+
+        # Handle bytes vs string tokens
+        if isinstance(token, bytes):
+            byte_buffer.append(token[0])  # Append the actual byte value
+        else:
+            # If we have bytes in buffer, try to decode them first
+            if byte_buffer:
+                try:
+                    decoded = bytes(byte_buffer).decode('utf-8', errors='replace')
+                    tokens.append(decoded)
+                except UnicodeDecodeError:
+                    tokens.append('')  # Unicode replacement character
+                byte_buffer = []
+
+            # Handle the string token
+            token = token.replace('Ġ', ' ')  # Replace Ġ with space
+            tokens.append(token)
+
+    # Handle any remaining bytes in the buffer
+    if byte_buffer:
+        try:
+            decoded = bytes(byte_buffer).decode('utf-8', errors='replace')
+            tokens.append(decoded)
+        except UnicodeDecodeError:
+            tokens.append('')
+
+    return ''.join(tokens)
+
+
+def load_python_token_processor(custom_tokens):
+    tokenizer_path = Path(__file__).parent / "data" / "template" / "programming_tokenizers" / "python_tokenizer.py"
+    spec = importlib.util.spec_from_file_location("python_tokenizer", tokenizer_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load python_tokenizer from {tokenizer_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.PythonTokenProcessor(custom_tokens)
+
+
+def python_programming_encode(text: str, stoi: dict, processor) -> list[int]:
+    ids: list[int] = []
+
+    def encode_bytes(segment: str) -> None:
+        for byte_val in segment.encode("utf-8"):
+            ids.append(stoi.get(bytes([byte_val]), stoi.get('<unk>', 0)))
+
+    def emit_reserved(token_text: str) -> None:
+        ids.append(stoi[token_text])
+
+    processor.encode_with_reserved_tokens(text, encode_bytes, emit_reserved)
+    return ids
+
 def get_tokenizer_functions(meta):
     """Get encode/decode functions based on tokenizer metadata"""
     if 'tokenizer' not in meta:
@@ -1015,7 +1078,6 @@ def get_tokenizer_functions(meta):
 
     if meta['tokenizer'] == 'json_byte_fallback':
         stoi, itos = meta['stoi'], meta['itos']
-
         # Sort tokens by length in descending order for precedence
         string_token_tuples = [(token, token_id) for token, token_id in stoi.items() if isinstance(token, str)]
 
@@ -1052,41 +1114,19 @@ def get_tokenizer_functions(meta):
             return ids
 
         def decode(token_ids):
-            tokens = []
-            byte_buffer = []
+            return json_byte_fallback_decode(token_ids, itos)
 
-            for id in token_ids:
-                if id not in itos:
-                    continue
+        return encode, decode
 
-                token = itos[id]
+    if meta['tokenizer'] == 'python_json_byte_fallback':
+        stoi, itos = meta['stoi'], meta['itos']
+        processor = load_python_token_processor(meta.get('custom_tokens', []))
 
-                # Handle bytes vs string tokens
-                if isinstance(token, bytes):
-                    byte_buffer.append(token[0])  # Append the actual byte value
-                else:
-                    # If we have bytes in buffer, try to decode them first
-                    if byte_buffer:
-                        try:
-                            decoded = bytes(byte_buffer).decode('utf-8', errors='replace')
-                            tokens.append(decoded)
-                        except UnicodeDecodeError:
-                            tokens.append('')  # Unicode replacement character
-                        byte_buffer = []
+        def encode(text):
+            return python_programming_encode(text, stoi, processor)
 
-                    # Handle the string token
-                    token = token.replace('Ġ', ' ')  # Replace Ġ with space
-                    tokens.append(token)
-
-            # Handle any remaining bytes in the buffer
-            if byte_buffer:
-                try:
-                    decoded = bytes(byte_buffer).decode('utf-8', errors='replace')
-                    tokens.append(decoded)
-                except UnicodeDecodeError:
-                    tokens.append('')
-
-            return ''.join(tokens)
+        def decode(token_ids):
+            return json_byte_fallback_decode(token_ids, itos)
 
         return encode, decode
 
