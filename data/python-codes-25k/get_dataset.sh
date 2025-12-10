@@ -63,12 +63,13 @@ if [[ "${1:-}" == "--outputs-only" ]]; then
     --output_dir "${target_dir}"
 
   if [[ "${annotate}" == true ]]; then
-    annotation_log="${target_dir}/annotation_results.log"
-    echo "Running code annotations for files in ${target_dir}" | tee "${annotation_log}"
+    target_dir_abs="$(cd "${target_dir}" && pwd)"
+    annotation_log="${target_dir_abs}/../annotation_results.log"
+    echo "Running code annotations for files in ${target_dir_abs}" | tee "${annotation_log}"
 
     pushd "${SCRIPT_DIR}" >/dev/null
     failures=0
-    for py_file in "${target_dir}"/*.py; do
+    for py_file in "${target_dir_abs}"/*.py; do
       [[ -e "${py_file}" ]] || continue
       echo "Annotating ${py_file}" | tee -a "${annotation_log}"
       if bash "${SCRIPT_DIR}/run_all_code_annotations.sh" "${py_file}" >>"${annotation_log}" 2>&1; then

@@ -57,8 +57,8 @@ def run_formatter(output_dir: Path, ruff_exec: str) -> None:
 
 
 def compile_snippets(output_dir: Path, extension: str) -> None:
-    """Compile emitted snippets, moving failures to a quarantine folder."""
-    fail_dir = output_dir / "does_not_compile"
+    """Compile emitted snippets, moving failures to a sibling quarantine folder."""
+    fail_dir = output_dir.parent / "does_not_compile"
     compiled = 0
     failed = 0
 
