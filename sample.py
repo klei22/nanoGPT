@@ -998,6 +998,21 @@ def get_tokenizer_functions(meta):
 
         return encode_fn, decode_fn
 
+    if meta['tokenizer'] == "audio_fp16":
+        def encode_fn(s: str):
+            cleaned = s.replace('\n', ' ').replace(';', ',')
+            parts = [p for p in cleaned.split(',') if p.strip()]
+            if not parts:
+                return []
+            floats = np.array([float(p) for p in parts], dtype=np.float16)
+            return floats.view(np.uint16).astype(int).tolist()
+
+        def decode_fn(values):
+            arr = np.asarray(values, dtype=np.uint16).view(np.float16)
+            return ','.join(f"{v:.6f}" for v in arr.tolist())
+
+        return encode_fn, decode_fn
+
     if meta['tokenizer'] == 'tiktoken':
         enc = tiktoken.get_encoding(meta['tiktoken_encoding'])
         encode = lambda s: enc.encode(s, allowed_special={""})
