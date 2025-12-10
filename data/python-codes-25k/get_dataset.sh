@@ -21,8 +21,8 @@ if [[ "${1:-}" == "--outputs-only" ]]; then
 
   python3 "${SCRIPT_DIR}/../template/utils/get_json_dataset.py" \
     --url "${url}" \
-    --include_keys "output" \
-    --value_prefix "" \
+    --include_keys "instruction" "output" \
+    --value_prefix $'\n"""<start>\n' $'\n"""\n' \
     --skip_empty \
     --output_text_file "${raw_output_file}"
 
