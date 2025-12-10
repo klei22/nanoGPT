@@ -24,21 +24,38 @@ def main():
     with open(args.input, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
 
-    pattern = re.compile(r"```python\s+(.*?)```", re.DOTALL | re.IGNORECASE)
-    matches = pattern.findall(content)
+    instruction_re = re.compile(r'"""<start>(.*?)"""', re.DOTALL | re.IGNORECASE)
+    code_re = re.compile(r"```python\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+    events = []
+    events.extend((m.start(), "instruction", m.group(1)) for m in instruction_re.finditer(content))
+    events.extend((m.start(), "code", m.group(1)) for m in code_re.finditer(content))
+    events.sort(key=lambda e: e[0])
 
     index = args.start_index
-    start_marker = '"""<start>'
+    pending_instruction = None
 
-    for block in matches:
-        # Only keep the portion starting from the instructions marker, if present
-        marker_pos = block.find(start_marker)
-        snippet = block[marker_pos:] if marker_pos != -1 else block
+    for _, kind, payload in events:
+        if kind == "instruction":
+            pending_instruction = payload
+            continue
+
+        # kind == "code"
+        code_block = payload.strip()
+        instruction_block = pending_instruction.strip() if pending_instruction is not None else None
+        pending_instruction = None
+
+        snippet_parts = []
+        if instruction_block:
+            snippet_parts.append('"""')
+            snippet_parts.append(instruction_block)
+            snippet_parts.append('"""\n')
+        snippet_parts.append(code_block)
 
         filename = f"{args.prefix}{index:05d}{args.extension}"
         file_path = output_dir / filename
         with open(file_path, "w", encoding="utf-8") as snippet_file:
-            snippet_file.write(snippet.strip() + "\n")
+            snippet_file.write("\n".join(snippet_parts).rstrip() + "\n")
         index += 1
 
     print(f"Wrote {index - args.start_index} files to {output_dir}")
