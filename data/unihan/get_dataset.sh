@@ -1,2 +1,2 @@
-unihan-etl -F yaml --no-expand --destination unihan.txt
+unihan-etl -F yaml --no-expand --destination unihan.yaml
 
