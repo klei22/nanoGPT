@@ -109,6 +109,8 @@ class CausalSelfAttention(nn.Module):
         self.resid_dropout = nn.Dropout(config.dropout)
         self.dropout = config.dropout
 
+        self.block_size = config.block_size
+
         # Post-attention normalization/scaling (mirrors MLP behavior)
         self.post_act_l2_norm = getattr(config, "attn_post_act_l2_norm", False)
         self.cproj_scale = getattr(config, "attn_cproj_scale", 1.0)
@@ -278,7 +280,7 @@ class CausalSelfAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, kv_cache=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
@@ -290,13 +292,30 @@ class CausalSelfAttention(nn.Module):
         k = self.c_attn_k(x)
         v = self.c_attn_v(x)
 
+        if kv_cache is not None:
+            cached_k, cached_v = kv_cache if kv_cache is not None else (None, None)
+            if cached_k is not None:
+                k = torch.cat([cached_k, k], dim=2)
+            if cached_v is not None:
+                v = torch.cat([cached_v, v], dim=2)
+
+            if self.block_size is not None and k.size(2) > self.block_size:
+                k = k[:, :, -self.block_size:, :]
+                v = v[:, :, -self.block_size:, :]
+
+        q_len = q.size(1)
+        kv_len_raw = k.size(1)
+
         if self.window_size is not None:
-            if self.use_flex_attn is not None:
+            if self.use_flex_attn is not None and kv_cache is None:
                 self.block_masks = {}
             else:
-                self.window_mask = torch.ones((1, 1, T, T), device=x.device)
-                self.window_mask = torch.triu(self.window_mask, diagonal=-self.window_size)
-                self.window_mask = self.bias[:,:,:T,:T] * self.window_mask
+                q_positions = torch.arange(kv_len_raw - q_len, kv_len_raw, device=x.device).view(q_len, 1)
+                kv_positions = torch.arange(kv_len_raw, device=x.device).view(1, kv_len_raw)
+                causal_mask = q_positions >= kv_positions
+                window_mask = (q_positions - kv_positions) <= self.window_size
+                full_mask = causal_mask & window_mask
+                self.window_mask = full_mask.view(1, 1, q_len, kv_len_raw)
 
         if self.gate:
             if self.n_kv_group == self.n_head:
@@ -317,9 +336,9 @@ class CausalSelfAttention(nn.Module):
                 k = k * gate_kv
                 v = v * gate_kv
 
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
-        k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
-        v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+        q = q.view(B, q_len, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
+        k = k.view(B, kv_len_raw, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+        v = v.view(B, kv_len_raw, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
 
         # rotate q and k before evaluating with the heads
         if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
@@ -336,7 +355,9 @@ class CausalSelfAttention(nn.Module):
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
+        new_cache = (k, v) if kv_cache is not None else None
+
+        if self.flash and kv_cache is None:
 
             k_attn = self._expand_kv(k)
             v_attn = self._expand_kv(v)
@@ -375,7 +396,7 @@ class CausalSelfAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=True,
             )
-        elif self.use_flex_attn and self.window_size is not None:
+        elif self.use_flex_attn and self.window_size is not None and kv_cache is None:
             block_mask = self.get_block_mask(T, x.device)
             y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
         else:
@@ -391,6 +412,7 @@ class CausalSelfAttention(nn.Module):
             att = None
             # manual implementation of attention
             k_attn = self._expand_kv(k)
+            total_len = k_attn.size(2)
             head_dim = math.sqrt(k_attn.size(-1))
             att = (q @ k_attn.transpose(-2, -1))
 
@@ -411,7 +433,7 @@ class CausalSelfAttention(nn.Module):
                 att = att.masked_fill(self.window_mask == 0, float('-inf'))
             else:
                 # regular lower triangle attention
-                att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
+                att = att.masked_fill(self.bias[:,:,total_len - q_len:total_len,:total_len].to(x.device) == 0, float('-inf'))
 
             # fire position embeddings
             if self.use_fire_embeddings is not None:
@@ -448,7 +470,7 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_pv_mult_output", y, num_bits, quant_method, iter_num)
 
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().view(B, q_len, C) # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
@@ -458,7 +480,9 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method, iter_num)
 
-        return y
+        if kv_cache is None:
+            return y
+        return y, new_cache
 
 class EdgeLLMASICAttention(nn.Module):
     def __init__(self, config, fire_pos_enc=None):
@@ -613,7 +637,7 @@ class EdgeLLMASICAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, kv_cache=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
@@ -800,7 +824,7 @@ class LinearAttention(nn.Module):
         self.scale = torch.nn.Parameter(torch.tensor(1.0 / math.sqrt(self.head_size)))
 
 
-    def forward(self, x, iter_num=None):
+    def forward(self, x, iter_num=None, kv_cache=None):
         B, T, C = x.size()
 
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
@@ -974,7 +998,7 @@ class AttnIdentity(nn.Identity):
     def __init__(self, config, fire_pos_enc=None):
         super().__init__()
 
-    def forward(self, x, iter_num=None):
+    def forward(self, x, iter_num=None, kv_cache=None):
         x = super().forward(x)
         return x
 
@@ -1159,7 +1183,7 @@ class InfiniteHeadAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, kv_cache=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.l2_norm_attn_q:
@@ -1493,7 +1517,7 @@ class Co4Attention(nn.Module):
         return x.transpose(1, 2).contiguous().view(B, S, self.n_embd)
 
     # ─────────────────────────── forward ────────────────────────────────
-    def forward(self, x, iter_num=None):
+    def forward(self, x, iter_num=None, kv_cache=None):
         """
         x : (B, N, E)
         """

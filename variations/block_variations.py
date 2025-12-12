@@ -67,7 +67,7 @@ def make_alpha_fn(mode: str, init: float, param=None, vec=None):
 # Block Forward Variations
 # -----------------------
 
-def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int, kv_cache=None):
     """Forward pass where attention and MLP run in parallel."""
 
     # Make sure not to override skip connection
@@ -78,7 +78,11 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
         x_in = block.pre_ln(x_in)
 
     # Perform Operations
-    attn_out = block.attn(x_in, iter_num)
+    attn_result = block.attn(x_in, iter_num, kv_cache=kv_cache)
+    if isinstance(attn_result, tuple):
+        attn_out, new_kv_cache = attn_result
+    else:
+        attn_out, new_kv_cache = attn_result, kv_cache
     mlp_out = block.mlp(x_in, iter_num)
 
     # Peri-LN
@@ -101,10 +105,12 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     if block.use_post_ln:
         x = block.post_ln(x)
 
-    return x
+    if kv_cache is None:
+        return x
+    return x, new_kv_cache
 
 
-def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int, kv_cache=None):
     """Attention followed by MLP."""
 
     # Make sure not to override skip connection
@@ -115,7 +121,11 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
     # Attn Operation
-    attn_out = block.attn(x_attn_in, iter_num)
+    attn_result = block.attn(x_attn_in, iter_num, kv_cache=kv_cache)
+    if isinstance(attn_result, tuple):
+        attn_out, new_kv_cache = attn_result
+    else:
+        attn_out, new_kv_cache = attn_result, kv_cache
 
     # Attn Peri-LN
     if block.use_peri_ln_attn:
@@ -157,10 +167,12 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
 
-    return x
+    if kv_cache is None:
+        return x
+    return x, new_kv_cache
 
 
-def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int, kv_cache=None):
     """EdgeLLM ASIC forward: Attention followed by MLP with skip connection accumulation between blocks."""
 
     # Separate Full Precision Residual 'x' from 'x_quantized_residual'
@@ -186,7 +198,11 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
     # Attn Operation
-    attn_out = block.attn(x_attn_in, iter_num)
+    attn_result = block.attn(x_attn_in, iter_num, kv_cache=kv_cache)
+    if isinstance(attn_result, tuple):
+        attn_out, new_kv_cache = attn_result
+    else:
+        attn_out, new_kv_cache = attn_result, kv_cache
 
     # Attn Peri-LN
     if block.use_peri_ln_attn:
@@ -243,7 +259,9 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
 
-    return x
+    if kv_cache is None:
+        return x
+    return x, new_kv_cache
 
 
 block_forward_variations = {
@@ -458,10 +476,10 @@ class Block(nn.Module):
         # Gradient checkpointing
         self.use_gradient_checkpointing = getattr(config, "use_gradient_checkpointing", False)
 
-    def forward(self, x: torch.Tensor, iter_num: int):
-        if self.use_gradient_checkpointing and x.requires_grad:
+    def forward(self, x: torch.Tensor, iter_num: int, kv_cache=None):
+        if self.use_gradient_checkpointing and x.requires_grad and kv_cache is None:
             return checkpoint.checkpoint(self.block_forward, x, iter_num, use_reentrant=False)
-        return self.block_forward(x, iter_num)
+        return self.block_forward(x, iter_num, kv_cache)
 
     def _combine_resid(self, kind: str, x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
         """Helper method to streamline forward block skip connections"""
