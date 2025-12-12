@@ -10,6 +10,7 @@ parameter_groups:
   - optimizer: ["muon"]
     learning_rate: ["0.05"]
     muon_momentum: [0.95]
+  - optimizer: ["adamw"]
 
 # GPT-2 architecture base hyperparameters
 n_layer: [6]
