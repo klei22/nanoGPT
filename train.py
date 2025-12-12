@@ -11,6 +11,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from rich.console import Group
 from rich.console import Console
@@ -75,6 +76,7 @@ import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
+import yaml
 
 from variations.model_variations import model_variation_dictionary
 
@@ -100,6 +102,8 @@ class Trainer:
         self.tokens_trained = 0
         self.best_tokens = 0
         self.peak_gpu_usage = 0.0
+        self.next_eval_tokens = self.args.eval_interval_tokens
+        self.next_eval_epochs = self.args.eval_interval_epochs
         self.total_training_time_ms: float = 0.0   # total run-time from start of training
         self.time_remaining_ms: float= 0.0
         self.total_time_est_ms: float= 0.0
@@ -257,6 +261,9 @@ class Trainer:
             print("self.model_args['lsv_dataset_num']")
             print(self.model_args['lsv_dataset_num'])
 
+        # Logging settings
+        self.logging_args = {action.dest: getattr(self.args, action.dest) for action in self.logging_group._group_actions}
+
         if self.args.init_from == 'scratch':
             self.model_args['vocab_size'] = self.get_vocab_size_from_meta()
 
@@ -269,6 +276,7 @@ class Trainer:
 
 
             self.load_data()
+            self._normalize_training_limits()
             # Initialize sampling state if using sequential or without_replacement
             if self.args.sampling_method in ["sequential", "without_replacement"]:
                 if self.args.dataset_list is None:
@@ -324,6 +332,7 @@ class Trainer:
                 self.model_args[k] = altered_model_args[k]
 
             self.load_data()
+            self._normalize_training_limits()
             gptconf = GPTConfig(**self.model_args)
             self.model = GPT(gptconf)
 
@@ -375,6 +384,7 @@ class Trainer:
             self.model = GPT.from_pretrained(gptconf, model_type=self.args.gpt2_type)
             self.model.to(self.device)
             self.load_data()
+            self._normalize_training_limits()
 
             if self.args.lsv_focused_training:
                 self.model.freeze_non_lsv_parameters()
@@ -772,6 +782,40 @@ class Trainer:
                 self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
             # Store total token count for the single dataset.
             self.dataset_size_tokens = len(self.train_data)
+
+    def _normalize_training_limits(self):
+        if self.args.dataset_list or isinstance(self.dataset_size_tokens, dict):
+            # Multi-dataset modes have different per-dataset lengths; skip conversion.
+            return
+
+        if not self.dataset_size_tokens:
+            return
+
+        tokens_per_epoch = self.dataset_size_tokens
+        max_iters = self.args.max_iters
+        max_tokens = self.args.max_tokens
+        max_epochs = self.args.max_epochs
+
+        tokens_specified = max_tokens is not None
+        epochs_specified = max_epochs is not None
+
+        if epochs_specified and not tokens_specified:
+            max_tokens = math.ceil(max_epochs * tokens_per_epoch)
+
+        if max_tokens is not None:
+            if max_epochs is None:
+                max_epochs = max_tokens / tokens_per_epoch
+            max_iters = math.ceil(max_tokens / self.tokens_per_iter)
+        else:
+            max_tokens = max_iters * self.tokens_per_iter
+            max_epochs = max_tokens / tokens_per_epoch
+
+        self.args.max_iters = max_iters
+        self.args.max_tokens = max_tokens
+        self.args.max_epochs = max_epochs
+
+        if self.args.lr_decay_match_max_iters:
+            self.args.lr_decay_iters = max_iters
 
 
     def get_batch(self, split, target_dataset=None):
@@ -1763,6 +1807,44 @@ class Trainer:
         else:
             self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset, better_than_chance)
 
+    def log_exploration_summary(self):
+        if not getattr(self.args, "exploration_log_file", None):
+            return
+
+        log_path = Path(self.args.exploration_log_file).expanduser()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        run_name = self.args.exploration_run_name or Path(self.args.out_dir).name
+
+        entry = {
+            "formatted_name": run_name,
+            "config": {
+                "model": self.model_args,
+                "training": self.training_args,
+                "logging": self.logging_args,
+            },
+            "best_val_loss": float(self.best_val_loss),
+            "best_val_iter": int(self.best_iter),
+            "best_val_tokens": int(self.best_tokens),
+            "num_params": int(getattr(self.model, "num_param", 0)),
+            "peak_gpu_mb": float(self.peak_gpu_usage / (1024 ** 2)),
+            "iter_latency_avg": float(self.iter_latency_avg),
+            "avg_top1_prob": float(self.latest_top1_prob),
+            "avg_top1_correct": float(self.latest_top1_correct),
+            "avg_target_rank": float(self.latest_target_rank),
+            "avg_target_left_prob": float(self.latest_target_left_prob),
+            "avg_target_prob": float(self.latest_target_prob),
+            "target_rank_95": float(self.latest_rank_95),
+            "left_prob_95": float(self.latest_left_prob_95),
+            "avg_ln_f_cosine": float(self.latest_ln_f_cosine),
+            "ln_f_cosine_95": float(self.latest_ln_f_cosine_95),
+            "max_iters": int(self.args.max_iters) if self.args.max_iters is not None else None,
+            "max_tokens": int(self.args.max_tokens) if self.args.max_tokens is not None else None,
+            "max_epochs": float(self.args.max_epochs) if self.args.max_epochs is not None else None,
+        }
+
+        with log_path.open("a") as log_file:
+            yaml.safe_dump(entry, log_file, explicit_start=True)
+
     def train(self):
         if self.args.training_mode == 'multicontext':
             self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
@@ -1844,8 +1926,37 @@ class Trainer:
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.lr
 
-                if self.iter_num % self.args.eval_interval == 0 and self.master_process:
+                if not self.args.dataset_list and self.dataset_size_tokens:
+                    current_epoch = self.tokens_trained / self.dataset_size_tokens
 
+                eval_this_iter = False
+                should_eval = self.master_process and (self.iter_num % self.args.eval_interval == 0)
+
+                if (
+                    self.master_process
+                    and not self.args.dataset_list
+                    and self.args.eval_interval_tokens is not None
+                    and self.next_eval_tokens is not None
+                    and self.tokens_trained >= self.next_eval_tokens
+                ):
+                    should_eval = True
+                    while self.tokens_trained >= self.next_eval_tokens:
+                        self.next_eval_tokens += self.args.eval_interval_tokens
+
+                if (
+                    self.master_process
+                    and not self.args.dataset_list
+                    and self.args.eval_interval_epochs is not None
+                    and self.next_eval_epochs is not None
+                    and self.dataset_size_tokens
+                    and current_epoch >= self.next_eval_epochs
+                ):
+                    should_eval = True
+                    while current_epoch >= self.next_eval_epochs:
+                        self.next_eval_epochs += self.args.eval_interval_epochs
+
+                if should_eval:
+                    eval_this_iter = True
                     losses, num_steps_with_worse_loss = self.run_validation_step(
                         running_mfu, current_epoch, current_dataset, num_steps_with_worse_loss, live
                     )
@@ -1932,15 +2043,11 @@ class Trainer:
                         # Update per–dataset count
                         self.tokens_trained_dict[current_dataset] += tokens_trained_this_batch
                         self.tokens_trained = self.tokens_trained_dict[current_dataset]
+                        current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                        self.epochs_trained_dict[current_dataset] = current_epoch
                     else:
                         self.tokens_trained += tokens_trained_this_batch
-
-                    # Compute epoch for logging:
-                        if self.args.dataset_list:
-                            current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
-                            self.epochs_trained_dict[current_dataset] = current_epoch
-                        else:
-                            current_epoch = self.tokens_trained / self.dataset_size_tokens
+                        current_epoch = self.tokens_trained / self.dataset_size_tokens
 
                     self.scaler.scale(loss).backward()
 
@@ -1989,7 +2096,7 @@ class Trainer:
                         iter_num=self.iter_num,
                         now=t1,
                         dt=dt,
-                        is_eval_boundary=(self.iter_num % self.args.eval_interval == 0),
+                        is_eval_boundary=should_eval,
                         )
 
                 progress_advance = eta_update.progress_advance
@@ -2043,8 +2150,29 @@ class Trainer:
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
+                stop_due_to_iters = self.iter_num > self.args.max_iters
+                stop_due_to_tokens = (
+                    self.args.max_tokens is not None
+                    and not self.args.dataset_list
+                    and self.tokens_trained >= self.args.max_tokens
+                )
+                stop_due_to_epochs = (
+                    self.args.max_epochs is not None
+                    and not self.args.dataset_list
+                    and current_epoch >= self.args.max_epochs
+                )
+
                 # End of training actions
-                if self.iter_num > self.args.max_iters:
+                if stop_due_to_iters or stop_due_to_tokens or stop_due_to_epochs:
+                    if (
+                        self.args.eval_at_last_iter
+                        and self.master_process
+                        and not eval_this_iter
+                        and not self.args.eval_only
+                    ):
+                        losses, num_steps_with_worse_loss = self.run_validation_step(
+                            running_mfu, current_epoch, current_dataset, num_steps_with_worse_loss, live
+                        )
                     print(self.best_val_loss, self.best_iter, self.best_tokens)
                     if self.args.only_save_checkpoint_at_end:
                         if not self.args.never_save_checkpoint:
@@ -2069,6 +2197,8 @@ class Trainer:
                 import wandb
                 wandb.log({"finished": True})
                 wandb.finish()
+
+        self.log_exploration_summary()
 
 def main():
     args, model_group, training_group, logging_group = parse_args()

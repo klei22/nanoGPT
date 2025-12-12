@@ -1,0 +1,26 @@
+# Demonstration of training-limit normalization and exploration logging
+---
+common_group:
+  dataset: ["shakespeare_char"]
+  block_size: [128]
+  batch_size: [8]
+  n_layer: [2]
+  n_head: [2]
+  n_embd: [128]
+  eval_interval: [50]
+  eval_iters: [20]
+  exploration_log_file: ["exploration_logs/limit_demo.yaml"]
+  tensorboard_log: [false]
+  never_save_checkpoint: [true]
+  device: ["cpu"]
+  dtype: ["bfloat16"]
+parameter_groups:
+  - name: "tokens_only"
+    max_tokens: [200000]
+    exploration_run_name: ["tokens-only"]
+  - name: "epochs_only"
+    max_epochs: [1.5]
+    exploration_run_name: ["epochs-only"]
+  - name: "iters_default"
+    max_iters: [120]
+    exploration_run_name: ["iters-default"]

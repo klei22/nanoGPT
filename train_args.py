@@ -77,14 +77,23 @@ def parse_args():
     # I/O args
     training_group.add_argument('--out_dir', default='out', type=str)
     training_group.add_argument('--eval_interval', default=250, type=int)
+    training_group.add_argument('--eval_interval_tokens', default=None, type=int, help="Run eval when this many new tokens have been trained (single dataset mode).")
+    training_group.add_argument('--eval_interval_epochs', default=None, type=float, help="Run eval when this many epochs have been completed (single dataset mode).")
     training_group.add_argument('--log_interval', default=10, type=int)
     training_group.add_argument('--eval_iters', default=200, type=int)
     training_group.add_argument('--eval_only', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument('--eval_at_last_iter', default=False, action=argparse.BooleanOptionalAction, help="Run one final evaluation on the last iteration even if it is not an eval boundary.")
+
+    training_group.add_argument('--max_tokens', default=None, type=int, help="Maximum number of tokens to train on (single dataset mode).")
+    training_group.add_argument('--max_epochs', default=None, type=float, help="Maximum number of epochs to train (single dataset mode).")
 
     # latency / ETA estimate options
     training_group.add_argument('--eta_variant', choices=['iteration', 'eval_cycle'], default='eval_cycle', help="iteration - estimates only based on training iterations -- use if doing one eval at the end; eval_cycle -- use if doing multiple evals, will use a single cycle for the estimation.")
     training_group.add_argument('--iteration_window', default=100, type=int)
     training_group.add_argument('--eval_cycle_window', default=5, type=int)
+
+    logging_group.add_argument('--exploration_log_file', default=None, type=str, help='Append run summaries compatible with run_exploration_monitor to this YAML file.')
+    logging_group.add_argument('--exploration_run_name', default=None, type=str, help='Name to record in exploration logs (defaults to out_dir basename).')
 
     # Loss variations
     training_group.add_argument(
