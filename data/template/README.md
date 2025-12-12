@@ -120,6 +120,25 @@ These files above are then utilized to train the model via the `train.py` or
 
 There are a number of methods to preprocess data before tokenization.
 
+#### Add Chinese metadata to JSON datasets
+
+If your dataset contains Chinese text, you can enrich the downloaded JSON file
+with additional information like radicals and pinyin before converting it to
+`input.txt`.
+
+```bash
+pip install hanzipy
+python utils/annotate_hanzi_metadata.py \
+  --input_json output_json.json \
+  --output_json output_with_metadata.json \
+  --text_key text \
+  --metadata_types radical pinyin definitions
+```
+
+The script scans each entry's `text` field for Chinese characters and appends a
+`hanzi_metadata` object with the requested annotations for every unique
+character.
+
 #### Phonemization
 
 To experiment with utilization of a phonemized version of the dataset, first
