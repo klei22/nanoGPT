@@ -336,6 +336,16 @@ def parse_args():
                                  choices=optimizer_variations,
                                  help="Optimizer to use for training.")
 
+    training_group.add_argument(
+        "--use_speedrun_optim_defaults",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "When enabled, apply the recommended NanoGPT speedrun settings for the"
+            " selected optimizer (AdamW or Muon)."
+        ),
+    )
+
     # --------  SGD --------------------------------------------------
     training_group.add_argument("--sgd_momentum", type=float, default=0.9, help="Momentum for SGD optimizer.")
     training_group.add_argument("--sgd_nesterov", type=bool, default=False, action=argparse.BooleanOptionalAction)
@@ -1412,6 +1422,18 @@ def parse_args():
         # Update the args namespace with values from the JSON file
         for key, value in config.items():
             setattr(args, key, value)
+
+    if args.use_speedrun_optim_defaults:
+        if args.optimizer == "adamw":
+            args.learning_rate = 0.05
+            args.beta1 = 0.9
+            args.beta2 = 0.99
+            args.opt_eps = 1e-8
+            args.weight_decay = 0.1
+        elif args.optimizer == "muon":
+            args.learning_rate = 0.05
+            args.muon_momentum = 0.95
+            args.weight_decay = 0.0
 
     # Save all params to provided json if flag is present
     if args.save_config_json is not None:
