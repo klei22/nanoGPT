@@ -699,6 +699,8 @@ class Trainer:
                 sys.exit("Error: When training_mode is 'multicontext', please provide --multicontext_datasets.")
             self.train_data_dict = {}
             self.val_data_dict = {}
+            self.dataset_value_transforms = {}
+            self.dataset_meta = {}
             for dataset in self.args.multicontext_datasets:
                 meta_path = os.path.join('data', dataset, 'meta.pkl')
                 if not os.path.exists(meta_path):
@@ -708,6 +710,10 @@ class Trainer:
                     vocab_size = meta.get('vocab_size', None)
                     print(vocab_size, dataset)
                     self.vocab_sizes[dataset] = meta['vocab_size']
+                    self.dataset_meta[dataset] = meta
+                    transform = self._create_value_transform(meta)
+                    if transform:
+                        self.dataset_value_transforms[dataset] = transform
                 # Here we use np.uint16 for most datasets:
                 self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
                 self.val_data_dict[dataset]   = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
@@ -727,6 +733,8 @@ class Trainer:
             self.train_data_dict = {}
             self.val_data_dict = {}
             self.vocab_sizes = []
+            self.dataset_value_transforms = {}
+            self.dataset_meta = {}
 
             for dataset in self.args.dataset_list:
                 train_data = None
@@ -740,6 +748,10 @@ class Trainer:
                     vocab_size = meta.get('vocab_size', None)
                     if vocab_size:
                         self.vocab_sizes.append(vocab_size)
+                        transform = self._create_value_transform(meta)
+                        if transform:
+                            self.dataset_value_transforms[dataset] = transform
+                        self.dataset_meta[dataset] = meta
 
                 # Load train and val data for each dataset
                 dtype = np.uint16 if vocab_size != 100277 else np.uint32
@@ -762,6 +774,11 @@ class Trainer:
 
             if self.model_args['vocab_size'] is None:
                 sys.exit("Error: no vocab size specified")
+            self.single_dataset_meta = {}
+            meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
+            if os.path.exists(meta_path):
+                with open(meta_path, 'rb') as f:
+                    self.single_dataset_meta = pickle.load(f)
             elif self.model_args['vocab_size'] == 100277:
                 # cl100k_base, vocab size 100277, requires np.uint32
                 self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
@@ -772,6 +789,28 @@ class Trainer:
                 self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
             # Store total token count for the single dataset.
             self.dataset_size_tokens = len(self.train_data)
+            self.single_dataset_transform = self._create_value_transform(self.single_dataset_meta)
+
+
+    def _create_value_transform(self, meta):
+        if not meta:
+            return None
+        storage_dtype = meta.get("storage_dtype")
+        value_dtype = meta.get("value_dtype")
+
+        if storage_dtype == "uint16" and value_dtype == "float16":
+            def transform(array_slice):
+                view = np.asarray(array_slice, dtype=np.uint16)
+                return view.view(np.float16)
+
+            return transform
+
+        return None
+
+    def _apply_transform(self, array_slice, transform):
+        if transform:
+            return np.asarray(transform(array_slice), dtype=np.float32)
+        return np.asarray(array_slice, dtype=np.int64)
 
 
     def get_batch(self, split, target_dataset=None):
@@ -803,15 +842,28 @@ class Trainer:
             for dataset_name in self.args.multicontext_datasets:
                 data = (self.train_data_dict[dataset_name]
                         if split == 'train' else self.val_data_dict[dataset_name])
+                transform = self.dataset_value_transforms.get(dataset_name)
+                if not self.model_args.get('numerical_multicontext'):
+                    transform = None
                 if ix is None:
                     ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
                 # pick random offset
                 x = torch.stack([
-                    torch.from_numpy(data[i : i+self.args.block_size].astype(np.int64))
+                    torch.from_numpy(
+                        self._apply_transform(
+                            data[i : i+self.args.block_size],
+                            transform,
+                        )
+                    )
                     for i in ix
                     ])
                 y = torch.stack([
-                    torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.int64))
+                    torch.from_numpy(
+                        self._apply_transform(
+                            data[i+1 : i+1+self.args.block_size],
+                            transform,
+                        )
+                    )
                     for i in ix
                     ])
                 # Move to device
@@ -899,6 +951,14 @@ class Trainer:
             dataset = self.args.dataset
             data = self.train_data if split == 'train' else self.val_data
 
+        transform = None
+        if self.args.training_mode == "multidataset":
+            transform = self.dataset_value_transforms.get(dataset)
+        elif self.args.training_mode != "multicontext":
+            transform = getattr(self, "single_dataset_transform", None)
+        if not self.model_args.get('numerical_multicontext'):
+            transform = None
+
         # Adaptive GNS settings
         if (self.gns is not None) and (self.args.gns_target is not None):
             if self.gns < self.args.gns_target:
@@ -948,8 +1008,18 @@ class Trainer:
 
 
         # Get training and targets
-        x = torch.stack([torch.from_numpy((data[i:i+self.args.block_size]).astype(np.int64)) for i in ix])
-        y = torch.stack([torch.from_numpy((data[i+1:i+1+self.args.block_size]).astype(np.int64)) for i in ix])
+        x = torch.stack([
+            torch.from_numpy(
+                self._apply_transform(data[i:i+self.args.block_size], transform)
+            )
+            for i in ix
+        ])
+        y = torch.stack([
+            torch.from_numpy(
+                self._apply_transform(data[i+1:i+1+self.args.block_size], transform)
+            )
+            for i in ix
+        ])
 
         # Send to appropriate device
         if self.device_type == 'cuda':
