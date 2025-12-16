@@ -406,7 +406,7 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
+    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None, past_key_values=None, use_cache=False):
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -615,10 +615,21 @@ class GPT(nn.Module):
             if self.use_ln_f_input_mixer:
                 layer_outputs = [x]
 
-            layer_idx = 1
-            for block in self.transformer.h:
-                # Propagate tokens through layers
-                x = block(x, iter_num)
+            present_key_values = [] if use_cache else None
+            if use_cache:
+                if past_key_values is None:
+                    past_key_values = [None] * len(self.transformer.h)
+                elif len(past_key_values) < len(self.transformer.h):
+                    past_key_values = list(past_key_values) + [None] * (len(self.transformer.h) - len(past_key_values))
+
+            for layer_idx, block in enumerate(self.transformer.h, start=1):
+                past_kv = past_key_values[layer_idx - 1] if use_cache else None
+
+                if use_cache:
+                    x, present = block(x, iter_num, past_kv, use_cache=True)
+                    present_key_values.append(present)
+                else:
+                    x = block(x, iter_num)
 
                 # Intercept for Learned Steering Vectors
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -646,8 +657,6 @@ class GPT(nn.Module):
 
                 if self.use_ln_f_input_mixer:
                     layer_outputs.append(x)
-
-                layer_idx +=1
 
             if self.use_ln_f_input_mixer:
                 x = self.ln_f_mixer(layer_outputs)
@@ -688,6 +697,8 @@ class GPT(nn.Module):
 
                 loss = None
 
+            if use_cache:
+                return logits, loss, present_key_values
             return logits, loss
     # ------------------------------------------------------------------
     #  LATENT-CHAINING
@@ -1004,17 +1015,33 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, use_kv_cache=False):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
+        past_key_values = None
         for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            if use_kv_cache and past_key_values is not None:
+                idx_cond = idx[:, -1:]
+            else:
+                idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            outputs = self(idx_cond, past_key_values=past_key_values, use_cache=use_kv_cache)
+            if use_kv_cache:
+                logits = outputs[0]
+                past_key_values = outputs[2]
+                if past_key_values is not None:
+                    trimmed = []
+                    for past_k, past_v in past_key_values:
+                        if past_k is None or past_v is None:
+                            trimmed.append((past_k, past_v))
+                            continue
+                        trimmed.append((past_k[:, :, -self.config.block_size:, :], past_v[:, :, -self.config.block_size:, :]))
+                    past_key_values = trimmed
+            else:
+                logits, _ = outputs
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
