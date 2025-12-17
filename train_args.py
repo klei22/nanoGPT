@@ -220,6 +220,10 @@ def parse_args():
     training_group.add_argument('--sample_start_tokens', default='\n', type=str)
     training_group.add_argument('--sample_only', default=False, action=argparse.BooleanOptionalAction, help="Run only the sampling process and exit")
     training_group.add_argument('--dataset_benchmarks', default=False, action=argparse.BooleanOptionalAction, help="Run dataset benchmark metrics on a random slice after each validation")
+    training_group.add_argument('--benchmark_config', default=None, type=str, help="Path to a JSON file describing inference-time benchmarks to run after sampling")
+    training_group.add_argument('--benchmark_top_k', type=int, nargs='*', default=None, help="Optional override for top-k values used while running benchmarks")
+    training_group.add_argument('--benchmark_max_new_tokens', type=int, default=None, help="Override max_new_tokens for benchmark runs")
+    training_group.add_argument('--benchmark_temperature', type=float, default=None, help="Override temperature for benchmark runs")
     training_group.add_argument('--sample_metrics', default=False, action=argparse.BooleanOptionalAction, help="Display sample metrics like spelling correctness during sampling")
 
     # Checkpoint args
