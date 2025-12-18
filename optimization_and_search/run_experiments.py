@@ -83,6 +83,78 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _merge_named_group_lists(
+    target: list[dict], incoming: list[dict], label: str, source: Path
+):
+    existing_names = {entry.get('named_group') for entry in target if isinstance(entry, dict)}
+    for entry in incoming:
+        if not isinstance(entry, dict):
+            raise TypeError(
+                f"Entries in '{label}' from {source} must be mappings with a 'named_group' key"
+            )
+        name = entry.get('named_group')
+        if not name:
+            raise ValueError(
+                f"Each entry in '{label}' from {source} must include 'named_group'"
+            )
+        if name in existing_names:
+            raise ValueError(
+                f"Duplicate named group '{name}' found while merging '{label}' from {source}"
+            )
+        target.append(entry)
+        existing_names.add(name)
+
+
+def _load_named_group_library(path: Path) -> dict:
+    text = path.read_text()
+    loaded = list(yaml.safe_load_all(text))
+    if len(loaded) != 1 or not isinstance(loaded[0], dict):
+        raise ValueError(
+            f"Named group library {path} must contain exactly one YAML mapping document"
+        )
+    return loaded[0]
+
+
+def _apply_named_group_libraries(config: dict, config_path: Path) -> dict:
+    libraries = config.pop('named_group_libraries', None)
+    if not libraries:
+        return config
+
+    base_dir = config_path.parent
+    libraries = libraries if isinstance(libraries, list) else [libraries]
+
+    merged_static = list(config.get('named_static_groups', []) or [])
+    merged_variations = list(config.get('named_variation_groups', []) or [])
+
+    for lib in libraries:
+        lib_path = Path(lib)
+        if not lib_path.is_absolute():
+            lib_path = base_dir / lib_path
+        if not lib_path.exists():
+            raise FileNotFoundError(f"Named group library not found: {lib_path}")
+
+        library_cfg = _load_named_group_library(lib_path)
+        _merge_named_group_lists(
+            merged_static,
+            library_cfg.get('named_static_groups', []) or [],
+            'named_static_groups',
+            lib_path,
+        )
+        _merge_named_group_lists(
+            merged_variations,
+            library_cfg.get('named_variation_groups', []) or [],
+            'named_variation_groups',
+            lib_path,
+        )
+
+    if merged_static:
+        config['named_static_groups'] = merged_static
+    if merged_variations:
+        config['named_variation_groups'] = merged_variations
+
+    return config
+
+
 def load_configurations(path: str, fmt: str) -> list[dict]:
     """
     Load experiment configurations from a JSON or YAML file.
@@ -100,8 +172,14 @@ def load_configurations(path: str, fmt: str) -> list[dict]:
         loaded = list(yaml.safe_load_all(text))
         # Flatten if outer list-of-lists
         if len(loaded) == 1 and isinstance(loaded[0], list):
-            return loaded[0]
-        return loaded
+            loaded = loaded[0]
+        configs = []
+        for cfg in loaded:
+            if not isinstance(cfg, dict):
+                configs.append(cfg)
+                continue
+            configs.append(_apply_named_group_libraries(cfg, Path(path)))
+        return configs
     else:
         return json.loads(text)
 
