@@ -525,10 +525,23 @@ class GPT(nn.Module):
                             loss_i = torch.zeros((), device=preds.device, dtype=preds.dtype)
                         losses.append(loss_i)
                 else:
-                    logits = [pred[:, [-1], :] for pred in logits]
+                    # Only score the final timestep to avoid unnecessary work during inference.
+                    last_hidden = x[:, -1, :]
+                    logits = [
+                        self.numerical_output_mlps[str(i)](last_hidden).unsqueeze(1)
+                        for i in range(len(token_list))
+                    ]
                     losses = None
             else:
-                logits = [self.transformer[f'lm_head_{i}'](x) for i in range(len(token_list))]
+                if target_list is not None:
+                    logits = [self.transformer[f'lm_head_{i}'](x) for i in range(len(token_list))]
+                else:
+                    # Single shared forward pass; project only the last token for each head.
+                    last_hidden = x[:, -1, :]
+                    logits = [
+                        F.linear(last_hidden, self.transformer[f'lm_head_{i}'].weight).unsqueeze(1)
+                        for i in range(len(token_list))
+                    ]
 
                 # Soft‑cap **each** logits tensor (training & inference)
                 if self.config.final_logit_softcapping is not None:
@@ -555,8 +568,6 @@ class GPT(nn.Module):
                         losses.append(loss_i)
 
                 else:
-                    # only forward lm head on very last position in inference mode
-                    logits = [logit[:, [-1], :] for logit in logits]
                     losses = None
 
             return logits, losses
