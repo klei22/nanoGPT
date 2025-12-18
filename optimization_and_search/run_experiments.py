@@ -207,40 +207,84 @@ def _collect_param_keys(cfg: dict) -> set[str]:
     return keys
 
 
+def _load_named_group_library(path: str, base_path: Path | None) -> list[dict]:
+    lib_path = Path(path)
+    if not lib_path.is_absolute() and base_path is not None:
+        lib_path = base_path / lib_path
+    if not lib_path.exists():
+        raise FileNotFoundError(f"Named group library '{path}' does not exist")
+
+    text = lib_path.read_text()
+    loaded = list(yaml.safe_load_all(text))
+    if len(loaded) == 1 and isinstance(loaded[0], list):
+        loaded = loaded[0]
+
+    configs: list[dict] = []
+    for idx, entry in enumerate(loaded, 1):
+        if entry is None:
+            continue
+        if not isinstance(entry, dict):
+            raise TypeError(
+                "Named group libraries must contain mapping documents; "
+                f"found {type(entry)} in document {idx} of '{lib_path}'"
+            )
+        configs.append(dict(entry))
+    return configs
+
+
+def _ingest_named_groups(
+    raw_static, raw_variation, static_groups: dict[str, dict], variation_groups: dict[str, dict], source: str
+) -> None:
+    for entry in _ensure_list(raw_static):
+        if not isinstance(entry, dict):
+            raise TypeError(f"Entries in 'named_static_groups' from {source} must be mappings")
+        name = entry.get('named_group')
+        if not name:
+            raise ValueError(f"Each named static group from {source} must include 'named_group'")
+        if name in static_groups:
+            raise ValueError(f"Duplicate named static group '{name}' from {source}")
+        body = {k: deepcopy(v) for k, v in entry.items() if k != 'named_group'}
+        static_groups[name] = body
+
+    for entry in _ensure_list(raw_variation):
+        if not isinstance(entry, dict):
+            raise TypeError(f"Entries in 'named_variation_groups' from {source} must be mappings")
+        name = entry.get('named_group')
+        if not name:
+            raise ValueError(f"Each named variation group from {source} must include 'named_group'")
+        if name in variation_groups:
+            raise ValueError(f"Duplicate named variation group '{name}' from {source}")
+        body = {k: deepcopy(v) for k, v in entry.items() if k != 'named_group'}
+        variation_groups[name] = body
+
+
 class NamedGroupRegistry:
     def __init__(self, static_groups: dict[str, dict], variation_groups: dict[str, dict]):
         self.static_groups = static_groups
         self.variation_groups = variation_groups
 
     @classmethod
-    def from_config(cls, cfg: dict) -> tuple['NamedGroupRegistry', dict]:
+    def from_config(cls, cfg: dict, base_path: Path | None = None) -> tuple['NamedGroupRegistry', dict]:
         cfg = dict(cfg)
+        library_paths = _ensure_list(cfg.pop('named_group_libraries', []))
         raw_static = cfg.pop('named_static_groups', [])
         raw_variation = cfg.pop('named_variation_groups', [])
 
         static_groups: dict[str, dict] = {}
-        for entry in _ensure_list(raw_static):
-            if not isinstance(entry, dict):
-                raise TypeError("Entries in 'named_static_groups' must be mappings")
-            name = entry.get('named_group')
-            if not name:
-                raise ValueError("Each named static group must include 'named_group'")
-            if name in static_groups:
-                raise ValueError(f"Duplicate named static group '{name}'")
-            body = {k: deepcopy(v) for k, v in entry.items() if k != 'named_group'}
-            static_groups[name] = body
-
         variation_groups: dict[str, dict] = {}
-        for entry in _ensure_list(raw_variation):
-            if not isinstance(entry, dict):
-                raise TypeError("Entries in 'named_variation_groups' must be mappings")
-            name = entry.get('named_group')
-            if not name:
-                raise ValueError("Each named variation group must include 'named_group'")
-            if name in variation_groups:
-                raise ValueError(f"Duplicate named variation group '{name}'")
-            body = {k: deepcopy(v) for k, v in entry.items() if k != 'named_group'}
-            variation_groups[name] = body
+
+        for lib_path in library_paths:
+            library_cfgs = _load_named_group_library(lib_path, base_path)
+            for lib_cfg in library_cfgs:
+                _ingest_named_groups(
+                    lib_cfg.get('named_static_groups', []),
+                    lib_cfg.get('named_variation_groups', []),
+                    static_groups,
+                    variation_groups,
+                    f"library '{lib_path}'",
+                )
+
+        _ingest_named_groups(raw_static, raw_variation, static_groups, variation_groups, "config")
 
         return cls(static_groups, variation_groups), cfg
 
@@ -401,14 +445,15 @@ def _extract_common_group(cfg: dict) -> tuple[dict, set[str]]:
     return common, set(common)
 
 
-def generate_combinations(config: dict):
+def generate_combinations(config: dict, base_path: Path | None = None):
     """Yield all valid parameter combinations for a config dict.
 
     Supports arbitrarily nested ``parameter_groups`` and the optional
-    ``common_group`` block.
+    ``common_group`` block. ``base_path`` is used to resolve any
+    ``named_group_libraries`` referenced by the configuration.
     """
 
-    registry, cfg = NamedGroupRegistry.from_config(config)
+    registry, cfg = NamedGroupRegistry.from_config(config, base_path)
     cfg = dict(cfg)
     common_values, common_keys = _extract_common_group(cfg)
 
@@ -673,8 +718,9 @@ def main():
 
     # Precompute all combinations to know total experiment count
     all_combos: list[tuple[dict, set[str]]] = []
+    config_dir = Path(args.config).resolve().parent
     for cfg in configs:
-        all_combos.extend(list(generate_combinations(cfg)))
+        all_combos.extend(list(generate_combinations(cfg, base_path=config_dir)))
 
     total = len(all_combos)
     start_time = datetime.now()

@@ -1,0 +1,56 @@
+# Shared named group presets for explorations
+---
+# Atomic Static Groupings
+named_static_groups:
+  # QK Norm
+  - named_group: "no_qk_norm"
+    use_qk_norm: [false]
+    use_qk_norm_scale: [false]
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "pre_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [false]
+    use_post_ln: [false]
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+  - named_group: "post_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [false]
+    use_post_ln: [true]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      use_abs_pos_embeddings: [false]
+  - named_group: "abs"
+    named_group_settings:
+      use_rotary_embeddings: [false]
+      use_abs_pos_embeddings: [true]
+
+  # RMSNorm Variations
+  - named_group: "rmsnorm_all"
+    named_group_settings:
+      norm_variant_attn: ["rmsnorm"]
+      norm_variant_output: ["rmsnorm"]
+  - named_group: "rmsnorm_attn_hsnorm_out"
+    named_group_settings:
+      norm_variant_attn: ["rmsnorm"]
+      norm_variant_output: ["hyperspherenorm"]
+
+# Higher Level Groupings
+named_variation_groups:
+  - named_group: "embedding_head_variations"
+    parameter_groups:
+      - n_embd: 256
+        n_head: [4, 8]
+      - n_embd: 320
+        n_head: [5, 4]
+  - named_group: "positional_embeddings"
+    named_group_alternates: ["rotary", "abs"]
