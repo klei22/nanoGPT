@@ -34,6 +34,10 @@ METRIC_KEYS = [
     "left_prob_95",
     "avg_ln_f_cosine",
     "ln_f_cosine_95",
+    "avg_energy_per_token",
+    "attn_energy",
+    "mlp_energy",
+    "lm_head_energy",
 ]
 
 
@@ -547,8 +551,32 @@ def read_metrics(out_dir: str) -> dict:
         raise FileNotFoundError(f"Metrics file not found: {path}")
     line = path.read_text().strip()
     parts = [p.strip() for p in line.split(',')]
+    if len(parts) < len(METRIC_KEYS):
+        parts.extend(["nan"] * (len(METRIC_KEYS) - len(parts)))
 
-    casts = [float, int, int, int, float, float, float, float, float, float, float, float, float, float, float, float, float]
+    casts = [
+        float,
+        int,
+        int,
+        int,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+        float,
+    ]
 
     return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
 
