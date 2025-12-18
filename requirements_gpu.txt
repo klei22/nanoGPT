@@ -23,6 +23,7 @@ rich==14.0.0
 sentencepiece
 spacy
 tqdm==4.66.4
+zeus
 # optimizer related
 adabelief-pytorch
 adan-pytorch
