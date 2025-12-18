@@ -1338,6 +1338,12 @@ def parse_args():
     logging_group.add_argument('--tensorboard_run_name', type=str, default=None)
     logging_group.add_argument('--tensorboard_graph', default=True, action=argparse.BooleanOptionalAction)
 
+    # Energy monitoring (Zeus)
+    logging_group.add_argument('--enable_energy_monitoring', default=False, action=argparse.BooleanOptionalAction,
+                               help='Enable Zeus-based GPU energy tracking during training')
+    logging_group.add_argument('--energy_gpu_index', type=int, default=0,
+                               help='GPU index to monitor when energy tracking is enabled')
+
     # Metric logging toggles
     logging_group.add_argument('--log_btc_train', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance training metrics')
     logging_group.add_argument('--log_btc_per_param', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance-per-parameter metrics')

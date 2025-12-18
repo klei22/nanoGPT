@@ -46,6 +46,7 @@ from utils.model_stats import (
     compute_activation_stats,
     print_model_stats_table,
 )
+from utils.energy_monitor import EnergyTracker
 
 from sample import (
     sample_with_existing_model,
@@ -137,6 +138,24 @@ class Trainer:
 
         # whether to show all model stats
         self.compute_model_stats = self.args.compute_model_stats
+
+        # Energy monitoring
+        self.energy_tracker = EnergyTracker(
+            enabled=getattr(self.args, "enable_energy_monitoring", False),
+            device_index=getattr(self.args, "energy_gpu_index", 0),
+        )
+        self.latest_energy_iteration = {
+            "overall": float("nan"),
+            "attention": float("nan"),
+            "mlp": float("nan"),
+            "lm_head": float("nan"),
+        }
+        self.avg_energy_per_token = {
+            "overall": float("nan"),
+            "attention": float("nan"),
+            "mlp": float("nan"),
+            "lm_head": float("nan"),
+        }
 
         # Where to aggregate statistics:  'cpu' (default) or 'gpu'.
         # The CLI flag is optional; fall back to CPU if it isn’t present.
@@ -419,6 +438,9 @@ class Trainer:
             self.model = DDP(self.model, device_ids=[self.ddp_local_rank])
 
         self.raw_model = self.model.module if self.ddp else self.model
+
+        # Attach Zeus monitoring hooks if requested
+        self.energy_tracker.attach_model(self.raw_model)
 
         if hasattr(self.loss_fn, "set_model"):
             self.loss_fn.set_model(self.raw_model)
@@ -1306,6 +1328,20 @@ class Trainer:
                 f"{target_dataset}/bit_loss_penalty_tokens", penalty_term, tokens_trained
             )
 
+    def _log_energy_metrics(self) -> None:
+        if not (self.args.tensorboard_log and self.energy_tracker.enabled):
+            return
+        if self.writer is None:
+            return
+
+        for key, value in self.latest_energy_iteration.items():
+            if not math.isnan(value):
+                self.writer.add_scalar(f"energy/iter_{key}_j_per_token", value, self.iter_num)
+
+        for key, value in self.avg_energy_per_token.items():
+            if not math.isnan(value):
+                self.writer.add_scalar(f"energy/avg_{key}_j_per_token", value, self.iter_num)
+
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance):
 
         if self.iter_num == 0 and self.args.tensorboard_log and self.args.export_model_graph == True  and self.args.compile == False:
@@ -1393,6 +1429,7 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
 
             self._log_bit_metrics(target_dataset, tokens_trained)
+            self._log_energy_metrics()
 
 
         if self.args.csv_log:
@@ -1442,6 +1479,8 @@ class Trainer:
             self.writer.add_scalar(f"{target_dataset}/mfu_pct", running_mfu * 100, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/vram", self.vram_allocated, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/param", self.model.num_param, self.iter_num)
+
+            self._log_energy_metrics()
 
             self.writer.add_scalar(f"{target_dataset}/epoch", epoch, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/tokens_trained", tokens_trained, self.iter_num)
@@ -1677,6 +1716,10 @@ class Trainer:
                             f"{self.latest_overall_activation_stats['max']:.6f}",
                             f"{self.latest_overall_activation_stats['min']:.6f}",
                             f"{self.latest_overall_activation_stats['abs_max']:.6f}",
+                            f"{self.avg_energy_per_token.get('overall', float('nan')):.6f}",
+                            f"{self.avg_energy_per_token.get('attention', float('nan')):.6f}",
+                            f"{self.avg_energy_per_token.get('mlp', float('nan')):.6f}",
+                            f"{self.avg_energy_per_token.get('lm_head', float('nan')):.6f}",
                     ]
                     best_loss_file.write(", ".join(metrics) + "\n")
                 num_steps_with_worse_loss = 0
@@ -1746,6 +1789,10 @@ class Trainer:
             log_message+= f", grad_norm {self.grad_norm:2f}"
         if self.args.log_grad_std:
             log_message+= f", grad_std {self.grad_std:.2f}"
+        if self.energy_tracker.enabled:
+            overall_energy = self.latest_energy_iteration.get("overall", float("nan"))
+            if not math.isnan(overall_energy):
+                log_message+= f", energy_j_per_token {overall_energy:.4f}"
 
         self.console.print(log_message)
 
@@ -1859,6 +1906,8 @@ class Trainer:
                 if self.args.eval_only:
                     break
 
+                if self.energy_tracker.enabled:
+                    self.energy_tracker.start_iteration()
 
                 for micro_step in range(self.args.gradient_accumulation_steps):
                     if self.ddp:
@@ -1935,6 +1984,9 @@ class Trainer:
                     else:
                         self.tokens_trained += tokens_trained_this_batch
 
+                    if self.energy_tracker.enabled:
+                        self.energy_tracker.add_tokens(tokens_trained_this_batch)
+
                     # Compute epoch for logging:
                         if self.args.dataset_list:
                             current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
@@ -1983,6 +2035,11 @@ class Trainer:
                 dt = t1 - t0
                 t0 = t1
                 self.total_training_time_ms = (t1 - t_start) * 1000.0
+
+                if self.energy_tracker.enabled:
+                    if self.energy_tracker.end_iteration() is not None:
+                        self.latest_energy_iteration = self.energy_tracker.latest_iteration_per_token()
+                        self.avg_energy_per_token = self.energy_tracker.global_average_per_token()
 
                 # Estimate ETA
                 eta_update: ETAUpdate = self.eta.update(
