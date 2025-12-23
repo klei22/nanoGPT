@@ -178,6 +178,83 @@ def _lookahead(param_groups, args):
 
 
 
+class RotationOnlyOptimizer(Optimizer):
+    """Updates embedding-aligned vectors by rotating them without scaling."""
+
+    def __init__(
+        self,
+        params,
+        lr: float = 1e-3,
+        embedding_dim: int | None = None,
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+    ):
+        if lr <= 0:
+            raise ValueError("Learning rate must be positive")
+        if eps <= 0:
+            raise ValueError("eps must be positive")
+
+        defaults = dict(
+            lr=lr,
+            embedding_dim=embedding_dim,
+            eps=eps,
+            weight_decay=weight_decay,
+        )
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            eps = group.get("eps", 1e-8)
+            weight_decay = group.get("weight_decay", 0.0)
+            embedding_dim = group.get("embedding_dim")
+            rotation_only = group.get("rotation_only", False)
+
+            for param in group["params"]:
+                if param.grad is None:
+                    continue
+
+                grad = param.grad
+                if weight_decay != 0.0:
+                    grad = grad.add(param.data, alpha=weight_decay)
+
+                if rotation_only and embedding_dim and param.data.ndim >= 1:
+                    axes = [idx for idx, dim in enumerate(param.data.shape) if dim == embedding_dim]
+                    if not axes:
+                        param.data.add_(grad, alpha=-lr)
+                        continue
+
+                    axis = axes[-1]
+                    data_view = param.data.movedim(axis, -1)
+                    grad_view = grad.movedim(axis, -1)
+
+                    flat_data = data_view.reshape(-1, embedding_dim)
+                    flat_grad = grad_view.reshape(-1, embedding_dim)
+
+                    norms = flat_data.norm(dim=-1, keepdim=True).clamp_min(eps)
+                    inv_sq_norm = norms.pow(-2)
+                    radial_component = (flat_grad * flat_data).sum(dim=-1, keepdim=True) * inv_sq_norm
+                    tangent_grad = flat_grad - radial_component * flat_data
+
+                    flat_data.add_(tangent_grad, alpha=-lr)
+
+                    new_norms = flat_data.norm(dim=-1, keepdim=True).clamp_min(eps)
+                    flat_data.mul_(norms / new_norms)
+
+                    updated = flat_data.reshape_as(data_view).movedim(-1, axis)
+                    param.data.copy_(updated)
+                else:
+                    param.data.add_(grad, alpha=-lr)
+
+        return loss
+
+
 ## Variance Adaptive LR
 class VarianceAdaptiveLR(Optimizer):
     def __init__(self, params, lr=1e-3, beta=0.9, eps=1e-8, weight_decay=0.0):
@@ -1579,6 +1656,21 @@ def _muon(param_groups, args):
     return opt_class(param_groups)
 
 
+def _rotation_only(param_groups, args):
+    embedding_dim = getattr(args, "rotation_embedding_dim", None)
+    if embedding_dim is None:
+        embedding_dim = getattr(args, "n_embd", None)
+    eps = getattr(args, "rotation_eps", 1e-8)
+    weight_decay = getattr(args, "opt_weight_decay", 0.0)
+    return RotationOnlyOptimizer(
+        param_groups,
+        lr=args.learning_rate,
+        embedding_dim=embedding_dim,
+        eps=eps,
+        weight_decay=weight_decay,
+    )
+
+
 optimizer_dictionary: dict[str, callable] = {
     # From pytorch
     "sgd": _sgd,
@@ -1602,6 +1694,7 @@ optimizer_dictionary: dict[str, callable] = {
     "lambdiff": _lambdiff,
     "adamod_diffgrad": _adamod_diffgrad,
     "muon": _muon,
+    "rotation_only": _rotation_only,
     # community contributed
     "lion": _lion,
     # from adabelief_pytorch
