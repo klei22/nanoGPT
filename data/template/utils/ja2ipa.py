@@ -1,9 +1,10 @@
-# ja2ipa.py
+#!/usr/bin/env python3
+# ja2ipa_io.py
 import argparse
 import json
 import sys
 from collections import OrderedDict
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List, Dict, Any
 
 from tqdm import tqdm
 import pykakasi.kakasi as kakasi
@@ -406,7 +407,6 @@ def mecab_spaced_reading(text: str) -> Tuple[Optional[str], Optional[str], Optio
     spaced_for_hira = " ".join(tokens_for_hira)
     pos_tags = " ".join(pos_tokens)
     spaced_hira_subbed = to_hiragana(spaced_for_hira)
-    # spaced_hira_original is computed here if needed later.
     spaced_hira_original = to_hiragana(spaced_original)
 
     return spaced_original, spaced_hira_subbed, spaced_hira_original, pos_tags
@@ -415,9 +415,7 @@ def mecab_spaced_reading(text: str) -> Tuple[Optional[str], Optional[str], Optio
 # ========== 3) spaCy Morphological Tokenization ==========
 _spacy_nlp = None
 def load_spacy_japanese():
-    """
-    Lazy-load the spaCy model. Requires 'ja_core_news_sm' or similar to be installed.
-    """
+    """Lazy-load the spaCy model. Requires 'ja_core_news_sm' or similar to be installed."""
     global _spacy_nlp
     if _spacy_nlp is None:
         _spacy_nlp = spacy.load("ja_core_news_sm")
@@ -461,9 +459,7 @@ def spacy_spaced_reading(text: str) -> Tuple[Optional[str], Optional[str], Optio
 
 # ========== 4) Unified "get spaced reading" function ==========
 def get_spaced_reading(text: str, method: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """
-    Return (spaced_original, spaced_hira_subbed, spaced_hira_original, pos_tags) using the chosen method.
-    """
+    """Return (spaced_original, spaced_hira_subbed, spaced_hira_original, pos_tags) using the chosen method."""
     if method == "mecab":
         return mecab_spaced_reading(text)
     elif method == "spacy":
@@ -472,28 +468,56 @@ def get_spaced_reading(text: str, method: str) -> Tuple[Optional[str], Optional[
         return None, None, None, None
 
 
-# ========== 5) Main Processing Logic ==========
+# ========== 5) Output Writers ==========
+def write_json_array(output_file: str, out_array: List[Dict[str, Any]]) -> None:
+    with open(output_file, "w", encoding="utf-8") as fout:
+        json.dump(out_array, fout, ensure_ascii=False, indent=4)
+
+def write_text_output(
+    output_file: str,
+    out_array: List[Dict[str, Any]],
+    field: str = "spaced_ipa",
+    include_sentence: bool = True,
+    sep: str = "\t"
+) -> None:
+    """
+    Write a plain-text file, one line per entry.
+    Default format: "<sentence>\\t<field>"
+    """
+    with open(output_file, "w", encoding="utf-8") as fout:
+        for obj in out_array:
+            sent = obj.get("sentence", "")
+            val = obj.get(field, "")
+            if include_sentence:
+                fout.write(f"{sent}{sep}{val}\n")
+            else:
+                fout.write(f"{val}\n")
+
+
+# ========== 6) Main Processing Logic ==========
 def process_japanese_text(
     input_file: str,
     output_file: str,
     json_inplace_update: bool = False,
     use_mecab: bool = False,
     use_spacy: bool = False,
+    output_text: bool = False,
+    text_field: str = "spaced_ipa",
+    text_include_sentence: bool = True,
+    text_sep: str = "\t",
 ):
     """
     Processes Japanese text to IPA.
-    
-    Whether the input is a JSON array (with each object having a "sentence" field) or plain text (one sentence per line),
-    the output is a valid JSON array. Each output object has the following fields:
-      - sentence             : original sentence
-      - unspaced_ipa         : IPA conversion of the unspaced (raw) Hiragana reading
-      - spaced_original      : original sentence with morphological tokenization (tokens joined by spaces)
-      - spaced_hira_subbed   : tokenized sentence (with "は" overridden to "わ") in Hiragana
-      - pos_tags             : space-separated part-of-speech tags
-      - spaced_ipa           : IPA conversion of the spaced reading
+
+    INPUT MODES (same defaults as original):
+      - If json_inplace_update=True: treat input as JSON array with "sentence" fields.
+      - Else: treat input as plain text (one sentence per line).
+
+    OUTPUT MODES (new):
+      - Default (unchanged): write JSON array to output_file
+      - If output_text=True: write plain text to output_file using selected field(s)
     """
     # Decide morphological method:
-    morph_method = None
     if use_mecab and use_spacy:
         print("Error: Please choose either MeCab or spaCy, not both.")
         sys.exit(1)
@@ -504,20 +528,23 @@ def process_japanese_text(
     else:
         morph_method = None
 
-    # If input is JSON, process as JSON array.
+    out_array: List[Dict[str, Any]] = []
+
     if json_inplace_update:
+        # JSON input: process as JSON array.
         try:
             with open(input_file, "r", encoding="utf-8") as fin:
                 data = json.load(fin)
-            out_array = []
+
             for entry in tqdm(data, desc="Processing JSON entries"):
                 if "sentence" not in entry:
                     continue
+
                 original_text = entry["sentence"]
-                # Compute unspaced IPA:
                 hira_unspaced = to_hiragana(original_text)
                 ipa_unspaced = hiragana_to_ipa(hira_unspaced)
-                out_obj = {
+
+                out_obj: Dict[str, Any] = {
                     "sentence": original_text,
                     "unspaced_ipa": ipa_unspaced,
                     "spaced_original": "",
@@ -525,38 +552,46 @@ def process_japanese_text(
                     "pos_tags": "",
                     "spaced_ipa": ""
                 }
+
                 if morph_method is not None:
                     spaced_original, spaced_hira_subbed, _, pos_tags = get_spaced_reading(original_text, morph_method)
-                    out_obj["spaced_original"]    = spaced_original if spaced_original is not None else ""
-                    out_obj["spaced_hira_subbed"]   = spaced_hira_subbed if spaced_hira_subbed is not None else ""
-                    out_obj["pos_tags"]             = pos_tags if pos_tags is not None else ""
+                    out_obj["spaced_original"] = spaced_original if spaced_original is not None else ""
+                    out_obj["spaced_hira_subbed"] = spaced_hira_subbed if spaced_hira_subbed is not None else ""
+                    out_obj["pos_tags"] = pos_tags if pos_tags is not None else ""
+
                     ipa_spaced = ""
-                    if spaced_hira_subbed:
-                        ipa_spaced = hiragana_to_ipa(spaced_hira_subbed)
+                    if out_obj["spaced_hira_subbed"]:
+                        ipa_spaced = hiragana_to_ipa(out_obj["spaced_hira_subbed"])
                     out_obj["spaced_ipa"] = ipa_spaced
+
                 out_array.append(out_obj)
-            with open(output_file, "w", encoding="utf-8") as fout:
-                json.dump(out_array, fout, ensure_ascii=False, indent=4)
+
         except FileNotFoundError:
             print(f"Error: Input file '{input_file}' not found.")
+            return
         except json.JSONDecodeError:
             print(f"Error: Invalid JSON format in '{input_file}'.")
+            return
         except Exception as e:
             print(f"An error occurred: {e}")
+            return
+
     else:
         # Plain text input: each non-blank line is treated as a sentence.
         try:
             with open(input_file, "r", encoding="utf-8") as fin:
                 lines = fin.readlines()
-            out_array = []
+
             for line in tqdm(lines, desc="Processing lines"):
                 line = line.strip()
                 if not line:
                     continue
+
                 original_text = line
                 hira_unspaced = to_hiragana(original_text)
                 ipa_unspaced = hiragana_to_ipa(hira_unspaced)
-                out_obj = {
+
+                out_obj: Dict[str, Any] = {
                     "sentence": original_text,
                     "unspaced_ipa": ipa_unspaced,
                     "spaced_original": "",
@@ -564,42 +599,101 @@ def process_japanese_text(
                     "pos_tags": "",
                     "spaced_ipa": ""
                 }
+
                 if morph_method is not None:
                     spaced_original, spaced_hira_subbed, _, pos_tags = get_spaced_reading(original_text, morph_method)
-                    out_obj["spaced_original"]    = spaced_original if spaced_original is not None else ""
-                    out_obj["spaced_hira_subbed"]   = spaced_hira_subbed if spaced_hira_subbed is not None else ""
-                    out_obj["pos_tags"]             = pos_tags if pos_tags is not None else ""
+                    out_obj["spaced_original"] = spaced_original if spaced_original is not None else ""
+                    out_obj["spaced_hira_subbed"] = spaced_hira_subbed if spaced_hira_subbed is not None else ""
+                    out_obj["pos_tags"] = pos_tags if pos_tags is not None else ""
+
                     ipa_spaced = ""
-                    if spaced_hira_subbed:
-                        ipa_spaced = hiragana_to_ipa(spaced_hira_subbed)
+                    if out_obj["spaced_hira_subbed"]:
+                        ipa_spaced = hiragana_to_ipa(out_obj["spaced_hira_subbed"])
                     out_obj["spaced_ipa"] = ipa_spaced
+
                 out_array.append(out_obj)
-            with open(output_file, "w", encoding="utf-8") as fout:
-                json.dump(out_array, fout, ensure_ascii=False, indent=4)
+
         except FileNotFoundError:
             print(f"Error: Input file '{input_file}' not found.")
+            return
         except Exception as e:
             print(f"An error occurred: {e}")
+            return
+
+    # OUTPUT (default unchanged: JSON)
+    if output_text:
+        write_text_output(
+            output_file=output_file,
+            out_array=out_array,
+            field=text_field,
+            include_sentence=text_include_sentence,
+            sep=text_sep
+        )
+    else:
+        write_json_array(output_file=output_file, out_array=out_array)
 
 
-# ========== 6) Command-Line Entry Point ==========
+# ========== 7) Command-Line Entry Point ==========
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Convert JP text to IPA with morphological spacing and POS tagging. "
-                    "Output is a JSON array with fields: sentence, unspaced_ipa, spaced_original, spaced_hira_subbed, pos_tags, spaced_ipa."
+        description=(
+            "Convert JP text to IPA with optional morphological spacing and POS tagging.\n"
+            "DEFAULT behavior matches original: input may be JSON (-j) or plain text, output is JSON array.\n"
+            "NEW: you can output plain text with --text_output."
+        )
     )
-    parser.add_argument("input_file", nargs="?", default="input.txt",
-                        help="Path to the input file (JSON array with 'sentence' fields or plain text).")
-    parser.add_argument("output_file", nargs="?", default="output.json",
-                        help="Path to the output JSON file.")
+    parser.add_argument(
+        "input_file",
+        nargs="?",
+        default="input.txt",
+        help="Path to the input file (JSON array with 'sentence' fields if -j, otherwise plain text)."
+    )
+    parser.add_argument(
+        "output_file",
+        nargs="?",
+        default="output.json",
+        help="Path to the output file (JSON by default, or text with --text_output)."
+    )
 
-    parser.add_argument("-j", "--json_inplace_update", action="store_true",
-                        help="Treat input file as JSON and update each entry with IPA and POS fields.")
+    parser.add_argument(
+        "-j", "--json_inplace_update",
+        action="store_true",
+    )
+
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--use_mecab", action="store_true",
-                       help="Use MeCab for morphological tokenization (and forcing 'は' => 'わ').")
-    group.add_argument("--use_spacy", action="store_true",
-                       help="Use spaCy for morphological tokenization (and forcing 'は' => 'わ').")
+    group.add_argument(
+        "--use_mecab",
+        action="store_true",
+        help="Use MeCab for morphological tokenization (and forcing 'は' => 'わ')."
+    )
+    group.add_argument(
+        "--use_spacy",
+        action="store_true",
+        help="Use spaCy for morphological tokenization (and forcing 'は' => 'わ')."
+    )
+
+    # NEW OUTPUT MODE
+    parser.add_argument(
+        "--text_output",
+        action="store_true",
+        help="Write a plain-text output file (one line per sentence) instead of JSON."
+    )
+    parser.add_argument(
+        "--text_field",
+        default="spaced_ipa",
+        help="Which field to emit in --text_output mode (default: spaced_ipa). "
+             "Common choices: unspaced_ipa, spaced_ipa, spaced_hira_subbed, pos_tags."
+    )
+    parser.add_argument(
+        "--text_no_sentence",
+        action="store_true",
+        help="In --text_output mode, emit only the selected field (omit the original sentence)."
+    )
+    parser.add_argument(
+        "--text_sep",
+        default="\t",
+        help="Separator used between sentence and field in --text_output mode (default: tab)."
+    )
 
     args = parser.parse_args()
 
@@ -608,6 +702,10 @@ if __name__ == "__main__":
         output_file=args.output_file,
         json_inplace_update=args.json_inplace_update,
         use_mecab=args.use_mecab,
-        use_spacy=args.use_spacy
+        use_spacy=args.use_spacy,
+        output_text=args.text_output,
+        text_field=args.text_field,
+        text_include_sentence=(not args.text_no_sentence),
+        text_sep=args.text_sep,
     )
 
