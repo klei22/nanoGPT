@@ -26,7 +26,19 @@ named_static_groups:
     softmax_variant_attn: ["relu2max"]
     softmax_variant_output: ["relu2max"]
     disable_flash_attention: [true]
-    compile: [true]
+
+  - named_group: "rotary"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      use_abs_pos_embeddings: [false]
+  - named_group: "abs"
+    named_group_settings:
+      use_rotary_embeddings: [false]
+      use_abs_pos_embeddings: [true]
+  - named_group: "nope"
+    named_group_settings:
+      use_rotary_embeddings: [false]
+      use_abs_pos_embeddings: [false]
 
 # Higher Level Groupings
 named_variation_groups:
@@ -39,27 +51,35 @@ named_variation_groups:
     named_group_alternates:
       - "peri_ln_on"
       - "peri_ln_off"
+  - named_group: "position"
+    named_group_alternates:
+      - "abs"
+      - "rotary"
+      - "nope"
   - named_group: "activation_modes"
     parameter_groups:
       - activation_variant: ["gelu"]
       - activation_variant: ["squared_relu"]
+  - named_group: "precision"
+    parameter_groups:
+      - dtype: ["float16"]
+      - dtype: ["bfloat16"]
 
 # Common_group: parameters applied to every run, but omitted from run names
 common_group:
   dataset: ["shakespeare_char"]
-  n_layer: [2]
-  n_embd: [256]
-  n_head: [4]
-  block_size: [128]
-  batch_size: [8]
-  max_iters: [300]
-  eval_interval: [100]
+  n_layer: [6]
+  n_embd: [384]
+  n_head: [6]
+  block_size: [256]
+  batch_size: [64]
+  max_iters: [750]
+  eval_interval: [150]
   eval_iters: [50]
   device: ["cuda"]
-  dtype: ["bfloat16"]
   never_save_checkpoint: [true]
   sample_each_eval: [true]
-  max_sample_tokens: [64]
+  max_sample_tokens: [256]
   zeus_profile: [true]
   zeus_profile_gpu: [true]
 
@@ -70,3 +90,5 @@ parameter_groups:
       - "softmax_modes"
       - "peri_ln_modes"
       - "activation_modes"
+      - "position"
+      - "precision"
