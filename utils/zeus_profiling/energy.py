@@ -33,11 +33,16 @@ class ZeusEnergyProfiler:
         elif target == "cpu":
             resolved_gpu_indices = []
 
-        self._monitor = ZeusMonitor(
-            gpu_indices=resolved_gpu_indices,
-            cpu_indices=resolved_cpu_indices,
-            sync_execution_with=sync_execution_with,
-        )
+        try:
+            self._monitor = ZeusMonitor(
+                gpu_indices=resolved_gpu_indices,
+                cpu_indices=resolved_cpu_indices,
+                sync_execution_with=sync_execution_with,
+            )
+        except Exception as exc:
+            print(f"Zeus profiler failed to initialize: {exc}")
+            self.enabled = False
+            self._monitor = None
 
     def begin(self, window_name: str) -> None:
         if not self.enabled or self._monitor is None:
