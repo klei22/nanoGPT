@@ -5,6 +5,17 @@ import argparse
 import re
 import json
 
+WRAP_PREFIX = "[[[[["
+WRAP_SUFFIX = "]]]]]"
+
+
+def utf8_len(s: str) -> int:
+    return len(s.encode("utf-8"))
+
+
+def is_korean_token(token: str) -> bool:
+    return any('가' <= ch <= '힣' for ch in token)
+
 
 def transcribe_korean(sentence, wrapper=False):
     """Transcribe a Korean sentence into its phonemes using KoNLPy (Okt) + espeak-ng."""
@@ -25,7 +36,7 @@ def transcribe_korean(sentence, wrapper=False):
         # Check for failed transcription markers
         if "(en)" in transcription or "(ko)" in transcription:
             if wrapper:
-                return "[[[[[" + sentence + "]]]]]"
+                return f"{WRAP_PREFIX}{sentence}{WRAP_SUFFIX}"
             return sentence
 
         return transcription
@@ -37,40 +48,69 @@ def transcribe_korean(sentence, wrapper=False):
 
 def handle_mixed_language(word, wrapper=False):
     """Handle a word with potential Korean, other language, or number content."""
-    if word.isdigit():  # Detect numbers (pass through unchanged)
+    if word.isdigit():  # numbers pass through unchanged
         return word
-    elif any('가' <= char <= '힣' for char in word):  # Detect Korean
+    elif is_korean_token(word):
         return transcribe_korean(word, wrapper=wrapper)
-    else:  # Non-Korean word
+    else:  # Non-Korean
         if wrapper:
-            return "[[[[[" + word + "]]]]]"
+            return f"{WRAP_PREFIX}{word}{WRAP_SUFFIX}"
         return word
 
 
-def transcribe_plain_text(text, wrapper=False):
-    """Transcribe a plain text string into IPA, leaving non-Korean as-is (or wrapped)."""
-    result = []
+def transcribe_plain_text(
+    text,
+    wrapper=False,
+    stats=None,
+):
+    """
+    Transcribe a plain text string into IPA, leaving non-Korean as-is (or wrapped).
+
+    If stats dict is provided, it will be updated with:
+      - transcribed_bytes: UTF-8 bytes of ORIGINAL tokens that were transcribed (Korean tokens only)
+      - not_transcribed_bytes: UTF-8 bytes of ORIGINAL tokens not transcribed (includes Latin, digits, punctuation)
+    Counts are based on ORIGINAL tokens, so wrapper overhead is excluded automatically.
+    """
+    if stats is None:
+        stats = {}
+
+    stats.setdefault("transcribed_bytes", 0)
+    stats.setdefault("not_transcribed_bytes", 0)
+
+    out = []
     words = re.findall(r'\w+|[^\w\s]', text, re.UNICODE)
-    for word in words:
-        if re.match(r'\w+', word):
-            result.append(handle_mixed_language(word, wrapper=wrapper))
+    for tok in words:
+        tok_bytes = utf8_len(tok)
+
+        if re.match(r'\w+', tok):
+            if tok.isdigit():
+                stats["not_transcribed_bytes"] += tok_bytes
+            elif is_korean_token(tok):
+                stats["transcribed_bytes"] += tok_bytes
+            else:
+                stats["not_transcribed_bytes"] += tok_bytes
+
+            out.append(handle_mixed_language(tok, wrapper=wrapper))
         else:
-            result.append(word)
-    return " ".join(result)
+            # punctuation/symbols
+            stats["not_transcribed_bytes"] += tok_bytes
+            out.append(tok)
+
+    return " ".join(out)
 
 
-def transcribe_multilingual(sentences, input_json_key=None, output_json_key='ipa', wrapper=False):
+def transcribe_multilingual(sentences, input_json_key=None, output_json_key='ipa', wrapper=False, stats=None):
     """
     Transcribe multilingual sentences and update JSON data directly.
 
-    Args:
-        sentences: JSON string or a loaded JSON object.
-        input_json_key: Key to extract sentences from in a JSON.
-        output_json_key: Key to store IPA transcription in the JSON (default: 'ipa').
-
-    Returns:
-        The modified JSON string with IPA transcriptions added.
+    Returns the modified JSON string with IPA transcriptions added.
+    If stats dict is provided, it will be updated with byte coverage counts.
     """
+    if stats is None:
+        stats = {}
+    stats.setdefault("transcribed_bytes", 0)
+    stats.setdefault("not_transcribed_bytes", 0)
+
     try:
         data = json.loads(sentences) if isinstance(sentences, str) else sentences
         if not isinstance(data, list):
@@ -79,8 +119,8 @@ def transcribe_multilingual(sentences, input_json_key=None, output_json_key='ipa
         for item in data:
             if input_json_key in item:
                 sentence = item[input_json_key]
-                transcription_result = transcribe_plain_text(sentence, wrapper=wrapper)
-                item[output_json_key] = transcription_result  # Update directly
+                transcription_result = transcribe_plain_text(sentence, wrapper=wrapper, stats=stats)
+                item[output_json_key] = transcription_result
                 print(transcription_result)
             else:
                 print(f"Warning: Key '{input_json_key}' not found in item: {item}")
@@ -92,9 +132,39 @@ def transcribe_multilingual(sentences, input_json_key=None, output_json_key='ipa
     return json.dumps(data, ensure_ascii=False, indent=4)
 
 
+def finalize_and_print_stats(stats, stats_json_path=None):
+    transcribed = int(stats.get("transcribed_bytes", 0))
+    not_tx = int(stats.get("not_transcribed_bytes", 0))
+    total = transcribed + not_tx
+    pct_tx = (transcribed / total * 100.0) if total else 0.0
+    pct_not = (not_tx / total * 100.0) if total else 0.0
+
+    out_stats = {
+        "transcribed_bytes": transcribed,
+        "not_transcribed_bytes": not_tx,
+        "total_bytes": total,
+        "pct_transcribed": pct_tx,
+        "pct_not_transcribed": pct_not,
+    }
+
+    print("\n=== Byte Coverage Stats (based on ORIGINAL tokens) ===")
+    print(f"Transcribed bytes      : {out_stats['transcribed_bytes']}")
+    print(f"Not transcribed bytes  : {out_stats['not_transcribed_bytes']}")
+    print(f"Total bytes (counted)  : {out_stats['total_bytes']}")
+    print(f"% transcribed          : {out_stats['pct_transcribed']:.2f}%")
+    print(f"% not transcribed      : {out_stats['pct_not_transcribed']:.2f}%")
+
+    if stats_json_path:
+        with open(stats_json_path, "w", encoding="utf-8") as sf:
+            json.dump(out_stats, sf, ensure_ascii=False, indent=2)
+        print(f"Stats JSON written to: {stats_json_path}")
+
+    return out_stats
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Transcribe multilingual text or JSON into IPA phonemes (Korean via espeak-ng).'
+        description='Transcribe multilingual text or JSON into IPA phonemes (Korean via espeak-ng), with byte coverage stats.'
     )
 
     parser.add_argument(
@@ -132,10 +202,19 @@ def main():
         "--wrapper",
         default=False,
         action=argparse.BooleanOptionalAction,
-        help="Wrap unparseable text with [[[[[square brackets]]]]], for later recovery."
+        help="Wrap unparseable/non-target tokens with [[[[[...]]]]]. Use --no-wrapper to leave them unchanged."
+    )
+
+    parser.add_argument(
+        "--stats_json",
+        type=str,
+        default=None,
+        help="Optional: write byte coverage stats as JSON to this path (in addition to printing)."
     )
 
     args = parser.parse_args()
+
+    stats = {"transcribed_bytes": 0, "not_transcribed_bytes": 0}
 
     try:
         with open(args.input_file, 'r', encoding='utf-8') as f:
@@ -145,7 +224,8 @@ def main():
         if args.text_input:
             transcription = transcribe_plain_text(
                 input_content,
-                wrapper=args.wrapper
+                wrapper=args.wrapper,
+                stats=stats
             )
 
             if args.text_output:
@@ -164,11 +244,11 @@ def main():
                 input_content,
                 args.input_json_key,
                 args.output_json_key,
-                wrapper=args.wrapper
+                wrapper=args.wrapper,
+                stats=stats
             )
 
             if updated_json_data:
-                # Default behavior: overwrite original JSON
                 if args.text_output:
                     with open(args.text_output, 'w', encoding='utf-8') as f:
                         f.write(updated_json_data)
@@ -177,6 +257,8 @@ def main():
                     with open(args.input_file, 'w', encoding='utf-8') as f:
                         f.write(updated_json_data)
                     print(f"Successfully updated JSON data in '{args.input_file}'")
+
+        finalize_and_print_stats(stats, stats_json_path=args.stats_json)
 
     except FileNotFoundError:
         print(f"Error: Input file '{args.input_file}' not found.")
