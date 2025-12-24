@@ -26,6 +26,16 @@ named_static_groups:
     softmax_variant_attn: ["relu2max"]
     softmax_variant_output: ["relu2max"]
     disable_flash_attention: [true]
+  - named_group: "relu2max_no_flash_compiled"
+    softmax_variant_attn: ["relu2max"]
+    softmax_variant_output: ["relu2max"]
+    disable_flash_attention: [true]
+    compile: [true]
+  - named_group: "strongermax"
+    softmax_variant_attn: ["strongermax"]
+    softmax_variant_output: ["strongermax"]
+    disable_flash_attention: [true]
+    compile: [true]
 
   - named_group: "rotary"
     named_group_settings:
@@ -47,6 +57,8 @@ named_variation_groups:
       - "softmax_flash_compiled"
       - "softmax_no_flash"
       - "relu2max_no_flash"
+      - "relu2max_no_flash_compiled"
+      - "strongermax"
   - named_group: "peri_ln_modes"
     named_group_alternates:
       - "peri_ln_on"
@@ -67,15 +79,15 @@ named_variation_groups:
 
 # Common_group: parameters applied to every run, but omitted from run names
 common_group:
-  dataset: ["shakespeare_char"]
+  dataset: ["minipile"]
   n_layer: [6]
   n_embd: [384]
   n_head: [6]
   block_size: [256]
   batch_size: [64]
-  max_iters: [750]
-  eval_interval: [150]
-  eval_iters: [50]
+  max_iters: [10000]
+  eval_interval: [1000]
+  eval_iters: [100]
   device: ["cuda"]
   never_save_checkpoint: [true]
   sample_each_eval: [true]
