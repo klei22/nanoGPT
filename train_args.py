@@ -1348,7 +1348,13 @@ def parse_args():
     # Zeus energy profiling
     logging_group.add_argument('--zeus_profile', default=False, action=argparse.BooleanOptionalAction, help='Enable Zeus energy profiling')
     logging_group.add_argument('--zeus_profile_target', default='gpu', choices=['gpu', 'cpu'], help='Zeus profiling target')
-    logging_group.add_argument('--zeus_gpu_indices', type=int, nargs='+', default=None, help='GPU indices to profile with Zeus')
+    logging_group.add_argument(
+        '--zeus_gpu_indices',
+        type=int,
+        nargs='+',
+        default=None,
+        help='GPU indices to profile with Zeus (e.g., --zeus_gpu_indices 0 or --zeus_gpu_indices 0 1).',
+    )
     logging_group.add_argument('--zeus_cpu_indices', type=int, nargs='+', default=None, help='CPU indices to profile with Zeus')
 
     # Turn activation/weight statistics off to save CPU RAM and wall time.

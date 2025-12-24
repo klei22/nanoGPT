@@ -1,0 +1,24 @@
+# energy_metrics_demo.yaml
+---
+
+common_group:
+  dataset: ["shakespeare_char"]
+  out_dir: ["out/energy_metrics_demo"]
+  block_size: [256]
+  batch_size: [12]
+  n_layer: [4]
+  n_head: [4]
+  n_embd: [256]
+  max_iters: [200]
+  eval_interval: [50]
+  eval_iters: [50]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  zeus_profile: [true]
+  zeus_profile_target: ["gpu"]
+  zeus_gpu_indices: [[0]]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  - learning_rate: [6e-4, 3e-4]
+    weight_decay: [0.1]
