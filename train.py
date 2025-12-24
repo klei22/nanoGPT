@@ -46,6 +46,7 @@ from utils.model_stats import (
     compute_activation_stats,
     print_model_stats_table,
 )
+from utils.zeus_profiling import ZeusEnergyProfiler
 
 from sample import (
     sample_with_existing_model,
@@ -107,6 +108,9 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+        self.aepi_gpu: float = float("nan")
+        self._gpu_energy_total_j: float = 0.0
+        self._gpu_energy_iters: int = 0
 
         # track latest evaluation metrics for progress bar
         self.latest_top1_prob = float('nan')
@@ -243,6 +247,28 @@ class Trainer:
 
         self.ptdtype = {"bfloat16" : torch.bfloat16, "float16" : torch.float16, "float32" : torch.float32}[self.args.dtype]
         self.ctx = nullcontext() if self.device_type == 'cpu' else torch.amp.autocast(device_type=self.device_type, dtype=self.ptdtype)
+
+        zeus_gpu_indices = self.args.zeus_gpu_indices
+        if (
+            self.args.zeus_profile
+            and self.args.zeus_profile_target == "gpu"
+            and zeus_gpu_indices is None
+            and self.device_type == "cuda"
+        ):
+            if self.ddp:
+                zeus_gpu_indices = [self.ddp_local_rank]
+            elif ":" in str(self.device):
+                zeus_gpu_indices = [int(str(self.device).split(":")[1])]
+            else:
+                zeus_gpu_indices = [torch.cuda.current_device()]
+
+        self.zeus_profiler = ZeusEnergyProfiler(
+            enabled=self.args.zeus_profile,
+            target=self.args.zeus_profile_target,
+            gpu_indices=zeus_gpu_indices,
+            cpu_indices=self.args.zeus_cpu_indices,
+            sync_execution_with="torch",
+        )
 
         # Model settings
         # TODO only add if they are defined from the argparse
@@ -1357,6 +1383,8 @@ class Trainer:
 
             self.writer.add_scalar(f"{target_dataset}/vram", self.vram_allocated, self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/mfu_pct", running_mfu * 100, self.iter_num)
+            if not math.isnan(self.aepi_gpu):
+                self.writer.add_scalar(f"{target_dataset}/aepi_gpu", self.aepi_gpu, self.iter_num)
 
             self.writer.add_scalar(f"{target_dataset}/loss_vocab", self.model_args['vocab_size'] / torch.exp(losses['val']).item(), self.iter_num)
 
@@ -1658,6 +1686,7 @@ class Trainer:
                             f"{chance_ratio/self.model.num_param:.3e}",
                             f"{peak_mb:.1f}",
                             f"{self.iter_latency_avg:.1f}",
+                            f"{self.aepi_gpu:.6f}",
                             f"{self.latest_top1_prob:.6f}",
                             f"{self.latest_top1_correct:.6f}",
                             f"{self.latest_target_rank:.2f}",
@@ -1859,6 +1888,8 @@ class Trainer:
                 if self.args.eval_only:
                     break
 
+                if self.zeus_profiler.enabled and self.args.zeus_profile_target == "gpu":
+                    self.zeus_profiler.begin("train_iter")
 
                 for micro_step in range(self.args.gradient_accumulation_steps):
                     if self.ddp:
@@ -1979,6 +2010,14 @@ class Trainer:
 
                 self.optimizer.zero_grad(set_to_none=True)
 
+                if self.zeus_profiler.enabled and self.args.zeus_profile_target == "gpu":
+                    measurement = self.zeus_profiler.end("train_iter")
+                    iter_energy = ZeusEnergyProfiler.total_energy_joules(measurement)
+                    if iter_energy is not None:
+                        self._gpu_energy_total_j += iter_energy
+                        self._gpu_energy_iters += 1
+                        self.aepi_gpu = self._gpu_energy_total_j / self._gpu_energy_iters
+
                 t1 = time.time()
                 dt = t1 - t0
                 t0 = t1
@@ -2086,4 +2125,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
