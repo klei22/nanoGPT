@@ -231,6 +231,7 @@ class MonitorApp(App):
             "num_params",
             "peak_gpu_mb",
             "iter_latency_avg",
+            "avg_joules_inf",
             "avg_top1_prob",
             "avg_top1_correct",
             "avg_target_rank",
