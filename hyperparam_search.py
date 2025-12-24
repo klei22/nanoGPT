@@ -249,7 +249,8 @@ def main():
         base_params = last["baseline_metrics"]["params"]
         base_gpu = last["baseline_metrics"].get("peak_gpu_mb", 0.0)
         base_iter_ms = last["baseline_metrics"].get("iter_latency_avg", 0.0)
-        cur_iter = last["iter"] + 1
+        base_best_iter = last["baseline_metrics"].get("best_iter", 0)
+        cur_iter = last["iter"] + (1 if "chosen" in last else 0)
         # Apply overrides to the resumed configuration for the current session
         _apply_overrides_to_active_config(baseline_cfg, args.override_cfg, "resumed baseline_cfg")
     else:
@@ -283,8 +284,37 @@ def main():
     # ── outer greedy loop ─────────────────────────────────────
     while cur_iter < args.num_iterations:
         print(f"========== Iteration {cur_iter} ==========")
-        candidates: List[Dict[str, Any]] = []
+        if not (log["iterations"] and log["iterations"][-1]["iter"] == cur_iter and "chosen" not in log["iterations"][-1]):
+            log["iterations"].append(
+                {
+                    "iter": cur_iter,
+                    "baseline_metrics": {
+                        "loss": base_loss,
+                        "score": base_score,
+                        "params": base_params,
+                        "peak_gpu_mb": base_gpu,
+                        "iter_latency_avg": base_iter_ms,
+                        "best_iter": base_best_iter,
+                    },
+                    "baseline_config_after": deepcopy(baseline_cfg),
+                    "candidates": [],
+                }
+            )
+            save_log(log_path, log)
+        iteration_block = log["iterations"][-1]
+        candidates = iteration_block["candidates"]
         best_choice: Tuple[float, Dict[str, Any]] | None = None
+        for cand in candidates:
+            if len(cand.get("seeds", [])) < args.random_iterations:
+                continue
+            eff = cand.get("efficiency", 0)
+            if eff > 0:
+                if best_choice is None or (eff > best_choice[0]) or (
+                    math.isinf(eff)
+                    and eff == best_choice[0]
+                    and cand.get("delta_score", 0) > best_choice[1].get("delta_score", 0)
+                ):
+                    best_choice = (eff, cand)
 
         for pname in args.param_names:
             if pname not in baseline_cfg:
@@ -302,47 +332,68 @@ def main():
             def _evaluate(cfg_template: Dict[str, Any],
                           label_for_log: str,
                           value_for_log: Any) -> None:
-                """
-                Run one candidate (possibly several seeds) and record its
-                performance into the surrounding `candidates` / `best_choice`
-                variables (declared in the parent scope).
-                """
+                """Run one candidate, saving progress after each train.py call."""
                 nonlocal best_choice, candidates
 
-                seed0     = cfg_template.get("seed", 1337)
-                seed_runs = []
-                scores    = []
+                seed0 = cfg_template.get("seed", 1337)
+                # retrieve or create candidate entry in log
+                cand = next(
+                    (
+                        c
+                        for c in candidates
+                        if c.get("param") == label_for_log and c.get("value") == value_for_log
+                    ),
+                    None,
+                )
+                if cand is None:
+                    cand = {"param": label_for_log, "value": value_for_log, "seeds": []}
+                    candidates.append(cand)
+                    save_log(log_path, log)
 
+                # run missing seeds
                 for r in range(args.random_iterations):
-                    cfg_run        = deepcopy(cfg_template)
-                    cfg_run["seed"] = seed0 + r
+                    seed = seed0 + r
+                    if any(s.get("seed") == seed for s in cand["seeds"]):
+                        print(f"[SKIP] {label_for_log}={value_for_log}  seed={seed}")
+                        continue
 
-                    print(f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}")
+                    cfg_run = deepcopy(cfg_template)
+                    cfg_run["seed"] = seed
+                    print(f"[TEST] {label_for_log}={value_for_log}  seed={seed}")
                     try:
                         loss, nparam, best_it, peak_mb, iter_ms = run_fn(cfg_run)
                     except Exception as exc:
                         print("   ⚠", exc)
-                        return                                      # discard this candidate
+                        return
 
                     score = 1.0 / math.exp(loss)
-                    seed_runs.append({
-                                      "seed": cfg_run["seed"],
-                                      "loss": loss,
-                                      "score": score,
-                                      "best_iter": best_it,
-                                      "peak_gpu_mb": peak_mb,
-                                      "iter_latency_ms": iter_ms})
-                    scores.append(score)
+                    cand["seeds"].append(
+                        {
+                            "seed": seed,
+                            "loss": loss,
+                            "score": score,
+                            "best_iter": best_it,
+                            "peak_gpu_mb": peak_mb,
+                            "iter_latency_ms": iter_ms,
+                        }
+                    )
+                    cand["num_params"] = nparam
+                    save_log(log_path, log)
 
-                # ── aggregate across seeds ───────────────────────────────────
-                avg_score  = sum(scores) / len(scores)
-                avg_peak   = sum(s["peak_gpu_mb"] for s in seed_runs) / len(seed_runs)
-                avg_iter   = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
-                avg_loss   = -math.log(avg_score)
-                d_score    = avg_score - base_score
-                d_param    = nparam     - base_params
-                d_vram     = avg_peak   - base_gpu
-                d_iter     = avg_iter   - base_iter_ms
+                if not cand["seeds"]:
+                    return
+
+                # aggregate results from recorded seeds
+                scores = [s["score"] for s in cand["seeds"]]
+                avg_score = sum(scores) / len(scores)
+                avg_peak = sum(s["peak_gpu_mb"] for s in cand["seeds"]) / len(cand["seeds"])
+                avg_iter = sum(s["iter_latency_ms"] for s in cand["seeds"]) / len(cand["seeds"])
+                avg_loss = -math.log(avg_score)
+                nparam = cand.get("num_params", 0.0)
+                d_score = avg_score - base_score
+                d_param = nparam - base_params
+                d_vram = avg_peak - base_gpu
+                d_iter = avg_iter - base_iter_ms
 
                 if args.efficiency_target == "params":
                     d_cost = d_param
@@ -355,33 +406,33 @@ def main():
 
                 eff = (d_score / d_cost) if d_cost != 0 else (math.inf if d_score > 0 else 0.0)
 
-                cand = {
-                    "param":         label_for_log,
-                    "value":         value_for_log,
-                    "avg_loss":      avg_loss,
-                    "avg_score":     avg_score,
-                    "best_val_loss": avg_loss,
-                    "best_iter":     max(s["best_iter"] for s in seed_runs),
-                    "num_params":    nparam,
-                    "peak_gpu_mb":   avg_peak,
-                    "iter_latency_avg": avg_iter,
-                    "delta_score":   d_score,
-                    "delta_params":  d_param,
-                    "delta_vram":    d_vram,
-                    "delta_iter_latency": d_iter,
-                    "efficiency":    eff,
-                    "seeds":         seed_runs,
-                }
-                candidates.append(cand)
+                cand.update(
+                    {
+                        "avg_loss": avg_loss,
+                        "avg_score": avg_score,
+                        "best_val_loss": avg_loss,
+                        "best_iter": max(s["best_iter"] for s in cand["seeds"]),
+                        "peak_gpu_mb": avg_peak,
+                        "iter_latency_avg": avg_iter,
+                        "delta_score": d_score,
+                        "delta_params": d_param,
+                        "delta_vram": d_vram,
+                        "delta_iter_latency": d_iter,
+                        "efficiency": eff,
+                    }
+                )
+                save_log(log_path, log)
 
-                # keep global best
-                if eff > 0:
+                if len(cand["seeds"]) == args.random_iterations and eff > 0:
                     if best_choice is None:
                         best_choice = (eff, cand)
                     else:
                         old_eff, old_cand = best_choice
-                        if (eff > old_eff) or (math.isinf(eff) and eff == old_eff
-                                               and cand["delta_score"] > old_cand["delta_score"]):
+                        if (eff > old_eff) or (
+                            math.isinf(eff)
+                            and eff == old_eff
+                            and cand.get("delta_score", 0) > old_cand.get("delta_score", 0)
+                        ):
                             best_choice = (eff, cand)
 
 
@@ -460,33 +511,50 @@ def main():
                 current_max_iters = baseline_cfg.get("max_iters")
                 if current_max_iters is not None:
                     new_max_iters = current_max_iters + args.max_iters_increase
-                    print(f"[ACTION] No positive-efficiency candidate. Increasing 'max_iters' from {current_max_iters} to {new_max_iters}.")
+                    print(
+                        f"[ACTION] No positive-efficiency candidate. Increasing 'max_iters' from {current_max_iters} to {new_max_iters}."
+                    )
                     baseline_cfg["max_iters"] = new_max_iters
-                    # Log the change to the baseline config for this iteration
-                    log["iterations"].append(
+                    iteration_block.update(
                         {
-                            "iter": cur_iter,
+                            "candidates": candidates,
+                            "chosen": None,
+                            "action": f"max_iters_increased_to_{new_max_iters}",
                             "baseline_metrics": {
-                                "loss": base_loss, # Keep current baseline metrics
+                                "loss": base_loss,
                                 "score": base_score,
                                 "params": base_params,
                                 "peak_gpu_mb": base_gpu,
                                 "iter_latency_avg": base_iter_ms,
-                                "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
+                                "best_iter": base_best_iter,
                             },
-                            "candidates": candidates, # Log candidates for this unproductive iteration
-                            "chosen": None, # Indicate no candidate was chosen for this iteration
-                            "action": f"max_iters_increased_to_{new_max_iters}", # Custom action field
                             "baseline_config_after": deepcopy(baseline_cfg),
                         }
                     )
                     save_log(log_path, log)
-                    cur_iter += 1 # Advance iteration as an action was taken
-                    continue # Continue to the next outer loop iteration
+                    cur_iter += 1
+                    continue
                 else:
-                    print(f"Warning: --max_iters_increase specified, but 'max_iters' is not defined in the baseline config. Stopping.")
+                    print(
+                        f"Warning: --max_iters_increase specified, but 'max_iters' is not defined in the baseline config. Stopping."
+                    )
 
             print("No positive-efficiency candidate — stopping.")
+            iteration_block.update(
+                {
+                    "candidates": candidates,
+                    "chosen": None,
+                    "baseline_metrics": {
+                        "loss": base_loss,
+                        "score": base_score,
+                        "params": base_params,
+                        "peak_gpu_mb": base_gpu,
+                        "iter_latency_avg": base_iter_ms,
+                        "best_iter": base_best_iter,
+                    },
+                    "baseline_config_after": deepcopy(baseline_cfg),
+                }
+            )
             log["stop_reason"] = "no_positive_efficiency"
             save_log(log_path, log)
             break
@@ -538,11 +606,13 @@ def main():
         base_params = chosen["num_params"]
         base_gpu = chosen.get("peak_gpu_mb", base_gpu)
         base_iter_ms = chosen.get("iter_latency_avg", base_iter_ms)
+        base_best_iter = chosen["best_iter"]
 
         # log block
-        log["iterations"].append(
+        iteration_block.update(
             {
-                "iter": cur_iter,
+                "candidates": candidates,
+                "chosen": chosen,
                 "baseline_metrics": {
                     "loss": base_loss,
                     "score": base_score,
@@ -551,8 +621,6 @@ def main():
                     "iter_latency_avg": base_iter_ms,
                     "best_iter": chosen["best_iter"],
                 },
-                "candidates": candidates,
-                "chosen": chosen,
                 "baseline_config_after": deepcopy(baseline_cfg),
             }
         )
