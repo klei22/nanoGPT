@@ -1,0 +1,72 @@
+# energy_efficiency_zeus.yaml
+---
+
+# Atomic Static Groupings
+named_static_groups:
+  - named_group: "qk_norm_scaled"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln_on"
+    use_peri_ln: [true]
+  - named_group: "peri_ln_off"
+    use_peri_ln: [false]
+
+  - named_group: "softmax_flash_compiled"
+    softmax_variant_attn: ["softmax"]
+    softmax_variant_output: ["softmax"]
+    disable_flash_attention: [false]
+    compile: [true]
+  - named_group: "softmax_no_flash"
+    softmax_variant_attn: ["softmax"]
+    softmax_variant_output: ["softmax"]
+    disable_flash_attention: [true]
+    compile: [true]
+  - named_group: "relu2max_no_flash"
+    softmax_variant_attn: ["relu2max"]
+    softmax_variant_output: ["relu2max"]
+    disable_flash_attention: [true]
+    compile: [true]
+
+# Higher Level Groupings
+named_variation_groups:
+  - named_group: "softmax_modes"
+    named_group_alternates:
+      - "softmax_flash_compiled"
+      - "softmax_no_flash"
+      - "relu2max_no_flash"
+  - named_group: "peri_ln_modes"
+    named_group_alternates:
+      - "peri_ln_on"
+      - "peri_ln_off"
+  - named_group: "activation_modes"
+    parameter_groups:
+      - activation_variant: ["gelu"]
+      - activation_variant: ["squared_relu"]
+
+# Common_group: parameters applied to every run, but omitted from run names
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: [2]
+  n_embd: [256]
+  n_head: [4]
+  block_size: [128]
+  batch_size: [8]
+  max_iters: [300]
+  eval_interval: [100]
+  eval_iters: [50]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  never_save_checkpoint: [true]
+  sample_each_eval: [true]
+  max_sample_tokens: [64]
+  zeus_profile: [true]
+  zeus_profile_gpu: [true]
+
+# Parameter_groups: define sets of overrides to apply on top of base params
+parameter_groups:
+  - named_group_static: ["qk_norm_scaled"]
+    named_group_variations:
+      - "softmax_modes"
+      - "peri_ln_modes"
+      - "activation_modes"
