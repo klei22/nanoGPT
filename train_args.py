@@ -1345,6 +1345,12 @@ def parse_args():
     logging_group.add_argument('--log_grad_std', default=False, action=argparse.BooleanOptionalAction, help='Log gradient std metrics')
     logging_group.add_argument('--log_all_metrics', default=False, action=argparse.BooleanOptionalAction, help='Enable logging of all metrics including gns')
 
+    # Zeus energy profiling
+    logging_group.add_argument('--zeus_profile', default=False, action=argparse.BooleanOptionalAction, help='Enable Zeus energy profiling')
+    logging_group.add_argument('--zeus_profile_target', default='gpu', choices=['gpu', 'cpu'], help='Zeus profiling target')
+    logging_group.add_argument('--zeus_gpu_indices', type=int, nargs='+', default=None, help='GPU indices to profile with Zeus')
+    logging_group.add_argument('--zeus_cpu_indices', type=int, nargs='+', default=None, help='CPU indices to profile with Zeus')
+
     # Turn activation/weight statistics off to save CPU RAM and wall time.
     training_group.add_argument(
         '--compute_model_stats',
@@ -1449,4 +1455,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-

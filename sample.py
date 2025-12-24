@@ -28,6 +28,7 @@ from torch.nn import functional as F
 
 from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
+from utils.zeus_profiling import ZeusEnergyProfiler
 from variations.model_variations import model_variation_dictionary
 
 from benchmarks import run_all
@@ -36,6 +37,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
     parser.add_argument("--device", type=str, default="cuda", help="Device to run inference (e.g., 'cpu', 'cuda', 'cuda:0', 'cuda:1')")
     parser.add_argument("--out_dir", type=str, default="out", help="Directory to load checkpoint from")
+    parser.add_argument('--zeus_profile', default=False, action=argparse.BooleanOptionalAction, help="Enable Zeus energy profiling")
+    parser.add_argument('--zeus_profile_target', default='gpu', choices=['gpu', 'cpu'], help="Zeus profiling target")
+    parser.add_argument('--zeus_gpu_indices', type=int, nargs='+', default=None, help="GPU indices to profile with Zeus")
+    parser.add_argument('--zeus_cpu_indices', type=int, nargs='+', default=None, help="CPU indices to profile with Zeus")
     parser.add_argument("--quantization_data_file", type=str, default=None, help="File name to export the quantized weights/activations, scale factor, and zero point")
     parser.add_argument("--init_from", type=str, default="resume", help="Either 'resume' (from an out_dir) or a GPT-2 variant (e.g., 'gpt2-xl')")
     parser.add_argument("--start", type=str, default="\n", help="Start text for generation. Can specify a file using 'FILE:prompt.txt'")
@@ -1147,6 +1152,26 @@ def main():
     ptdtype = {'bfloat16': torch.bfloat16, 'float16': torch.float16, 'float32': torch.float32}[args.dtype]
     ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
+    zeus_gpu_indices = args.zeus_gpu_indices
+    if (
+        args.zeus_profile
+        and args.zeus_profile_target == "gpu"
+        and zeus_gpu_indices is None
+        and device_type == "cuda"
+    ):
+        if ":" in args.device:
+            zeus_gpu_indices = [int(args.device.split(":")[1])]
+        else:
+            zeus_gpu_indices = [torch.cuda.current_device()]
+
+    zeus_profiler = ZeusEnergyProfiler(
+        enabled=args.zeus_profile,
+        target=args.zeus_profile_target,
+        gpu_indices=zeus_gpu_indices,
+        cpu_indices=args.zeus_cpu_indices,
+        sync_execution_with="torch",
+    )
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(args.out_dir, timestamp)
     os.makedirs(out_dir, exist_ok=True)
@@ -1326,6 +1351,9 @@ def main():
         )
         return
 
+    if zeus_profiler.enabled:
+        zeus_profiler.begin("inference")
+
     x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
     # Obtain vector from the specified layer and save it to a file if required
     if args.save_avg_vector:
@@ -1481,6 +1509,15 @@ def main():
                 dataset_idx=0,
                 )
 
+    if zeus_profiler.enabled:
+        measurement = zeus_profiler.end("inference")
+        total_energy = ZeusEnergyProfiler.total_energy_joules(measurement)
+        if measurement is not None and total_energy is not None:
+            measured_time = getattr(measurement, "time", None)
+            time_display = f", {measured_time:.4f} s" if measured_time is not None else ""
+            print(
+                f"Zeus {args.zeus_profile_target} energy: {total_energy:.4f} J{time_display}"
+            )
+
 if __name__ == "__main__":
     main()
-
