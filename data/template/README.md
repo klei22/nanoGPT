@@ -123,6 +123,12 @@ To visualize the CSV output:
 python3 visualize_whisper_mel_csv.py sample.csv --output sample.png
 ```
 
+To reconstruct a WAV file from the CSV (approximate inversion):
+
+```bash
+python3 mel_csv_to_wav.py sample.csv --output reconstructed.wav
+```
+
 #### Expected Value Range
 
 When `--mel_normalize` is enabled (default), values follow Whisper's log-mel
