@@ -541,6 +541,10 @@ def parse_args():
     model_group.add_argument('--use_peri_ln_mlp', default=None, action=argparse.BooleanOptionalAction, help="override peri-LN for MLP block")
     model_group.add_argument('--use_post_ln_attn', default=None, action=argparse.BooleanOptionalAction, help="override post-LN for attention block")
     model_group.add_argument('--use_post_ln_mlp', default=None, action=argparse.BooleanOptionalAction, help="override post-LN for MLP block")
+    model_group.add_argument('--use_dual_residual', default=False, action=argparse.BooleanOptionalAction,
+                             help="Enable ResiDual-style dual residual stream that combines pre- and post-layer normalized activations")
+    model_group.add_argument('--dual_residual_norm_variant', type=str, default=None,
+                             help="Normalization variant for the dual residual stream (defaults to norm_variant_output when omitted)")
     model_group.add_argument('--window_size', default=None, type=int, help="Sliding window size, note this cannot be greater than block size")
     model_group.add_argument('--gate', default=False, action=argparse.BooleanOptionalAction, help="option for gated attention see https://arxiv.org/abs/2306.12929")
     model_group.add_argument('--use_moe', default=False,  action=argparse.BooleanOptionalAction, help="option for Mixture of Experts (MoE) architecture")
