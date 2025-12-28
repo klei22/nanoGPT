@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: bash run_mel_csv_to_wav.sh mel.csv reconstructed.wav
+# Usage: bash mel_csv_to_wav.sh mel.csv reconstructed.wav
 
 CSV_PATH="${1:-mel.csv}"
 OUT_WAV="${2:-reconstructed.wav}"
