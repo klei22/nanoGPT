@@ -1,6 +1,7 @@
-# restructured-ntrex128 dataset setup
+# ntrex dataset setup
 
-This folder documents how to pull the multilingual `restructured-ntrex128` parquet files from Hugging Face and convert them into a tokenized dataset that matches the rest of the repository.
+This folder documents how to pull the multilingual `ntrex` parquet files convert
+them into a tokenized dataset that matches the rest of the repository.
 
 ## 1) Gather the raw parquet files
 
@@ -10,7 +11,7 @@ Use the provided `get_dataset.sh` script to download the parquet shards and flat
 bash get_dataset.sh
 ```
 
-The script currently pulls three English-like columns (`text_eng_Latn`, `text_eng-US_Latn`, and `text_eng-GB_Latn`) and prefixes each row with `#TEXT:\n` to keep splits visible in the final text file. Adjust the `include_keys`/`value_prefix` arrays in the script if you want to extract other languages from the parquet schema. The helper will download the parquet files, convert each to JSON, then emit the requested keys line-by-line into `input.txt`.
+The script currently pulls three English-like columns (`eng_Latn`, `kor_Hang`, and `zho_Hans`) and prefixes each row with `#EN:\n` to keep splits visible in the final text file. Adjust the `include_keys`/`value_prefix` arrays in the script if you want to extract other languages from the parquet schema. The helper will download the parquet files, convert each to JSON, then emit the requested keys line-by-line into `input.txt`.
 
 ## 2) Tokenize the text
 
