@@ -11,7 +11,7 @@ Use the provided `get_dataset.sh` script to download the parquet shards and flat
 bash get_dataset.sh
 ```
 
-The script currently pulls three English-like columns (`eng_Latn`, `kor_Hang`, and `zho_Hans`) and prefixes each row with `#EN:\n` to keep splits visible in the final text file. Adjust the `include_keys`/`value_prefix` arrays in the script if you want to extract other languages from the parquet schema. The helper will download the parquet files, convert each to JSON, then emit the requested keys line-by-line into `input.txt`.
+The script currently pulls four language columns (`eng_Latn`, `kor_Hang`, `zho_Hans`, and `jpn_Jpan`) and prefixes each row with `#EN:\n` to keep splits visible in the final text file. Adjust the `include_keys`/`value_prefix` arrays in the script if you want to extract other languages from the parquet schema. The helper will download the parquet files, convert each to JSON, then emit the requested keys line-by-line into `input.txt`.
 
 ## 2) Tokenize the text
 
