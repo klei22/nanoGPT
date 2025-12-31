@@ -28,7 +28,7 @@ This produces `train.bin`, `val.bin`, and `meta.pkl` in the current directory fo
 If you tweak the include keys or add more parquet files, delete `input.txt` (and optionally the `downloaded_parquets` and `json_output` helper folders) before rerunning `get_dataset.sh` so the regenerated text reflects your changes.
 
 
-# Original Dataset PAge
+# Original Dataset Page
 
 - [NTREX Main Page](https://huggingface.co/datasets/mteb/NTREX)
 
