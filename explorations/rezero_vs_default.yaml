@@ -1,0 +1,30 @@
+# rezero_vs_default.yaml
+---
+parameter_groups:
+  # Default residual behavior
+  - attn_residual_combination: ["add"]
+    mlp_residual_combination: ["add"]
+    attn_residual_alpha_type: ["fixed"]
+    mlp_residual_alpha_type: ["fixed"]
+
+  # ReZero residual gates (x + alpha * F(x), alpha initialized to 0)
+  - attn_residual_combination: ["rezero"]
+    mlp_residual_combination: ["rezero"]
+    attn_residual_alpha_type: ["rezero"]
+    mlp_residual_alpha_type: ["rezero"]
+
+# base hyperparameters (defaults)
+block_size: [256]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+bias: [false]
+
+# training configuration
+dataset: "shakespeare_char"
+max_iters: 5000
+eval_interval: 500
+eta_variant: ["iteration"]
+
+# compilation
+compile: [true]

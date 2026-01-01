@@ -650,14 +650,14 @@ def parse_args():
         '--attn_residual_combination',
         type=str,
         default='add',
-        choices=['add', 'lerp', 'slerp'],
+        choices=['add', 'rezero', 'lerp', 'slerp'],
         help='Residual combination method for attention block'
     )
     model_group.add_argument(
         '--mlp_residual_combination',
         type=str,
         default='add',
-        choices=['add', 'lerp', 'slerp'],
+        choices=['add', 'rezero', 'lerp', 'slerp'],
         help='Residual combination method for MLP block'
     )
     model_group.add_argument(
@@ -682,14 +682,14 @@ def parse_args():
         '--attn_residual_alpha_type',
         type=str,
         default='fixed',
-        choices=['fixed', 'learned', 'dot'],
+        choices=['fixed', 'learned', 'rezero', 'dot'],
         help='Alpha mode for attention residual combination'
     )
     model_group.add_argument(
         '--mlp_residual_alpha_type',
         type=str,
         default='fixed',
-        choices=['fixed', 'learned', 'dot'],
+        choices=['fixed', 'learned', 'rezero', 'dot'],
         help='Alpha mode for MLP residual combination'
     )
 
@@ -1449,4 +1449,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-
