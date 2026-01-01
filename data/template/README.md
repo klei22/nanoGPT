@@ -9,11 +9,14 @@ supported, with more tokenization method support planned.
 Additionally, phonemization using espeak via a shell script is supported to
 preprocess text data into phoneme representations.
 
+Whisper-style mel spectrogram CSV export is also supported for audio inputs.
+
 ## Currently Supported Tokenizations
 
 - **SentencePiece Tokenization**
 - **TikToken Tokenization**
 - **Character-Level Tokenization**
+- **Whisper-style Mel Spectrogram CSV Export**
 
 ## Usage
 
@@ -23,6 +26,9 @@ Ensure you have Python installed on your system along with the necessary
 libraries: `numpy`, `pickle`, `sentencepiece`, and `tiktoken`.
 
 Also for phonemization ensure that `espeak` and `GNU Parallel` are installed.
+
+For Whisper-style mel CSV export and visualization, install `torch`,
+`torchaudio`, and `matplotlib`.
 
 ##### 1. Create a New Data Folder
 
@@ -94,6 +100,64 @@ python3 prepare.py -t input.txt --method custom --tokens_file phoneme_list.txt
 ```bash
 python3 prepare.py -t input.txt --method custom_char_byte_fallback --custom_chars_file tokens.txt
 ```
+
+##### Whisper-style Mel Spectrogram CSV Export
+
+This emits a CSV file where each row is a time frame and each column is a mel
+channel. Defaults match Whisper/whisper.cpp (16 kHz, 80 mel channels, 25 ms
+window, 10 ms hop).
+
+```bash
+python3 prepare.py \
+  --method whisper_mel_csv \
+  --train_input sample.wav \
+  --train_output sample.csv
+```
+
+For convenience, see `run_whisper_mel_csv_examples.sh` for mp3/wav/flac
+examples.
+
+To visualize the CSV output:
+
+```bash
+python3 visualize_whisper_mel_csv.py sample.csv --output sample.png
+```
+
+To reconstruct a WAV file from the CSV (approximate inversion):
+
+```bash
+python3 mel_csv_to_wav.py sample.csv --output reconstructed.wav
+```
+
+#### Expected Value Range
+
+When `--mel_normalize` is enabled (default), values follow Whisper's log-mel
+normalization:
+
+1. Convert mel spectrogram to log10.
+2. Clamp to `max - 8`.
+3. Scale as `(log_mel + 4) / 4`.
+
+This yields values typically in the `~[0, 1]` range after normalization (values
+can be slightly outside this range depending on the audio content and scale).
+
+##### Converting to int16 Range
+
+If you need a fixed-point representation, you can linearly scale and clamp the
+normalized values:
+
+```python
+scaled = np.clip(mel, 0.0, 1.0)
+int16 = (scaled * 32767).astype(np.int16)
+```
+
+To recover approximate floats later:
+
+```python
+mel = int16.astype(np.float32) / 32767.0
+```
+
+Note that this is a lossy quantization step and will reduce precision.
 
 ### Additional details about the `prepare.py` script
 

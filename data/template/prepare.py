@@ -13,6 +13,7 @@ from tokenizers import (
     JsonByteTokenizerWithByteFallback,
     PythonProgrammingTokenizer,
     SineWaveTokenizer,
+    WhisperMelCsvTokenizer,
 )
 from tqdm import tqdm
 import pickle
@@ -29,7 +30,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave"],
+                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave", "whisper_mel_csv"],
                        default="tiktoken", help="Tokenization method")
 
     # Sine wave tokenizer arguments
@@ -41,6 +42,30 @@ def parse_arguments():
                         help="Total number of periods to generate")
     parser.add_argument("--sine_amplitude", type=float, default=50.0,
                         help="Amplitude of the generated sine wave prior to clamping")
+
+    # Whisper-style mel spectrogram tokenizer arguments
+    parser.add_argument("--mel_sample_rate", type=int, default=16000,
+                        help="Target sample rate for mel spectrogram computation")
+    parser.add_argument("--mel_n_fft", type=int, default=400,
+                        help="FFT size for mel spectrogram computation")
+    parser.add_argument("--mel_hop_length", type=int, default=160,
+                        help="Hop length between frames for mel spectrogram computation")
+    parser.add_argument("--mel_win_length", type=int, default=400,
+                        help="Window length for mel spectrogram computation")
+    parser.add_argument("--mel_n_mels", type=int, default=80,
+                        help="Number of mel filterbank channels")
+    parser.add_argument("--mel_f_min", type=float, default=0.0,
+                        help="Minimum frequency for mel filterbank")
+    parser.add_argument("--mel_f_max", type=float, default=8000.0,
+                        help="Maximum frequency for mel filterbank")
+    parser.add_argument("--mel_center", action=argparse.BooleanOptionalAction, default=True,
+                        help="Center frames during STFT computation")
+    parser.add_argument("--mel_power", type=float, default=2.0,
+                        help="Exponent for the magnitude spectrogram")
+    parser.add_argument("--mel_normalize", action=argparse.BooleanOptionalAction, default=True,
+                        help="Apply Whisper-style log-mel normalization")
+    parser.add_argument("--mel_csv_float_format", type=str, default="%.6f",
+                        help="Float format string used when writing mel CSV files")
 
     # SentencePiece arguments
     parser.add_argument("--vocab_size", type=int, default=500, help="Vocabulary size for SentencePiece model")
@@ -77,6 +102,10 @@ def save_tokens(ids, output_file, dtype):
             batch = ids[i:i+batch_size]
             np.array(batch, dtype=dtype).tofile(f_out)
 
+def save_mel_csv(frames, output_file, float_format):
+    with open(output_file, "w", encoding="utf-8") as f_out:
+        np.savetxt(f_out, frames, delimiter=",", fmt=float_format)
+
 def _read_input_data(path):
     if os.path.isdir(path):
         collected = []
@@ -94,7 +123,7 @@ def main():
     args = parse_arguments()
 
     # Load training/validation data depending on tokenizer method
-    if args.method == "sinewave":
+    if args.method in {"sinewave", "whisper_mel_csv"}:
         train_data = None
         val_data = None
     else:
@@ -127,26 +156,40 @@ def main():
         tokenizer = PythonProgrammingTokenizer(args)
     elif args.method == "sinewave":
         tokenizer = SineWaveTokenizer(args)
+    elif args.method == "whisper_mel_csv":
+        tokenizer = WhisperMelCsvTokenizer(args)
     else:
         raise ValueError(f"Unknown tokenization method: {args.method}")
 
     # Tokenize data
-    train_ids = tokenizer.tokenize(train_data)
+    if args.method == "whisper_mel_csv":
+        train_ids = tokenizer.tokenize(args.train_input)
+    else:
+        train_ids = tokenizer.tokenize(train_data)
     if args.method == "tiktoken":
         print(f"[tiktoken] Total train tokens: {tokenizer.last_token_count:,}")
-    if args.method == "sinewave" and args.val_input is None:
+    if args.method == "whisper_mel_csv" and args.val_input is None:
+        split_point = int(len(train_ids) * args.percentage_train)
+        val_ids = train_ids[split_point:]
+        train_ids = train_ids[:split_point]
+    elif args.method == "sinewave" and args.val_input is None:
         split_point = int(len(train_ids) * args.percentage_train)
         val_ids = train_ids[split_point:]
         train_ids = train_ids[:split_point]
     elif val_data is not None:
-        val_ids = tokenizer.tokenize(val_data)
+        if args.method == "whisper_mel_csv":
+            val_ids = tokenizer.tokenize(args.val_input)
+        else:
+            val_ids = tokenizer.tokenize(val_data)
         if args.method == "tiktoken":
             print(f"[tiktoken] Total val tokens: {tokenizer.last_token_count:,}")
     else:
         val_ids = None
 
     # Determine dtype based on vocabulary size from meta.pkl
-    if args.method == "sinewave":
+    if args.method == "whisper_mel_csv":
+        dtype = None
+    elif args.method == "sinewave":
         dtype = np.uint16
     else:
         with open("meta.pkl", "rb") as f:
@@ -162,9 +205,14 @@ def main():
                 os.makedirs(out_dir, exist_ok=True)
 
     # Save tokenized data
-    save_tokens(train_ids, args.train_output, dtype)
-    if val_ids is not None:
-        save_tokens(val_ids, args.val_output, dtype)
+    if args.method == "whisper_mel_csv":
+        save_mel_csv(train_ids, args.train_output, args.mel_csv_float_format)
+        if val_ids is not None:
+            save_mel_csv(val_ids, args.val_output, args.mel_csv_float_format)
+    else:
+        save_tokens(train_ids, args.train_output, dtype)
+        if val_ids is not None:
+            save_tokens(val_ids, args.val_output, dtype)
 
     if args.method == "sinewave":
         meta = {
@@ -174,6 +222,22 @@ def main():
             "sine_points_per_period": args.sine_points_per_period,
             "sine_num_periods": args.sine_num_periods,
             "sine_amplitude": args.sine_amplitude,
+        }
+        with open("meta.pkl", "wb") as f:
+            pickle.dump(meta, f)
+    elif args.method == "whisper_mel_csv":
+        meta = {
+            "tokenizer": "whisper_mel_csv",
+            "sample_rate": args.mel_sample_rate,
+            "n_fft": args.mel_n_fft,
+            "hop_length": args.mel_hop_length,
+            "win_length": args.mel_win_length,
+            "n_mels": args.mel_n_mels,
+            "f_min": args.mel_f_min,
+            "f_max": args.mel_f_max,
+            "center": args.mel_center,
+            "power": args.mel_power,
+            "normalize": args.mel_normalize,
         }
         with open("meta.pkl", "wb") as f:
             pickle.dump(meta, f)
@@ -195,4 +259,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
