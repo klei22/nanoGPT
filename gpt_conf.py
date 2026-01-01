@@ -377,13 +377,13 @@ class GPTConfig:
     learn_mlp_resid_const: bool = False
     resid_gaussian_mean_init: float = 0.0
     resid_gaussian_std_init: float = 0.02
-    attn_residual_combination: str = "add"
-    mlp_residual_combination: str = "add"
+    attn_residual_combination: str = "add"  # add | rezero | lerp | slerp
+    mlp_residual_combination: str = "add"  # add | rezero | lerp | slerp
     residual_slerp_eps: float = 0.0
     attn_residual_alpha: float = 0.05
     mlp_residual_alpha: float = 0.05
-    attn_residual_alpha_type: str = "fixed"
-    mlp_residual_alpha_type: str = "fixed"
+    attn_residual_alpha_type: str = "fixed"  # fixed | learned | rezero | dot
+    mlp_residual_alpha_type: str = "fixed"  # fixed | learned | rezero | dot
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
@@ -582,4 +582,3 @@ class GPTConfig:
 
         with open(filename, 'w') as json_file:
             json.dump(conf_dict, json_file)
-
