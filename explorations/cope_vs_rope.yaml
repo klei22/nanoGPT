@@ -1,0 +1,34 @@
+# Compare CoPE (complex positional encoding) vs RoPE.
+---
+named_static_groups:
+  - named_group: "rope"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      rope_variant: ["rope"]
+      use_abs_pos_embeddings: [false]
+      use_cope: [false]
+  - named_group: "cope"
+    named_group_settings:
+      use_rotary_embeddings: [false]
+      use_abs_pos_embeddings: [false]
+      use_cope: [true]
+      cope_first_layer_only: [true]
+      cope_variant: ["phase"]
+      cope_phase_alpha: [0.2]
+      cope_gamma: [1.0]
+      cope_base: [10000.0]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: ["6"]
+  n_head: ["6"]
+  n_embd: ["384"]
+  block_size: ["256"]
+  max_iters: [5000]
+  device: ["cuda"]
+  dtype: ["float16"]
+  compile: [true]
+  tensorboard_run_name: ["cope_vs_rope"]
+
+parameter_groups:
+  - named_group_alternates: ["rope", "cope"]

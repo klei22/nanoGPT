@@ -68,7 +68,9 @@ class LearnedPositionEmbedding(nn.Module):
 
         self.drop = nn.Dropout(config.dropout)
         # reuse the same Block init as GPT.transformer.h
-        self.blocks = nn.ModuleList([Block(self.lpe_config) for _ in range(self.lpe_config.n_layer)])
+        self.blocks = nn.ModuleList([
+            Block(self.lpe_config, block_idx=idx) for idx in range(self.lpe_config.n_layer)
+        ])
 
     def forward(self, b, t, x, iter_num=None):
         # add absolute position embeddings if used
@@ -195,7 +197,10 @@ class GPT(nn.Module):
 
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
-        self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
+        self.transformer['h'] = nn.ModuleList([
+            Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i], block_idx=i)
+            for i in range(config.n_layer)
+        ])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
         # Optional post-embedding normalizations

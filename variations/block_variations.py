@@ -364,8 +364,9 @@ resid_scaler_setup_variations = {
 class Block(nn.Module):
     """Transformer block supporting multiple normalization strategies."""
 
-    def __init__(self, config, mlp=None, attn=None):
+    def __init__(self, config, mlp=None, attn=None, block_idx=None):
         super().__init__()
+        self.layer_idx = 0 if block_idx is None else block_idx
 
         # Choose norm class for attention/MLP blocks
         norm_cls = norm_dictionary[config.norm_variant_attn]
@@ -459,6 +460,8 @@ class Block(nn.Module):
         self.use_gradient_checkpointing = getattr(config, "use_gradient_checkpointing", False)
 
     def forward(self, x: torch.Tensor, iter_num: int):
+        if hasattr(self.attn, "layer_idx"):
+            self.attn.layer_idx = self.layer_idx
         if self.use_gradient_checkpointing and x.requires_grad:
             return checkpoint.checkpoint(self.block_forward, x, iter_num, use_reentrant=False)
         return self.block_forward(x, iter_num)
@@ -467,4 +470,3 @@ class Block(nn.Module):
         """Helper method to streamline forward block skip connections"""
         alpha = self.alpha_fns[kind](out)
         return self.resid_fns[kind](x, out, alpha, self.residual_slerp_eps)
-
