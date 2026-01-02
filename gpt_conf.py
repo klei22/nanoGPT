@@ -342,6 +342,12 @@ class GPTConfig:
     sym_rot_num_angles: int = 512
     rope_variant: str = "rope" # options: "shortrope", "rope"
     rope_length: int = 8 # number of embeddings to use in shortrope
+    use_cope: bool = False
+    cope_first_layer_only: bool = True
+    cope_variant: str = "phase" # options: "magnitude", "phase", "real", "hybrid", "hybrid_norm"
+    cope_phase_alpha: float = 0.2
+    cope_gamma: float = 1.0
+    cope_base: float = 10000.0
 
     ## Embedding Intialization Options
     embedding_mean_init: float= 0.0
@@ -582,4 +588,3 @@ class GPTConfig:
 
         with open(filename, 'w') as json_file:
             json.dump(conf_dict, json_file)
-

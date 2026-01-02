@@ -18,6 +18,31 @@ class QuantizedEmbedding(nn.Embedding):
         out = F.embedding(x, weight)
         return out
 
+
+class SinusoidalPositionEmbedding(nn.Module):
+    """Generate sinusoidal positional embeddings using only sine components."""
+    def __init__(self, dim, base=10000.0, scale=1.0):
+        super().__init__()
+        self.dim = dim
+        self.base = base
+        self.scale = scale
+        self.inv_freq = None
+        self.first_pass = True
+
+    def _generate_inv_freq(self, device, dtype):
+        return 1.0 / (self.base ** (torch.arange(0, self.dim, device=device, dtype=dtype) / self.dim))
+
+    def forward(self, seq_len, device, dtype=None, start_index=0):
+        if dtype is None:
+            dtype = torch.float32
+        if self.first_pass or self.inv_freq is None or self.inv_freq.device != device or self.inv_freq.dtype != dtype:
+            self.inv_freq = self._generate_inv_freq(device, dtype)
+            self.first_pass = False
+
+        pos_indices = torch.arange(start_index, start_index + seq_len, device=device, dtype=dtype)
+        angles = torch.einsum('i,d->id', pos_indices, self.inv_freq)
+        return self.scale * angles.sin()
+
 class RotaryEmbedding(nn.Module):
     """ Implementation of standard Rotary Position Embeddings (RoPE).
 
@@ -239,4 +264,3 @@ class FIRE(nn.Module):
         fire_bias = fire_bias.unsqueeze(0).permute(0, 3, 1, 2)
 
         return fire_bias
-
