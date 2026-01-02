@@ -1095,6 +1095,12 @@ def parse_args():
     model_group.add_argument('--use_abs_pos_embeddings', default=True, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--use_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--shared_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--use_cope_embeddings', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--cope_first_layer_only', default=True, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--cope_mode', type=str, default="phase", choices=["magnitude", "phase", "real", "hybrid", "hybrid_norm"])
+    model_group.add_argument('--cope_alpha', type=float, default=0.2)
+    model_group.add_argument('--cope_gamma', type=float, default=1.0)
+    model_group.add_argument('--cope_eps', type=float, default=1e-6)
 
     ## Positional Embedding Weight Initialization Options
     model_group.add_argument( "--embedding_mean_init", type=float, default=0.0)
@@ -1449,4 +1455,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-
