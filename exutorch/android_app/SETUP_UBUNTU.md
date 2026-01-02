@@ -3,24 +3,14 @@
 This guide walks through setting up the Android build environment on Ubuntu,
 building the demo app, and installing it on a virtual or real device.
 
-## 1) Install system dependencies
+## 1) Run setup scripts
+
+All command sequences are grouped into numbered scripts under
+`exutorch/android_app/scripts/`. Run them in order:
 
 ```bash
-sudo apt update
-sudo apt install -y \
-  unzip \
-  zip \
-  curl \
-  wget \
-  git \
-  openjdk-17-jdk \
-  libgl1 \
-  libpulse0 \
-  libxkbcommon0 \
-  libxcomposite1 \
-  libxdamage1 \
-  libxrandr2 \
-  libgtk-3-0
+cd exutorch/android_app
+bash scripts/01_install_deps.sh
 ```
 
 Verify Java:
@@ -29,27 +19,14 @@ Verify Java:
 java -version
 ```
 
-## 2) Install Android SDK command-line tools
-
-Set an SDK location and download the command-line tools:
+## 2) Install Android SDK command-line tools + env vars
 
 ```bash
-export ANDROID_SDK_ROOT="$HOME/Android/Sdk"
-mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-cd /tmp
-curl -fLO https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-unzip commandlinetools-linux-11076708_latest.zip
-mv cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+cd exutorch/android_app
+bash scripts/02_install_android_sdk.sh
 ```
 
-Update your shell profile (`~/.bashrc` or `~/.zshrc`):
-
-```bash
-export ANDROID_SDK_ROOT="$HOME/Android/Sdk"
-export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
-```
-
-Reload the shell:
+Reload the shell after the script completes:
 
 ```bash
 source ~/.bashrc
@@ -57,53 +34,37 @@ source ~/.bashrc
 
 ## 3) Install SDK packages
 
-Accept licenses and install required components:
-
 ```bash
-sdkmanager --licenses
-
-sdkmanager \
-  "platform-tools" \
-  "platforms;android-34" \
-  "build-tools;34.0.0" \
-  "emulator" \
-  "system-images;android-34;google_apis;x86_64"
+cd exutorch/android_app
+bash scripts/03_install_sdk_packages.sh
 ```
 
 ## 4) Create an Android Virtual Device (AVD)
 
 ```bash
-avdmanager create avd \
-  --name nanogpt_avd \
-  --package "system-images;android-34;google_apis;x86_64" \
-  --device "pixel"
+cd exutorch/android_app
+bash scripts/04_create_avd.sh
 ```
 
 Start the emulator:
 
 ```bash
-emulator -avd nanogpt_avd
-```
-
-If you need to run headless:
-
-```bash
-emulator -avd nanogpt_avd -no-window -no-audio
+cd exutorch/android_app
+bash scripts/05_start_emulator.sh
 ```
 
 ## 5) Install the app on a virtual device
 
-From the repo root:
-
 ```bash
 cd exutorch/android_app
-./gradlew :app:installDebug
+bash scripts/06_install_app.sh
 ```
 
 Open Logcat to see metrics:
 
 ```bash
-adb logcat | grep NanoGPT
+cd exutorch/android_app
+bash scripts/07_logcat.sh
 ```
 
 You should see:
@@ -116,23 +77,11 @@ On the Android device:
 - Enable **Developer options**.
 - Enable **USB debugging**.
 
-Connect the device and verify:
-
-```bash
-adb devices
-```
-
-Then install:
+Then run:
 
 ```bash
 cd exutorch/android_app
-./gradlew :app:installDebug
-```
-
-Open Logcat:
-
-```bash
-adb logcat | grep NanoGPT
+bash scripts/08_real_device.sh
 ```
 
 ## 7) Ensure assets are in place
@@ -140,16 +89,8 @@ adb logcat | grep NanoGPT
 Before building, copy your exported artifacts:
 
 ```bash
-cp ../android_export/nanogpt_xnnpack.pte app/src/main/assets/
-cp ../android_export/manifest.json app/src/main/assets/
-```
-
-Update `prompt_tokens.txt` if desired:
-
-```bash
-cat > app/src/main/assets/prompt_tokens.txt <<'EOF'
-464, 3290, 318, 257, 1332
-EOF
+cd exutorch/android_app
+bash scripts/00_copy_assets.sh
 ```
 
 ## Troubleshooting
