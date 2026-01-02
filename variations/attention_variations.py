@@ -195,6 +195,37 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
+        # CoPE (Complex Positional Encoding) - phase-aware attention for first layer
+        self.use_cope_embeddings = getattr(config, "use_cope_embeddings", False)
+        self.cope_first_layer_only = getattr(config, "cope_first_layer_only", True)
+        self.cope_mode = getattr(config, "cope_mode", "phase")
+        self.cope_alpha = getattr(config, "cope_alpha", 0.2)
+        self.cope_gamma = getattr(config, "cope_gamma", 1.0)
+        self.cope_eps = getattr(config, "cope_eps", 1e-6)
+        layer_idx = getattr(config, "layer_idx", 0)
+        self.use_cope = self.use_cope_embeddings and (not self.cope_first_layer_only or layer_idx == 0)
+
+        if self.use_cope:
+            self.c_attn_q_imag = self.linear_variant_q(
+                config.n_embd,
+                config.n_embd,
+                config,
+                self.quantization_attn_dict["quantize_linear_attn_q_method"],
+                self.quantization_attn_dict["quantize_linear_attn_q_bits"],
+                bias=config.bias,
+            )
+            self.c_attn_k_imag = self.linear_variant_k(
+                config.n_embd,
+                self.kv_dim,
+                config,
+                self.quantization_attn_dict["quantize_linear_attn_k_method"],
+                self.quantization_attn_dict["quantize_linear_attn_k_bits"],
+                bias=config.bias,
+            )
+            self.cope_inv_freq = None
+            self.cope_inv_freq_dtype = None
+            self.use_flex_attn = False
+
         # qk norm factor
         if self.use_qk_norm_scale:
             L = config.block_size
@@ -214,6 +245,10 @@ class CausalSelfAttention(nn.Module):
         if self.use_fire_embeddings:
             self.flash = False
             print("flash attention removed due to FIRE")
+
+        if self.use_cope:
+            self.flash = False
+            print("flash attention removed due to CoPE")
 
         # Can't use flash attention if we want to manually quantize most input/output activations in attn
         for key, val in self.quantization_attn_dict.items():
@@ -278,6 +313,15 @@ class CausalSelfAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
+    def _get_cope_positional_embedding(self, seq_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        if self.cope_inv_freq is None or self.cope_inv_freq.device != device or self.cope_inv_freq_dtype != dtype:
+            inv_freq = 1.0 / (10000 ** (torch.arange(0, self.n_embd, device=device, dtype=dtype) / self.n_embd))
+            self.cope_inv_freq = inv_freq
+            self.cope_inv_freq_dtype = dtype
+        positions = torch.arange(seq_len, device=device, dtype=dtype)
+        angles = positions[:, None] * self.cope_inv_freq[None, :]
+        return self.cope_gamma * torch.sin(angles)
+
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -286,9 +330,29 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             x = fake_quantize_act(self, "attn_act_input", x, num_bits, quant_method, iter_num)
 
-        q = self.c_attn_q(x)
-        k = self.c_attn_k(x)
-        v = self.c_attn_v(x)
+        if self.use_cope:
+            pos_emb = self._get_cope_positional_embedding(T, x.device, x.dtype)
+            pos_emb = pos_emb.unsqueeze(0).expand(B, -1, -1)
+
+            q_real_x = self.c_attn_q(x)
+            q_real_pos = self.c_attn_q(pos_emb)
+            q_imag_x = self.c_attn_q_imag(x)
+            q_imag_pos = self.c_attn_q_imag(pos_emb)
+            q_real = q_real_x - q_imag_pos
+            q_imag = q_real_pos + q_imag_x
+
+            k_real_x = self.c_attn_k(x)
+            k_real_pos = self.c_attn_k(pos_emb)
+            k_imag_x = self.c_attn_k_imag(x)
+            k_imag_pos = self.c_attn_k_imag(pos_emb)
+            k_real = k_real_x - k_imag_pos
+            k_imag = k_real_pos + k_imag_x
+
+            v = self.c_attn_v(x)
+        else:
+            q = self.c_attn_q(x)
+            k = self.c_attn_k(x)
+            v = self.c_attn_v(x)
 
         if self.window_size is not None:
             if self.use_flex_attn is not None:
@@ -302,9 +366,16 @@ class CausalSelfAttention(nn.Module):
             if self.n_kv_group == self.n_head:
                 Gating = nn.Linear(self.n_embd, self.n_embd, bias=True, device=x.device)
                 gate_ = torch.sigmoid(Gating(x))
-                q = q * gate_
-                k = k * gate_
-                v = v * gate_
+                if self.use_cope:
+                    q_real = q_real * gate_
+                    q_imag = q_imag * gate_
+                    k_real = k_real * gate_
+                    k_imag = k_imag * gate_
+                    v = v * gate_
+                else:
+                    q = q * gate_
+                    k = k * gate_
+                    v = v * gate_
             else:
                 # TODO: Test more methods to merge Attention Gates with GQA
                 # TODO: Evaluate each method's ability to even out parameter sizes
@@ -313,24 +384,46 @@ class CausalSelfAttention(nn.Module):
                 gate_qx = Gating_q(x)
                 gate_q = torch.sigmoid(gate_qx)
                 gate_kv = torch.sigmoid(Gating_kv(gate_qx))
-                q = q * gate_q
-                k = k * gate_kv
-                v = v * gate_kv
+                if self.use_cope:
+                    q_real = q_real * gate_q
+                    q_imag = q_imag * gate_q
+                    k_real = k_real * gate_kv
+                    k_imag = k_imag * gate_kv
+                    v = v * gate_kv
+                else:
+                    q = q * gate_q
+                    k = k * gate_kv
+                    v = v * gate_kv
 
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
-        k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
-        v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+        if self.use_cope:
+            q_real = q_real.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+            q_imag = q_imag.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+            k_real = k_real.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2)
+            k_imag = k_imag.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2)
+            v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2)
+        else:
+            q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
+            k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+            v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
 
-        # rotate q and k before evaluating with the heads
-        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
-            q = self.rotary_emb_q(q)
-            k = self.rotary_emb_k(k)
+            # rotate q and k before evaluating with the heads
+            if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
+                q = self.rotary_emb_q(q)
+                k = self.rotary_emb_k(k)
 
         y = None
 
         if self.use_qk_norm:
-            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+            if self.use_cope:
+                q_norm = torch.sqrt((q_real ** 2 + q_imag ** 2).sum(dim=-1, keepdim=True) + 1e-6)
+                k_norm = torch.sqrt((k_real ** 2 + k_imag ** 2).sum(dim=-1, keepdim=True) + 1e-6)
+                q_real = q_real / q_norm
+                q_imag = q_imag / q_norm
+                k_real = k_real / k_norm
+                k_imag = k_imag / k_norm
+            else:
+                q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+                k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -379,20 +472,42 @@ class CausalSelfAttention(nn.Module):
             block_mask = self.get_block_mask(T, x.device)
             y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
         else:
-            if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
+            if (not self.use_cope) and self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
                 q = fake_quantize_act(self, "attn_act_qk_mult_q_input", q, num_bits, quant_method, iter_num)
-            if self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input"]:
+            if (not self.use_cope) and self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
                 k = fake_quantize_act(self, "attn_act_qk_mult_k_input", k, num_bits, quant_method, iter_num)
 
             att = None
             # manual implementation of attention
-            k_attn = self._expand_kv(k)
-            head_dim = math.sqrt(k_attn.size(-1))
-            att = (q @ k_attn.transpose(-2, -1))
+            if self.use_cope:
+                k_real_attn = self._expand_kv(k_real)
+                k_imag_attn = self._expand_kv(k_imag)
+                head_dim = math.sqrt(k_real_attn.size(-1))
+                att_real = (q_real @ k_real_attn.transpose(-2, -1)) + (q_imag @ k_imag_attn.transpose(-2, -1))
+                att_imag = (q_imag @ k_real_attn.transpose(-2, -1)) - (q_real @ k_imag_attn.transpose(-2, -1))
+                att_magnitude = torch.sqrt(att_real ** 2 + att_imag ** 2 + self.cope_eps)
+                att_phase = torch.atan2(att_imag, att_real)
+                if self.cope_mode == "magnitude":
+                    att = att_magnitude
+                elif self.cope_mode == "phase":
+                    att = torch.cos(att_phase)
+                elif self.cope_mode == "real":
+                    att = att_real
+                elif self.cope_mode == "hybrid":
+                    att = att_magnitude + self.cope_alpha * torch.cos(att_phase)
+                elif self.cope_mode == "hybrid_norm":
+                    max_mag = att_magnitude.max(dim=-1, keepdim=True).values.clamp_min(self.cope_eps)
+                    att = att_magnitude / max_mag + self.cope_alpha * torch.cos(att_phase)
+                else:
+                    raise ValueError(f"Unknown CoPE mode: {self.cope_mode}")
+            else:
+                k_attn = self._expand_kv(k)
+                head_dim = math.sqrt(k_attn.size(-1))
+                att = (q @ k_attn.transpose(-2, -1))
 
             if self.use_qk_norm_scale:
                 att = att * self.qk_norm_factor
