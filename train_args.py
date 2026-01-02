@@ -1092,6 +1092,16 @@ def parse_args():
     model_group.add_argument('--sym_rot_num_angles', type=int, default=512, help="number of angles to use for symmetric rope variant")
     model_group.add_argument("--rope_variant", type=str, default="rope", choices=["rope", "soap"])
     model_group.add_argument("--rope_length", type=int, default=None, help="Defaults to all embeddings (if set to None), else must be even.")
+    model_group.add_argument("--use_cope_embeddings", default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument(
+        "--cope_variant",
+        type=str,
+        default="phase",
+        choices=["magnitude", "phase", "real", "hybrid", "hybrid_norm"],
+    )
+    model_group.add_argument("--cope_alpha", type=float, default=0.2)
+    model_group.add_argument("--cope_gamma", type=float, default=1.0)
+    model_group.add_argument("--cope_theta", type=float, default=10000.0)
     model_group.add_argument('--use_abs_pos_embeddings', default=True, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--use_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--shared_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
@@ -1449,4 +1459,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-
