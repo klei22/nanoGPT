@@ -12,11 +12,14 @@ lang_array=(
   "text_swh_Latn:sw"
   "text_ell_Grek:el"
   "text_fra_Latn:fr"
+  "text_yue_Hant:yue"
 )
 
 for lang in "${lang_array[@]}"; do
   text_file="${lang%%:*}"
   two_letter_code="${lang##*:}"
   echo "${text_file}; ${two_letter_code}"
-  python3 utils/espeak2ipa.py "$text_file".txt --mode text --output_file ipa_"$text_file".txt --no-wrapper --stats_json stats_"$text_file".json --lang "$two_letter_code" --text_no_sentence
+  if [ ! -f "ipa_${text_file}.txt" ]; then
+    python3 utils/espeak2ipa.py "$text_file".txt --mode text --output_file ipa_"$text_file".txt --no-wrapper --stats_json stats_"$text_file".json --lang "$two_letter_code" --text_no_sentence
+  fi
 done
