@@ -98,7 +98,6 @@ lang_array=(
 #   "text_jav_Latn"
 #   "text_jpn_Jpan"
 #   "text_kab_Latn"
-#
 #   "text_kac_Latn"
 #   "text_kam_Latn"
 #   "text_kan_Knda"
