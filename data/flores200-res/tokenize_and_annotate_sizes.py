@@ -81,7 +81,7 @@ def main() -> None:
 
     ap.add_argument(
         "--in-json",
-        default="filtered_scripts.json",
+        default="filtered_files.json",
         help="Input JSON from filter_files_by_script.py",
     )
     ap.add_argument(

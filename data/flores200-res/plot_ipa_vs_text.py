@@ -11,10 +11,25 @@ Defaults:
   --text-dir text/
   --ipa-dir  ipa/
 
-Produces:
+Tokenization:
+- Can also load tokenized sizes (e.g. tiktoken) from filtered_scripts.json (or other)
+  produced by your tokenize_and_annotate_sizes.py pipeline, and plot:
+
+    raw_bytes vs ipa_bytes vs tok_bytes
+
+Assumptions for filtered JSON rows:
+  - list[dict]
+  - key "lang_script" OR ("language"+"_"+"script") matches the <lang> part of text_<lang>.txt
+  - key "tokenized_sizes" is a dict like {"tiktoken": <KB float>, ...}
+
+Produces (same as before):
 - scatter: IPA bytes vs raw bytes
 - bar: IPA/raw ratio
 - bar: delta bytes (IPA - raw)
+
+Additionally (if filtered json provided & matches are found):
+- grouped bar: Raw vs IPA vs Tokenized (bytes) per language
+
 """
 
 from __future__ import annotations
@@ -24,6 +39,7 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 import math
+import json
 
 from typing import Dict, List, Optional, Tuple
 
@@ -41,6 +57,7 @@ class PairStats:
     ipa_chars: int
     raw_lines: int
     ipa_lines: int
+    tok_bytes: Optional[int] = None  # NEW
 
     @property
     def ratio_bytes(self) -> float:
@@ -67,6 +84,8 @@ def discover_pairs(text_dir: Path, ipa_dir: Path) -> List[Tuple[str, Path, Path]
     Finds pairs across directories:
       text_dir/text_<lang>.txt
       ipa_dir/ipa_text_<lang>.txt
+
+    Note: <lang> can be "eng_Latn" etc; we treat it as an opaque key.
     """
     raw_map: Dict[str, Path] = {}
     ipa_map: Dict[str, Path] = {}
@@ -83,6 +102,56 @@ def discover_pairs(text_dir: Path, ipa_dir: Path) -> List[Tuple[str, Path, Path]
 
     langs = sorted(set(raw_map) & set(ipa_map))
     return [(lang, raw_map[lang], ipa_map[lang]) for lang in langs]
+
+
+def _load_tokenized_kb_map(filtered_json: Path, method: str) -> Dict[str, float]:
+    """
+    Returns: { lang_script_key -> tokenized_size_kb } for the chosen method.
+
+    Expects rows like:
+      {
+        "lang_script": "eng_Latn",
+        "tokenized_sizes": {"tiktoken": 300.0},
+        ...
+      }
+    """
+    if not filtered_json.exists():
+        raise FileNotFoundError(f"filtered json not found: {filtered_json}")
+
+    rows = json.loads(filtered_json.read_text(encoding="utf-8"))
+    if not isinstance(rows, list):
+        raise ValueError("filtered json must be a list of objects")
+
+    out: Dict[str, float] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+
+        key = r.get("lang_script")
+        if not key:
+            # try reconstruct
+            lang = r.get("language")
+            script = r.get("script")
+            if lang and script:
+                key = f"{lang}_{script}"
+
+        if not key:
+            continue
+
+        tok_map = r.get("tokenized_sizes")
+        if not isinstance(tok_map, dict):
+            continue
+
+        v = tok_map.get(method)
+        if v is None:
+            continue
+
+        try:
+            out[str(key)] = float(v)  # KB
+        except Exception:
+            continue
+
+    return out
 
 
 def make_scatter(stats: List[PairStats], outpath: Optional[Path], title: str) -> None:
@@ -132,7 +201,6 @@ def make_bar(
         plt.show()
 
 
-
 def _mean_std(vals: List[float]) -> Tuple[float, float]:
     """
     Population mean/std (ddof=0) over vals.
@@ -145,10 +213,10 @@ def _mean_std(vals: List[float]) -> Tuple[float, float]:
 
 
 def make_back_to_back_bar(
-        stats: List[PairStats],
-        outpath: Optional[Path],
-        title: str = "Raw vs IPA Text Size (UTF-8 bytes)",
-        ) -> None:
+    stats: List[PairStats],
+    outpath: Optional[Path],
+    title: str = "Raw vs IPA Text Size (UTF-8 bytes)",
+) -> None:
     """
     Back-to-back horizontal bar chart:
         - Raw text on the left (negative)
@@ -182,29 +250,21 @@ def make_back_to_back_bar(
     plt.axvline(ipa_mean, linestyle=":", linewidth=2, label=f"IPA mean ({ipa_mean:.0f})")
 
     # ±1 stddev lines (dotted, lighter)
-    # Raw side
     plt.axvline(-(raw_mean - raw_std), linestyle=":", linewidth=1)
     plt.axvline(-(raw_mean + raw_std), linestyle=":", linewidth=1)
-    # IPA side
     plt.axvline(ipa_mean - ipa_std, linestyle=":", linewidth=1)
     plt.axvline(ipa_mean + ipa_std, linestyle=":", linewidth=1)
 
     plt.xlabel("UTF-8 bytes")
     plt.title(
-            f"{title}\n"
-            f"Raw mean={raw_mean:.0f}, std={raw_std:.0f} | "
-            f"IPA mean={ipa_mean:.0f}, std={ipa_std:.0f}"
-            )
+        f"{title}\n"
+        f"Raw mean={raw_mean:.0f}, std={raw_std:.0f} | "
+        f"IPA mean={ipa_mean:.0f}, std={ipa_std:.0f}"
+    )
     plt.grid(True, axis="x", linestyle="--", linewidth=0.5)
 
-    # Symmetric x-limits
     max_val = max(max(ipa_vals), max(abs(v) for v in raw_vals))
-    # also include mean±std in bounds
-    max_val = max(
-            max_val,
-            raw_mean + raw_std,
-            ipa_mean + ipa_std,
-            )
+    max_val = max(max_val, raw_mean + raw_std, ipa_mean + ipa_std)
     plt.xlim(-max_val * 1.15, max_val * 1.15)
 
     plt.legend(loc="best")
@@ -216,9 +276,59 @@ def make_back_to_back_bar(
     else:
         plt.show()
 
-    # Optional: print summary to console (handy)
     print(f"[back-to-back] Raw bytes: mean={raw_mean:.2f}, std={raw_std:.2f}")
     print(f"[back-to-back] IPA bytes: mean={ipa_mean:.2f}, std={ipa_std:.2f}")
+
+
+def make_grouped_raw_ipa_tok(
+    stats: List[PairStats],
+    outpath: Optional[Path],
+    tok_label: str,
+    title: str = "Raw vs IPA vs Tokenized Size (UTF-8 bytes)",
+) -> None:
+    """
+    Grouped (clustered) vertical bar chart per language:
+      raw, ipa, tok (if present)
+
+    If some rows are missing tok_bytes, we simply omit that bar for that language.
+    """
+    langs = [s.lang for s in stats]
+    raw = [s.raw_bytes for s in stats]
+    ipa = [s.ipa_bytes for s in stats]
+    tok = [s.tok_bytes for s in stats]  # Optional[int]
+
+    x = list(range(len(langs)))
+    width = 0.25
+
+    plt.figure(figsize=(max(10, 0.9 * len(langs)), 5))
+
+    # raw and ipa always present
+    plt.bar([i - width for i in x], raw, width=width, label="Raw")
+    plt.bar([i for i in x], ipa, width=width, label="IPA")
+
+    # tokenized: only where present
+    tok_x = []
+    tok_y = []
+    for i, v in enumerate(tok):
+        if v is not None:
+            tok_x.append(i + width)
+            tok_y.append(v)
+    if tok_x:
+        plt.bar(tok_x, tok_y, width=width, label=tok_label)
+
+    plt.xticks(x, langs, rotation=35, ha="right")
+    plt.ylabel("Bytes (UTF-8)")
+    plt.title(title)
+    plt.grid(True, axis="y", linestyle="--", linewidth=0.5)
+    plt.legend(loc="best")
+
+    plt.tight_layout()
+    if outpath:
+        plt.savefig(outpath, dpi=200)
+        plt.close()
+    else:
+        plt.show()
+
 
 def write_csv(stats: List[PairStats], out_csv: Path) -> None:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -237,6 +347,7 @@ def write_csv(stats: List[PairStats], out_csv: Path) -> None:
                 "ipa_chars",
                 "raw_lines",
                 "ipa_lines",
+                "tok_bytes",
             ]
         )
         for s in stats:
@@ -253,6 +364,7 @@ def write_csv(stats: List[PairStats], out_csv: Path) -> None:
                     s.ipa_chars,
                     s.raw_lines,
                     s.ipa_lines,
+                    "" if s.tok_bytes is None else s.tok_bytes,
                 ]
             )
 
@@ -275,6 +387,26 @@ def main() -> None:
         default="IPA vs Raw Text Size (UTF-8 bytes)",
         help="Title for scatter plot.",
     )
+
+    # NEW: load tokenized sizes (KB) from filtered json and compare in bytes
+    ap.add_argument(
+        "--filtered-json",
+        default=None,
+        help="Optional: filtered_scripts.json (annotated) containing tokenized_sizes (KB). "
+             "If set, we will add a Raw vs IPA vs Tokenized plot.",
+    )
+    ap.add_argument(
+        "--tok-method",
+        default="tiktoken",
+        help="Which tokenized_sizes[method] to load from filtered json (default: tiktoken).",
+    )
+    ap.add_argument(
+        "--skip-missing-tok",
+        action="store_true",
+        help="If set, drop languages that don't have tokenized_sizes[tok-method]. "
+             "Default: keep language but omit tok bar.",
+    )
+
     args = ap.parse_args()
 
     text_dir = Path(args.text_dir)
@@ -289,10 +421,25 @@ def main() -> None:
     if not pairs:
         raise SystemExit("No matching text_/ipa_text_ pairs found.")
 
+    tok_kb_map: Dict[str, float] = {}
+    if args.filtered_json:
+        tok_kb_map = _load_tokenized_kb_map(Path(args.filtered_json), method=args.tok_method)
+
     stats: List[PairStats] = []
     for lang, raw_p, ipa_p in pairs:
         rb, rc, rl = read_stats(raw_p)
         ib, ic, il = read_stats(ipa_p)
+
+        tok_bytes: Optional[int] = None
+        if tok_kb_map:
+            kb = tok_kb_map.get(lang)
+            if kb is not None:
+                tok_bytes = int(round(kb * 1024.0))
+
+        # optionally drop missing tokenized values
+        if args.skip_missing_tok and tok_kb_map and tok_bytes is None:
+            continue
+
         stats.append(
             PairStats(
                 lang=lang,
@@ -304,6 +451,7 @@ def main() -> None:
                 ipa_chars=ic,
                 raw_lines=rl,
                 ipa_lines=il,
+                tok_bytes=tok_bytes,
             )
         )
 
@@ -344,19 +492,33 @@ def main() -> None:
     )
 
     make_back_to_back_bar(
-            stats,
-            outdir / "bar_back_to_back_raw_vs_ipa.png" if args.save else None,
-            title="Raw vs IPA Text Size by Language (UTF-8 bytes)",
+        stats,
+        outdir / "bar_back_to_back_raw_vs_ipa.png" if args.save else None,
+        title="Raw vs IPA Text Size by Language (UTF-8 bytes)",
     )
 
+    # NEW: grouped raw vs ipa vs tokenized (if filtered_json provided and any matches exist)
+    if tok_kb_map:
+        any_tok = any(s.tok_bytes is not None for s in stats)
+        if any_tok:
+            make_grouped_raw_ipa_tok(
+                stats,
+                outdir / f"bar_grouped_raw_ipa_{args.tok_method}.png" if args.save else None,
+                tok_label=args.tok_method,
+                title=f"Raw vs IPA vs {args.tok_method} (bytes)",
+            )
+        else:
+            print(f"[warn] --filtered-json provided but no tokenized_sizes['{args.tok_method}'] matched your lang keys.")
 
     if args.save and args.csv:
         write_csv(stats, outdir / "ipa_vs_raw_stats.csv")
 
     for s in stats:
+        tok_str = "n/a" if s.tok_bytes is None else str(s.tok_bytes)
         print(
             f"{s.lang:14s} raw={s.raw_bytes:8d} "
             f"ipa={s.ipa_bytes:8d} "
+            f"tok({args.tok_method})={tok_str:>8s} "
             f"ratio={s.ratio_bytes:6.3f} "
             f"delta={s.delta_bytes:8d}"
         )

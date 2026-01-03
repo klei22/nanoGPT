@@ -1488,5 +1488,25 @@
     "tokenized_sizes": {
       "tiktoken": 259.185546875
     }
+  },
+  {
+    "language": "vie",
+    "script": "Latn",
+    "lang_script": "vie_Latn",
+    "size_kb": 360.0,
+    "filename": "text_vie_Latn.txt",
+    "tokenized_sizes": {
+      "tiktoken": 470.21875
+    }
+  },
+  {
+    "language": "swh",
+    "script": "Latn",
+    "lang_script": "swh_Latn",
+    "size_kb": 272.0,
+    "filename": "text_swh_Latn.txt",
+    "tokenized_sizes": {
+      "tiktoken": 223.5703125
+    }
   }
 ]
