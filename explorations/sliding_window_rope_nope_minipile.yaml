@@ -2,24 +2,57 @@
 # Mixed sliding-window and full causal attention (ratio 1:2) with RoPE only
 # on sliding-window layers.
 ---
+
+
+named_static_groups:
+  # Attn patterns
+  - named_group: "attn2t1"
+    window_size_layerlist:
+      - [256, 64, 64, 256, 64, 64, 256]
+  - named_group: "all_causal"
+    window_size_layerlist:
+      - [256, 256, 256, 256, 256, 256, 256]
+  - named_group: "all_sliding"
+    window_size_layerlist:
+      - [64, 64, 64, 64, 64, 64, 64]
+
+  # pos emb patterns
+  - named_group: "nope_to_rope_21"
+    use_rotary_embeddings_layerlist:
+      - [true, false, false, true, false, false, true]
+  - named_group: "all_rope"
+    use_rotary_embeddings_layerlist:
+      - [true, true, true, true, true, true, true]
+  - named_group: "all_nope"
+    use_rotary_embeddings_layerlist:
+      - [false, false, false, false, false, false, false]
+
+named_variation_groups:
+  - named_group: "pos_embd_var"
+    named_group_alternates: ["nope_to_rope_21", "all_rope", "all_nope"]
+  - named_group: "attn_patterns"
+    named_group_alternates: ["attn2t1", "all_causal", "all_sliding"]
+
 common_group:
   dataset: ["minipile"]
   device: ["cuda"]
   dtype: ["bfloat16"]
   compile: [true]
   never_save_checkpoint: [true]
-  max_iters: [20000]
-  eval_interval: [20000]
-  n_layer: [12]
-  n_head: [12]
-  n_embd: [768]
-  block_size: [1024]
+  max_iters: [10000]
+  eval_interval: [1000]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  block_size: [256]
   batch_size: [64]
   attention_variant: ["causal"]
   rope_variant: ["rope"]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  use_peri_ln: [true]
+  use_abs_pos_embeddings: [false]
 
 parameter_groups:
-  - window_size_layerlist:
-      - [256, null, null]
-    use_rotary_embeddings_layerlist:
-      - [true, false, false]
+  - named_group_variations: ["pos_embd_var", "attn_patterns"]
+
