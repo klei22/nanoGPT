@@ -1,0 +1,34 @@
+# hypersphere_clampnorm_vs_default.yaml
+---
+# Compare default RMSNorm vs hypersphere clamp norm under the same baseline settings.
+
+parameter_groups:
+  - norm_variant_wte: ["rmsnorm"]
+    norm_variant_attn: ["rmsnorm"]
+    norm_variant_output: ["rmsnorm"]
+  - norm_variant_wte: ["hypersphereclampnorm"]
+    norm_variant_attn: ["hypersphereclampnorm"]
+    norm_variant_output: ["hypersphereclampnorm"]
+
+# Base hyperparameters
+max_iters: [5000]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+batch_size: [64]
+device: ["cuda"]
+dtype: ["float16"]
+dataset: ["shakespeare_char"]
+
+use_pre_ln: [true]
+use_peri_ln: [true]
+use_post_ln: [false]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+
+compile: [true]

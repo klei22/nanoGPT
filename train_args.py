@@ -701,6 +701,7 @@ def parse_args():
             "rmsnorm",
             "layernorm",
             "hyperspherenorm",
+            "hypersphereclampnorm",
             "dact",
             "identity",
             ]
@@ -1449,4 +1450,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-

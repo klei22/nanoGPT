@@ -1,0 +1,15 @@
+# default.yaml
+---
+use_pre_ln: [true]
+use_peri_ln: [true]
+use_post_ln: [false]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+norm_variant_wte: ["rmsnorm"]
+norm_variant_attn: ["rmsnorm"]
+norm_variant_output: ["rmsnorm"]
+
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
