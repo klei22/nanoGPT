@@ -1,0 +1,25 @@
+# explorations/sliding_window_rope_nope_minipile.yaml
+# Mixed sliding-window and full causal attention (ratio 1:2) with RoPE only
+# on sliding-window layers.
+---
+common_group:
+  dataset: ["minipile"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  never_save_checkpoint: [true]
+  max_iters: [20000]
+  eval_interval: [20000]
+  n_layer: [12]
+  n_head: [12]
+  n_embd: [768]
+  block_size: [1024]
+  batch_size: [64]
+  attention_variant: ["causal"]
+  rope_variant: ["rope"]
+
+parameter_groups:
+  - window_size_layerlist:
+      - [256, null, null]
+    use_rotary_embeddings_layerlist:
+      - [true, false, false]

@@ -869,6 +869,8 @@ def parse_args():
     model_group.add_argument("--n_cproj_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--n_kv_group_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--attention_variant_layerlist", nargs='+', action=LayerListAction, default=None)
+    model_group.add_argument("--use_rotary_embeddings_layerlist", nargs='+', action=LayerListAction, default=None)
+    model_group.add_argument("--window_size_layerlist", nargs='+', action=LayerListAction, default=None)
 
     ## Infinite Attention variation
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
@@ -1449,4 +1451,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-
