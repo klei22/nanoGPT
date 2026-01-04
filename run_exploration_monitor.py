@@ -5,8 +5,8 @@ Refreshes every N seconds, showing all runs in a DataTable view.
 Interactive keybindings:
   Enter - toggle sort by column
   h/l   - move column left/right
-  H/:   - move column all the way left/right
-  Ctrl+Shift+H/Ctrl+Shift+: - move column to left/right edge and move focus
+  a/f   - move column all the way left/right
+  b/n   - move column to left/right edge and move focus
   -     - jump back to previous cell location
   d     - hide column
   o     - unhide all columns
@@ -67,8 +67,8 @@ def load_runs(log_file: Path) -> List[Dict]:
 HOTKEYS_TEXT = (
     "Enter: toggle sort by column\n"
     "h/l: move column left/right\n"
-    "H/: move column all the way left/right\n"
-    "Ctrl+Shift+H/Ctrl+Shift+: move column to left/right edge and move focus\n"
+    "a/f: move column all the way left/right\n"
+    "b/n: move column to left/right edge and move focus\n"
     "-: jump back to previous cell location\n"
     "d: hide column\n"
     "o: unhide all columns\n"
@@ -703,15 +703,15 @@ class MonitorApp(App):
                     col for col in self.all_columns if col not in self.hidden_cols
                 ]
                 self.refresh_table(new_cursor=t)
-        elif key in ("H", ":") or (key == ";" and getattr(event, "shift", False)):
-            move_left = key == "H"
+        elif key in ("a", "f"):
+            move_left = key == "a"
             self._move_column_to_edge(
                 col_index=c,
                 move_left=move_left,
                 move_cursor=False,
             )
-        elif key in ("ctrl+H", "ctrl+shift+H", "ctrl+shift+h", "ctrl+h", "ctrl+:", "ctrl+;", "ctrl+shift+;", "ctrl+shift+:"):
-            move_left = "H" in key or "h" in key
+        elif key in ("b", "n"):
+            move_left = key == "b"
             self._move_column_to_edge(
                 col_index=c,
                 move_left=move_left,
