@@ -9,7 +9,6 @@ Interactive keybindings:
   b/n   - move column to left/right edge and move focus
   k/j   - move cursor to top/bottom row
   v/m   - move cursor to leftmost/rightmost column
-  -     - jump back to previous cell location
   d     - hide column
   o     - unhide all columns
   x     - hide all rows matching current cell in column
@@ -73,7 +72,6 @@ HOTKEYS_TEXT = (
     "b/n: move column to left/right edge and move focus\n"
     "k/j: move cursor to top/bottom row\n"
     "v/m: move cursor to leftmost/rightmost column\n"
-    "-: jump back to previous cell location\n"
     "d: hide column\n"
     "o: unhide all columns\n"
     "x: hide rows matching value\n"
@@ -159,7 +157,6 @@ class MonitorApp(App):
         self._bar_digits: List[int] = []       # collected numeric keys
         self._trim_mode: bool = False          # 'z' zoom-bar mode
         self._trim_digit: List[int] = []       # holds the single digit
-        self._previous_cursor: Optional[tuple[int, int]] = None
         self.csv_dir: str = csv_dir
 
     def compose(self) -> ComposeResult:
@@ -553,22 +550,6 @@ class MonitorApp(App):
             return
         r, c = coord.row, coord.column
         key = event.key
-        if key == "-":
-            if self._previous_cursor is None:
-                self._msg("No previous cell")
-                return
-            prev_row, prev_col = self._previous_cursor
-            maxr = len(self.current_entries) - 1
-            maxc = len(self.columns) - 1
-            if maxr < 0 or maxc < 0:
-                return
-            self._previous_cursor = (r, c)
-            self.table.cursor_coordinate = (
-                min(max(prev_row, 0), maxr),
-                min(max(prev_col, 0), maxc),
-            )
-            return
-        self._previous_cursor = (r, c)
         if self._bar_mode:
             if key.isdigit() and key != "0":
                 self._bar_digits.append(int(key))
