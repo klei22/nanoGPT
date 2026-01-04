@@ -495,6 +495,7 @@ class GPT(nn.Module):
 
                 layer_idx += 1
 
+            activation_kurtosis_loss = self._activation_kurtosis_loss()
             if self.use_ln_f_input_mixer:
                 x = self.ln_f_mixer(layer_outputs)
 
@@ -552,6 +553,8 @@ class GPT(nn.Module):
                             )
                         else:
                             loss_i = loss_fn(logits[i], target_list[i], iter_num=iter_num)
+                        if activation_kurtosis_loss is not None:
+                            loss_i = loss_i + activation_kurtosis_loss
                         losses.append(loss_i)
 
                 else:
@@ -649,6 +652,7 @@ class GPT(nn.Module):
 
                 layer_idx +=1
 
+            activation_kurtosis_loss = self._activation_kurtosis_loss()
             if self.use_ln_f_input_mixer:
                 x = self.ln_f_mixer(layer_outputs)
 
@@ -674,6 +678,8 @@ class GPT(nn.Module):
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
                 else:
                     loss = loss_fn(logits, targets, iter_num=iter_num)
+                if activation_kurtosis_loss is not None:
+                    loss = loss + activation_kurtosis_loss
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
                 if self.config.multidataset_wte and dataset_idx is not None:
@@ -689,6 +695,19 @@ class GPT(nn.Module):
                 loss = None
 
             return logits, loss
+
+    def _activation_kurtosis_loss(self):
+        if self.config.activation_kurtosis_reg <= 0:
+            return None
+        losses = []
+        for block in self.transformer.h:
+            for module in (block.attn, block.mlp):
+                loss = getattr(module, "kurtosis_loss", None)
+                if loss is not None:
+                    losses.append(loss)
+        if not losses:
+            return None
+        return torch.stack(losses).sum()
     # ------------------------------------------------------------------
     #  LATENT-CHAINING
     # ------------------------------------------------------------------
