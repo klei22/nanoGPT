@@ -1002,6 +1002,10 @@ def parse_args():
 
     ## Activations
     model_group.add_argument("--activations_quant_method", type=str, default="affine_quant", choices=quant_methods, help="function used for quantization of activations")
+    model_group.add_argument("--activation_qat", action=argparse.BooleanOptionalAction, default=False, help="Enable learnable clip values for activation QAT.")
+    model_group.add_argument("--activation_qat_clip_init", type=float, default=4.0, help="Initial symmetric clip value for activation QAT.")
+    model_group.add_argument("--activation_kurtosis_reg", type=float, default=0.0, help="Kurtosis regularization strength on layer outputs.")
+    model_group.add_argument("--activation_kurtosis_eps", type=float, default=1e-6, help="Numerical stability term for kurtosis regularization.")
 
     ### Attention Activations
     model_group.add_argument("--quantize_attn_act", action=argparse.BooleanOptionalAction, default=False, help="quantize all input/output activations in attn")
@@ -1449,4 +1453,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-
