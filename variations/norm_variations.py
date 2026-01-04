@@ -132,8 +132,11 @@ class HyperSphereClampNorm(nn.Module):
 
     def forward(self, x):
         radius = self.const_radius_factor * self.radius_init_factor
+        if not torch.is_tensor(radius):
+            radius = torch.tensor(radius, device=x.device, dtype=x.dtype)
+        radius = torch.clamp(radius, min=1e-6)
         hypersphere_norm = x.norm(2, dim=-1, keepdim=True)
-        denom = torch.clamp(hypersphere_norm / radius, min=1.0)
+        denom = torch.maximum(hypersphere_norm, radius) / radius
         return (x / denom) * self.gain
 
 class pRMSNorm(nn.Module):
