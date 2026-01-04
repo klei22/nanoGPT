@@ -1,0 +1,34 @@
+# explorations/shared_kv_sharing.yaml
+# Sweep: shared KV projection patterns for cross-layer KV cache sharing
+#
+# Each key with a *list* value is expanded cartesian-product style
+# by the run_experiments.py launcher.
+
+# ── dataset & compute ──────────────────────────────────────────────
+dataset: ["minipile"]
+device:  ["cuda"]
+compile: [true]
+never_save_checkpoint: [true]
+dtype: ["bfloat16"]
+
+# ── base model hyper-params (SMALL net) ────────────────────────────
+max_iters: [10000]
+eval_interval: [10000]
+eta_variant: ["iteration"]
+
+# ── base architecture ──────────────────────────────────────────────
+n_layer: [8]
+n_embd: [512]
+n_head: [8]
+block_size: [1024]
+batch_size: [64]
+
+# ── KV SHARING GRID  (cartesian product) ───────────────────────────
+# Size-sharing: reuse KV projections every k layers
+shared_kv_size: [1, 2, 3]
+
+# Sequence-sharing: cyclic A-B-C pattern length
+shared_kv_seq: [1, 2, 3, 4]
+
+# Symmetry mirror
+shared_kv_sym: [false, true]
