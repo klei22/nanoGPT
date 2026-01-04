@@ -20,7 +20,7 @@ pushd "${WORK_DIR}" > /dev/null
 python3 ../prepare.py \
   -t input.txt \
   --method char_bpe \
-  --vocab_size 128 \
+  --vocab_size 300 \
   -T \
   --train_output train.bin \
   --val_output val.bin
