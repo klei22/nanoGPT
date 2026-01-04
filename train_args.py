@@ -621,6 +621,9 @@ def parse_args():
     model_group.add_argument('--shared_attn_size', default=1, type=int, help="every 'k' contiguous blocks of attn are shared")
     model_group.add_argument('--shared_attn_sym', default=False, action=argparse.BooleanOptionalAction, help="symmetrical attention sharing")
     model_group.add_argument('--shared_attn_seq', default=1, type=int, help="Sequence length for cyclic sharing of attention layers")
+    model_group.add_argument('--shared_kv_size', default=1, type=int, help="every 'k' contiguous KV projections are shared across layers")
+    model_group.add_argument('--shared_kv_sym', default=False, action=argparse.BooleanOptionalAction, help="symmetrical KV projection sharing")
+    model_group.add_argument('--shared_kv_seq', default=1, type=int, help="Sequence length for cyclic sharing of KV projections")
 
     ## Learned Confidence Residual Scaling
     confidence_variants = ["zeros", "ones", "gaussian"]
@@ -1449,4 +1452,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-

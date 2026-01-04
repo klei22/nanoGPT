@@ -133,7 +133,10 @@ class GPT(nn.Module):
         # Use the new SharedParamGroupCreator for MLP and Attn layers
         spg_creator = SharedParamGroupCreator(config)
         shared_mlp_array = spg_creator.create_shared_param_group("mlp")
-        shared_attn_array = spg_creator.create_shared_param_group("attn")
+        shared_kv_array = None
+        if config.shared_kv_size > 1 or config.shared_kv_seq > 1 or config.shared_kv_sym:
+            shared_kv_array = spg_creator.create_shared_param_group("kv")
+        shared_attn_array = spg_creator.create_shared_param_group("attn", shared_kv_array=shared_kv_array)
 
         # General weight tying
         self.wte_weight_tying = config.wte_weight_tying
@@ -196,6 +199,13 @@ class GPT(nn.Module):
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
+        if shared_kv_array is not None:
+            self._shared_kv_modules = []
+            for kv in shared_kv_array:
+                if kv not in self._shared_kv_modules:
+                    self._shared_kv_modules.append(kv)
+        else:
+            self._shared_kv_modules = []
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
         # Optional post-embedding normalizations
@@ -406,6 +416,10 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
+    def _reset_shared_kv_cache(self):
+        for kv in self._shared_kv_modules:
+            kv.reset_cache()
+
     def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
         if token_dict is not None:
             token_list = list(token_dict.values())
@@ -441,6 +455,8 @@ class GPT(nn.Module):
                 x = self.transformer.drop(x)
 
             x.requires_grad_(True)
+
+            self._reset_shared_kv_cache()
 
             # sum all learned position residuals
             learned_sum = None
@@ -609,6 +625,8 @@ class GPT(nn.Module):
 
             x.requires_grad_(True)  # Ensure requires_grad is True
 
+            self._reset_shared_kv_cache()
+
             if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
                 x = self.lsv_matrix(x)
 
@@ -736,6 +754,8 @@ class GPT(nn.Module):
         # ---- copy–paste from the “else:” branch of forward() ---------
         b, t, _ = x_emb.size()
         x = x_emb
+
+        self._reset_shared_kv_cache()
 
         # (learned position residuals, steering vectors, etc.)
         learned_sum = None

@@ -39,13 +39,66 @@ def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
         )
 
     return group_sizes, head_to_group
+
+
+class SharedKVProjections(nn.Module):
+    """Shared K/V projection block with a lightweight cache for cross-layer reuse."""
+
+    def __init__(self, config):
+        super().__init__()
+        if config.n_kv_group is None:
+            config.n_kv_group = config.n_head
+
+        self.n_head = config.n_head
+        self.n_kv_group = config.n_kv_group
+        self.head_dim = config.n_embd // self.n_head
+        self.kv_dim = self.head_dim * self.n_kv_group
+
+        linear_variant_k = linear_dictionary[set_variant(config.linear_variant_k, config.linear_variant_attn)]
+        linear_variant_v = linear_dictionary[set_variant(config.linear_variant_v, config.linear_variant_attn)]
+
+        quant_k_method = set_variant(config.quantize_linear_attn_k_method, config.quantize_linear_method)
+        quant_k_bits = set_variant(config.quantize_linear_attn_k_bits, config.quantize_linear_bits)
+        quant_v_method = set_variant(config.quantize_linear_attn_v_method, config.quantize_linear_method)
+        quant_v_bits = set_variant(config.quantize_linear_attn_v_bits, config.quantize_linear_bits)
+
+        self.c_attn_k = linear_variant_k(
+            config.n_embd,
+            self.kv_dim,
+            config,
+            quant_k_method,
+            quant_k_bits,
+            bias=config.bias,
+        )
+        self.c_attn_v = linear_variant_v(
+            config.n_embd,
+            self.kv_dim,
+            config,
+            quant_v_method,
+            quant_v_bits,
+            bias=config.bias,
+        )
+
+        self._cached_k = None
+        self._cached_v = None
+
+    def reset_cache(self) -> None:
+        self._cached_k = None
+        self._cached_v = None
+
+    def get_cached(self):
+        return self._cached_k, self._cached_v
+
+    def store_cache(self, k, v) -> None:
+        self._cached_k = k
+        self._cached_v = v
 # Mamba related imports
 # if torch.cuda.is_available():
 #     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
 #     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, config, fire_pos_enc=None):
+    def __init__(self, config, fire_pos_enc=None, shared_kv=None):
         super().__init__()
 
         self.attn_logit_softcapping = config.attn_logit_softcapping
@@ -100,8 +153,13 @@ class CausalSelfAttention(nn.Module):
             torch.tensor(head_to_group, dtype=torch.long),
             persistent=False,
         )
-        self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.bias)
-        self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
+        self.shared_kv = shared_kv
+        if self.shared_kv is None:
+            self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.bias)
+            self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
+        else:
+            self.c_attn_k = None
+            self.c_attn_v = None
         self.c_proj = self.linear_variant_attn_proj(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_proj_method"], self.quantization_attn_dict["quantize_linear_attn_proj_bits"], bias=config.bias)
 
         # Regularization
@@ -287,24 +345,14 @@ class CausalSelfAttention(nn.Module):
             x = fake_quantize_act(self, "attn_act_input", x, num_bits, quant_method, iter_num)
 
         q = self.c_attn_q(x)
-        k = self.c_attn_k(x)
-        v = self.c_attn_v(x)
 
-        if self.window_size is not None:
-            if self.use_flex_attn is not None:
-                self.block_masks = {}
-            else:
-                self.window_mask = torch.ones((1, 1, T, T), device=x.device)
-                self.window_mask = torch.triu(self.window_mask, diagonal=-self.window_size)
-                self.window_mask = self.bias[:,:,:T,:T] * self.window_mask
-
+        gate_kv = None
         if self.gate:
             if self.n_kv_group == self.n_head:
                 Gating = nn.Linear(self.n_embd, self.n_embd, bias=True, device=x.device)
                 gate_ = torch.sigmoid(Gating(x))
                 q = q * gate_
-                k = k * gate_
-                v = v * gate_
+                gate_kv = gate_
             else:
                 # TODO: Test more methods to merge Attention Gates with GQA
                 # TODO: Evaluate each method's ability to even out parameter sizes
@@ -314,26 +362,60 @@ class CausalSelfAttention(nn.Module):
                 gate_q = torch.sigmoid(gate_qx)
                 gate_kv = torch.sigmoid(Gating_kv(gate_qx))
                 q = q * gate_q
+
+        k = v = None
+        kv_cached = False
+        if self.shared_kv is not None:
+            cached_k, cached_v = self.shared_kv.get_cached()
+            if cached_k is not None and cached_v is not None:
+                k = cached_k
+                v = cached_v
+                kv_cached = True
+
+        if not kv_cached:
+            if self.shared_kv is None:
+                k = self.c_attn_k(x)
+                v = self.c_attn_v(x)
+            else:
+                k = self.shared_kv.c_attn_k(x)
+                v = self.shared_kv.c_attn_v(x)
+
+            if gate_kv is not None:
                 k = k * gate_kv
                 v = v * gate_kv
 
+        if self.window_size is not None:
+            if self.use_flex_attn is not None:
+                self.block_masks = {}
+            else:
+                self.window_mask = torch.ones((1, 1, T, T), device=x.device)
+                self.window_mask = torch.triu(self.window_mask, diagonal=-self.window_size)
+                self.window_mask = self.bias[:,:,:T,:T] * self.window_mask
+
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
-        k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
-        v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+        if not kv_cached:
+            k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+            v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
 
         # rotate q and k before evaluating with the heads
         if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
             q = self.rotary_emb_q(q)
-            k = self.rotary_emb_k(k)
+            if not kv_cached:
+                k = self.rotary_emb_k(k)
 
         y = None
 
         if self.use_qk_norm:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+            if not kv_cached:
+                k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 
         if self.use_v_norm:
-            v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+            if not kv_cached:
+                v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+
+        if self.shared_kv is not None and not kv_cached:
+            self.shared_kv.store_cache(k, v)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -461,7 +543,7 @@ class CausalSelfAttention(nn.Module):
         return y
 
 class EdgeLLMASICAttention(nn.Module):
-    def __init__(self, config, fire_pos_enc=None):
+    def __init__(self, config, fire_pos_enc=None, shared_kv=None):
         super().__init__()
 
         self.attn_logit_softcapping = config.attn_logit_softcapping
@@ -520,8 +602,13 @@ class EdgeLLMASICAttention(nn.Module):
             torch.tensor(head_to_group, dtype=torch.long),
             persistent=False,
         )
-        self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.bias)
-        self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
+        self.shared_kv = shared_kv
+        if self.shared_kv is None:
+            self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.bias)
+            self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
+        else:
+            self.c_attn_k = None
+            self.c_attn_v = None
         self.c_proj = self.linear_variant_attn_proj(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_proj_method"], self.quantization_attn_dict["quantize_linear_attn_proj_bits"], bias=config.bias)
 
         # Regularization
@@ -622,24 +709,14 @@ class EdgeLLMASICAttention(nn.Module):
             x = fake_quantize_act(self, "attn_act_input", x, num_bits, quant_method, iter_num)
 
         q = self.c_attn_q(x)
-        k = self.c_attn_k(x)
-        v = self.c_attn_v(x)
 
-        if self.window_size is not None:
-            if self.use_flex_attn is not None:
-                self.block_masks = {}
-            else:
-                self.window_mask = torch.ones((1, 1, T, T), device=x.device)
-                self.window_mask = torch.triu(self.window_mask, diagonal=-self.window_size)
-                self.window_mask = self.bias[:,:,:T,:T] * self.window_mask
-
+        gate_kv = None
         if self.gate:
             if self.n_kv_group == self.n_head:
                 Gating = nn.Linear(self.n_embd, self.n_embd, bias=True, device=x.device)
                 gate_ = torch.sigmoid(Gating(x))
                 q = q * gate_
-                k = k * gate_
-                v = v * gate_
+                gate_kv = gate_
             else:
                 # TODO: Test more methods to merge Attention Gates with GQA
                 # TODO: Evaluate each method's ability to even out parameter sizes
@@ -649,26 +726,60 @@ class EdgeLLMASICAttention(nn.Module):
                 gate_q = torch.sigmoid(gate_qx)
                 gate_kv = torch.sigmoid(Gating_kv(gate_qx))
                 q = q * gate_q
+
+        k = v = None
+        kv_cached = False
+        if self.shared_kv is not None:
+            cached_k, cached_v = self.shared_kv.get_cached()
+            if cached_k is not None and cached_v is not None:
+                k = cached_k
+                v = cached_v
+                kv_cached = True
+
+        if not kv_cached:
+            if self.shared_kv is None:
+                k = self.c_attn_k(x)
+                v = self.c_attn_v(x)
+            else:
+                k = self.shared_kv.c_attn_k(x)
+                v = self.shared_kv.c_attn_v(x)
+
+            if gate_kv is not None:
                 k = k * gate_kv
                 v = v * gate_kv
 
+        if self.window_size is not None:
+            if self.use_flex_attn is not None:
+                self.block_masks = {}
+            else:
+                self.window_mask = torch.ones((1, 1, T, T), device=x.device)
+                self.window_mask = torch.triu(self.window_mask, diagonal=-self.window_size)
+                self.window_mask = self.bias[:,:,:T,:T] * self.window_mask
+
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
-        k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
-        v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+        if not kv_cached:
+            k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+            v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
 
         # rotate q and k before evaluating with the heads
         if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
             q = self.rotary_emb_q(q)
-            k = self.rotary_emb_k(k)
+            if not kv_cached:
+                k = self.rotary_emb_k(k)
 
         y = None
 
         if self.use_qk_norm:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+            if not kv_cached:
+                k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 
         if self.use_v_norm:
-            v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+            if not kv_cached:
+                v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+
+        if self.shared_kv is not None and not kv_cached:
+            self.shared_kv.store_cache(k, v)
 
         if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
@@ -785,7 +896,7 @@ class LinearAttention(nn.Module):
     kernel-based linear attention mechanism, enabling linear
     time and space complexity with respect to sequence length.
     """
-    def __init__(self, config, fire_pos_enc=None):
+    def __init__(self, config, fire_pos_enc=None, shared_kv=None):
         super().__init__()
         assert config.n_embd % config.n_head == 0
 
@@ -971,7 +1082,7 @@ class LinearAttention(nn.Module):
 
 
 class AttnIdentity(nn.Identity):
-    def __init__(self, config, fire_pos_enc=None):
+    def __init__(self, config, fire_pos_enc=None, shared_kv=None):
         super().__init__()
 
     def forward(self, x, iter_num=None):
@@ -995,7 +1106,7 @@ class InfiniteHeadAttention(nn.Module):
              been noted to be a bottleneck when digesting large trees of information
              in a single layer e.g. multidigit addition.
     """
-    def __init__(self, config, fire_pos_enc=None):
+    def __init__(self, config, fire_pos_enc=None, shared_kv=None):
         super().__init__()
 
         self.n_head = config.n_head
@@ -1328,7 +1439,7 @@ class MultiHeadLatentAttention(nn.Module):
     later without changing the forward pass.
     """
 
-    def __init__(self, config, fire_pos_enc: nn.Module | None = None):
+    def __init__(self, config, fire_pos_enc: nn.Module | None = None, shared_kv=None):
         super().__init__()
 
         # ── dimensions ──────────────────────────────────────────────────────
@@ -1455,7 +1566,7 @@ class Co4Attention(nn.Module):
     *   triadic loops between (Q, K, V) with MOD transfer-function
     *   final latent-to-token dot-product attention
     """
-    def __init__(self, config, fire_pos_enc=None):
+    def __init__(self, config, fire_pos_enc=None, shared_kv=None):
         super().__init__()
 
         assert config.n_embd % config.n_head == 0, "n_embd must be divisible by n_head"
