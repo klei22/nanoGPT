@@ -7,6 +7,8 @@ Interactive keybindings:
   h/l   - move column left/right
   a/f   - move column all the way left/right
   b/n   - move column to left/right edge and move focus
+  k/j   - move cursor to top/bottom row
+  v/m   - move cursor to leftmost/rightmost column
   -     - jump back to previous cell location
   d     - hide column
   o     - unhide all columns
@@ -69,6 +71,8 @@ HOTKEYS_TEXT = (
     "h/l: move column left/right\n"
     "a/f: move column all the way left/right\n"
     "b/n: move column to left/right edge and move focus\n"
+    "k/j: move cursor to top/bottom row\n"
+    "v/m: move cursor to leftmost/rightmost column\n"
     "-: jump back to previous cell location\n"
     "d: hide column\n"
     "o: unhide all columns\n"
@@ -705,6 +709,22 @@ class MonitorApp(App):
                     col for col in self.all_columns if col not in self.hidden_cols
                 ]
                 self.refresh_table(new_cursor=t)
+        elif key in ("k", "j", "v", "m"):
+            maxr = len(self.current_entries) - 1
+            maxc = len(self.columns) - 1
+            if maxr < 0 or maxc < 0:
+                return
+            target_row, target_col = r, c
+            if key == "k":
+                target_row = 0
+            elif key == "j":
+                target_row = maxr
+            elif key == "v":
+                target_col = 0
+            elif key == "m":
+                target_col = maxc
+            self.table.cursor_coordinate = (target_row, target_col)
+            return
         elif key in ("a", "f"):
             move_left = key == "a"
             self._move_column_to_edge(
