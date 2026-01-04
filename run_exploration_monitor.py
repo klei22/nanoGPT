@@ -204,6 +204,7 @@ class MonitorApp(App):
             self.columns = [c for c in self.all_columns if c not in self.hidden_cols]
             self.sort_stack = [tuple(p) for p in cfg.get("sort_stack", [])]
             self.colour_columns = set(cfg.get("colour_columns", []))
+            self.auto_fit_columns = set(cfg.get("auto_fit_columns", []))
             # Restore saved row filters
             self.row_filters = cfg.get("row_filters", [])
             self.current_entries = list(self.original_entries)
@@ -647,6 +648,7 @@ class MonitorApp(App):
                 "hidden_cols": list(self.hidden_cols),
                 "sort_stack":  [[i, asc] for i, asc in self.sort_stack],
                 "colour_columns": list(self.colour_columns),
+                "auto_fit_columns": list(self.auto_fit_columns),
                 "row_filters": getattr(self, "row_filters", []),
             }
             self.config_file.write_text(json.dumps(cfg, indent=2))
