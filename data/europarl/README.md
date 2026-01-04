@@ -1,10 +1,12 @@
 # Europarl (Helsinki-NLP/europarl)
 
+This directory contains scripts compatible with the Europarl dataset.
+
 ## Summary
 The OPUS Europarl dataset is a parallel corpus extracted from the European Parliament web site by Philipp Koehn (University of Edinburgh). It is commonly used for machine translation and cross-lingual word embedding research.
 
 ## Data source
-- Dataset: https://huggingface.co/datasets/Helsinki-NLP/europarl/tree/main/en-pt
+- Dataset: https://huggingface.co/datasets/Helsinki-NLP/europarl
 - OPUS Europarl: https://opus.nlpl.eu/Europarl/corpus/version/Europarl
 - Additional info: http://www.statmt.org/europarl/
 
@@ -18,19 +20,6 @@ bg, cs, da, de, el, en, es, et, fi, fr, hu, it, lt, lv, nl, pl, pt, ro, sk, sl, 
 - **Auto-converted Parquet size:** 35.6 GB
 - **Data split:** train only
 
-### Example
-```json
-{
-  "translation": {
-    "en": "Resumption of the session",
-    "fr": "Reprise de la session"
-  }
-}
-```
-
-### Fields
-- `translation`: a dictionary containing two strings paired with keys indicating the corresponding languages.
-
 ## Usage
 From this directory, run:
 
@@ -42,10 +31,6 @@ This uses `data/template/utils/get_parquet_translation_dataset.py` to download t
 
 ## Licensing
 The dataset comes with the same license as the original sources. See the OPUS Europarl page for details: https://opus.nlpl.eu/Europarl/corpus/version/Europarl
-
-The terms of use of the original source dataset are:
-
-> We are not aware of any copyright restrictions of the material. If you use this data in your research, please contact phi@jhu.edu.
 
 ## Citation
 Please cite the following works when using this corpus:
@@ -86,5 +71,3 @@ Please cite the following works when using this corpus:
 }
 ```
 
-## Contributions
-Thanks to @lucadiliello for adding this dataset.
