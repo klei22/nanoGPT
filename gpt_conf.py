@@ -227,6 +227,10 @@ class GPTConfig:
     shared_attn_size: int = 1
     shared_attn_sym: bool = False
     shared_attn_seq: int = 1
+    # KV sharing (cross-layer attention)
+    shared_kv_size: int = 1
+    shared_kv_sym: bool = False
+    shared_kv_seq: int = 1
 
     # Softmax Alternatives and Options
     softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
@@ -582,4 +586,3 @@ class GPTConfig:
 
         with open(filename, 'w') as json_file:
             json.dump(conf_dict, json_file)
-

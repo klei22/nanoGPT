@@ -14,7 +14,7 @@ from rich.text import Text
 
 _console = Console()
 
-from variations.attention_variations import attention_dictionary
+from variations.attention_variations import SharedKVProjections, attention_dictionary
 from variations.mlp_variations import get_mlp_instance
 from variations.moe_variations import MoELayer
 from variations.position_encoding_variations import FIRE
@@ -46,7 +46,7 @@ class SharedParamGroupCreator:
             self.fire_pos_enc = FIRE(config, num_heads=config.n_head)
 
 
-    def create_shared_param_group(self, layer_type):
+    def create_shared_param_group(self, layer_type, shared_kv_array=None):
         """
         Creates a shared list of layer blocks (either MLP or Attn), optionally
         reusing blocks every 'shared_size' layers and reflecting them symmetrically
@@ -71,8 +71,12 @@ class SharedParamGroupCreator:
             shared_size = self.config.shared_attn_size
             shared_sym = self.config.shared_attn_sym
             seq_len     = self.config.shared_attn_seq
+        elif layer_type == "kv":
+            shared_size = self.config.shared_kv_size
+            shared_sym = self.config.shared_kv_sym
+            seq_len = self.config.shared_kv_seq
         else:
-            sys.exit(f"{layer_type} not supported. Use 'mlp' or 'attn' only.")
+            sys.exit(f"{layer_type} not supported. Use 'mlp', 'attn', or 'kv' only.")
 
         shared_group = []
         layer_block = None
@@ -179,14 +183,14 @@ class SharedParamGroupCreator:
                 seq_idx  = (i // shared_size) % seq_len if shared_size > 1 else i % seq_len
                 layer_block = seq_pool[seq_idx]
                 if layer_block is None:
-                    layer_block = _build_block(layer_type, layer_config, self.fire_pos_enc)
+                    layer_block = _build_block(layer_type, layer_config, self.fire_pos_enc, shared_kv_array)
 
                     seq_pool[seq_idx] = layer_block
             else:
                 # create a new block only every k layers,
                 # otherwise keep re-using the last one
                 if i % shared_size == 0 or layer_block is None:
-                    layer_block = _build_block(layer_type, layer_config, self.fire_pos_enc)
+                    layer_block = _build_block(layer_type, layer_config, self.fire_pos_enc, shared_kv_array)
 
             # Add this (possibly reused) block for *every* logical layer
             shared_group.append(layer_block)
@@ -230,7 +234,7 @@ class SharedParamGroupCreator:
 # Helper to move logic out of the main loop
 # ─────────────────────────────────────────────────────────────
 
-def _build_block(layer_type: str, layer_config, fire_pos_enc):
+def _build_block(layer_type: str, layer_config, fire_pos_enc, shared_kv_array):
     """Factory wrapper so we don’t repeat the same if/else everywhere."""
     if layer_type == "mlp":
         if layer_config.use_moe and layer_config.layer_idx % layer_config.moe_layer_freq == 0:
@@ -244,6 +248,9 @@ def _build_block(layer_type: str, layer_config, fire_pos_enc):
             block._debug_size = getattr(layer_config, "mlp_size", "?")
         return block
 
+    if layer_type == "kv":
+        return SharedKVProjections(layer_config)
+
     # Attention
     variant = layer_config.attention_variant
     if hasattr(layer_config, "attention_list") and layer_config.attention_list:
@@ -251,7 +258,10 @@ def _build_block(layer_type: str, layer_config, fire_pos_enc):
         idx = layer_config.layer_idx % len(variant_list)
         variant = variant_list[idx]
     attn_cls = attention_dictionary[variant]
-    return attn_cls(layer_config, fire_pos_enc=fire_pos_enc)
+    shared_kv = None
+    if shared_kv_array is not None:
+        shared_kv = shared_kv_array[layer_config.layer_idx]
+    return attn_cls(layer_config, fire_pos_enc=fire_pos_enc, shared_kv=shared_kv)
 
 # ─────────────────────────────────────────────────────────────
 #  Debug printer
