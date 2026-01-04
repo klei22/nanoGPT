@@ -2,18 +2,22 @@
 """
 spm_vocab_freq_dashboard.py
 
-Build a single self-contained HTML dashboard (Plotly + vanilla JS) that shows:
+Single-script, self-contained HTML dashboard (Plotly + vanilla JS) that shows:
 
 LEFT:
-  - SentencePiece vocab tokens + total frequency across *all* .txt files in a directory
-  - searchable dropdown to pick a token (and optional click-to-select from table)
+  - SentencePiece vocab tokens + total frequency across *all* text files in a directory
+  - searchable dropdown to pick a token
+  - click-to-select from the token table
 
-RIGHT:
-  - per-file counts for the currently-selected token (bar chart)
-  - updates live in the same HTML (no server)
+RIGHT (top):
+  - per-file counts for the selected token (bar chart)
+
+RIGHT (bottom):
+  - square similarity heatmap clustering text files by similarity across high-frequency vocab
+    (cosine similarity over TF-IDF on top vocab tokens)
 
 Why we require a .model:
-  - SentencePiece tokenization is not plain substring matching; to get true token frequencies,
+  - SentencePiece tokenization is not substring matching; to get true token frequencies,
     we MUST encode text using the SentencePiece model.
 
 Defaults:
@@ -25,8 +29,8 @@ Output:
   vocab_freq_dashboard.html (or --out)
 
 Example:
-  python3 spm_vocab_freq_dashboard.py --dir ./text --vocab trained_spm_model.vocab
-  python3 spm_vocab_freq_dashboard.py --dir ./text --model trained_spm_model.model --top-k 2000
+  python3 spm_vocab_freq_dashboard.py --dir ./text --vocab trained_spm_model.vocab --heatmap
+  python3 spm_vocab_freq_dashboard.py --dir ./text --heatmap-top-k 500 --recursive
 """
 
 from __future__ import annotations
@@ -35,24 +39,26 @@ import argparse
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import sentencepiece as spm
 
+# For heatmap similarity: NumPy required (SciPy not needed)
+try:
+    import numpy as np
+except Exception as e:
+    np = None
+    _NUMPY_IMPORT_ERROR = e
+
 
 def infer_model_path_from_vocab(vocab_path: Path) -> Path:
-    # trained_spm_model.vocab -> trained_spm_model.model
     if vocab_path.suffix.lower() == ".vocab":
         return vocab_path.with_suffix(".model")
-    # fallback: append .model
     return Path(str(vocab_path) + ".model")
 
 
 def iter_text_files(root: Path, recursive: bool, suffixes: Tuple[str, ...]) -> List[Path]:
-    if recursive:
-        it = root.rglob("*")
-    else:
-        it = root.glob("*")
+    it = root.rglob("*") if recursive else root.glob("*")
     files = []
     for p in it:
         if p.is_file() and p.suffix.lower() in suffixes:
@@ -74,9 +80,159 @@ def count_tokens_in_file(sp: spm.SentencePieceProcessor, path: Path) -> Counter:
 
 
 def human_token(tok: str) -> str:
-    # Make SentencePiece boundary visible and avoid crazy HTML rendering.
-    # Keep it readable: ▁ (U+2581) is the "word boundary" marker in SPM.
     return tok.replace("\t", " ").replace("\n", "\\n")
+
+
+def _build_tfidf_matrix(
+    file_names: List[str],
+    per_file: Dict[str, Counter],
+    token_ids: List[int],
+) -> "np.ndarray":
+    """
+    docs x tokens TF-IDF, L2-normalized per doc
+    """
+    assert np is not None
+    n_docs = len(file_names)
+    n_tok = len(token_ids)
+    if n_docs == 0 or n_tok == 0:
+        return np.zeros((n_docs, n_tok), dtype=np.float32)
+
+    tok_to_col = {tid: j for j, tid in enumerate(token_ids)}
+
+    # document frequency
+    df = np.zeros((n_tok,), dtype=np.int32)
+    for fn in file_names:
+        c = per_file[fn]
+        for tid in c.keys():
+            j = tok_to_col.get(tid)
+            if j is not None:
+                df[j] += 1
+
+    # smooth idf
+    idf = np.log((n_docs + 1.0) / (df.astype(np.float32) + 1.0)) + 1.0
+
+    X = np.zeros((n_docs, n_tok), dtype=np.float32)
+    for i, fn in enumerate(file_names):
+        c = per_file[fn]
+        row = X[i]
+        for tid, cnt in c.items():
+            j = tok_to_col.get(tid)
+            if j is not None:
+                row[j] = float(cnt)
+
+        row *= idf
+
+        # L2 normalize
+        norm = float(np.linalg.norm(row))
+        if norm > 0:
+            row /= norm
+
+    return X
+
+
+def _cosine_similarity_matrix(X: "np.ndarray") -> "np.ndarray":
+    """
+    X assumed rows L2-normalized; cosine similarity = X @ X.T
+    """
+    assert np is not None
+    if X.size == 0:
+        return np.zeros((X.shape[0], X.shape[0]), dtype=np.float32)
+    S = X @ X.T
+    # numerical guard
+    S = np.clip(S, -1.0, 1.0).astype(np.float32)
+    # make diagonal exactly 1
+    n = S.shape[0]
+    for i in range(n):
+        S[i, i] = 1.0
+    return S
+
+
+def _order_by_simple_clustering(S: "np.ndarray") -> List[int]:
+    """
+    Optional: reorder files so similar ones are near each other, without SciPy.
+    Greedy "nearest neighbor chain" heuristic:
+      - start from most "central" (max average similarity)
+      - repeatedly append most similar unused item to the last
+    """
+    assert np is not None
+    n = S.shape[0]
+    if n <= 2:
+        return list(range(n))
+
+    avg = S.mean(axis=1)
+    start = int(np.argmax(avg))
+    order = [start]
+    used = set(order)
+
+    while len(order) < n:
+        last = order[-1]
+        # pick unused with max similarity to last
+        best_j = None
+        best_val = -1e9
+        for j in range(n):
+            if j in used:
+                continue
+            v = float(S[last, j])
+            if v > best_val:
+                best_val = v
+                best_j = j
+        order.append(int(best_j))
+        used.add(int(best_j))
+
+    return order
+
+
+def _build_heatmap_payload(
+    file_names: List[str],
+    per_file: Dict[str, Counter],
+    token_ids_for_heatmap: List[int],
+    reorder: bool,
+) -> Dict:
+    """
+    Returns plotly-ready payload for similarity heatmap.
+    """
+    if np is None:
+        raise RuntimeError(
+            "NumPy is required for heatmap mode.\n"
+            f"Import error: {_NUMPY_IMPORT_ERROR!r}\n"
+            "Install: python3 -m pip install numpy"
+        )
+
+    if len(file_names) < 2:
+        return {"ok": False, "reason": "Need at least 2 files to build a similarity heatmap."}
+
+    X = _build_tfidf_matrix(file_names, per_file, token_ids_for_heatmap)
+    S = _cosine_similarity_matrix(X)
+
+    idx = list(range(len(file_names)))
+    if reorder:
+        idx = _order_by_simple_clustering(S)
+
+    labels = [file_names[i] for i in idx]
+    S2 = S[np.ix_(idx, idx)]
+
+    # convert to nested lists for JSON
+    z = S2.tolist()
+
+    traces = [{
+        "type": "heatmap",
+        "z": z,
+        "x": labels,
+        "y": labels,
+        "zmin": 0.0,
+        "zmax": 1.0,
+        "hovertemplate": "x=%{x}<br>y=%{y}<br>cosine=%{z:.3f}<extra></extra>",
+        # no explicit colorscale specified (Plotly default) to match your earlier “no custom colors” vibe
+    }]
+
+    layout = {
+        "margin": {"l": 120, "r": 20, "t": 40, "b": 120},
+        "title": "File similarity heatmap (TF-IDF on high-freq SPM vocab, cosine similarity)",
+        "xaxis": {"tickangle": 35, "automargin": True},
+        "yaxis": {"automargin": True},
+    }
+
+    return {"ok": True, "traces": traces, "layout": layout}
 
 
 def build_html(
@@ -85,23 +241,18 @@ def build_html(
     per_file_counts: Dict[str, Dict[str, int]],
     file_order: List[str],
     default_token_id: int,
+    heatmap_payload: Optional[Dict],
     out_path: Path,
 ) -> None:
-    """
-    token_rows: list of dicts for top-k tokens: {id, token, count}
-    per_file_counts: { token_id(str) -> { file_name -> count } } only for tokens we embed
-    file_order: stable order of files for bar chart
-    """
     payload = {
         "title": title,
         "tokens": token_rows,
         "per_file": per_file_counts,
         "files": file_order,
         "default_token_id": default_token_id,
+        "heatmap": heatmap_payload,
     }
 
-    # NOTE: This uses Plotly CDN for a "dynamic" interactive page without extra deps.
-    # If you need fully offline HTML (no CDN), we can embed plotly.min.js, but the file is huge.
     html = f"""<!doctype html>
 <html>
 <head>
@@ -170,9 +321,20 @@ def build_html(
       flex: 1;
       min-height: 200px;
     }}
+    .rightCharts {{
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+      overflow: hidden;
+    }}
     #barDiv {{
       flex: 1;
       min-height: 200px;
+    }}
+    #heatDiv {{
+      flex: 1;
+      min-height: 260px;
     }}
     .note {{
       font-size: 12px;
@@ -187,7 +349,7 @@ def build_html(
 <body>
 <header>
   <h1>{title}</h1>
-  <span class="muted">Click a row (or use dropdown) to update per-file counts.</span>
+  <span class="muted">Pick a token to update per-file counts; heatmap shows file similarity via high-frequency vocab.</span>
 </header>
 
 <div class="container">
@@ -206,10 +368,13 @@ def build_html(
   </div>
 
   <div class="panel">
-    <h2 id="rightTitle">Per-file counts</h2>
-    <div id="barDiv"></div>
+    <h2 id="rightTitle">Per-file counts + similarity heatmap</h2>
+    <div class="rightCharts">
+      <div id="barDiv"></div>
+      <div id="heatDiv"></div>
+    </div>
     <div class="note">
-      Bars show token count per file (same tokenization as training).
+      Heatmap uses <b>TF-IDF</b> over high-frequency SentencePiece tokens and <b>cosine similarity</b>.
     </div>
   </div>
 </div>
@@ -218,9 +383,7 @@ def build_html(
 const DATA = {json.dumps(payload, ensure_ascii=False)};
 
 function fmtTokenRow(t) {{
-  // Make whitespace visible-ish in dropdown
   let s = t.token;
-  // show the word-boundary marker as "▁" (already is), but keep readable
   if (s.length > 60) s = s.slice(0, 57) + "…";
   return `${{t.id}}: ${{s}} (${{t.count}})`;
 }}
@@ -243,7 +406,6 @@ function filterTokens(tokens, q) {{
 }}
 
 function renderTable(tokens) {{
-  // Plotly table
   const ids = tokens.map(t => t.id);
   const toks = tokens.map(t => t.token);
   const counts = tokens.map(t => t.count);
@@ -261,13 +423,10 @@ function renderTable(tokens) {{
     }}
   }}];
 
-  const layout = {{
+  Plotly.newPlot("tableDiv", tableData, {{
     margin: {{l: 10, r: 10, t: 10, b: 10}},
-  }};
+  }}, {{displayModeBar: false}});
 
-  Plotly.newPlot("tableDiv", tableData, layout, {{displayModeBar: false}});
-
-  // Click-to-select token: for tables, plotly_click gives pointNumber (row index)
   const tableDiv = document.getElementById("tableDiv");
   tableDiv.on("plotly_click", (ev) => {{
     try {{
@@ -288,32 +447,52 @@ function renderBar(tokenId) {{
   const xs = DATA.files.slice();
   const ys = xs.map(fn => (per[fn] || 0));
 
-  const trace = {{
+  Plotly.newPlot("barDiv", [{{
     type: "bar",
     x: xs,
     y: ys
-  }};
-
-  const layout = {{
+  }}], {{
     margin: {{l: 50, r: 10, t: 30, b: 120}},
-    xaxis: {{
-      tickangle: 35,
-      automargin: true
-    }},
-    yaxis: {{
-      title: "Count"
-    }},
+    xaxis: {{ tickangle: 35, automargin: true }},
+    yaxis: {{ title: "Count" }},
     title: `Token: ${{name}} (id=${{tokenId}})`
-  }};
+  }}, {{displayModeBar: true}});
+}}
 
-  Plotly.newPlot("barDiv", [trace], layout, {{displayModeBar: true}});
-  document.getElementById("rightTitle").textContent = "Per-file counts";
+function renderHeatmap() {{
+  const h = DATA.heatmap;
+  const div = document.getElementById("heatDiv");
+
+  if (!h) {{
+    Plotly.newPlot(div, [], {{
+      margin: {{l: 20, r: 10, t: 30, b: 30}},
+      title: "Similarity heatmap: not computed",
+      annotations: [{{
+        text: "No heatmap payload present.",
+        xref: "paper", yref: "paper", x: 0.5, y: 0.5, showarrow: false
+      }}]
+    }}, {{displayModeBar: false}});
+    return;
+  }}
+
+  if (!h.ok) {{
+    Plotly.newPlot(div, [], {{
+      margin: {{l: 20, r: 10, t: 30, b: 30}},
+      title: "Similarity heatmap: unavailable",
+      annotations: [{{
+        text: h.reason || "Unavailable",
+        xref: "paper", yref: "paper", x: 0.5, y: 0.5, showarrow: false
+      }}]
+    }}, {{displayModeBar: false}});
+    return;
+  }}
+
+  Plotly.newPlot(div, h.traces, h.layout, {{displayModeBar: true}});
 }}
 
 function selectToken(tokenId, updateSelect) {{
   if (updateSelect) {{
-    const sel = document.getElementById("tokenSelect");
-    sel.value = String(tokenId);
+    document.getElementById("tokenSelect").value = String(tokenId);
   }}
   renderBar(tokenId);
 }}
@@ -321,11 +500,12 @@ function selectToken(tokenId, updateSelect) {{
 function init() {{
   buildSelectOptions(DATA.tokens);
 
-  // Default selection
   const sel = document.getElementById("tokenSelect");
   sel.value = String(DATA.default_token_id);
+
   renderTable(DATA.tokens);
   renderBar(DATA.default_token_id);
+  renderHeatmap();
 
   sel.addEventListener("change", (e) => {{
     selectToken(e.target.value, false);
@@ -336,19 +516,14 @@ function init() {{
     const q = e.target.value || "";
     const filtered = filterTokens(DATA.tokens, q);
 
-    // update dropdown to filtered list, but keep current selection if still present
     const cur = document.getElementById("tokenSelect").value;
     buildSelectOptions(filtered);
 
-    // if current selection is in filtered list, keep it; else select first
     const hasCur = filtered.some(t => String(t.id) === String(cur));
     const newId = hasCur ? cur : (filtered.length ? String(filtered[0].id) : String(DATA.default_token_id));
     document.getElementById("tokenSelect").value = newId;
 
-    // rerender table with filtered tokens
     renderTable(filtered);
-
-    // update bar based on dropdown selection
     selectToken(newId, false);
   }});
 }}
@@ -373,12 +548,22 @@ def main() -> None:
                     help="Recurse into subdirectories (default: false).")
     ap.add_argument("--suffixes", default=".txt",
                     help="Comma-separated suffixes to include (default: .txt). Example: .txt,.md")
+
     ap.add_argument("--top-k", type=int, default=1500,
-                    help="Embed only top-K tokens by total frequency into the HTML for interactivity (default: 1500).")
-    ap.add_argument("--out", default="vocab_freq_dashboard.html",
-                    help="Output HTML path (default: vocab_freq_dashboard.html)")
+                    help="Embed only top-K tokens by total frequency into the HTML (default: 1500).")
     ap.add_argument("--min-count", type=int, default=1,
                     help="Only consider tokens with total count >= this (default: 1).")
+    ap.add_argument("--out", default="vocab_freq_dashboard.html",
+                    help="Output HTML path (default: vocab_freq_dashboard.html)")
+
+    # NEW: heatmap controls (no dendro mode; just heatmap)
+    ap.add_argument("--heatmap", action="store_true",
+                    help="Compute and embed a file similarity heatmap (requires numpy).")
+    ap.add_argument("--heatmap-top-k", type=int, default=300,
+                    help="Use top-K frequent tokens (from the directory) as features for TF-IDF similarity (default: 300).")
+    ap.add_argument("--heatmap-reorder", action="store_true",
+                    help="Reorder files to group similar ones (simple greedy heuristic, no SciPy).")
+
     args = ap.parse_args()
 
     vocab_path = Path(args.vocab)
@@ -397,10 +582,9 @@ def main() -> None:
         raise SystemExit(f"No files found in {root} with suffixes={suffixes} (try --recursive or --suffixes)")
 
     sp = spm.SentencePieceProcessor(model_file=str(model_path))
-    vocab_size = sp.get_piece_size()
 
     print(f"[info] model: {model_path}")
-    print(f"[info] vocab size: {vocab_size}")
+    print(f"[info] vocab size: {sp.get_piece_size()}")
     print(f"[info] scanning {len(files)} files under: {root}")
 
     total = Counter()
@@ -414,24 +598,21 @@ def main() -> None:
         per_file[rel] = c
         total.update(c)
 
-    # Build top tokens (by total frequency)
+    # Token UI: top tokens by directory frequency
     items = [(tid, cnt) for tid, cnt in total.items() if cnt >= args.min_count]
     items.sort(key=lambda x: x[1], reverse=True)
-
     if not items:
         raise SystemExit(f"No tokens met min-count={args.min_count} (unexpected).")
 
     top_items = items[: max(1, args.top_k)]
 
     token_rows: List[Dict] = []
-    # per_file_counts: token_id(str) -> file -> count  (only for embedded tokens)
     per_file_counts: Dict[str, Dict[str, int]] = {}
 
     for tid, cnt in top_items:
         tok = human_token(sp.id_to_piece(int(tid)))
         token_rows.append({"id": int(tid), "token": tok, "count": int(cnt)})
 
-    # Build per-file map for embedded tokens
     for tid, _ in top_items:
         tid = int(tid)
         k = str(tid)
@@ -443,6 +624,22 @@ def main() -> None:
 
     default_token_id = int(top_items[0][0])
 
+    heatmap_payload: Optional[Dict] = None
+    if args.heatmap:
+        # Features for similarity
+        feat_tok_ids = [int(tid) for tid, _ in items[: max(2, args.heatmap_top_k)]]
+        print(f"[info] heatmap features: top {len(feat_tok_ids)} tokens (TF-IDF)")
+        try:
+            heatmap_payload = _build_heatmap_payload(
+                file_names=file_names,
+                per_file=per_file,
+                token_ids_for_heatmap=feat_tok_ids,
+                reorder=args.heatmap_reorder,
+            )
+        except Exception as e:
+            heatmap_payload = {"ok": False, "reason": f"Failed to build heatmap: {e!r}"}
+            print(f"[warn] heatmap failed: {e!r}")
+
     title = f"SentencePiece token frequency dashboard ({root.name})"
     build_html(
         title=title,
@@ -450,11 +647,14 @@ def main() -> None:
         per_file_counts=per_file_counts,
         file_order=file_names,
         default_token_id=default_token_id,
+        heatmap_payload=heatmap_payload,
         out_path=out,
     )
 
     print(f"[done] wrote: {out}")
-    print(f"[note] Uses Plotly CDN for interactivity; open the HTML in your browser.")
+    print("[note] Uses Plotly CDN for interactivity; open the HTML in your browser.")
+    if args.heatmap and (np is None):
+        print("[note] Install heatmap deps: python3 -m pip install numpy")
 
 
 if __name__ == "__main__":
