@@ -11,6 +11,7 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 import sys
+from contextlib import contextmanager
 from rich import print
 import copy
 
@@ -45,6 +46,23 @@ from initializations.initialization_variations import init_dictionary
 
 from shared_param_utils import SharedParamGroupCreator
 from variations.block_variations import Block
+
+
+@contextmanager
+def _energy_window(module, key: str):
+    monitor = getattr(module, "energy_monitor", None)
+    tracker = getattr(module, "energy_tracker", None)
+    if monitor is None:
+        yield
+        return
+
+    monitor.begin_window(key)
+    try:
+        yield
+    finally:
+        measurement = monitor.end_window(key)
+        if tracker is not None and measurement is not None:
+            tracker[key] = tracker.get(key, 0.0) + getattr(measurement, "total_energy", 0.0)
 
 class LearnedPositionEmbedding(nn.Module):
     """
@@ -91,6 +109,8 @@ class GPT(nn.Module):
         assert config.block_size is not None
 
         self.config = config
+        self.energy_monitor = None
+        self.energy_tracker = None
 
         self.uses_numerical_multicontext = bool(config.numerical_multicontext)
         if self.uses_numerical_multicontext:
@@ -270,6 +290,19 @@ class GPT(nn.Module):
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+    def attach_energy_monitor(self, monitor, tracker):
+        self.energy_monitor = monitor
+        self.energy_tracker = tracker
+        for block in self.transformer['h']:
+            block.energy_monitor = monitor
+            block.energy_tracker = tracker
+
+    def _get_lm_head(self, dataset_idx=None):
+        if (self.config.multicontext or self.config.multidataset_wte) and not self.uses_numerical_multicontext:
+            head_idx = dataset_idx if dataset_idx is not None else 0
+            return self.transformer[f'lm_head_{head_idx}']
+        return self.lm_head
 
     def get_num_params(self, non_embedding=True):
         """
@@ -528,7 +561,10 @@ class GPT(nn.Module):
                     logits = [pred[:, [-1], :] for pred in logits]
                     losses = None
             else:
-                logits = [self.transformer[f'lm_head_{i}'](x) for i in range(len(token_list))]
+                logits = []
+                for i in range(len(token_list)):
+                    with _energy_window(self, "lm_head"):
+                        logits.append(self.transformer[f'lm_head_{i}'](x))
 
                 # Soft‑cap **each** logits tensor (training & inference)
                 if self.config.final_logit_softcapping is not None:
@@ -660,10 +696,9 @@ class GPT(nn.Module):
 
             if targets is not None:
                 # if we are given some desired targets also calculate the loss
-                if self.config.multidataset_wte and dataset_idx is not None:
-                    logits = self.transformer[f'lm_head_{dataset_idx}'](x)
-                else:
-                    logits = self.lm_head(x)
+                head = self._get_lm_head(dataset_idx)
+                with _energy_window(self, "lm_head"):
+                    logits = head(x)
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -676,10 +711,9 @@ class GPT(nn.Module):
                     loss = loss_fn(logits, targets, iter_num=iter_num)
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
-                if self.config.multidataset_wte and dataset_idx is not None:
-                    logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
-                else:
-                    logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+                head = self._get_lm_head(dataset_idx)
+                with _energy_window(self, "lm_head"):
+                    logits = head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -761,10 +795,7 @@ class GPT(nn.Module):
         if self.n_embd_wte:
             x = F.linear(x, self.transformer.scale_down.weight.t())
 
-        if self.config.multidataset_wte and dataset_idx is not None:
-            logits = self.transformer[f'lm_head_{dataset_idx}'](x)
-        else:
-            logits = self.lm_head(x)
+        logits = self._get_lm_head(dataset_idx)(x)
         if self.final_logit_softcapping is not None:
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping

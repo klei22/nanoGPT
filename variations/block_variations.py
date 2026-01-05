@@ -5,6 +5,7 @@ from functools import partial
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
+from contextlib import contextmanager
 
 from variations.attention_variations import attention_dictionary
 from variations.mlp_variations import get_mlp_instance
@@ -14,6 +15,23 @@ from quantization.quantize import fake_quantize_act
 
 # type alias for the forward function
 BlockForward = Callable[['Block', torch.Tensor, int], torch.Tensor]
+
+
+@contextmanager
+def _energy_window(module, key: str):
+    monitor = getattr(module, "energy_monitor", None)
+    tracker = getattr(module, "energy_tracker", None)
+    if monitor is None:
+        yield
+        return
+
+    monitor.begin_window(key)
+    try:
+        yield
+    finally:
+        measurement = monitor.end_window(key)
+        if tracker is not None and measurement is not None:
+            tracker[key] = tracker.get(key, 0.0) + getattr(measurement, "total_energy", 0.0)
 
 # -----------------------
 # Residual combination helpers
@@ -78,8 +96,10 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
         x_in = block.pre_ln(x_in)
 
     # Perform Operations
-    attn_out = block.attn(x_in, iter_num)
-    mlp_out = block.mlp(x_in, iter_num)
+    with _energy_window(block, "attn"):
+        attn_out = block.attn(x_in, iter_num)
+    with _energy_window(block, "mlp"):
+        mlp_out = block.mlp(x_in, iter_num)
 
     # Peri-LN
     if block.use_peri_ln_attn:
@@ -115,7 +135,8 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
     # Attn Operation
-    attn_out = block.attn(x_attn_in, iter_num)
+    with _energy_window(block, "attn"):
+        attn_out = block.attn(x_attn_in, iter_num)
 
     # Attn Peri-LN
     if block.use_peri_ln_attn:
@@ -140,7 +161,8 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
     # MLP Operation
-    mlp_out = block.mlp(x_mlp_in, iter_num)
+    with _energy_window(block, "mlp"):
+        mlp_out = block.mlp(x_mlp_in, iter_num)
 
     # MLP Peri-LN
     if block.use_peri_ln_mlp:
@@ -186,7 +208,8 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
     # Attn Operation
-    attn_out = block.attn(x_attn_in, iter_num)
+    with _energy_window(block, "attn"):
+        attn_out = block.attn(x_attn_in, iter_num)
 
     # Attn Peri-LN
     if block.use_peri_ln_attn:
@@ -214,7 +237,8 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
         x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
     # MLP Operation
-    mlp_out = block.mlp(x_mlp_in, iter_num)
+    with _energy_window(block, "mlp"):
+        mlp_out = block.mlp(x_mlp_in, iter_num)
 
     # MLP Peri-LN
     if block.use_peri_ln_mlp:
