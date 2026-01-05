@@ -406,14 +406,31 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
-        if token_dict is not None:
-            token_list = list(token_dict.values())
-            # If target_dict is None (typical for inference), set target_list = None
-            if target_dict is not None:
-                target_list = list(target_dict.values())
-            else:
-                target_list = None
+    def forward(
+        self,
+        idx,
+        targets=None,
+        iter_num=None,
+        token_dict=None,
+        target_dict=None,
+        dataset_idx=None,
+        loss_fn=None,
+        token_order=None,
+        token_list=None,
+        target_list=None,
+    ):
+        if token_list is not None or token_dict is not None:
+            if token_list is None:
+                if token_order is None:
+                    token_list = list(token_dict.values())
+                else:
+                    token_list = [token_dict[name] for name in token_order]
+
+            if target_dict is not None and target_list is None:
+                if token_order is None:
+                    target_list = list(target_dict.values())
+                else:
+                    target_list = [target_dict[name] for name in token_order]
             device = token_list[0].device
             b, t = token_list[0].size()
 
