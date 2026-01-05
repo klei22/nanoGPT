@@ -70,8 +70,8 @@ def patched_argv(argv: List[str]):
         sys.argv = old
 
 
-def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float]:
-    """Return (best_val_loss, num_params, best_iter, peak_gpu_mb, iter_latency_ms)."""
+def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float, float, float, float]:
+    """Return (best_val_loss, num_params, best_iter, peak_gpu_mb, iter_latency_ms, total_energy_j, energy_per_token, energy_per_iter)."""
     from train import Trainer
     from train_args import parse_args as parse_train_args
 
@@ -88,10 +88,13 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, flo
     del tr
     torch.cuda.empty_cache()
     gc.collect()
-    return loss, nparam, best_iter, peak_gpu_mb, iter_latency_ms
+    total_energy = float(getattr(tr, "total_energy_joules", 0.0))
+    energy_per_token = float(getattr(tr, "average_energy_per_token", 0.0))
+    energy_per_iter = float(getattr(tr, "energy_per_iter_joules", 0.0))
+    return loss, nparam, best_iter, peak_gpu_mb, iter_latency_ms, total_energy, energy_per_token, energy_per_iter
 
 
-def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float]:
+def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float, float, float, float]:
     script_dir = Path(__file__).parent
     cmd = [sys.executable, str(script_dir / "train.py")] + dict_to_cli(cfg)
     env = {k: v for k, v in os.environ.items() if k not in {"RANK", "WORLD_SIZE"}}
@@ -105,11 +108,14 @@ def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, fl
     loss = float(line[0])
     best_iter = int(line[1])
     nparam = float(line[2])
-    peak_gpu_mb = float(line[5])
-    iter_latency_ms = float(line[6])
+    peak_gpu_mb = float(line[6]) if len(line) > 6 else 0.0
+    iter_latency_ms = float(line[7]) if len(line) > 7 else 0.0
+    total_energy = float(line[27]) if len(line) > 27 else 0.0
+    energy_per_iter = float(line[28]) if len(line) > 28 else 0.0
+    energy_per_token = float(line[29]) if len(line) > 29 else 0.0
     torch.cuda.empty_cache()
     gc.collect()
-    return loss, nparam, best_iter, peak_gpu_mb, iter_latency_ms
+    return loss, nparam, best_iter, peak_gpu_mb, iter_latency_ms, total_energy, energy_per_token, energy_per_iter
 
 
 def load_log(path: Path) -> Dict[str, Any]:
@@ -249,6 +255,9 @@ def main():
         base_params = last["baseline_metrics"]["params"]
         base_gpu = last["baseline_metrics"].get("peak_gpu_mb", 0.0)
         base_iter_ms = last["baseline_metrics"].get("iter_latency_avg", 0.0)
+        base_energy = last["baseline_metrics"].get("total_energy_joules", 0.0)
+        base_energy_per_iter = last["baseline_metrics"].get("energy_per_iter_joules", 0.0)
+        base_energy_per_token = last["baseline_metrics"].get("energy_per_token_joules", 0.0)
         cur_iter = last["iter"] + 1
         # Apply overrides to the resumed configuration for the current session
         _apply_overrides_to_active_config(baseline_cfg, args.override_cfg, "resumed baseline_cfg")
@@ -261,7 +270,16 @@ def main():
         print("[BASELINE] measuring initial config …")
         # run_fn receives a deepcopy of the (potentially overridden) baseline_cfg
 
-        base_loss, base_params, base_best_iter, base_gpu, base_iter_ms = run_fn(deepcopy(baseline_cfg))
+        (
+            base_loss,
+            base_params,
+            base_best_iter,
+            base_gpu,
+            base_iter_ms,
+            base_energy,
+            base_energy_per_token,
+            base_energy_per_iter,
+        ) = run_fn(deepcopy(baseline_cfg))
         base_score = 1 / math.exp(base_loss)
         log["iterations"].append(
             {
@@ -273,12 +291,21 @@ def main():
                     "peak_gpu_mb": base_gpu,
                     "iter_latency_avg": base_iter_ms,
                     "best_iter": base_best_iter,
+                    "total_energy_joules": base_energy,
+                    "energy_per_iter_joules": base_energy_per_iter,
+                    "energy_per_token_joules": base_energy_per_token,
                 },
                 "baseline_config_after": deepcopy(baseline_cfg),
             }
         )
         save_log(log_path, log)
         cur_iter = 0
+
+    if args.efficiency_target == "energy":
+        if not baseline_cfg.get("energy_monitor", False):
+            print("[INFO] Enabling energy_monitor for energy-targeted search runs.")
+        baseline_cfg["energy_monitor"] = True
+        log["baseline_config"] = deepcopy(baseline_cfg)
 
     # ── outer greedy loop ─────────────────────────────────────
     while cur_iter < args.num_iterations:
@@ -319,7 +346,16 @@ def main():
 
                     print(f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}")
                     try:
-                        loss, nparam, best_it, peak_mb, iter_ms = run_fn(cfg_run)
+                        (
+                            loss,
+                            nparam,
+                            best_it,
+                            peak_mb,
+                            iter_ms,
+                            total_energy,
+                            energy_per_token,
+                            energy_per_iter,
+                        ) = run_fn(cfg_run)
                     except Exception as exc:
                         print("   ⚠", exc)
                         return                                      # discard this candidate
@@ -331,7 +367,10 @@ def main():
                                       "score": score,
                                       "best_iter": best_it,
                                       "peak_gpu_mb": peak_mb,
-                                      "iter_latency_ms": iter_ms})
+                                      "iter_latency_ms": iter_ms,
+                                      "total_energy_joules": total_energy,
+                                      "energy_per_token_joules": energy_per_token,
+                                      "energy_per_iter_joules": energy_per_iter})
                     scores.append(score)
 
                 # ── aggregate across seeds ───────────────────────────────────
@@ -339,10 +378,14 @@ def main():
                 avg_peak   = sum(s["peak_gpu_mb"] for s in seed_runs) / len(seed_runs)
                 avg_iter   = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
                 avg_loss   = -math.log(avg_score)
+                avg_energy = sum(s.get("total_energy_joules", 0.0) for s in seed_runs) / len(seed_runs)
+                avg_energy_per_token = sum(s.get("energy_per_token_joules", 0.0) for s in seed_runs) / len(seed_runs)
+                avg_energy_per_iter = sum(s.get("energy_per_iter_joules", 0.0) for s in seed_runs) / len(seed_runs)
                 d_score    = avg_score - base_score
                 d_param    = nparam     - base_params
                 d_vram     = avg_peak   - base_gpu
                 d_iter     = avg_iter   - base_iter_ms
+                d_energy   = avg_energy - base_energy
 
                 if args.efficiency_target == "params":
                     d_cost = d_param
@@ -350,6 +393,8 @@ def main():
                     d_cost = d_vram
                 elif args.efficiency_target == "iter":
                     d_cost = d_iter
+                elif args.efficiency_target == "energy":
+                    d_cost = d_energy
                 else:
                     raise ValueError("Unknown efficiency target")
 
@@ -369,8 +414,12 @@ def main():
                     "delta_params":  d_param,
                     "delta_vram":    d_vram,
                     "delta_iter_latency": d_iter,
+                    "delta_energy_joules": d_energy,
                     "efficiency":    eff,
                     "seeds":         seed_runs,
+                    "total_energy_joules": avg_energy,
+                    "energy_per_iter_joules": avg_energy_per_iter,
+                    "energy_per_token_joules": avg_energy_per_token,
                 }
                 candidates.append(cand)
 
@@ -473,6 +522,9 @@ def main():
                                 "peak_gpu_mb": base_gpu,
                                 "iter_latency_avg": base_iter_ms,
                                 "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
+                                "total_energy_joules": base_energy,
+                                "energy_per_iter_joules": base_energy_per_iter,
+                                "energy_per_token_joules": base_energy_per_token,
                             },
                             "candidates": candidates, # Log candidates for this unproductive iteration
                             "chosen": None, # Indicate no candidate was chosen for this iteration
@@ -538,6 +590,9 @@ def main():
         base_params = chosen["num_params"]
         base_gpu = chosen.get("peak_gpu_mb", base_gpu)
         base_iter_ms = chosen.get("iter_latency_avg", base_iter_ms)
+        base_energy = chosen.get("total_energy_joules", base_energy)
+        base_energy_per_iter = chosen.get("energy_per_iter_joules", base_energy_per_iter)
+        base_energy_per_token = chosen.get("energy_per_token_joules", base_energy_per_token)
 
         # log block
         log["iterations"].append(
@@ -550,6 +605,9 @@ def main():
                     "peak_gpu_mb": base_gpu,
                     "iter_latency_avg": base_iter_ms,
                     "best_iter": chosen["best_iter"],
+                    "total_energy_joules": base_energy,
+                    "energy_per_iter_joules": base_energy_per_iter,
+                    "energy_per_token_joules": base_energy_per_token,
                 },
                 "candidates": candidates,
                 "chosen": chosen,

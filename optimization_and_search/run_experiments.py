@@ -34,6 +34,19 @@ METRIC_KEYS = [
     "left_prob_95",
     "avg_ln_f_cosine",
     "ln_f_cosine_95",
+    "overall_weight_stdev",
+    "overall_weight_kurtosis",
+    "overall_weight_max",
+    "overall_weight_min",
+    "overall_weight_abs_max",
+    "overall_activation_stdev",
+    "overall_activation_kurtosis",
+    "overall_activation_max",
+    "overall_activation_min",
+    "overall_activation_abs_max",
+    "total_energy_joules",
+    "energy_per_iter_joules",
+    "energy_per_token_joules",
 ]
 
 
@@ -548,7 +561,38 @@ def read_metrics(out_dir: str) -> dict:
     line = path.read_text().strip()
     parts = [p.strip() for p in line.split(',')]
 
-    casts = [float, int, int, int, float, float, float, float, float, float, float, float, float, float, float, float, float]
+    casts = [
+        float,  # best_val_loss
+        int,    # best_val_iter
+        int,    # best_val_tokens
+        int,    # num_params
+        float,  # better_than_chance
+        float,  # btc_per_param
+        float,  # peak_gpu_mb
+        float,  # iter_latency_avg
+        float,  # avg_top1_prob
+        float,  # avg_top1_correct
+        float,  # avg_target_rank
+        float,  # avg_target_left_prob
+        float,  # avg_target_prob
+        float,  # target_rank_95
+        float,  # left_prob_95
+        float,  # avg_ln_f_cosine
+        float,  # ln_f_cosine_95
+        float,  # overall_weight_stdev
+        float,  # overall_weight_kurtosis
+        float,  # overall_weight_max
+        float,  # overall_weight_min
+        float,  # overall_weight_abs_max
+        float,  # overall_activation_stdev
+        float,  # overall_activation_kurtosis
+        float,  # overall_activation_max
+        float,  # overall_activation_min
+        float,  # overall_activation_abs_max
+        float,  # total_energy_joules
+        float,  # energy_per_iter_joules
+        float,  # energy_per_token_joules
+    ]
 
     return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
 

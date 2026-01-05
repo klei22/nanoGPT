@@ -4,7 +4,7 @@
 
 set -e
 
-for target in params vram iter; do
+for target in params vram iter energy; do
   python hyperparam_search.py \
     --orig_settings ./hp_searches/efficiency_targets_demo.yaml \
     --param_names n_layer n_head n_embd mlp_size \
