@@ -170,7 +170,7 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
 
     if args.init_from == "scratch":
-        vocab_size = args.vocab_size or get_vocab_size_from_meta(args.dataset, args.out_dir)
+        vocab_size = getattr(args, "vocab_size", None) or get_vocab_size_from_meta(args.dataset, args.out_dir)
         model_args = build_model_args(args, vocab_size)
         config_json = {**model_args, "max_iters": args.max_iters, "batch_size": args.batch_size}
         with open(os.path.join(args.out_dir, "full_config.json"), "w") as handle:
