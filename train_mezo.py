@@ -66,7 +66,7 @@ def perturb_parameters(model: torch.nn.Module, epsilon: float, generator: torch.
     for param in model.parameters():
         if not param.requires_grad:
             continue
-        noise = torch.randn_like(param, generator=generator)
+        noise = torch.randn(param.shape, device=param.device, dtype=param.dtype, generator=generator)
         param.add_(epsilon * noise)
 
 
@@ -99,7 +99,7 @@ def mezo_update(
         for param in model.parameters():
             if not param.requires_grad:
                 continue
-            noise = torch.randn_like(param, generator=generator)
+            noise = torch.randn(param.shape, device=param.device, dtype=param.dtype, generator=generator)
             param.add_(-lr * projected_grad * noise)
 
         return (loss_pos + loss_neg) * 0.5
