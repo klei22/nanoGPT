@@ -204,6 +204,7 @@ class GPTConfig:
     activation_end: str = "relu"
     activation_transition_start_iter: int = 0
     activation_transition_end_iter: int = None
+    relu_power: float = 2.0
 
     # MLP Options
     use_parallel_mlp: bool = False
@@ -582,4 +583,3 @@ class GPTConfig:
 
         with open(filename, 'w') as json_file:
             json.dump(conf_dict, json_file)
-

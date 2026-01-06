@@ -756,6 +756,7 @@ def parse_args():
             "pfla_le",
             "prelu",
             "relu",
+            "relu_power",
             "relu6",
             "rrelu",
             "selu",
@@ -783,6 +784,7 @@ def parse_args():
 
     # ACTIVATION VARIATIONS
     model_group.add_argument( "--activation_variant", type=str, default="gelu", choices=activation_variations)
+    model_group.add_argument("--relu_power", type=float, default=2.0)
 
     ## Shifted Gelu
     model_group.add_argument("--shifted_gelu_learnable_shift",  type=bool, default=True, action=argparse.BooleanOptionalAction)
@@ -1449,4 +1451,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-
