@@ -336,6 +336,12 @@ class Trainer:
             self.best_val_loss = checkpoint['best_val_loss']
             self.best_iter = checkpoint['best_iter']
             self.best_tokens = checkpoint.get('best_tokens', 0)
+            if self.args.init_from == 'resume' and self.args.reset_best_val_loss_on_resume:
+                self.best_val_loss = 1e9
+                self.best_iter = 0
+                self.best_tokens = 0
+                with open(os.path.join(self.args.out_dir, "best_val_loss_and_iter.txt"), 'w') as file:
+                    print("resetting best val loss file")
             if self.args.lsv_focused_training:
                 self.model.freeze_non_lsv_parameters()
 
@@ -2086,4 +2092,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
