@@ -17,6 +17,7 @@ import numpy as np
 import torch
 
 from model import GPT, GPTConfig
+from sample import get_tokenizer_functions, sample_with_existing_model
 from train_args import parse_args
 from train_variations.loss_variants import build_loss_function
 
@@ -29,17 +30,22 @@ class CheckpointState:
 
 
 def get_vocab_size_from_meta(dataset: str, out_dir: str) -> int:
+    meta = load_meta(dataset, out_dir)
+    if "vocab_size" not in meta:
+        raise KeyError(f"meta.pkl missing vocab_size at data/{dataset}/meta.pkl")
+    return meta["vocab_size"]
+
+
+def load_meta(dataset: str, out_dir: str) -> dict:
     meta_path = os.path.join("data", dataset, "meta.pkl")
     if not os.path.exists(meta_path):
         raise FileNotFoundError(f"meta.pkl not found at {meta_path}")
     with open(meta_path, "rb") as handle:
         meta = pickle.load(handle)
-    if "vocab_size" not in meta:
-        raise KeyError(f"meta.pkl missing vocab_size at {meta_path}")
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "meta.pkl"), "wb") as handle:
         pickle.dump(meta, handle)
-    return meta["vocab_size"]
+    return meta
 
 
 def load_dataset(dataset: str, vocab_size: int) -> tuple[np.memmap, np.memmap]:
@@ -154,6 +160,43 @@ def build_model_args(args, vocab_size: int) -> dict:
     return model_args
 
 
+def sample_and_print(
+    model: torch.nn.Module,
+    args,
+    device: torch.device,
+    encode,
+    decode,
+    iter_num: int,
+    best_val_loss: float,
+) -> None:
+    model.eval()
+    start_ids = torch.tensor(encode(args.sample_start_tokens), dtype=torch.long, device=device)[None, ...]
+    sample_with_existing_model(
+        model=model,
+        start_ids=start_ids,
+        start_tokens=args.sample_start_tokens,
+        decode=decode,
+        device=device,
+        out_dir=args.out_dir,
+        max_new_tokens=args.max_sample_tokens,
+        temperature=args.temperature,
+        top_k=args.top_k,
+        colorize_output=args.colorize_output,
+        colorize_mode=args.colorize_mode,
+        token_boundary=(args.token_boundary or None),
+        show_heatmaps=args.show_heatmaps,
+        chart_type=args.chart_type,
+        sample_file=args.sample_file,
+        num_samples=args.num_samples,
+        iter_num=iter_num,
+        best_val_loss=best_val_loss,
+        run_name=args.tensorboard_run_name,
+        args=args,
+        writer=None,
+    )
+    model.train()
+
+
 def main() -> None:
     args, _model_group, _training_group, _logging_group = parse_args()
     if args.training_mode != "single":
@@ -194,6 +237,10 @@ def main() -> None:
 
     train_data, val_data = load_dataset(args.dataset, model_args["vocab_size"])
     loss_fn = build_loss_function(args)
+    encode = decode = None
+    if args.max_sample_tokens is not None:
+        meta = load_meta(args.dataset, args.out_dir)
+        encode, decode = get_tokenizer_functions(meta)
 
     t_start = time.time()
     while state.iter_num < args.max_iters:
@@ -232,10 +279,16 @@ def main() -> None:
                 state.iter_num,
             )
             print(f"iter {state.iter_num}: val loss {val_loss:.4f}")
-            if val_loss < state.best_val_loss:
+            is_best = val_loss < state.best_val_loss
+            if is_best:
                 state.best_val_loss = val_loss
                 state.best_iter = state.iter_num
                 save_checkpoint(args.out_dir, model, model_args, state)
+            if args.max_sample_tokens is not None and (is_best or args.sample_each_eval):
+                if encode is None or decode is None:
+                    meta = load_meta(args.dataset, args.out_dir)
+                    encode, decode = get_tokenizer_functions(meta)
+                sample_and_print(model, args, device, encode, decode, state.iter_num, state.best_val_loss)
 
         state.iter_num += 1
 
