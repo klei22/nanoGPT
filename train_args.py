@@ -1306,6 +1306,10 @@ def parse_args():
     training_group.add_argument('--lr_decay_match_max_iters', default=True, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--warmup_iters', default=100, type=int)
 
+    # MeZO training options
+    training_group.add_argument('--mezo_epsilon', default=1e-3, type=float, help="Perturbation scale for MeZO training.")
+    training_group.add_argument('--mezo_seed', default=None, type=int, help="Optional base seed for MeZO perturbations.")
+
     # DDP args
     training_group.add_argument('--backend', default='nccl', type=str)
     training_group.add_argument('--gradient_accumulation_steps', default=1, type=int)
@@ -1449,4 +1453,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-
