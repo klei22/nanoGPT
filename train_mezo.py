@@ -155,7 +155,7 @@ def build_model_args(args, vocab_size: int) -> dict:
 
 
 def main() -> None:
-    args = parse_args()
+    args, _model_group, _training_group, _logging_group = parse_args()
     if args.training_mode != "single":
         raise ValueError("train_mezo.py only supports training_mode=single")
     if args.dataset_list is not None or args.multicontext_datasets is not None:
