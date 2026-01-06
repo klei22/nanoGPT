@@ -88,30 +88,6 @@ class GPTConfig:
     ln_f_input_mixer_variant: str = "linear"
     ln_f_mixer_top_k: int = 2
 
-    # Learned Position Embeddings
-    n_lpe: int = 0
-    lpe_block_size: int = 1024
-    lpe_n_layer: int = 12
-    lpe_n_head: int = 12
-    lpe_n_kv_group: int = 12
-    lpe_n_qk_head_dim: int = None
-    lpe_n_v_head_dim: int = None
-    lpe_use_abs_pos_embeddings: bool = True
-    lpe_use_rotary_embeddings: bool = True
-    lpe_attention_variant: str = "causal"
-    lpe_mlp_variant: str = "mlp"
-    lpe_mlp_size: str = None
-    target_layer_in_lpe: int = 0
-    target_layer_out_lpe: int = 0
-
-    # Shared parameters
-    # MLP
-    lpe_shared_mlp_size: int = 1
-    lpe_shared_mlp_sym: bool = False
-    # ATTN
-    lpe_shared_attn_size: int = 1
-    lpe_shared_attn_sym: bool = False
-
     # Attention Variation Specific
 
     ## Flash Lobo
@@ -582,4 +558,3 @@ class GPTConfig:
 
         with open(filename, 'w') as json_file:
             json.dump(conf_dict, json_file)
-
