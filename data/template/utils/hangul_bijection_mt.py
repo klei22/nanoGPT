@@ -475,7 +475,6 @@ class TestBijectionMT(unittest.TestCase):
         back8 = inverse("strict", decomposed, do_nfc=True, jobs=8, chunk_chars=1)
         self.assertEqual(back1, back8)
         # Expect composed syllables where possible:
-        expected = chr(S_BASE + 1)  # not correct; compute properly: L=0, V=0, T=1 -> "각" (U+AC01)
         expected = "각" + "X" + "가" + "Y" + "ᄀ" + "Z" + "각"
         self.assertEqual(back1, expected)
 
