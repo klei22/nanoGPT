@@ -1,6 +1,7 @@
 # explorations/sliding_window_rope_nope_minipile.yaml
-# Mixed sliding-window and full causal attention (ratio 1:2) with RoPE only
-# on sliding-window layers.
+# Mixed sliding-window and full causal attention (3:2 ratio across 5 layers)
+# with variations in RoPE placement (full-causal only, sliding-window only,
+# all layers, or none).
 ---
 
 
