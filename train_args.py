@@ -245,6 +245,8 @@ def parse_args():
     training_group.add_argument('--prev_run_ckpt', default='', type=str)
     training_group.add_argument('--csv_ckpt_dir', default='', type=str)
     training_group.add_argument('--init_from_ckpt', default='ckpt.pt', type=str, help="if save_major_ckpt_interval was set, can use to init from specific ckpts")
+    training_group.add_argument('--reset_best_val_loss_on_resume', default=False, action=argparse.BooleanOptionalAction,
+                                help="When resuming, reset best_val_loss tracking instead of loading it from the checkpoint.")
 
     # Training modes
     # TODO: find a way to merge this with the multicontext arg
