@@ -10,7 +10,7 @@ from quantization.quant_utils import create_activation_buffers, set_variant
 from quantization.quantize import fake_quantize_act
 from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from variations.position_encoding_variations import (
-    FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
+    CoPEPositionEmbedding, FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
 from variations.softmax_variations import softmax_dictionary
 from variations.triadic_modulation_variations import mod_fn_dict
 
@@ -142,6 +142,33 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
+        self.use_cope = getattr(config, "use_cope_embeddings", False) and getattr(config, "layer_idx", 0) == 0
+        if self.use_cope:
+            self.cope_variant = config.cope_variant
+            self.cope_alpha = config.cope_alpha
+            self.cope_pos_emb = CoPEPositionEmbedding(config, size=config.n_embd)
+            self.c_attn_q_imag = self.linear_variant_q(
+                config.n_embd,
+                config.n_embd,
+                config,
+                self.quantization_attn_dict["quantize_linear_attn_q_method"],
+                self.quantization_attn_dict["quantize_linear_attn_q_bits"],
+                bias=config.bias,
+            )
+            self.c_attn_k_imag = self.linear_variant_k(
+                config.n_embd,
+                self.kv_dim,
+                config,
+                self.quantization_attn_dict["quantize_linear_attn_k_method"],
+                self.quantization_attn_dict["quantize_linear_attn_k_bits"],
+                bias=config.bias,
+            )
+
+            if self.rotary_emb_q is not None or self.rotary_emb_k is not None:
+                print("disabling rotary embeddings for CoPE")
+            self.rotary_emb_q = None
+            self.rotary_emb_k = None
+
         # Sliding window size
         self.window_size = config.window_size
         print(f"sliding window size: {self.window_size}")
@@ -215,6 +242,10 @@ class CausalSelfAttention(nn.Module):
             self.flash = False
             print("flash attention removed due to FIRE")
 
+        if self.use_cope:
+            self.flash = False
+            print("flash attention removed due to CoPE")
+
         # Can't use flash attention if we want to manually quantize most input/output activations in attn
         for key, val in self.quantization_attn_dict.items():
             if key.startswith("quantize_") and val == True:
@@ -286,9 +317,17 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             x = fake_quantize_act(self, "attn_act_input", x, num_bits, quant_method, iter_num)
 
-        q = self.c_attn_q(x)
-        k = self.c_attn_k(x)
-        v = self.c_attn_v(x)
+        if self.use_cope:
+            pos_emb = self.cope_pos_emb(T, x.device).unsqueeze(0).expand(B, -1, -1)
+            q_real = self.c_attn_q(x) - self.c_attn_q_imag(pos_emb)
+            q_imag = self.c_attn_q(pos_emb) + self.c_attn_q_imag(x)
+            k_real = self.c_attn_k(x) - self.c_attn_k_imag(pos_emb)
+            k_imag = self.c_attn_k(pos_emb) + self.c_attn_k_imag(x)
+            v = self.c_attn_v(x)
+        else:
+            q = self.c_attn_q(x)
+            k = self.c_attn_k(x)
+            v = self.c_attn_v(x)
 
         if self.window_size is not None:
             if self.use_flex_attn is not None:
@@ -302,8 +341,14 @@ class CausalSelfAttention(nn.Module):
             if self.n_kv_group == self.n_head:
                 Gating = nn.Linear(self.n_embd, self.n_embd, bias=True, device=x.device)
                 gate_ = torch.sigmoid(Gating(x))
-                q = q * gate_
-                k = k * gate_
+                if self.use_cope:
+                    q_real = q_real * gate_
+                    q_imag = q_imag * gate_
+                    k_real = k_real * gate_
+                    k_imag = k_imag * gate_
+                else:
+                    q = q * gate_
+                    k = k * gate_
                 v = v * gate_
             else:
                 # TODO: Test more methods to merge Attention Gates with GQA
@@ -313,13 +358,26 @@ class CausalSelfAttention(nn.Module):
                 gate_qx = Gating_q(x)
                 gate_q = torch.sigmoid(gate_qx)
                 gate_kv = torch.sigmoid(Gating_kv(gate_qx))
-                q = q * gate_q
-                k = k * gate_kv
+                if self.use_cope:
+                    q_real = q_real * gate_q
+                    q_imag = q_imag * gate_q
+                    k_real = k_real * gate_kv
+                    k_imag = k_imag * gate_kv
+                else:
+                    q = q * gate_q
+                    k = k * gate_kv
                 v = v * gate_kv
 
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
-        k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
-        v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+        if self.use_cope:
+            q_real = q_real.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+            q_imag = q_imag.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+            k_real = k_real.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2)
+            k_imag = k_imag.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2)
+            v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2)
+        else:
+            q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
+            k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+            v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
 
         # rotate q and k before evaluating with the heads
         if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
@@ -329,8 +387,16 @@ class CausalSelfAttention(nn.Module):
         y = None
 
         if self.use_qk_norm:
-            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+            if self.use_cope:
+                q_mag = torch.sqrt((q_real ** 2 + q_imag ** 2).sum(dim=-1, keepdim=True))
+                k_mag = torch.sqrt((k_real ** 2 + k_imag ** 2).sum(dim=-1, keepdim=True))
+                q_real = q_real / (q_mag + 1e-6)
+                q_imag = q_imag / (q_mag + 1e-6)
+                k_real = k_real / (k_mag + 1e-6)
+                k_imag = k_imag / (k_mag + 1e-6)
+            else:
+                q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+                k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -382,17 +448,49 @@ class CausalSelfAttention(nn.Module):
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
-                q = fake_quantize_act(self, "attn_act_qk_mult_q_input", q, num_bits, quant_method, iter_num)
+                if self.use_cope:
+                    q_real = fake_quantize_act(self, "attn_act_qk_mult_q_input", q_real, num_bits, quant_method, iter_num)
+                    q_imag = fake_quantize_act(self, "attn_act_qk_mult_q_input", q_imag, num_bits, quant_method, iter_num)
+                else:
+                    q = fake_quantize_act(self, "attn_act_qk_mult_q_input", q, num_bits, quant_method, iter_num)
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
-                k = fake_quantize_act(self, "attn_act_qk_mult_k_input", k, num_bits, quant_method, iter_num)
+                if self.use_cope:
+                    k_real = fake_quantize_act(self, "attn_act_qk_mult_k_input", k_real, num_bits, quant_method, iter_num)
+                    k_imag = fake_quantize_act(self, "attn_act_qk_mult_k_input", k_imag, num_bits, quant_method, iter_num)
+                else:
+                    k = fake_quantize_act(self, "attn_act_qk_mult_k_input", k, num_bits, quant_method, iter_num)
 
             att = None
             # manual implementation of attention
-            k_attn = self._expand_kv(k)
-            head_dim = math.sqrt(k_attn.size(-1))
-            att = (q @ k_attn.transpose(-2, -1))
+            if self.use_cope:
+                k_real_attn = self._expand_kv(k_real)
+                k_imag_attn = self._expand_kv(k_imag)
+                v_attn = self._expand_kv(v)
+                head_dim = math.sqrt(k_real_attn.size(-1))
+                real_scores = (q_real @ k_real_attn.transpose(-2, -1)) + (q_imag @ k_imag_attn.transpose(-2, -1))
+                imag_scores = (q_imag @ k_real_attn.transpose(-2, -1)) - (q_real @ k_imag_attn.transpose(-2, -1))
+                magnitude = torch.sqrt(real_scores ** 2 + imag_scores ** 2)
+                phase = torch.atan2(imag_scores, real_scores)
+
+                if self.cope_variant == "magnitude":
+                    att = magnitude
+                elif self.cope_variant == "phase":
+                    att = torch.cos(phase)
+                elif self.cope_variant == "real":
+                    att = real_scores
+                elif self.cope_variant == "hybrid":
+                    att = magnitude + self.cope_alpha * torch.cos(phase)
+                elif self.cope_variant == "hybrid_norm":
+                    max_mag = magnitude.amax(dim=-1, keepdim=True).clamp_min(1e-6)
+                    att = (magnitude / max_mag) + self.cope_alpha * torch.cos(phase)
+                else:
+                    raise ValueError(f"Unknown CoPE variant: {self.cope_variant}")
+            else:
+                k_attn = self._expand_kv(k)
+                head_dim = math.sqrt(k_attn.size(-1))
+                att = (q @ k_attn.transpose(-2, -1))
 
             if self.use_qk_norm_scale:
                 att = att * self.qk_norm_factor
@@ -440,7 +538,8 @@ class CausalSelfAttention(nn.Module):
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
                 v = fake_quantize_act(self, "attn_act_pv_mult_v_input", v, num_bits, quant_method, iter_num)
 
-            v_attn = self._expand_kv(v)
+            if not self.use_cope:
+                v_attn = self._expand_kv(v)
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
