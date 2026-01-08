@@ -869,8 +869,8 @@ def parse_args():
     model_group.add_argument("--n_cproj_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--n_kv_group_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--attention_variant_layerlist", nargs='+', action=LayerListAction, default=None)
-    model_group.add_argument("--use_rotary_embeddings_layerlist", nargs='+', action=LayerListAction, default=None)
-    model_group.add_argument("--window_size_layerlist", nargs='+', action=LayerListAction, default=None)
+    model_group.add_argument("--use_rotary_embeddings_layerlist", nargs='+', action=LayerListAction, default=None, help="Override use_rotary_embeddings per layer, cycling through the list.")
+    model_group.add_argument("--window_size_layerlist", nargs='+', action=LayerListAction, default=None, help="Override window_size per layer, cycling through the list.")
 
     ## Infinite Attention variation
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
