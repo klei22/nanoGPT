@@ -118,6 +118,8 @@ class Trainer:
         self.latest_left_prob_95 = float('nan')
         self.latest_ln_f_cosine = float('nan')
         self.latest_ln_f_cosine_95 = float('nan')
+        self.latest_rankme = float('nan')
+        self.latest_areq = float('nan')
 
         # store overall statistics for weights and activations
         self.latest_overall_weight_stats = {
@@ -970,6 +972,7 @@ class Trainer:
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
+                rankme_vectors = []
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
@@ -1011,6 +1014,15 @@ class Trainer:
                                 ln_f_out[0].float(), target_vecs.float(), dim=-1
                             )
                             ln_f_cosines.append(cos)
+                            if self.args.log_rankme or self.args.log_areq:
+                                rankme_vectors.append(
+                                    ln_f_out[0][:, -1, :].float().detach().cpu()
+                                )
+                rankme = torch.tensor(float('nan'))
+                areq = torch.tensor(float('nan'))
+                if rankme_vectors:
+                    features = torch.cat(rankme_vectors, dim=0)
+                    rankme, areq = self._compute_rankme_areq(features)
                 out['datasets'][dataset] = {
                         'train': dataset_losses['train'].mean(),
                         'train_std': dataset_losses['train'].std(),
@@ -1025,6 +1037,8 @@ class Trainer:
                         'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
                         'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
                         'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
+                        'rankme': rankme,
+                        'areq': areq,
                         }
             out['val'] = out['datasets'][self.args.dataset]['val']
             out['val_std'] = out['datasets'][self.args.dataset]['val_std']
@@ -1039,6 +1053,8 @@ class Trainer:
             out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
             out['ln_f_cosine'] = out['datasets'][self.args.dataset]['ln_f_cosine']
             out['ln_f_cosine_95'] = out['datasets'][self.args.dataset]['ln_f_cosine_95']
+            out['rankme'] = out['datasets'][self.args.dataset]['rankme']
+            out['areq'] = out['datasets'][self.args.dataset]['areq']
         elif self.args.training_mode == "multicontext":
             for i, dataset in enumerate(self.args.multicontext_datasets):
                 out['datasets'][dataset] = {}
@@ -1082,12 +1098,15 @@ class Trainer:
                 # general train and val losses, as well as std dev
                 out[split] = np.array(mean_avg / len(self.args.multicontext_datasets))
                 out[split + "_std"] = np.array(loss_std / len(self.args.multicontext_datasets))
+            out['rankme'] = torch.tensor(float('nan'))
+            out['areq'] = torch.tensor(float('nan'))
         else:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
+                rankme_vectors = []
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
                     ln_f_out: list[torch.Tensor] = []
@@ -1127,6 +1146,10 @@ class Trainer:
                             ln_f_out[0].float(), target_vecs.float(), dim=-1
                         )
                         ln_f_cosines.append(cos)
+                        if self.args.log_rankme or self.args.log_areq:
+                            rankme_vectors.append(
+                                ln_f_out[0][:, -1, :].float().detach().cpu()
+                            )
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
                 if split == 'val':
@@ -1139,6 +1162,13 @@ class Trainer:
                     out['left_prob_95'] = torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan'))
                     out['ln_f_cosine'] = torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan'))
                     out['ln_f_cosine_95'] = torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan'))
+                    rankme = torch.tensor(float('nan'))
+                    areq = torch.tensor(float('nan'))
+                    if rankme_vectors:
+                        features = torch.cat(rankme_vectors, dim=0)
+                        rankme, areq = self._compute_rankme_areq(features)
+                    out['rankme'] = rankme
+                    out['areq'] = areq
 
         # compute statistics from a single validation batch
         if self.compute_model_stats:
@@ -1387,6 +1417,17 @@ class Trainer:
             if 'ln_f_cosine' in losses:
                 self.writer.add_scalar(f"{target_dataset}/avg_ln_f_cosine", losses['ln_f_cosine'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/ln_f_cosine_95", losses['ln_f_cosine_95'], self.iter_num)
+            if 'rankme' in losses:
+                self.writer.add_scalar(
+                    f"{target_dataset}/rankme",
+                    self._to_scalar(losses['rankme']),
+                    self.iter_num,
+                )
+                self.writer.add_scalar(
+                    f"{target_dataset}/areq",
+                    self._to_scalar(losses['areq']),
+                    self.iter_num,
+                )
 
             if self.args.gns_type is not None:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
@@ -1397,10 +1438,27 @@ class Trainer:
 
         if self.args.csv_log:
             # concise training metrics
-            self.write_to_csv(target_dataset, losses['train'].item(), losses['val'].item(), prefix=f"{target_dataset}_")
+            rankme_value = self._to_scalar(losses.get('rankme', float('nan')))
+            areq_value = self._to_scalar(losses.get('areq', float('nan')))
+            self.write_to_csv(
+                target_dataset,
+                losses['train'].item(),
+                losses['val'].item(),
+                rankme_value,
+                areq_value,
+                prefix=f"{target_dataset}_",
+            )
 
             # bulk metrics
-            self.write_to_csv(target_dataset, losses['train'].item(), losses['val'].item(), running_mfu, prefix="bulk_")
+            self.write_to_csv(
+                target_dataset,
+                losses['train'].item(),
+                losses['val'].item(),
+                rankme_value,
+                areq_value,
+                running_mfu,
+                prefix="bulk_",
+            )
 
     def log_metrics_non_validation(self, loss_training, running_mfu, epoch, tokens_trained, target_dataset, train_better_than_chance):
         if self.args.tensorboard_log:
@@ -1530,6 +1588,48 @@ class Trainer:
                 "mfu": running_mfu*100,
                 })
 
+    @staticmethod
+    def _compute_rankme_areq(features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if features.numel() == 0:
+            return torch.tensor(float('nan')), torch.tensor(float('nan'))
+        features = features.float()
+        if features.ndim != 2:
+            features = features.view(features.shape[0], -1)
+        features = features - features.mean(dim=0, keepdim=True)
+        cov = features.T @ features / max(features.shape[0], 1)
+        eigvals = torch.linalg.eigvalsh(cov)
+        eigvals = torch.sort(eigvals, descending=True).values
+        total = eigvals.sum()
+        if total <= 0:
+            return torch.tensor(float('nan')), torch.tensor(float('nan'))
+        probs = eigvals / total
+        entropy = -(probs * torch.log(probs + 1e-12)).sum()
+        rankme = torch.exp(entropy)
+
+        positive = eigvals > 0
+        if positive.sum() < 2:
+            return rankme, torch.tensor(float('nan'))
+        eigvals = eigvals[positive]
+        idx = torch.arange(1, eigvals.numel() + 1, dtype=eigvals.dtype)
+        log_i = torch.log(idx)
+        log_e = torch.log(eigvals)
+        log_i = log_i - log_i.mean()
+        log_e = log_e - log_e.mean()
+        denom = (log_i ** 2).sum()
+        if denom == 0:
+            areq = torch.tensor(float('nan'))
+        else:
+            areq = -(log_i * log_e).sum() / denom
+        return rankme, areq
+
+    @staticmethod
+    def _to_scalar(value: object) -> float:
+        if value is None:
+            return float('nan')
+        if torch.is_tensor(value):
+            return value.item()
+        return float(value)
+
     def underscore_abbr(self, dataset_name):
         """ Transforms long dataset name to abbreviation
         e.g.
@@ -1568,6 +1668,8 @@ class Trainer:
         self.latest_left_prob_95 = losses.get('left_prob_95', float('nan'))
         self.latest_ln_f_cosine = losses.get('ln_f_cosine', float('nan'))
         self.latest_ln_f_cosine_95 = losses.get('ln_f_cosine_95', float('nan'))
+        self.latest_rankme = self._to_scalar(losses.get('rankme', float('nan')))
+        self.latest_areq = self._to_scalar(losses.get('areq', float('nan')))
 
         if self.args.gns_type is not None:
             self.gns = self.gns_ema.get_gns()
@@ -1667,6 +1769,8 @@ class Trainer:
                             f"{self.latest_left_prob_95:.6f}",
                             f"{self.latest_ln_f_cosine:.6f}",
                             f"{self.latest_ln_f_cosine_95:.6f}",
+                            f"{self.latest_rankme:.6f}",
+                            f"{self.latest_areq:.6f}",
                             f"{self.latest_overall_weight_stats['stdev']:.6f}",
                             f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
                             f"{self.latest_overall_weight_stats['max']:.6f}",
@@ -2086,4 +2190,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
