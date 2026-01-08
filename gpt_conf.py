@@ -27,6 +27,8 @@ class GPTConfig:
     n_cproj_layerlist: List[int] = field(default_factory=list)
     n_kv_group_layerlist: List[int] = field(default_factory=list)
     attention_variant_layerlist: List[str] = field(default_factory=list)
+    use_rotary_embeddings_layerlist: List[bool] = field(default_factory=list)
+    window_size_layerlist: List[int] = field(default_factory=list)
 
     # For multicontext training
     multicontext: bool = False
