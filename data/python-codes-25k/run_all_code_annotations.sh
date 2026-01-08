@@ -1,46 +1,76 @@
 #!/bin/bash
 # run_all_code_annotations.sh
 
+set -u
+
 # Color codes
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
 MAGENTA='\033[0;35m'
+RED='\033[0;31m'
 NC='\033[0m'
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <python_file>" >&2
+  exit 1
+fi
 
 # filename to convert
 filename="$1"
-output_folder="annotated_files"
+file_dir="$(cd "$(dirname "$filename")" && pwd)"
+file_base="$(basename "$filename")"
+parent_dir="$(cd "${file_dir}/.." && pwd)"
 mapped_file="${filename}.mapped"
 
-if [[ ! -d "$output_folder" ]]; then
-  mkdir -p  "$output_folder"
-fi
-
-# List of every supported mode
+# List of modes to run (limited to general and param_nesting)
 MODES=(
-  general exact keywords nesting param_nesting argnum
-  dot_nesting name_kind literals semantic comments scope
+  general param_nesting
 )
+
+failures=0
 
 for mode in "${MODES[@]}"; do
   echo -e "${MAGENTA}=== MODE: $mode ===${NC}"
   echo
 
-  # Run the highlighter and color its stdout magenta
-  python code_highlighter.py --mode "$mode" "$filename" 2>&1
+  if ! python code_highlighter.py --mode "$mode" "$filename" 2>&1; then
+    echo -e "${RED}Highlighter failed for mode $mode${NC}"
+    ((failures+=1))
+    echo
+    continue
+  fi
 
-  # Move the .mapped file to a mode-specific file
-  mv "$mapped_file" "${output_folder}/$mode.txt"
+  mode_dir="${parent_dir}/${mode}_annotations"
+  if [[ ! -d "$mode_dir" ]]; then
+    mkdir -p "$mode_dir"
+  fi
+
+  target_mapped="${mode_dir}/${file_base%.py}.mapped"
+  if ! mv "$mapped_file" "$target_mapped"; then
+    echo -e "${RED}Failed to move mapped output for mode $mode${NC}"
+    ((failures+=1))
+    echo
+    continue
+  fi
   echo
 
-  # Show the mapped output in green
-  echo -e "${GREEN}--- ${output_folder}/$mode.txt (mapped output) ---${NC}"
-  cat "$mode.txt"
+  echo -e "${GREEN}--- ${target_mapped} (mapped output) ---${NC}"
+  if ! cat "$target_mapped"; then
+    echo -e "${RED}Unable to read mapped output for mode $mode${NC}"
+    ((failures+=1))
+  fi
   echo
 
-  # Show the original source in blue
   echo -e "${BLUE}--- $filename (original source) ---${NC}"
-  cat "$filename"
+  if ! cat "$filename"; then
+    echo -e "${RED}Unable to read original source${NC}"
+    ((failures+=1))
+  fi
   echo
 done
+
+if (( failures > 0 )); then
+  echo -e "${RED}${failures} mode(s) reported issues.${NC}" >&2
+  exit 1
+fi
 

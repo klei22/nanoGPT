@@ -10,7 +10,7 @@ shift 1                 # now $@ are additional files and dirs to include
 echo "=== Compiling report: ${report_name}.tar.gz ==="
 
 # Default directories and files (globs need expansion)
-defaults=(./out ./logs ./csv_logs ./exploration_logs ./rem* ./*.csv ./*.yaml ./view_hp_log.py view_model_stats.py logging/ ./plot_view.py ./sample.txt ./explorations ./hp_searches)
+defaults=(./out ./logs ./csv_logs ./exploration_logs ./rem* ./*.csv ./*.yaml ./view_hp_log.py view_model_stats.py logging/ ./plot_view.py ./sample.txt ./explorations ./hp_searches ./utils)
 
 # Expand defaults and collect existing items
 dirs_and_files_to_include=()

@@ -4,6 +4,9 @@ import math
 import re
 
 from train_variations.loss_variants import LOSS_VARIANTS
+from train_variations.distillation_loss_variants import (
+    DISTILLATION_LOSS_VARIANTS,
+)
 
 def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
@@ -37,6 +40,26 @@ def parse_args():
                              help="Dimension for L2-normalizing MLP up projections: 'embed' or 'hidden'")
     model_group.add_argument('--l2_norm_mlp_down_dim', type=str, default='hidden', choices=['embed', 'hidden'],
                              help="Dimension for L2-normalizing MLP down projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_print_dims', default=False, action=argparse.BooleanOptionalAction,
+                             help='Print the dimension size used for L2 normalization when enabled')
+
+    # Attention L2 Normalization options (Infinite attention)
+    model_group.add_argument('--l2_norm_attn_q', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention query projection weights')
+    model_group.add_argument('--l2_norm_attn_k', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention key projection weights')
+    model_group.add_argument('--l2_norm_attn_v', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention value projection weights')
+    model_group.add_argument('--l2_norm_attn_cproj', default=False, action=argparse.BooleanOptionalAction,
+                             help='L2 normalize attention output projection weights')
+    model_group.add_argument('--l2_norm_attn_q_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention query projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_k_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention key projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_v_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention value projections: 'embed' or 'hidden'")
+    model_group.add_argument('--l2_norm_attn_cproj_dim', type=str, default='embed', choices=['embed', 'hidden'],
+                             help="Dimension for L2-normalizing attention output projections: 'embed' or 'hidden'")
 
     # Export Args
     ## Factored WTE
@@ -57,6 +80,18 @@ def parse_args():
     training_group.add_argument('--log_interval', default=10, type=int)
     training_group.add_argument('--eval_iters', default=200, type=int)
     training_group.add_argument('--eval_only', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument(
+        '--mezo_epsilon',
+        type=float,
+        default=1e-3,
+        help='Perturbation scale for MeZO forward-only training.',
+    )
+    training_group.add_argument(
+        '--mezo_seed',
+        type=int,
+        default=None,
+        help='Optional fixed seed for MeZO perturbations (defaults to random per step).',
+    )
 
     # latency / ETA estimate options
     training_group.add_argument('--eta_variant', choices=['iteration', 'eval_cycle'], default='eval_cycle', help="iteration - estimates only based on training iterations -- use if doing one eval at the end; eval_cycle -- use if doing multiple evals, will use a single cycle for the estimation.")
@@ -134,6 +169,18 @@ def parse_args():
         help='Scaling for flatness_boost loss when predictions are flat.',
     )
     training_group.add_argument(
+        '--bit_loss_weight',
+        type=float,
+        default=1e-6,
+        help='Weight of the bit-usage penalty in bit_balanced_cross_entropy.',
+    )
+    training_group.add_argument(
+        '--bit_loss_normalize',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Normalize the bit penalty by parameter count in bit_balanced_cross_entropy.',
+    )
+    training_group.add_argument(
         '--correct_top1_attenuation',
         type=float,
         default=1.0,
@@ -144,6 +191,39 @@ def parse_args():
         type=float,
         default=0.0,
         help='Strength of distance-based attenuation in distance_attenuated_top1 loss.',
+    )
+
+    # Distillation options
+    training_group.add_argument(
+        '--distillation_teacher_ckpt',
+        type=str,
+        default=None,
+        help='Path to a teacher checkpoint (ckpt.pt) for knowledge distillation.',
+    )
+    training_group.add_argument(
+        '--distillation_loss',
+        type=str,
+        default=None,
+        choices=sorted(DISTILLATION_LOSS_VARIANTS.keys()),
+        help='Distillation loss variant applied when a teacher checkpoint is provided.',
+    )
+    training_group.add_argument(
+        '--distillation_weight',
+        type=float,
+        default=1.0,
+        help='Scaling factor applied to the distillation loss before combining with the student loss.',
+    )
+    training_group.add_argument(
+        '--distillation_temperature',
+        type=float,
+        default=1.0,
+        help='Logit temperature used when computing distillation losses.',
+    )
+    training_group.add_argument(
+        '--distillation_eps',
+        type=float,
+        default=1e-8,
+        help='Numerical stability epsilon for distillation losses.',
     )
 
     # Sample args
@@ -236,7 +316,6 @@ def parse_args():
             "adams",
             "ademamix",
             "adan",
-            "apollo_adamw",
             "qhadam",
             "yogi",
             "adamp",
@@ -361,13 +440,6 @@ def parse_args():
     # Adan ---------------------------------------------------------------
     training_group.add_argument("--adan_wd", type=float, default=0.0, help="Adan weight decay.")
     training_group.add_argument("--adan_eps", type=float, default=1e-8, help="Adan epsilon.")
-    # Apollo-Adamw low-rank specific knobs
-    training_group.add_argument("--apollo_rank", type=int, default=2, help="Low-rank adaptor rank (k).")
-    training_group.add_argument("--apollo_proj", type=str, default="random", choices=["random", "hadamard", "learned"], help="Type of projection matrix used by Apollo.")
-    training_group.add_argument("--apollo_scale", type=int, default=128, help="Scale constant applied to projection (see paper).")
-    training_group.add_argument("--apollo_update_proj_gap", type=int, default=200, help="# of optimisation steps between projector refresh.")
-    training_group.add_argument("--apollo_proj_type", type=str, default="std", choices=["std", "gaussian", "rademacher"], help="Distribution for generating the projection matrix.")
-    training_group.add_argument("--apollo_apply_to_all", action=argparse.BooleanOptionalAction, default=False, help="If set, apply low-rank Apollo updates to *all* " "parameters instead of only tensors tagged with " "`.lowrank = True`.")
     training_group.add_argument("--lookahead_inner_opt",
                                 type=str,
                                 default="adamw",
@@ -656,10 +728,12 @@ def parse_args():
     model_group.add_argument("--norm_wte_radius", type=float, default=None)
     model_group.add_argument("--norm_wte_scale", type=float, default=None)
     model_group.add_argument("--norm_wte_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--norm_wte_radius_learning", type=bool, default=None, action=argparse.BooleanOptionalAction)
 
     model_group.add_argument("--norm_abs_radius", type=float, default=None)
     model_group.add_argument("--norm_abs_scale", type=float, default=None)
     model_group.add_argument("--norm_abs_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--norm_abs_radius_learning", type=bool, default=None, action=argparse.BooleanOptionalAction)
 
     ## Layernorm
     model_group.add_argument('--bias', default=False, action=argparse.BooleanOptionalAction, help="only used for layernorm variation option")
@@ -812,6 +886,10 @@ def parse_args():
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
     model_group.add_argument('--n_v_head_dim', default=None, type=int)
     model_group.add_argument('--n_cproj', default=None, type=int)
+    model_group.add_argument('--attn_cproj_scale', default=1.0, type=float,
+                             help="Scale attention outputs before c_proj (Infinite Attention)")
+    model_group.add_argument('--attn_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction,
+                             help="L2 normalize attention outputs before c_proj (Infinite Attention)")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
 
     ## qk_norm variations
@@ -833,7 +911,15 @@ def parse_args():
     model_group.add_argument("--ssm_io_bias",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="adds biases for nn.linear() of both in_proj and out_proj")
 
     # LINEAR VARIATIONS
-    linear_variants = ["linear", "bitlinear", "bitlinear_1p58", "bitlinear_optimized", "kan","quantized_linear"]
+    linear_variants = [
+        "linear",
+        "bitlinear",
+        "bitlinear_1p58",
+        "bitlinear_optimized",
+        "kan",
+        "quantized_linear",
+        "adaptive_bit_linear",
+    ]
     model_group.add_argument("--linear_variant_attn", type=str, default="linear", choices=linear_variants)
     model_group.add_argument("--linear_variant_q", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_q in attention (takes precedence over linear_variant_attn)")
     model_group.add_argument("--linear_variant_k", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_k in attention (takes precedence over linear_variant_attn)")
@@ -845,6 +931,37 @@ def parse_args():
     ## Linear Weight Initialization Options
     model_group.add_argument( "--linear_mean_init", type=float, default=0.0)
     model_group.add_argument( "--linear_std_init", type=float, default=0.02)
+
+    model_group.add_argument(
+        "--adaptive_linear_init_bits",
+        type=float,
+        default=8.0,
+        help="Initial bit-width for adaptive_bit_linear projections.",
+    )
+    model_group.add_argument(
+        "--adaptive_linear_min_bits",
+        type=float,
+        default=1.0,
+        help="Minimum bit-width permitted in adaptive_bit_linear layers.",
+    )
+    model_group.add_argument(
+        "--adaptive_linear_max_bits",
+        type=float,
+        default=8.0,
+        help="Maximum bit-width permitted in adaptive_bit_linear layers.",
+    )
+    model_group.add_argument(
+        "--adaptive_linear_activation_bits",
+        type=float,
+        default=8.0,
+        help="Activation bit-width used when quantizing inputs in adaptive_bit_linear layers.",
+    )
+    model_group.add_argument(
+        "--adaptive_linear_quantize_input",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Whether adaptive_bit_linear layers fake-quantize their activations.",
+    )
 
     ## Embedding Weight Initialization Options
     embedding_init_variations = [
@@ -1160,32 +1277,6 @@ def parse_args():
     model_group.add_argument('--use_gradient_checkpointing', default=False, action=argparse.BooleanOptionalAction, help="Memory efficient training, but takes longer time to train due to trading compute time for memory efficiency. For best memory tradeoff omit the --compile flag. For medium memory tradeoff add --compile.")
     model_group.add_argument('--recompute_backward_pass', default=False, action=argparse.BooleanOptionalAction, help="Recomputes for the backward pass, must use with --use_gradient_checkpointing")
 
-    ## Learned Position Embeddings
-    model_group.add_argument( '--n_lpe', type=int, default=0, help='Number of LearnedPositionEmbedding modules to instantiate (one per transformer block)')
-
-    model_group.add_argument('--lpe_block_size', default=256, type=int)
-    model_group.add_argument('--lpe_n_layer', default=3, type=int)
-    model_group.add_argument('--lpe_n_head', default=6, type=int)
-    model_group.add_argument('--lpe_n_kv_group', default=None, type=int)
-    model_group.add_argument('--lpe_use_abs_pos_embeddings', default=True, action=argparse.BooleanOptionalAction, help='Whether LPE modules add absolute position embeddings')
-    model_group.add_argument('--lpe_use_rotary_embeddings', default=True, action=argparse.BooleanOptionalAction, help='Whether LPE modules add absolute position embeddings')
-    model_group.add_argument('--lpe_n_qk_head_dim', default=None, type=int)
-    model_group.add_argument('--lpe_n_v_head_dim', default=None, type=int)
-    model_group.add_argument("--lpe_mlp_size", type=int, default=None, help="If not None, is used instead of mlp_expansion_factor")
-
-    model_group.add_argument('--target_layer_in_lpe', default=0, type=int)
-    model_group.add_argument('--target_layer_out_lpe', default=0, type=int)
-
-    model_group.add_argument(
-        "--lpe_attention_variant",
-        type=str,
-        default="causal",
-        choices=attention_variants,
-        help="Which attention variant to use for the Transformer blocks."
-    )
-
-
-    model_group.add_argument("--lpe_mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
     # Optimizer args
     training_group.add_argument('--max_iters', default=3500, type=int)
     training_group.add_argument('--weight_decay', default=1e-1, type=float)
@@ -1344,4 +1435,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-

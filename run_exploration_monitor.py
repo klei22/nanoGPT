@@ -5,6 +5,10 @@ Refreshes every N seconds, showing all runs in a DataTable view.
 Interactive keybindings:
   Enter - toggle sort by column
   h/l   - move column left/right
+  a/f   - move column all the way left/right
+  b/n   - move column to left/right edge and move focus
+  k/j   - move cursor to top/bottom row
+  v/m   - move cursor to leftmost/rightmost column
   d     - hide column
   o     - unhide all columns
   x     - hide all rows matching current cell in column
@@ -21,6 +25,7 @@ Interactive keybindings:
   z # # - Δ-bar chart (trim baseline) – e.g. ‘z 3 2’
   r–y   - barcharts with labels merged (r=1, y=3)
   c     - toggle colour-map on first column (green → red)
+  w     - toggle column width to fit largest visible cell
   u     - unsort / remove current column from the sort stack
   U     - clear *all* sorting
 
@@ -63,6 +68,10 @@ def load_runs(log_file: Path) -> List[Dict]:
 HOTKEYS_TEXT = (
     "Enter: toggle sort by column\n"
     "h/l: move column left/right\n"
+    "a/f: move column all the way left/right\n"
+    "b/n: move column to left/right edge and move focus\n"
+    "k/j: move cursor to top/bottom row\n"
+    "v/m: move cursor to leftmost/rightmost column\n"
     "d: hide column\n"
     "o: unhide all columns\n"
     "x: hide rows matching value\n"
@@ -80,6 +89,7 @@ HOTKEYS_TEXT = (
     "z # #: Δ-bar chart (trim baseline) – e.g. ‘z 3 2’\n"
     "r–y: barcharts with labels merged (r=1, y=3)\n"
     "c: toggle colour-map on first column (green → red)\n"
+    "w: toggle column width to fit largest visible cell\n"
     "u: unsort / remove current column from the sort stack\n"
     "U: clear *all* sorting\n"
 )
@@ -142,6 +152,7 @@ class MonitorApp(App):
         self.current_entries: List[Dict] = []  # View data with filters
         self.row_filters: List[tuple] = []     # (col, op, val) triples
         self.colour_columns: set[int] = set()   # columns currently colourised
+        self.auto_fit_columns: set[str] = set()
         self._bar_mode: bool = False           # are we collecting digits?
         self._bar_digits: List[int] = []       # collected numeric keys
         self._trim_mode: bool = False          # 'z' zoom-bar mode
@@ -192,6 +203,8 @@ class MonitorApp(App):
             self.hidden_cols = set(cfg.get("hidden_cols", []))
             self.columns = [c for c in self.all_columns if c not in self.hidden_cols]
             self.sort_stack = [tuple(p) for p in cfg.get("sort_stack", [])]
+            self.colour_columns = set(cfg.get("colour_columns", []))
+            self.auto_fit_columns = set(cfg.get("auto_fit_columns", []))
             # Restore saved row filters
             self.row_filters = cfg.get("row_filters", [])
             self.current_entries = list(self.original_entries)
@@ -219,7 +232,45 @@ class MonitorApp(App):
             return
         self.table.clear(columns=True)
         for col in self.columns:
-            self.table.add_column(col, width=max(12, len(col) + 2))
+            self.table.add_column(col, width=self._column_width(col))
+
+    def _format_cell(self, val) -> str:
+        if isinstance(val, float) and not isinstance(val, bool):
+            return f"{val:.6f}"
+        return str(val)
+
+    def _column_width(self, col: str) -> int:
+        base_width = max(12, len(col) + 2)
+        if col not in self.auto_fit_columns:
+            return base_width
+        max_len = 0
+        for entry in self.current_entries:
+            text = self._format_cell(self.get_cell(entry, col))
+            max_len = max(max_len, len(text))
+        return max(base_width, max_len + 2)
+
+    def _move_column_to_edge(
+        self,
+        col_index: int,
+        move_left: bool,
+        move_cursor: bool,
+    ) -> None:
+        if not self.columns:
+            return
+        if col_index < 0 or col_index >= len(self.columns):
+            return
+        col_name = self.columns[col_index]
+        edge_name = self.columns[0] if move_left else self.columns[-1]
+        if col_name == edge_name:
+            return
+        updated = [col for col in self.all_columns if col != col_name]
+        edge_index = updated.index(edge_name)
+        insert_index = edge_index if move_left else edge_index + 1
+        updated.insert(insert_index, col_name)
+        self.all_columns = updated
+        self.columns = [col for col in self.all_columns if col not in self.hidden_cols]
+        new_cursor = self.columns.index(col_name) if move_cursor else col_index
+        self.refresh_table(new_cursor=new_cursor)
 
     def get_cell(self, entry: Dict, col_name: str):
         """Retrieve the value for a given column in an entry."""
@@ -596,6 +647,8 @@ class MonitorApp(App):
                 "all_columns": self.all_columns,
                 "hidden_cols": list(self.hidden_cols),
                 "sort_stack":  [[i, asc] for i, asc in self.sort_stack],
+                "colour_columns": list(self.colour_columns),
+                "auto_fit_columns": list(self.auto_fit_columns),
                 "row_filters": getattr(self, "row_filters", []),
             }
             self.config_file.write_text(json.dumps(cfg, indent=2))
@@ -639,6 +692,36 @@ class MonitorApp(App):
                     col for col in self.all_columns if col not in self.hidden_cols
                 ]
                 self.refresh_table(new_cursor=t)
+        elif key in ("k", "j", "v", "m"):
+            maxr = len(self.current_entries) - 1
+            maxc = len(self.columns) - 1
+            if maxr < 0 or maxc < 0:
+                return
+            target_row, target_col = r, c
+            if key == "k":
+                target_row = 0
+            elif key == "j":
+                target_row = maxr
+            elif key == "v":
+                target_col = 0
+            elif key == "m":
+                target_col = maxc
+            self.table.cursor_coordinate = (target_row, target_col)
+            return
+        elif key in ("a", "f"):
+            move_left = key == "a"
+            self._move_column_to_edge(
+                col_index=c,
+                move_left=move_left,
+                move_cursor=False,
+            )
+        elif key in ("b", "n"):
+            move_left = key == "b"
+            self._move_column_to_edge(
+                col_index=c,
+                move_left=move_left,
+                move_cursor=True,
+            )
         elif key == "d":
             # Hide column
             col = self.columns[c]
@@ -707,6 +790,15 @@ class MonitorApp(App):
                 self.colour_columns.add(cur)
                 self._msg(f"Colour ON for {self.columns[cur]}")
             self.refresh_table()
+        elif key == "w":
+            col = self.columns[c]
+            if col in self.auto_fit_columns:
+                self.auto_fit_columns.remove(col)
+                self._msg(f"Width reset for {col}")
+            else:
+                self.auto_fit_columns.add(col)
+                self._msg(f"Width fit to data for {col}")
+            self.refresh_table(new_cursor=c)
         elif key == "u":
             # ── remove current column from sort stack ────────────────────
             before = len(self.sort_stack)

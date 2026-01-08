@@ -9,6 +9,8 @@ from collections import defaultdict, Counter
 import json
 import math
 import numpy as np
+import importlib.util
+from pathlib import Path
 
 
 class Tokenizer:
@@ -781,6 +783,57 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
             out_pieces.append(all_bytes.decode('utf-8', errors='replace'))
 
         return ''.join(out_pieces)
+
+
+def _load_python_token_processor():
+    """Load the PythonTokenProcessor helper without requiring a package install."""
+    tokenizer_path = Path(__file__).parent / "programming_tokenizers" / "python_tokenizer.py"
+    spec = importlib.util.spec_from_file_location("python_tokenizer", tokenizer_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load python_tokenizer from {tokenizer_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.PythonTokenProcessor
+
+
+class PythonProgrammingTokenizer(JsonByteTokenizerWithByteFallback):
+    """Tokenize Python code with reserved tokens and byte fallback for everything else."""
+
+    def __init__(self, args):
+        if args.json_tokens_file is None:
+            args.json_tokens_file = str(
+                Path(__file__).parent / "premade_vocab_sets" / "python_programming_tokens.json"
+            )
+        super().__init__(args)
+        python_processor_cls = _load_python_token_processor()
+        self.python_processor = python_processor_cls(self.custom_tokens)
+
+    def tokenize(self, data):
+        ids = []
+
+        def encode_bytes(segment: str) -> None:
+            for byte_val in segment.encode("utf-8"):
+                token_id = self.stoi[bytes([byte_val])]
+                self.record_token(token_id)
+                ids.append(token_id)
+
+        def emit_reserved(token_text: str) -> None:
+            token_id = self.stoi[token_text]
+            self.record_token(token_id)
+            ids.append(token_id)
+
+        self.python_processor.encode_with_reserved_tokens(data, encode_bytes, emit_reserved)
+
+        meta = {
+            "vocab_size": self.vocab_size,
+            "tokenizer": "python_json_byte_fallback",
+            "custom_tokens": self.custom_tokens,
+            "stoi": self.stoi,
+            "itos": self.itos,
+            "custom_token_count": self.custom_token_count,
+        }
+        self.finalize_meta(meta)
+        return ids
 
 
 class SineWaveTokenizer:

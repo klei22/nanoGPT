@@ -12,12 +12,14 @@ provided that more strongly encourage correct top-1 predictions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Tuple
 
 import math
 import torch
 import torch.nn.functional as F
+
+from utils.bit_usage import compute_total_bit_usage
 
 
 # ---------------------------------------------------------------------------
@@ -27,6 +29,80 @@ import torch.nn.functional as F
 def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
     """Standard cross-entropy loss used by the original codebase."""
     return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+
+
+class BitBalancedCrossEntropy:
+    """Cross entropy augmented with a bit-usage penalty."""
+
+    def __init__(self, bit_penalty: float = 0.0, normalize_by_params: bool = False) -> None:
+        self.bit_penalty = bit_penalty
+        self.normalize_by_params = normalize_by_params
+        self.model: torch.nn.Module | None = None
+        self._last_total_bits: float | None = None
+        self._last_normalized_bits: float | None = None
+        self._last_bit_penalty_term: float | None = None
+        self._last_cross_entropy: float | None = None
+
+    def set_model(self, model: torch.nn.Module) -> None:
+        self.model = model
+
+    def _record_stats(
+        self,
+        base: torch.Tensor,
+        total_bits: torch.Tensor | None,
+        normalized_bits: torch.Tensor | None,
+    ) -> None:
+        self._last_cross_entropy = float(base.detach())
+        self._last_total_bits = float(total_bits.detach()) if total_bits is not None else None
+        self._last_normalized_bits = (
+            float(normalized_bits.detach()) if normalized_bits is not None else None
+        )
+        if normalized_bits is not None:
+            penalty = normalized_bits * self.bit_penalty
+            self._last_bit_penalty_term = float(penalty.detach())
+        else:
+            self._last_bit_penalty_term = None
+
+    def _bit_term(self) -> tuple[torch.Tensor, torch.Tensor]:
+        assert self.model is not None, "Model reference must be set before computing bit penalty."
+        total_bits = compute_total_bit_usage(self.model)
+        normalized = total_bits
+        if self.normalize_by_params:
+            param_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            if param_count > 0:
+                normalized = normalized / param_count
+            else:
+                normalized = torch.zeros_like(normalized)
+        return total_bits, normalized
+
+    def bit_statistics(self) -> Dict[str, float] | None:
+        if self._last_total_bits is None and self._last_bit_penalty_term is None:
+            return None
+        return {
+            "total_bits": self._last_total_bits,
+            "normalized_bits": self._last_normalized_bits,
+            "bit_penalty_term": self._last_bit_penalty_term,
+            "cross_entropy": self._last_cross_entropy,
+            "bit_penalty_weight": self.bit_penalty,
+        }
+
+    def __call__(self, logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
+        base = cross_entropy_loss(logits, targets, iter_num=iter_num)
+        if self.model is None:
+            self._record_stats(base, None, None)
+            return base
+
+        if self.bit_penalty == 0.0:
+            with torch.no_grad():
+                total_bits, normalized = self._bit_term()
+        else:
+            total_bits, normalized = self._bit_term()
+
+        self._record_stats(base, total_bits, normalized)
+
+        if self.bit_penalty == 0.0:
+            return base
+        return base + self.bit_penalty * normalized
 
 
 def label_smoothing_loss(
@@ -426,6 +502,7 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "entropy_focal": entropy_focal_loss,
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
+    "bit_balanced_cross_entropy": BitBalancedCrossEntropy(),
 }
 
 
@@ -459,6 +536,7 @@ class ScheduledLoss:
 
     schedule: List[Tuple[int, str]]
     loss_dict: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]]
+    _active_loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.schedule.sort(key=lambda x: x[0])
@@ -471,7 +549,22 @@ class ScheduledLoss:
                     name = candidate
                 else:
                     break
-        return self.loss_dict[name](logits, targets, iter_num=iter_num)
+        loss_impl = self.loss_dict[name]
+        self._active_loss = loss_impl
+        return loss_impl(logits, targets, iter_num=iter_num)
+
+    def set_model(self, model: torch.nn.Module) -> None:
+        for loss in self.loss_dict.values():
+            if hasattr(loss, "set_model"):
+                loss.set_model(model)
+
+    def bit_statistics(self) -> Dict[str, float] | None:
+        if self._active_loss is None or not hasattr(self._active_loss, "bit_statistics"):
+            return None
+        stats_fn = getattr(self._active_loss, "bit_statistics")
+        if callable(stats_fn):
+            return stats_fn()
+        return None
 
 
 def parse_loss_schedule(schedule_str: str) -> List[Tuple[int, str]]:
@@ -564,6 +657,10 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             gamma=rank_gamma(iter_num),
             focal_gamma=getattr(args, "focal_gamma", 2.0),
             beta=getattr(args, "entropy_beta", 0.01),
+        ),
+        "bit_balanced_cross_entropy": BitBalancedCrossEntropy(
+            bit_penalty=getattr(args, "bit_loss_weight", 0.0),
+            normalize_by_params=getattr(args, "bit_loss_normalize", False),
         ),
     }
 

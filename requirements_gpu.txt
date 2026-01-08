@@ -23,7 +23,6 @@ rich==14.0.0
 sentencepiece
 spacy
 tqdm==4.66.4
-lm_eval==0.4.8
 # optimizer related
 adabelief-pytorch
 adan-pytorch

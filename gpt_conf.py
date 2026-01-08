@@ -49,6 +49,17 @@ class GPTConfig:
     l2_norm_mlp_down: bool = False
     l2_norm_mlp_up_dim: str = "embed"   # 'embed' or 'hidden'
     l2_norm_mlp_down_dim: str = "hidden"  # 'embed' or 'hidden'
+    l2_norm_print_dims: bool = False
+
+    # Optional L2 normalization of attention projections (Infinite attention)
+    l2_norm_attn_q: bool = False
+    l2_norm_attn_k: bool = False
+    l2_norm_attn_v: bool = False
+    l2_norm_attn_cproj: bool = False
+    l2_norm_attn_q_dim: str = "embed"     # 'embed' or 'hidden'
+    l2_norm_attn_k_dim: str = "embed"     # 'embed' or 'hidden'
+    l2_norm_attn_v_dim: str = "embed"     # 'embed' or 'hidden'
+    l2_norm_attn_cproj_dim: str = "embed" # 'embed' or 'hidden'
 
     ## MLA Variations
     mla_latent_dim: int | None = None   # d_c  (proj dimension of the shared latent)
@@ -76,30 +87,6 @@ class GPTConfig:
     use_ln_f_input_mixer: bool = False
     ln_f_input_mixer_variant: str = "linear"
     ln_f_mixer_top_k: int = 2
-
-    # Learned Position Embeddings
-    n_lpe: int = 0
-    lpe_block_size: int = 1024
-    lpe_n_layer: int = 12
-    lpe_n_head: int = 12
-    lpe_n_kv_group: int = 12
-    lpe_n_qk_head_dim: int = None
-    lpe_n_v_head_dim: int = None
-    lpe_use_abs_pos_embeddings: bool = True
-    lpe_use_rotary_embeddings: bool = True
-    lpe_attention_variant: str = "causal"
-    lpe_mlp_variant: str = "mlp"
-    lpe_mlp_size: str = None
-    target_layer_in_lpe: int = 0
-    target_layer_out_lpe: int = 0
-
-    # Shared parameters
-    # MLP
-    lpe_shared_mlp_size: int = 1
-    lpe_shared_mlp_sym: bool = False
-    # ATTN
-    lpe_shared_attn_size: int = 1
-    lpe_shared_attn_sym: bool = False
 
     # Attention Variation Specific
 
@@ -170,6 +157,8 @@ class GPTConfig:
 
     # Attention Options
     attention_variant: str = "causal"
+    attn_cproj_scale: float = 1.0
+    attn_post_act_l2_norm: bool = False
 
     # QK Norm Options
     use_qk_norm: bool = False
@@ -380,11 +369,13 @@ class GPTConfig:
     norm_wte_radius: float | None = None
     norm_wte_scale: float | None = None
     norm_wte_gain: bool | None = None
+    norm_wte_radius_learning: bool | None = None
 
     norm_variant_abs: str | None = None
     norm_abs_radius: float | None = None
     norm_abs_scale: float | None = None
     norm_abs_gain: bool | None = None
+    norm_abs_radius_learning: bool | None = None
 
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     prmsnorm_pct: float = 0.0625
@@ -441,6 +432,12 @@ class GPTConfig:
     linear_variant_attn_proj: str = None
     linear_variant_mlp_up: str = None
     linear_variant_mlp_down: str = None
+
+    adaptive_linear_init_bits: float = 8.0
+    adaptive_linear_min_bits: float = 1.0
+    adaptive_linear_max_bits: float = 8.0
+    adaptive_linear_activation_bits: float = 8.0
+    adaptive_linear_quantize_input: bool = True
 
     ## Linear Initialization Options
     linear_mean_init: float= 0.0
@@ -561,4 +558,3 @@ class GPTConfig:
 
         with open(filename, 'w') as json_file:
             json.dump(conf_dict, json_file)
-
