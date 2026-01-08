@@ -1,4 +1,4 @@
-# sample.yaml demonstrating named parameter group configurations
+# fast_scan.yaml demonstrating named parameter group configurations
 ---
 
 # Atomic Static Groupings
@@ -10,6 +10,16 @@ named_static_groups:
   - named_group: "qk_norm"
     use_qk_norm: [true]
     use_qk_norm_scale: [true]
+
+  # RMSNorm Variations
+  - named_group: "rmsnorm_all"
+    named_group_settings:
+      norm_variant_attn: ["rmsnorm"]
+      norm_variant_output: ["rmsnorm"]
+  - named_group: "hsnorm_all"
+    named_group_settings:
+      norm_variant_attn: ["hyperspherenorm"]
+      norm_variant_output: ["hyperspherenorm"]
 
   # Norm Type
   - named_group: "pre_ln"
@@ -35,24 +45,7 @@ named_static_groups:
       use_rotary_embeddings: [false]
       use_abs_pos_embeddings: [true]
 
-  # RMSNorm Variations
-  - named_group: "rmsnorm_all"
-    named_group_settings:
-      norm_variant_attn: ["rmsnorm"]
-      norm_variant_output: ["rmsnorm"]
-  - named_group: "hsnorm_all"
-    named_group_settings:
-      norm_variant_attn: ["hyperspherenorm"]
-      norm_variant_output: ["hyperspherenorm"]
-
-# Higher Level Groupings
 named_variation_groups:
-  - named_group: "embedding_head_variations"
-    parameter_groups:
-      - n_embd: 256
-        n_head: [4, 8]
-      - n_embd: 320
-        n_head: [5, 4]
   - named_group: "pe_var"
     named_group_alternates: ["rotary", "abs"]
   - named_group: "norm_var"
@@ -63,26 +56,18 @@ named_variation_groups:
 # Common_group: parameters applied to every run, but omitted from run names
 common_group:
   dataset: ["shakespeare_char"]
-  n_layer: ["2"]
-  block_size: ["32"]
-  batch_size: ["8"]
-  max_iters: [750]
+  n_layer: ["1"]
+  block_size: ["16"]
+  batch_size: ["1"]
+  max_iters: [500]
+  eval_interval: [500]
+  eta_variant: ["iteration"]
   device: ["cuda"]
   dtype: ["bfloat16"]
   never_save_checkpoint: [true]
+  compile: [false]
 
 # Parameter_groups: define sets of overrides to apply on top of base params
 parameter_groups:
-  - compile: [true, false]
-    named_group_static: ["qk_norm", "pre_ln"]
-    named_group_variations:
-      - "norm_var"
-      - "pe_var"
-    named_group_alternates: ["rmsnorm_all", "hsnorm_all"]
-  - compile: [true, false]
-    named_group_static: ["no_qk_norm", "peri_ln"]
-    named_group_variations:
-      - "embedding_head_variations"
-      - "pe_var"
-    named_group_alternates: ["rmsnorm_all", "hsnorm_all"]
+  - named_group_variations: ["arch_var", "norm_var", "pe_var"]
 
