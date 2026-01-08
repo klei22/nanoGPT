@@ -701,6 +701,7 @@ def parse_args():
             "rmsnorm",
             "layernorm",
             "hyperspherenorm",
+            "hypersphereclampnorm",
             "dact",
             "identity",
             ]
