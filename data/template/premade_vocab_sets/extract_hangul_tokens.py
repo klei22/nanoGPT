@@ -29,7 +29,8 @@ HANGUL_RANGES: Tuple[Tuple[int, int], ...] = (
     (0x3130, 0x318F),  # Hangul Compatibility Jamo
     (0xA960, 0xA97F),  # Hangul Jamo Extended-A
     (0xAC00, 0xD7A3),  # Hangul Syllables
-    (0xD7B0, 0xD7FF),  # Hangul Jamo Extended-B
+    (0xD7B0, 0xD7C6),  # Hangul Jamo Extended-B (part 1)
+    (0xD7CB, 0xD7FB),  # Hangul Jamo Extended-B (part 2)
     (0xFFA0, 0xFFDC),  # Halfwidth Hangul variants
 )
 
