@@ -1332,6 +1332,8 @@ def parse_args():
     logging_group.add_argument('--log_grad_norm', default=False, action=argparse.BooleanOptionalAction, help='Log gradient norm metrics')
     logging_group.add_argument('--log_grad_std', default=False, action=argparse.BooleanOptionalAction, help='Log gradient std metrics')
     logging_group.add_argument('--log_all_metrics', default=False, action=argparse.BooleanOptionalAction, help='Enable logging of all metrics including gns')
+    logging_group.add_argument('--log_rankme', default=True, action=argparse.BooleanOptionalAction, help='Log RankMe representation metric during validation')
+    logging_group.add_argument('--log_areq', default=True, action=argparse.BooleanOptionalAction, help='Log aReQ representation metric during validation')
 
     # Turn activation/weight statistics off to save CPU RAM and wall time.
     training_group.add_argument(
