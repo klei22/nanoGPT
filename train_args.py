@@ -80,6 +80,18 @@ def parse_args():
     training_group.add_argument('--log_interval', default=10, type=int)
     training_group.add_argument('--eval_iters', default=200, type=int)
     training_group.add_argument('--eval_only', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument(
+        '--mezo_epsilon',
+        type=float,
+        default=1e-3,
+        help='Perturbation scale for MeZO forward-only training.',
+    )
+    training_group.add_argument(
+        '--mezo_seed',
+        type=int,
+        default=None,
+        help='Optional fixed seed for MeZO perturbations (defaults to random per step).',
+    )
 
     # latency / ETA estimate options
     training_group.add_argument('--eta_variant', choices=['iteration', 'eval_cycle'], default='eval_cycle', help="iteration - estimates only based on training iterations -- use if doing one eval at the end; eval_cycle -- use if doing multiple evals, will use a single cycle for the estimation.")

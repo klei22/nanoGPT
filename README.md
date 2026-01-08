@@ -106,6 +106,27 @@ at each new saved checkpoint.
 python3 train.py --max_sample_tokens 100 --compile
 ```
 
+### Train Model with MeZO (Forward-Only Updates)
+
+This repo also includes a zeroth-order optimizer script, `train_mezo.py`, that
+uses forward passes only to estimate gradients. It supports the standard single
+dataset training mode and can start from scratch or an existing checkpoint.
+
+Train from scratch:
+
+```bash
+python3 train_mezo.py --dataset shakespeare_char --max_iters 2000 --batch_size 64 --block_size 256
+```
+
+Resume from an existing checkpoint:
+
+```bash
+python3 train_mezo.py --init_from resume --out_dir out
+```
+
+You can adjust the perturbation scale with `--mezo_epsilon` and optionally fix
+the perturbation seed per step with `--mezo_seed`.
+
 ### Perform Inference From Custom Model
 
 minutes and the best validation loss is 1.4697. Based on the configuration, the
