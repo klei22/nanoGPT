@@ -278,7 +278,7 @@ class CausalSelfAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, past_key_value=None, use_cache=False):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
@@ -289,6 +289,14 @@ class CausalSelfAttention(nn.Module):
         q = self.c_attn_q(x)
         k = self.c_attn_k(x)
         v = self.c_attn_v(x)
+
+        if past_key_value is not None:
+            past_k, past_v = past_key_value
+            if past_k is not None and past_v is not None:
+                k = torch.cat([past_k, k], dim=1)
+                v = torch.cat([past_v, v], dim=1)
+
+        present = (k, v) if use_cache else None
 
         if self.window_size is not None:
             if self.use_flex_attn is not None:
@@ -318,8 +326,13 @@ class CausalSelfAttention(nn.Module):
                 v = v * gate_kv
 
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
-        k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
-        v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
+        total_len = k.size(1)
+        k = k.view(B, total_len, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T_total, hs)
+        v = v.view(B, total_len, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T_total, hs)
+
+        causal_mask = None
+        if past_key_value is not None:
+            causal_mask = torch.ones((1, 1, T, total_len), device=x.device, dtype=torch.bool).tril(diagonal=total_len - T)
 
         # rotate q and k before evaluating with the heads
         if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
@@ -336,7 +349,7 @@ class CausalSelfAttention(nn.Module):
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
+        if self.flash and past_key_value is None:
 
             k_attn = self._expand_kv(k)
             v_attn = self._expand_kv(v)
@@ -411,7 +424,10 @@ class CausalSelfAttention(nn.Module):
                 att = att.masked_fill(self.window_mask == 0, float('-inf'))
             else:
                 # regular lower triangle attention
-                att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
+                if causal_mask is not None:
+                    att = att.masked_fill(~causal_mask, float('-inf'))
+                else:
+                    att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
 
             # fire position embeddings
             if self.use_fire_embeddings is not None:
@@ -458,7 +474,7 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method, iter_num)
 
-        return y
+        return (y, present) if use_cache else y
 
 class EdgeLLMASICAttention(nn.Module):
     def __init__(self, config, fire_pos_enc=None):
@@ -613,7 +629,7 @@ class EdgeLLMASICAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, past_key_value=None, use_cache=False):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
@@ -800,7 +816,7 @@ class LinearAttention(nn.Module):
         self.scale = torch.nn.Parameter(torch.tensor(1.0 / math.sqrt(self.head_size)))
 
 
-    def forward(self, x, iter_num=None):
+    def forward(self, x, iter_num=None, past_key_value=None, use_cache=False):
         B, T, C = x.size()
 
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
@@ -974,7 +990,7 @@ class AttnIdentity(nn.Identity):
     def __init__(self, config, fire_pos_enc=None):
         super().__init__()
 
-    def forward(self, x, iter_num=None):
+    def forward(self, x, iter_num=None, past_key_value=None, use_cache=False):
         x = super().forward(x)
         return x
 
@@ -1159,7 +1175,7 @@ class InfiniteHeadAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, past_key_value=None, use_cache=False):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.l2_norm_attn_q:
@@ -1493,7 +1509,7 @@ class Co4Attention(nn.Module):
         return x.transpose(1, 2).contiguous().view(B, S, self.n_embd)
 
     # ─────────────────────────── forward ────────────────────────────────
-    def forward(self, x, iter_num=None):
+    def forward(self, x, iter_num=None, past_key_value=None, use_cache=False):
         """
         x : (B, N, E)
         """
