@@ -25,7 +25,8 @@ class Tokenizer:
         raise NotImplementedError("Detokenize method must be implemented by subclasses.")
 
     def save_meta(self, meta):
-        with open("meta.pkl", "wb") as f:
+        meta_path = getattr(self.args, "meta_output_path", "meta.pkl")
+        with open(meta_path, "wb") as f:
             pickle.dump(meta, f)
 
     def record_token(self, token_id):
@@ -38,8 +39,7 @@ class Tokenizer:
         self.save_meta(meta)
 
     @staticmethod
-    def get_key_from_meta(keyname):
-        meta_path = 'meta.pkl'
+    def get_key_from_meta(keyname, meta_path="meta.pkl"):
         if os.path.exists(meta_path):
             with open(meta_path, 'rb') as f:
                 meta = pickle.load(f)
@@ -289,7 +289,7 @@ class CharTokenizer(Tokenizer):
         super().__init__(args)
         self.reuse_chars = args.reuse_chars
         if self.reuse_chars:
-            self.chars = self.get_key_from_meta('chars')
+            self.chars = self.get_key_from_meta('chars', getattr(args, "meta_output_path", "meta.pkl"))
             if self.chars is None:
                 raise ValueError("No chars found in meta.pkl. Cannot reuse chars.")
         else:
@@ -658,4 +658,3 @@ class SineWaveTokenizer:
     def detokenize(self, ids):
         array = np.asarray(ids, dtype=np.int64)
         return ','.join(map(str, array.tolist()))
-
