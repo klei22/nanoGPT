@@ -94,7 +94,14 @@ def _read_input_data(path):
 
 def main():
     args = parse_arguments()
-    output_dir = args.method if args.output_tokenization_subdir else None
+    output_dir = None
+    if args.output_tokenization_subdir:
+        if args.method == "json_byte_fallback" and args.json_tokens_file:
+            output_dir = os.path.splitext(os.path.basename(args.json_tokens_file))[0]
+        elif args.method == "sentencepiece":
+            output_dir = f"sp_{args.vocab_size}"
+        else:
+            output_dir = args.method
     if output_dir:
         args.meta_output_path = os.path.join(output_dir, "meta.pkl")
         args.train_output = os.path.join(output_dir, os.path.basename(args.train_output))
