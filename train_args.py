@@ -253,8 +253,14 @@ def parse_args():
     training_group.add_argument(
         '--training_mode',
         default='single',
-        choices=['single', 'multidataset', 'multicontext'],
-        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously."
+        choices=['single', 'multidataset', 'multicontext', 'sequence'],
+        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously. 'sequence' performs multi-step sequence prediction."
+    )
+    training_group.add_argument(
+        '--sequence_prediction_steps',
+        default=1,
+        type=int,
+        help="Number of autoregressive passes to run in sequence training mode."
     )
 
     # Data args
