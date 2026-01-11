@@ -1,0 +1,24 @@
+{
+  "description": "Simple addition benchmark that checks exact and regex-valid answers.",
+  "max_new_tokens": 3,
+  "temperature": 0.0,
+  "top_k": [null, 5],
+  "scorers": ["exact", "legal"],
+  "tasks": [
+    {
+      "start_tokens": "1+2=",
+      "answer_string": "3",
+      "legal_answer_regex": "^[0-9]+$"
+    },
+    {
+      "start_tokens": "12+9=",
+      "answer_string": "21",
+      "legal_answer_regex": "^[0-9]+$"
+    },
+    {
+      "start_tokens": "7+5=",
+      "answer_string": "12",
+      "legal_answer_regex": "^[0-9]+$"
+    }
+  ]
+}
