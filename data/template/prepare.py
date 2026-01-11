@@ -67,6 +67,8 @@ def parse_arguments():
     parser.add_argument("-T", "--track_token_counts", action="store_true", help="Track how often each token appears and store in meta.pkl")
     parser.add_argument("-s", "--output_tokenization_subdir", action="store_true",
                         help="Write meta.pkl/train.bin/val.bin into a subdirectory named after the selected tokenization method")
+    parser.add_argument("-S", "--output_subdir_suffix", type=str, default="",
+                        help="Optional suffix to append to the tokenization subdirectory name (e.g. sp_1000_suffix)")
 
     return parser.parse_args()
 
@@ -102,6 +104,8 @@ def main():
             output_dir = f"sp_{args.vocab_size}"
         else:
             output_dir = args.method
+        if args.output_subdir_suffix:
+            output_dir = f"{output_dir}_{args.output_subdir_suffix}"
     if output_dir:
         args.meta_output_path = os.path.join(output_dir, "meta.pkl")
         args.train_output = os.path.join(output_dir, os.path.basename(args.train_output))
