@@ -239,6 +239,9 @@ class Trainer:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
+        if self.args.training_mode == "multi_token" and self.args.multi_token_prediction_steps < 1:
+            raise ValueError("--multi_token_prediction_steps must be >= 1 in multi_token mode.")
+
         self.device_type = 'cuda' if 'cuda' in self.args.device else 'cpu'
         if self.device_type == 'cuda':
             reset_peak_memory_stats(self.device)
@@ -785,6 +788,9 @@ class Trainer:
     def get_batch(self, split, target_dataset=None):
         dataset = None
         data = None
+        extra_target_tokens = 0
+        if self.args.training_mode == "multi_token":
+            extra_target_tokens = max(self.args.multi_token_prediction_steps - 1, 0)
         def interpolate_probs(initial_probs, final_probs, method, step_ratio):
             if method == 'linear':
                 return initial_probs + step_ratio * (final_probs - initial_probs)
@@ -917,7 +923,7 @@ class Trainer:
 
         # Generate random indices for the batch
         ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
-        available = len(data) - self.args.block_size
+        available = len(data) - (self.args.block_size + extra_target_tokens)
         if self.args.sampling_method == "random":
             ix = torch.randint(available, (self.args.batch_size,))
         elif self.args.sampling_method == "sequential":
@@ -957,7 +963,12 @@ class Trainer:
 
         # Get training and targets
         x = torch.stack([torch.from_numpy((data[i:i+self.args.block_size]).astype(np.int64)) for i in ix])
-        y = torch.stack([torch.from_numpy((data[i+1:i+1+self.args.block_size]).astype(np.int64)) for i in ix])
+        y = torch.stack([
+            torch.from_numpy(
+                (data[i+1:i+1+self.args.block_size+extra_target_tokens]).astype(np.int64)
+            )
+            for i in ix
+        ])
 
         # Send to appropriate device
         if self.device_type == 'cuda':
@@ -986,8 +997,19 @@ class Trainer:
                         handle = self.model.transformer.ln_f.register_forward_hook(
                             lambda _m, _i, o: ln_f_out.append(o.detach())
                         )
-                        with self.ctx:
-                            idx = self.args.dataset_list.index(dataset)
+                    with self.ctx:
+                        idx = self.args.dataset_list.index(dataset)
+                        if self.args.training_mode == "multi_token":
+                            logits, loss = self.model.forward_n_step(
+                                X,
+                                Y,
+                                self.args.multi_token_prediction_steps,
+                                iter_num=self.iter_num,
+                                dataset_idx=idx if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                                loss_reduction=self.args.multi_token_loss_reduction,
+                            )
+                        else:
                             logits, loss = self.model(
                                 X,
                                 Y,
@@ -995,27 +1017,28 @@ class Trainer:
                                 dataset_idx=idx if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
-                        handle.remove()
-                        dataset_losses[split][k] = loss.item()
-                        if split == 'val':
-                            probs = F.softmax(logits, dim=-1)
-                            top1_prob, top1_idx = probs.max(dim=-1)
-                            top1_probs.append(top1_prob)
-                            top1_corrects.append((top1_idx == Y).float())
-                            target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
-                            ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
-                            target_ranks.append(ranks.float())
-                            target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
-                            target_probs.append(target_prob)
-                            left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
-                            target_left_probs.append(left_prob)
-                            left_inclusive_probs.append(left_prob + target_prob)
+                    handle.remove()
+                    dataset_losses[split][k] = loss.item()
+                    if split == 'val':
+                        y_eval = Y[:, :self.args.block_size] if self.args.training_mode == "multi_token" else Y
+                        probs = F.softmax(logits, dim=-1)
+                        top1_prob, top1_idx = probs.max(dim=-1)
+                        top1_probs.append(top1_prob)
+                        top1_corrects.append((top1_idx == y_eval).float())
+                        target_logits = logits.gather(-1, y_eval.unsqueeze(-1)).squeeze(-1)
+                        ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+                        target_ranks.append(ranks.float())
+                        target_prob = probs.gather(-1, y_eval.unsqueeze(-1)).squeeze(-1).float()
+                        target_probs.append(target_prob)
+                        left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
+                        target_left_probs.append(left_prob)
+                        left_inclusive_probs.append(left_prob + target_prob)
                             lm_head = (
                                 self.model.transformer[f'lm_head_{idx}']
                                 if self.args.multidataset_wte
                                 else self.model.lm_head
                             )
-                            target_vecs = lm_head.weight[Y]
+                            target_vecs = lm_head.weight[y_eval]
                             cos = F.cosine_similarity(
                                 ln_f_out[0].float(), target_vecs.float(), dim=-1
                             )
@@ -1120,24 +1143,36 @@ class Trainer:
                         lambda _m, _i, o: ln_f_out.append(o.detach())
                     )
                     with self.ctx:
-                        logits, loss = self.model(
-                            X,
-                            Y,
-                            iter_num=self.iter_num,
-                            dataset_idx=0 if self.args.multidataset_wte else None,
-                            loss_fn=self.loss_fn,
-                        )
+                        if self.args.training_mode == "multi_token":
+                            logits, loss = self.model.forward_n_step(
+                                X,
+                                Y,
+                                self.args.multi_token_prediction_steps,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                                loss_reduction=self.args.multi_token_loss_reduction,
+                            )
+                        else:
+                            logits, loss = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
                     handle.remove()
                     losses[k] = loss.item()
                     if split == 'val':
+                        y_eval = Y[:, :self.args.block_size] if self.args.training_mode == "multi_token" else Y
                         probs = F.softmax(logits, dim=-1)
                         top1_prob, top1_idx = probs.max(dim=-1)
                         top1_probs.append(top1_prob)
-                        top1_corrects.append((top1_idx == Y).float())
-                        target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                        top1_corrects.append((top1_idx == y_eval).float())
+                        target_logits = logits.gather(-1, y_eval.unsqueeze(-1)).squeeze(-1)
                         ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
                         target_ranks.append(ranks.float())
-                        target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
+                        target_prob = probs.gather(-1, y_eval.unsqueeze(-1)).squeeze(-1).float()
                         target_probs.append(target_prob)
                         left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
                         target_left_probs.append(left_prob)
@@ -1147,7 +1182,7 @@ class Trainer:
                             if self.args.multidataset_wte
                             else self.model.lm_head
                         )
-                        target_vecs = lm_head.weight[Y]
+                        target_vecs = lm_head.weight[y_eval]
                         cos = F.cosine_similarity(
                             ln_f_out[0].float(), target_vecs.float(), dim=-1
                         )
@@ -1179,6 +1214,8 @@ class Trainer:
         # compute statistics from a single validation batch
         if self.compute_model_stats:
             X_stat, Y_stat, _ = self.get_batch('val')
+            if self.args.training_mode == "multi_token":
+                Y_stat = Y_stat[:, :self.args.block_size]
             # ── Run heavy ops on the selected device (GPU keeps host‑RAM flat) ──
             act_stats,  overall_act  = compute_activation_stats(
                     self.model, X_stat, Y_stat, self.iter_num, device=self.stats_device
@@ -1988,6 +2025,17 @@ class Trainer:
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
+                        elif self.args.training_mode == "multi_token":
+                            idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
+                            logits, loss = self.model.forward_n_step(
+                                self.X,
+                                self.Y,
+                                self.args.multi_token_prediction_steps,
+                                iter_num=self.iter_num,
+                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                                loss_reduction=self.args.multi_token_loss_reduction,
+                            )
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
                             logits, loss = self.model(
@@ -2012,9 +2060,14 @@ class Trainer:
                         and self.args.training_mode != 'multicontext'
                     ):
                         with torch.no_grad():
+                            teacher_targets = (
+                                self.Y[:, :self.args.block_size]
+                                if self.args.training_mode == "multi_token"
+                                else self.Y
+                            )
                             teacher_logits, _ = self.teacher_model(
                                 self.X,
-                                targets=self.Y,
+                                targets=teacher_targets,
                                 iter_num=self.iter_num,
                                 dataset_idx=idx_ds if self.args.multidataset_wte else None,
                                 loss_fn=None,
@@ -2022,7 +2075,7 @@ class Trainer:
                         distill_component = self.distillation_loss_fn(
                             logits,
                             teacher_logits,
-                            self.Y,
+                            teacher_targets,
                             iter_num=self.iter_num,
                         )
                         distill_component = distill_component.to(loss.dtype)
