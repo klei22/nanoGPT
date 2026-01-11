@@ -181,6 +181,8 @@ class Trainer:
 
         if self.args.training_mode == 'multicontext':
             self.vocab_sizes = {}
+        if self.args.training_mode == 'sequence' and self.args.sequence_prediction_steps < 1:
+            raise ValueError("sequence_prediction_steps must be >= 1 for sequence training mode.")
         # init optimizer and scheduler
         self.optimizer = None
         self.scheduler = None
@@ -785,6 +787,9 @@ class Trainer:
     def get_batch(self, split, target_dataset=None):
         dataset = None
         data = None
+        extra_tokens = 0
+        if self.args.training_mode == 'sequence':
+            extra_tokens = self.args.sequence_prediction_steps - 1
         def interpolate_probs(initial_probs, final_probs, method, step_ratio):
             if method == 'linear':
                 return initial_probs + step_ratio * (final_probs - initial_probs)
@@ -916,8 +921,8 @@ class Trainer:
                 self.args.batch_size = math.ceil(self.args.batch_size * (1.0 - self.args.gns_batch_pct))
 
         # Generate random indices for the batch
-        ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
-        available = len(data) - self.args.block_size
+        ix = torch.randint(len(data) - (self.args.block_size + extra_tokens), (self.args.batch_size,))
+        available = len(data) - (self.args.block_size + extra_tokens)
         if self.args.sampling_method == "random":
             ix = torch.randint(available, (self.args.batch_size,))
         elif self.args.sampling_method == "sequential":
@@ -957,7 +962,10 @@ class Trainer:
 
         # Get training and targets
         x = torch.stack([torch.from_numpy((data[i:i+self.args.block_size]).astype(np.int64)) for i in ix])
-        y = torch.stack([torch.from_numpy((data[i+1:i+1+self.args.block_size]).astype(np.int64)) for i in ix])
+        y = torch.stack([
+            torch.from_numpy((data[i+1:i+1+self.args.block_size+extra_tokens]).astype(np.int64))
+            for i in ix
+        ])
 
         # Send to appropriate device
         if self.device_type == 'cuda':
@@ -965,6 +973,31 @@ class Trainer:
         else:
             x, y = x.to(self.device), y.to(self.device)
         return x, y, dataset
+
+    def _sequence_rollout_loss(self, x, y, dataset_idx=None):
+        steps = self.args.sequence_prediction_steps
+        current_input = x
+        total_loss = None
+        first_logits = None
+
+        for step in range(steps):
+            step_targets = y[:, step:step + self.args.block_size]
+            logits, loss = self.model(
+                current_input,
+                targets=step_targets,
+                iter_num=self.iter_num,
+                dataset_idx=dataset_idx if self.args.multidataset_wte else None,
+                loss_fn=self.loss_fn,
+            )
+            if first_logits is None:
+                first_logits = logits
+            total_loss = loss if total_loss is None else total_loss + loss
+
+            if step < steps - 1:
+                next_token = logits[:, -1, :].argmax(dim=-1)
+                current_input = torch.cat([current_input[:, 1:], next_token.unsqueeze(1)], dim=1)
+
+        return first_logits, total_loss
 
     @torch.no_grad()
     def estimate_loss(self):
@@ -988,13 +1021,17 @@ class Trainer:
                         )
                         with self.ctx:
                             idx = self.args.dataset_list.index(dataset)
-                            logits, loss = self.model(
-                                X,
-                                Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
-                            )
+                            if self.args.training_mode == 'sequence':
+                                logits, loss = self._sequence_rollout_loss(X, Y, dataset_idx=idx)
+                                Y = Y[:, :self.args.block_size]
+                            else:
+                                logits, loss = self.model(
+                                    X,
+                                    Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
                         handle.remove()
                         dataset_losses[split][k] = loss.item()
                         if split == 'val':
@@ -1120,13 +1157,17 @@ class Trainer:
                         lambda _m, _i, o: ln_f_out.append(o.detach())
                     )
                     with self.ctx:
-                        logits, loss = self.model(
-                            X,
-                            Y,
-                            iter_num=self.iter_num,
-                            dataset_idx=0 if self.args.multidataset_wte else None,
-                            loss_fn=self.loss_fn,
-                        )
+                        if self.args.training_mode == 'sequence':
+                            logits, loss = self._sequence_rollout_loss(X, Y, dataset_idx=0)
+                            Y = Y[:, :self.args.block_size]
+                        else:
+                            logits, loss = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
                     handle.remove()
                     losses[k] = loss.item()
                     if split == 'val':
@@ -1179,6 +1220,8 @@ class Trainer:
         # compute statistics from a single validation batch
         if self.compute_model_stats:
             X_stat, Y_stat, _ = self.get_batch('val')
+            if self.args.training_mode == 'sequence':
+                Y_stat = Y_stat[:, :self.args.block_size]
             # ── Run heavy ops on the selected device (GPU keeps host‑RAM flat) ──
             act_stats,  overall_act  = compute_activation_stats(
                     self.model, X_stat, Y_stat, self.iter_num, device=self.stats_device
@@ -1990,13 +2033,18 @@ class Trainer:
                             loss = sum(training_losses) / len(training_losses)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(
-                                self.X,
-                                targets=self.Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
-                            )
+                            if self.args.training_mode == 'sequence':
+                                logits, loss = self._sequence_rollout_loss(self.X, self.Y, dataset_idx=idx_ds)
+                                target_for_logits = self.Y[:, :self.args.block_size]
+                            else:
+                                logits, loss = self.model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
+                                target_for_logits = self.Y
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                         with torch.no_grad():
@@ -2012,17 +2060,26 @@ class Trainer:
                         and self.args.training_mode != 'multicontext'
                     ):
                         with torch.no_grad():
-                            teacher_logits, _ = self.teacher_model(
-                                self.X,
-                                targets=self.Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=None,
-                            )
+                            if self.args.training_mode == 'sequence':
+                                teacher_logits, _ = self.teacher_model(
+                                    self.X,
+                                    targets=target_for_logits,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=None,
+                                )
+                            else:
+                                teacher_logits, _ = self.teacher_model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=None,
+                                )
                         distill_component = self.distillation_loss_fn(
                             logits,
                             teacher_logits,
-                            self.Y,
+                            target_for_logits,
                             iter_num=self.iter_num,
                         )
                         distill_component = distill_component.to(loss.dtype)
