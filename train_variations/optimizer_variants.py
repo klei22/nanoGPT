@@ -601,8 +601,14 @@ class SophiaG(Optimizer):
 
 try:
     from torch_optimizer import Shampoo as _ToptShampoo
+    try:
+        # present in upstream torch-optimizer/shampoo.py
+        from torch_optimizer.shampoo import _matrix_power as _topt_matrix_power
+    except Exception:  # pragma: no cover - defensive fallback
+        _topt_matrix_power = None
 except (ModuleNotFoundError, ImportError):
     _ToptShampoo = None
+    _topt_matrix_power = None
 
 
 class SOAP(Optimizer):
@@ -619,10 +625,10 @@ class SOAP(Optimizer):
         self,
         params,
         lr: float = 1e-4,
-        betas: tuple[float, float] = (0.9, 0.999),   # (β₁  for m,  β₂ for Shampoo)
+        betas: tuple[float, float] = (0.9, 0.999),   # (β₁  for m,  β₂ fallback for Shampoo momentum)
         eps: float = 1e-12,
         weight_decay: float = 0.0,
-        momentum: float = 0.9,        # reused for Shampoo
+        momentum: float | None = None,        # reused for Shampoo (defaults to β₂)
         update_freq: int = 1,         # Shampoo pre-condition freq
         graft_lr: float = 1.0,        # LR multiplier after grafting
     ):
@@ -633,12 +639,14 @@ class SOAP(Optimizer):
                 "or choose a different optimiser."
             )
 
+        shampoo_momentum = betas[1] if momentum is None else momentum
+
         defaults = dict(
             lr=lr,
             betas=betas,
             eps=eps,
             weight_decay=weight_decay,
-            momentum=momentum,
+            momentum=shampoo_momentum,
             update_freq=update_freq,
             graft_lr=graft_lr,
         )
@@ -648,7 +656,7 @@ class SOAP(Optimizer):
         self._shampoo = _ToptShampoo(
             params,
             lr=1.0,                       # handled by SOAP itself
-            momentum=momentum,
+            momentum=shampoo_momentum,
             epsilon=eps,
             weight_decay=0.0,             # decay handled in outer loop
             update_freq=update_freq,
@@ -657,12 +665,100 @@ class SOAP(Optimizer):
         # we must NOT let torch-optimizer step the params – override later
         self._shampoo.step = lambda *a, **kw: None
 
+    def _matrix_power(self, matrix: torch.Tensor, power: float) -> torch.Tensor:
+        """
+        Wrapper around torch-optimizer's SVD-based matrix_power helper with a
+        built-in fallback so we can still precondition grads when the helper
+        is unavailable (e.g., older torch-optimizer versions).
+        """
+
+        if _topt_matrix_power is not None:
+            return _topt_matrix_power(matrix, power)
+
+        # Simple fallback adapted from torch-optimizer/shampoo.py
+        device = matrix.device
+        matrix_cpu = matrix.cpu()
+        u, s, v = torch.svd(matrix_cpu)
+        powered = u @ torch.diag(s.pow(power)) @ v.t()
+        return powered.to(device=device, dtype=matrix.dtype)
+
+    def _precondition_grads(self):
+        """
+        Run Shampoo preconditioning in-place on parameter grads **without**
+        performing the actual parameter update. This mirrors the upstream
+        Shampoo.step logic up to, but not including, the final param add_.
+        """
+
+        for group in self._shampoo.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data
+                order = grad.ndimension()
+                original_size = grad.size()
+                state = self._shampoo.state[p]
+
+                momentum = group["momentum"]
+                weight_decay = group["weight_decay"]
+                epsilon = group["epsilon"]
+                update_freq = group["update_freq"]
+
+                if len(state) == 0:
+                    state["step"] = 0
+                    if momentum > 0:
+                        state["momentum_buffer"] = grad.clone()
+                    for dim_id, dim in enumerate(grad.size()):
+                        state[f"precond_{dim_id}"] = epsilon * torch.eye(
+                            dim, out=grad.new(dim, dim)
+                        )
+                        state[f"inv_precond_{dim_id}"] = grad.new(dim, dim).zero_()
+
+                if momentum > 0:
+                    grad = grad.mul(1 - momentum).add_(
+                        state["momentum_buffer"], alpha=momentum
+                    )
+
+                if weight_decay > 0:
+                    grad = grad.add(p.data, alpha=weight_decay)
+
+                for dim_id, dim in enumerate(grad.size()):
+                    precond = state[f"precond_{dim_id}"]
+                    inv_precond = state[f"inv_precond_{dim_id}"]
+
+                    grad = grad.transpose(0, dim_id).contiguous()
+                    transposed_size = grad.size()
+                    grad = grad.view(dim, -1)
+
+                    grad_t = grad.t()
+                    precond.add_(grad @ grad_t)
+                    if state["step"] % update_freq == 0:
+                        inv_precond.copy_(
+                            self._matrix_power(precond, -1 / order)
+                        )
+
+                    if dim_id == order - 1:
+                        grad = grad_t @ inv_precond
+                        grad = grad.view(original_size)
+                    else:
+                        grad = inv_precond @ grad
+                        grad = grad.view(transposed_size)
+
+                state["step"] += 1
+                state["momentum_buffer"] = grad
+
+                # replace grad on the param with the preconditioned version
+                if p.grad.data.data_ptr() == grad.data_ptr():
+                    # already the same storage; nothing to copy
+                    continue
+                p.grad.copy_(grad)
+
     @torch.no_grad()
     def step(self, closure=None):
         loss = None if closure is None else closure()
 
         # 1) Let Shampoo compute **pre-conditioned grads** (stored on .grad)
-        self._shampoo.precondition_grads()   # no param update here
+        self._precondition_grads()   # no param update here
 
         # 2) Adam-style first-moment + weight decay + param update
         for group in self.param_groups:
@@ -1437,10 +1533,11 @@ def _sgdw(param_groups, args):
 
 def _shampoo(param_groups, args):
     _needs_topt()
+    shampoo_momentum = 0.0 if args.shampoo_momentum is None else args.shampoo_momentum
     return topt.Shampoo(
         param_groups,
         lr=args.learning_rate,
-        momentum=args.shampoo_momentum,
+        momentum=shampoo_momentum,
         weight_decay=args.opt_weight_decay,
         epsilon=args.shampoo_eps,
         update_freq=args.shampoo_update_freq,
