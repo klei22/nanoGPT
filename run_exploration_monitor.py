@@ -136,7 +136,7 @@ class MonitorApp(App):
     }
     """
 
-    def __init__(self, log_file: Path, interval: float, csv_dir: str) -> None:
+    def __init__(self, log_file: Path, interval: float, csv_dir: str, include_zeus_metrics: bool) -> None:
         super().__init__()
         self.log_file = log_file
         self.interval = interval
@@ -158,6 +158,7 @@ class MonitorApp(App):
         self._trim_mode: bool = False          # 'z' zoom-bar mode
         self._trim_digit: List[int] = []       # holds the single digit
         self.csv_dir: str = csv_dir
+        self.include_zeus_metrics: bool = include_zeus_metrics
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -196,6 +197,15 @@ class MonitorApp(App):
             "rankme",
             "areq",
         ] + self.param_keys
+        if self.include_zeus_metrics:
+            base_cols.extend(
+                [
+                    "zeus_time_s",
+                    "zeus_total_energy_j",
+                    "zeus_gpu_energy_j",
+                    "zeus_wall_duration_s",
+                ]
+            )
         self.all_columns = base_cols.copy()
         self.columns = base_cols.copy()
         # Load persisted layout if exists
@@ -900,6 +910,11 @@ def main() -> None:
     parser.add_argument(
         "--csv_dir", type=str, default="rem_csv_exports", help="directory for csv outputs"
     )
+    parser.add_argument(
+        "--include_zeus_metrics",
+        action="store_true",
+        help="Display Zeus energy metrics from exploration logs when available",
+    )
     args = parser.parse_args()
 
     if args.hotkeys:
@@ -907,7 +922,7 @@ def main() -> None:
         sys.exit(0)
 
     os.makedirs(args.csv_dir, exist_ok=True)
-    app = MonitorApp(args.log_file, args.interval, args.csv_dir)
+    app = MonitorApp(args.log_file, args.interval, args.csv_dir, args.include_zeus_metrics)
     app.run()
 
 
