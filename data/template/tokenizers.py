@@ -54,6 +54,7 @@ class SentencePieceTokenizer(Tokenizer):
         self.spm_vocab_file = args.spm_vocab_file
         self.skip_tokenization = args.skip_tokenization
         self.input_files = input_files
+        self.output_dir = os.path.dirname(getattr(args, "meta_output_path", ""))
         self.sp = None
 
         if self.spm_model_file:
@@ -64,6 +65,9 @@ class SentencePieceTokenizer(Tokenizer):
 
     def train_sentencepiece_model(self):
         spm_model_prefix = "trained_spm_model"
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
+            spm_model_prefix = os.path.join(self.output_dir, spm_model_prefix)
         num_threads = os.cpu_count()
         input_arg = ""
         if isinstance(self.input_files, list):
