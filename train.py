@@ -92,6 +92,11 @@ class Trainer:
         self.model_group = model_group
         self.training_group = training_group
         self.logging_group = logging_group
+        self.sequence_prediction_steps = max(1, getattr(self.args, "sequence_prediction_steps", 1))
+        if self.sequence_prediction_steps < 1:
+            raise ValueError("sequence_prediction_steps must be at least 1.")
+        if self.sequence_prediction_steps > 1 and self.args.training_mode == 'multicontext':
+            raise ValueError("sequence prediction mode does not support multicontext training.")
 
         # GNS and batch schedule
         self.gns = None
@@ -971,6 +976,7 @@ class Trainer:
         out = {'datasets':{}}
 
         self.model.eval()
+        use_sequence_prediction = self.sequence_prediction_steps > 1
         # If multi-dataset sampling is enabled, we calculate loss per dataset
         if self.args.dataset_list:
             for dataset in self.args.dataset_list:
@@ -982,48 +988,76 @@ class Trainer:
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
-                        ln_f_out: list[torch.Tensor] = []
-                        handle = self.model.transformer.ln_f.register_forward_hook(
-                            lambda _m, _i, o: ln_f_out.append(o.detach())
-                        )
-                        with self.ctx:
-                            idx = self.args.dataset_list.index(dataset)
-                            logits, loss = self.model(
-                                X,
-                                Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
+                        if use_sequence_prediction:
+                            with self.ctx:
+                                idx = self.args.dataset_list.index(dataset)
+                                logits, loss, _, eval_targets, ln_f_out = self._sequence_prediction_forward(
+                                    X,
+                                    Y,
+                                    dataset_idx=idx if self.args.multidataset_wte else None,
+                                    capture_ln_f=(split == 'val'),
+                                    include_distillation=False,
+                                )
+                        else:
+                            ln_f_out: list[torch.Tensor] = []
+                            handle = self.model.transformer.ln_f.register_forward_hook(
+                                lambda _m, _i, o: ln_f_out.append(o.detach())
                             )
-                        handle.remove()
+                            with self.ctx:
+                                idx = self.args.dataset_list.index(dataset)
+                                logits, loss = self.model(
+                                    X,
+                                    Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
+                            handle.remove()
                         dataset_losses[split][k] = loss.item()
                         if split == 'val':
-                            probs = F.softmax(logits, dim=-1)
-                            top1_prob, top1_idx = probs.max(dim=-1)
-                            top1_probs.append(top1_prob)
-                            top1_corrects.append((top1_idx == Y).float())
-                            target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
-                            ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
-                            target_ranks.append(ranks.float())
-                            target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
-                            target_probs.append(target_prob)
-                            left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
-                            target_left_probs.append(left_prob)
-                            left_inclusive_probs.append(left_prob + target_prob)
                             lm_head = (
                                 self.model.transformer[f'lm_head_{idx}']
                                 if self.args.multidataset_wte
                                 else self.model.lm_head
                             )
-                            target_vecs = lm_head.weight[Y]
-                            cos = F.cosine_similarity(
-                                ln_f_out[0].float(), target_vecs.float(), dim=-1
-                            )
-                            ln_f_cosines.append(cos)
-                            if self.args.log_rankme or self.args.log_areq:
-                                rankme_vectors.append(
-                                    ln_f_out[0][:, -1, :].float().detach().cpu()
+                            if use_sequence_prediction:
+                                metrics = {
+                                    'top1_probs': top1_probs,
+                                    'top1_corrects': top1_corrects,
+                                    'target_ranks': target_ranks,
+                                    'target_probs': target_probs,
+                                    'target_left_probs': target_left_probs,
+                                    'left_inclusive_probs': left_inclusive_probs,
+                                    'ln_f_cosines': ln_f_cosines,
+                                }
+                                self._append_masked_val_metrics(metrics, logits, eval_targets, ln_f_out, lm_head)
+                                if self.args.log_rankme or self.args.log_areq:
+                                    if ln_f_out is not None:
+                                        rankme_vectors.append(
+                                            ln_f_out[:, -1, :].float().detach().cpu()
+                                        )
+                            else:
+                                probs = F.softmax(logits, dim=-1)
+                                top1_prob, top1_idx = probs.max(dim=-1)
+                                top1_probs.append(top1_prob)
+                                top1_corrects.append((top1_idx == Y).float())
+                                target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                                ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+                                target_ranks.append(ranks.float())
+                                target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
+                                target_probs.append(target_prob)
+                                left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
+                                target_left_probs.append(left_prob)
+                                left_inclusive_probs.append(left_prob + target_prob)
+                                target_vecs = lm_head.weight[Y]
+                                cos = F.cosine_similarity(
+                                    ln_f_out[0].float(), target_vecs.float(), dim=-1
                                 )
+                                ln_f_cosines.append(cos)
+                                if self.args.log_rankme or self.args.log_areq:
+                                    rankme_vectors.append(
+                                        ln_f_out[0][:, -1, :].float().detach().cpu()
+                                    )
                 rankme = torch.tensor(float('nan'))
                 areq = torch.tensor(float('nan'))
                 if rankme_vectors:
@@ -1115,47 +1149,74 @@ class Trainer:
                 rankme_vectors = []
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
-                    ln_f_out: list[torch.Tensor] = []
-                    handle = self.model.transformer.ln_f.register_forward_hook(
-                        lambda _m, _i, o: ln_f_out.append(o.detach())
-                    )
-                    with self.ctx:
-                        logits, loss = self.model(
-                            X,
-                            Y,
-                            iter_num=self.iter_num,
-                            dataset_idx=0 if self.args.multidataset_wte else None,
-                            loss_fn=self.loss_fn,
+                    if use_sequence_prediction:
+                        with self.ctx:
+                            logits, loss, _, eval_targets, ln_f_out = self._sequence_prediction_forward(
+                                X,
+                                Y,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                capture_ln_f=(split == 'val'),
+                                include_distillation=False,
+                            )
+                    else:
+                        ln_f_out: list[torch.Tensor] = []
+                        handle = self.model.transformer.ln_f.register_forward_hook(
+                            lambda _m, _i, o: ln_f_out.append(o.detach())
                         )
-                    handle.remove()
+                        with self.ctx:
+                            logits, loss = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
+                        handle.remove()
                     losses[k] = loss.item()
                     if split == 'val':
-                        probs = F.softmax(logits, dim=-1)
-                        top1_prob, top1_idx = probs.max(dim=-1)
-                        top1_probs.append(top1_prob)
-                        top1_corrects.append((top1_idx == Y).float())
-                        target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
-                        ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
-                        target_ranks.append(ranks.float())
-                        target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
-                        target_probs.append(target_prob)
-                        left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
-                        target_left_probs.append(left_prob)
-                        left_inclusive_probs.append(left_prob + target_prob)
                         lm_head = (
                             self.model.transformer['lm_head_0']
                             if self.args.multidataset_wte
                             else self.model.lm_head
                         )
-                        target_vecs = lm_head.weight[Y]
-                        cos = F.cosine_similarity(
-                            ln_f_out[0].float(), target_vecs.float(), dim=-1
-                        )
-                        ln_f_cosines.append(cos)
-                        if self.args.log_rankme or self.args.log_areq:
-                            rankme_vectors.append(
-                                ln_f_out[0][:, -1, :].float().detach().cpu()
+                        if use_sequence_prediction:
+                            metrics = {
+                                'top1_probs': top1_probs,
+                                'top1_corrects': top1_corrects,
+                                'target_ranks': target_ranks,
+                                'target_probs': target_probs,
+                                'target_left_probs': target_left_probs,
+                                'left_inclusive_probs': left_inclusive_probs,
+                                'ln_f_cosines': ln_f_cosines,
+                            }
+                            self._append_masked_val_metrics(metrics, logits, eval_targets, ln_f_out, lm_head)
+                            if self.args.log_rankme or self.args.log_areq:
+                                if ln_f_out is not None:
+                                    rankme_vectors.append(
+                                        ln_f_out[:, -1, :].float().detach().cpu()
+                                    )
+                        else:
+                            probs = F.softmax(logits, dim=-1)
+                            top1_prob, top1_idx = probs.max(dim=-1)
+                            top1_probs.append(top1_prob)
+                            top1_corrects.append((top1_idx == Y).float())
+                            target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                            ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+                            target_ranks.append(ranks.float())
+                            target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
+                            target_probs.append(target_prob)
+                            left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
+                            target_left_probs.append(left_prob)
+                            left_inclusive_probs.append(left_prob + target_prob)
+                            target_vecs = lm_head.weight[Y]
+                            cos = F.cosine_similarity(
+                                ln_f_out[0].float(), target_vecs.float(), dim=-1
                             )
+                            ln_f_cosines.append(cos)
+                            if self.args.log_rankme or self.args.log_areq:
+                                rankme_vectors.append(
+                                    ln_f_out[0][:, -1, :].float().detach().cpu()
+                                )
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
                 if split == 'val':
@@ -1636,6 +1697,124 @@ class Trainer:
             return value.item()
         return float(value)
 
+    @staticmethod
+    def _shift_targets(targets: torch.Tensor, shift: int) -> torch.Tensor:
+        if shift == 0:
+            return targets
+        shifted = targets.new_full(targets.shape, -1)
+        if shift < targets.size(1):
+            shifted[:, :-shift] = targets[:, shift:]
+        return shifted
+
+    def _sequence_prediction_forward(
+        self,
+        idx: torch.Tensor,
+        targets: torch.Tensor,
+        *,
+        dataset_idx: int | None = None,
+        capture_ln_f: bool = False,
+        include_distillation: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor | None]:
+        idx_round = idx
+        total_loss = None
+        total_distill = None
+        last_logits = None
+        last_targets = targets
+        last_ln_f = None
+
+        for step in range(self.sequence_prediction_steps):
+            step_targets = self._shift_targets(targets, step)
+            ln_f_out = []
+            handle = None
+            if capture_ln_f:
+                handle = self.model.transformer.ln_f.register_forward_hook(
+                    lambda _m, _i, o: ln_f_out.append(o.detach())
+                )
+
+            logits, loss = self.model(
+                idx_round,
+                targets=step_targets,
+                iter_num=self.iter_num,
+                dataset_idx=dataset_idx,
+                loss_fn=self.loss_fn,
+            )
+
+            if handle is not None:
+                handle.remove()
+                last_ln_f = ln_f_out[0] if ln_f_out else None
+
+            if (
+                include_distillation
+                and self.teacher_model is not None
+                and self.distillation_loss_fn is not None
+            ):
+                with torch.no_grad():
+                    teacher_logits, _ = self.teacher_model(
+                        idx_round,
+                        targets=step_targets,
+                        iter_num=self.iter_num,
+                        dataset_idx=dataset_idx,
+                        loss_fn=None,
+                    )
+                distill = self.distillation_loss_fn(
+                    logits,
+                    teacher_logits,
+                    step_targets,
+                    iter_num=self.iter_num,
+                )
+                distill = distill.to(loss.dtype)
+                total_distill = distill if total_distill is None else total_distill + distill
+
+            total_loss = loss if total_loss is None else total_loss + loss
+            last_logits = logits
+            last_targets = step_targets
+
+            if step < self.sequence_prediction_steps - 1:
+                with torch.no_grad():
+                    next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+                idx_round = torch.cat([idx_round[:, 1:], next_token], dim=1)
+
+        return last_logits, total_loss, total_distill, last_targets, last_ln_f
+
+    def _append_masked_val_metrics(
+        self,
+        metrics: dict[str, list[torch.Tensor]],
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        ln_f_out: torch.Tensor | None,
+        lm_head: torch.nn.Module,
+    ) -> None:
+        mask = targets != -1
+        if not mask.any():
+            return
+        probs = F.softmax(logits, dim=-1)
+        vocab = probs.size(-1)
+        probs_flat = probs.view(-1, vocab)
+        logits_flat = logits.view(-1, vocab)
+        targets_flat = targets.view(-1)
+        mask_flat = mask.view(-1)
+        valid_probs = probs_flat[mask_flat]
+        valid_logits = logits_flat[mask_flat]
+        valid_targets = targets_flat[mask_flat]
+
+        top1_prob, top1_idx = valid_probs.max(dim=-1)
+        metrics['top1_probs'].append(top1_prob)
+        metrics['top1_corrects'].append((top1_idx == valid_targets).float())
+        target_logits = valid_logits.gather(-1, valid_targets.unsqueeze(-1)).squeeze(-1)
+        ranks = (valid_logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+        metrics['target_ranks'].append(ranks.float())
+        target_prob = valid_probs.gather(-1, valid_targets.unsqueeze(-1)).squeeze(-1).float()
+        metrics['target_probs'].append(target_prob)
+        left_prob = (valid_probs * (valid_probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
+        metrics['target_left_probs'].append(left_prob)
+        metrics['left_inclusive_probs'].append(left_prob + target_prob)
+
+        if ln_f_out is not None:
+            ln_f_flat = ln_f_out.view(-1, ln_f_out.size(-1))[mask_flat]
+            target_vecs = lm_head.weight[valid_targets]
+            cos = F.cosine_similarity(ln_f_flat.float(), target_vecs.float(), dim=-1)
+            metrics['ln_f_cosines'].append(cos)
+
     def underscore_abbr(self, dataset_name):
         """ Transforms long dataset name to abbreviation
         e.g.
@@ -1974,6 +2153,7 @@ class Trainer:
                     if self.ddp:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
 
+                    distill_component = None
                     with self.ctx:
                         if self.args.training_mode == 'multicontext':
                             total_loss = 0
@@ -1990,13 +2170,21 @@ class Trainer:
                             loss = sum(training_losses) / len(training_losses)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(
-                                self.X,
-                                targets=self.Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
-                            )
+                            if self.sequence_prediction_steps > 1:
+                                logits, loss, distill_component, _, _ = self._sequence_prediction_forward(
+                                    self.X,
+                                    self.Y,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                )
+                            else:
+                                logits, loss = self.model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
+                                distill_component = None
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                         with torch.no_grad():
@@ -2005,9 +2193,9 @@ class Trainer:
                             ent = ent / math.log(logits.size(-1))
                         self.optimizer.set_entropy(float(ent))
 
-                    distill_component = None
                     if (
-                        self.teacher_model is not None
+                        self.sequence_prediction_steps == 1
+                        and self.teacher_model is not None
                         and self.distillation_loss_fn is not None
                         and self.args.training_mode != 'multicontext'
                     ):
@@ -2026,6 +2214,8 @@ class Trainer:
                             iter_num=self.iter_num,
                         )
                         distill_component = distill_component.to(loss.dtype)
+
+                    if distill_component is not None:
                         loss = loss + self.distillation_weight * distill_component
 
                     self.latest_distillation_loss = (
