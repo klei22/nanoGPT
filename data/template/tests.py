@@ -6,7 +6,6 @@ import sys
 import pickle
 import json
 import prepare
-import numpy as np
 from tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
