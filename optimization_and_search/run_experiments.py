@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from itertools import product
@@ -630,7 +631,7 @@ def run_experiment(
     base: str,
     args: argparse.Namespace,
     common_keys: set[str],
-) -> None:
+) -> tuple[bool, float]:
     """
     Execute one experiment combo: skip if done, run train.py, record metrics.
     """
@@ -674,10 +675,14 @@ def run_experiment(
     # Build and run
     cmd = build_command(combo)
     print(f"Running: {' '.join(cmd)}")
+    run_start = time.perf_counter()
+    success = True
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
+        success = False
         print(f"[red]Process exited with error for run:[/] {run_name}")
+    run_duration = time.perf_counter() - run_start
 
     # Read metrics (use existing or nan on failure)
     try:
@@ -686,6 +691,7 @@ def run_experiment(
         metrics = {k: float("nan") for k in METRIC_KEYS}
 
     append_log(log_file, run_name, combo, metrics)
+    return success, run_duration
 
 
 def main():
@@ -699,7 +705,7 @@ def main():
         all_combos.extend(list(generate_combinations(cfg)))
 
     total = len(all_combos)
-    start_time = datetime.now()
+    last_success_duration = None
     progress_log = LOG_DIR / f"{base}_progress.log"
     for idx, (combo, common_keys) in enumerate(all_combos, 1):
         configs_left = total - idx + 1
@@ -713,21 +719,28 @@ def main():
             append_progress(progress_log, message)
         else:
             now = datetime.now()
-            elapsed = (now - start_time).total_seconds()
-            avg = elapsed / (idx - 1)
-            eta_seconds = int(avg * configs_left)
-            eta = timedelta(seconds=eta_seconds)
-            finish_time = now + timedelta(seconds=eta_seconds)
-            finish_formatted = finish_time.strftime("%Y-%m-%d %H:%M:%S")
-            message = (
-                "Starting config "
-                f"{idx}/{total} ({configs_left} configs left). "
-                f"Estimated time remaining: {eta}. "
-                f"Estimated completion: {finish_formatted}"
-            )
+            if last_success_duration is None:
+                message = (
+                    "Starting config "
+                    f"{idx}/{total} ({configs_left} configs left). "
+                    "Estimated time remaining: N/A. Estimated completion: N/A"
+                )
+            else:
+                eta_seconds = int(last_success_duration * configs_left)
+                eta = timedelta(seconds=eta_seconds)
+                finish_time = now + timedelta(seconds=eta_seconds)
+                finish_formatted = finish_time.strftime("%Y-%m-%d %H:%M:%S")
+                message = (
+                    "Starting config "
+                    f"{idx}/{total} ({configs_left} configs left). "
+                    f"Estimated time remaining: {eta}. "
+                    f"Estimated completion: {finish_formatted}"
+                )
             print(f"[green]{message}[/]")
             append_progress(progress_log, message)
-        run_experiment(combo, base, args, common_keys)
+        success, duration = run_experiment(combo, base, args, common_keys)
+        if success:
+            last_success_duration = duration
 
 
 if __name__ == '__main__':
