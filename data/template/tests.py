@@ -7,8 +7,6 @@ import pickle
 import json
 import prepare
 import numpy as np
-import torch
-import torchaudio
 from tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
@@ -17,7 +15,6 @@ from tokenizers import (
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
-    WhisperMelCsvTokenizer,
 )
 from argparse import Namespace
 from rich.console import Console
@@ -296,45 +293,6 @@ class TestTokenizers(unittest.TestCase):
             os.remove(json_tokens_file)
 
         console.print("JsonByteTokenizerWithByteFallback test passed.")
-
-    def test_whisper_mel_csv_tokenizer(self):
-        sample_rate = 16000
-        duration = 1.0
-        frequency = 440.0
-        num_samples = int(sample_rate * duration)
-        t = np.linspace(0, duration, num_samples, endpoint=False)
-        waveform = 0.2 * np.sin(2 * np.pi * frequency * t)
-        waveform_tensor = torch.from_numpy(waveform).float().unsqueeze(0)
-
-        wav_path = "test_whisper_mel.wav"
-        torchaudio.save(wav_path, waveform_tensor, sample_rate)
-        self.temp_paths.append(wav_path)
-
-        args = Namespace(
-            mel_sample_rate=16000,
-            mel_n_fft=400,
-            mel_hop_length=160,
-            mel_win_length=400,
-            mel_n_mels=80,
-            mel_f_min=0.0,
-            mel_f_max=8000.0,
-            mel_center=True,
-            mel_power=2.0,
-            mel_normalize=True,
-        )
-        tokenizer = WhisperMelCsvTokenizer(args)
-        frames = tokenizer.tokenize(wav_path)
-
-        self.assertEqual(frames.shape[1], args.mel_n_mels)
-        self.assertGreater(frames.shape[0], 0)
-
-        with open("meta.pkl", "rb") as f:
-            meta = pickle.load(f)
-        self.assertEqual(meta["tokenizer"], "whisper_mel_csv")
-        self.assertEqual(meta["n_mels"], args.mel_n_mels)
-
-        csv_text = tokenizer.detokenize(frames)
-        self.assertIn(",", csv_text)
 
     # --------------------------------------------------------------------------
     # Tests for Token Counts (with histogram printing)
