@@ -11,6 +11,12 @@ import math
 import numpy as np
 import importlib.util
 from pathlib import Path
+try:
+    import torch
+    import torchaudio
+except ImportError:  # pragma: no cover - optional dependency
+    torch = None
+    torchaudio = None
 
 
 class Tokenizer:
@@ -867,3 +873,78 @@ class SineWaveTokenizer:
     def detokenize(self, ids):
         array = np.asarray(ids, dtype=np.int64)
         return ','.join(map(str, array.tolist()))
+
+      
+class WhisperMelCsvTokenizer(Tokenizer):
+    """Generate Whisper-style log-mel spectrogram frames suitable for CSV export."""
+
+    def __init__(self, args):
+        super().__init__(args)
+        if torch is None or torchaudio is None:
+            raise ImportError("WhisperMelCsvTokenizer requires torch and torchaudio.")
+        self.sample_rate = args.mel_sample_rate
+        self.n_fft = args.mel_n_fft
+        self.hop_length = args.mel_hop_length
+        self.win_length = args.mel_win_length
+        self.n_mels = args.mel_n_mels
+        self.f_min = args.mel_f_min
+        self.f_max = args.mel_f_max
+        self.center = args.mel_center
+        self.power = args.mel_power
+        self.normalize = args.mel_normalize
+        self.mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=self.sample_rate,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            n_mels=self.n_mels,
+            f_min=self.f_min,
+            f_max=self.f_max,
+            center=self.center,
+            power=self.power,
+            mel_scale="slaney",
+            norm="slaney",
+        )
+
+    def _load_audio(self, path):
+        waveform, original_sample_rate = torchaudio.load(path)
+        if waveform.size(0) > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+        if original_sample_rate != self.sample_rate:
+            waveform = torchaudio.functional.resample(
+                waveform, orig_freq=original_sample_rate, new_freq=self.sample_rate
+            )
+        return waveform
+
+    def _whisper_log_mel(self, mel_spec):
+        log_mel = torch.clamp(mel_spec, min=1e-10).log10()
+        log_mel = torch.maximum(log_mel, log_mel.max() - 8.0)
+        return (log_mel + 4.0) / 4.0
+
+    def tokenize(self, data):
+        waveform = self._load_audio(data)
+        mel_spec = self.mel_transform(waveform).squeeze(0)
+        if self.normalize:
+            mel_spec = self._whisper_log_mel(mel_spec)
+        mel_frames = mel_spec.transpose(0, 1).contiguous()
+        meta = {
+            "tokenizer": "whisper_mel_csv",
+            "sample_rate": self.sample_rate,
+            "n_fft": self.n_fft,
+            "hop_length": self.hop_length,
+            "win_length": self.win_length,
+            "n_mels": self.n_mels,
+            "f_min": self.f_min,
+            "f_max": self.f_max,
+            "center": self.center,
+            "power": self.power,
+            "normalize": self.normalize,
+        }
+        self.finalize_meta(meta)
+        return mel_frames.cpu().numpy()
+
+    def detokenize(self, ids):
+        array = np.asarray(ids, dtype=np.float32)
+        lines = [",".join(map(str, row)) for row in array.tolist()]
+        return "\n".join(lines)
+      

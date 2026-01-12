@@ -90,6 +90,7 @@ class TestTokenizers(unittest.TestCase):
         # Sample data for testing
         self.sample_text = "Hello\nworld\nThis is a test."
         self.tokens_file = "tokens.txt"
+        self.temp_paths = []
 
         # Create a tokens file for custom tokenizers
         with open(self.tokens_file, 'w') as f:
@@ -109,6 +110,9 @@ class TestTokenizers(unittest.TestCase):
             os.remove("meta.pkl")
         if os.path.exists("remaining.txt"):
             os.remove("remaining.txt")
+        for path in self.temp_paths:
+            if os.path.exists(path):
+                os.remove(path)
         for fname in ["char_bpe_vocab.json", "char_bpe_token_counts.json"]:
             if os.path.exists(fname):
                 os.remove(fname)
@@ -487,4 +491,3 @@ class TestTokenizers(unittest.TestCase):
 
 if __name__ == '__main__':
     run_tests()
-
