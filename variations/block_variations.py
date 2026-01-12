@@ -39,6 +39,10 @@ def add_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: f
     return x + out
 
 
+def rezero_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
+    return x + alpha * out
+
+
 def lerp_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
     return (1 - alpha) * x + alpha * (x + out)
 
@@ -49,6 +53,7 @@ def slerp_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps:
 
 residual_combine_dict = {
     "add": add_residual,
+    "rezero": rezero_residual,
     "lerp": lerp_residual,
     "slerp": slerp_residual,
 }
@@ -58,6 +63,8 @@ def make_alpha_fn(mode: str, init: float, param=None, vec=None):
     if mode == "fixed":
         return lambda _out: init
     if mode == "learned":
+        return lambda _out: param
+    if mode == "rezero":
         return lambda _out: param
     if mode == "dot":
         return lambda out: init * (param + (out * vec).sum(dim=-1, keepdim=True))
@@ -430,12 +437,18 @@ class Block(nn.Module):
         self.attn_alpha_mode = getattr(config, "attn_residual_alpha_type", "fixed")
         self.mlp_alpha_mode = getattr(config, "mlp_residual_alpha_type", "fixed")
 
-        if self.attn_alpha_mode == "learned":
+        if self.attn_alpha_mode == "rezero":
+            self.attn_alpha = 0.0
+            self.attn_alpha_param = nn.Parameter(torch.tensor(0.0))
+        elif self.attn_alpha_mode == "learned":
             self.attn_alpha_param = nn.Parameter(torch.tensor(self.attn_alpha))
         elif self.attn_alpha_mode == "dot":
             self.attn_alpha_vec = nn.Parameter(torch.zeros(config.n_embd))
             self.attn_alpha_param = nn.Parameter(torch.tensor(self.attn_alpha))
-        if self.mlp_alpha_mode == "learned":
+        if self.mlp_alpha_mode == "rezero":
+            self.mlp_alpha = 0.0
+            self.mlp_alpha_param = nn.Parameter(torch.tensor(0.0))
+        elif self.mlp_alpha_mode == "learned":
             self.mlp_alpha_param = nn.Parameter(torch.tensor(self.mlp_alpha))
         elif self.mlp_alpha_mode == "dot":
             self.mlp_alpha_vec = nn.Parameter(torch.zeros(config.n_embd))
@@ -467,4 +480,3 @@ class Block(nn.Module):
         """Helper method to streamline forward block skip connections"""
         alpha = self.alpha_fns[kind](out)
         return self.resid_fns[kind](x, out, alpha, self.residual_slerp_eps)
-

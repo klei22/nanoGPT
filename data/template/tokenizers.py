@@ -5,7 +5,7 @@ import tempfile
 import sentencepiece as spm
 import tiktoken
 from tqdm import tqdm
-from collections import defaultdict
+from collections import defaultdict, Counter
 import json
 import math
 import numpy as np
@@ -31,7 +31,8 @@ class Tokenizer:
         raise NotImplementedError("Detokenize method must be implemented by subclasses.")
 
     def save_meta(self, meta):
-        with open("meta.pkl", "wb") as f:
+        meta_path = getattr(self.args, "meta_output_path", "meta.pkl")
+        with open(meta_path, "wb") as f:
             pickle.dump(meta, f)
 
     def record_token(self, token_id):
@@ -44,8 +45,7 @@ class Tokenizer:
         self.save_meta(meta)
 
     @staticmethod
-    def get_key_from_meta(keyname):
-        meta_path = 'meta.pkl'
+    def get_key_from_meta(keyname, meta_path="meta.pkl"):
         if os.path.exists(meta_path):
             with open(meta_path, 'rb') as f:
                 meta = pickle.load(f)
@@ -60,6 +60,7 @@ class SentencePieceTokenizer(Tokenizer):
         self.spm_vocab_file = args.spm_vocab_file
         self.skip_tokenization = args.skip_tokenization
         self.input_files = input_files
+        self.output_dir = os.path.dirname(getattr(args, "meta_output_path", ""))
         self.sp = None
 
         if self.spm_model_file:
@@ -70,6 +71,9 @@ class SentencePieceTokenizer(Tokenizer):
 
     def train_sentencepiece_model(self):
         spm_model_prefix = "trained_spm_model"
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
+            spm_model_prefix = os.path.join(self.output_dir, spm_model_prefix)
         num_threads = os.cpu_count()
         input_arg = ""
         if isinstance(self.input_files, list):
@@ -295,7 +299,7 @@ class CharTokenizer(Tokenizer):
         super().__init__(args)
         self.reuse_chars = args.reuse_chars
         if self.reuse_chars:
-            self.chars = self.get_key_from_meta('chars')
+            self.chars = self.get_key_from_meta('chars', getattr(args, "meta_output_path", "meta.pkl"))
             if self.chars is None:
                 raise ValueError("No chars found in meta.pkl. Cannot reuse chars.")
         else:
@@ -322,6 +326,211 @@ class CharTokenizer(Tokenizer):
 
     def detokenize(self, ids):
         return ''.join([self.itos[id] for id in ids])
+
+
+class CharBPETokenizerWithByteFallback(Tokenizer):
+    def __init__(self, args, train_data, val_data=None):
+        super().__init__(args)
+        if getattr(args, "vocab_size", None) is None:
+            raise ValueError("vocab_size must be provided for char_bpe method.")
+        if args.vocab_size <= 256:
+            raise ValueError("vocab_size must be greater than 256 to allow space for byte fallback tokens.")
+
+        self.desired_vocab_size = args.vocab_size
+        corpus_text = train_data or ""
+        if val_data:
+            corpus_text += val_data
+
+        self.unique_chars = sorted(set(corpus_text))
+        if not self.unique_chars:
+            raise ValueError("Training data must contain at least one character for char_bpe tokenization.")
+
+        self.char_tokens = list(self.unique_chars)
+        self._train_merges(corpus_text)
+        self._build_vocab()
+
+    def _train_merges(self, text):
+        tokens = list(text)
+        # Nothing to merge if text empty or target vocab already satisfied
+        if len(tokens) < 2:
+            return
+
+        current_vocab_size = 256 + len(self.char_tokens)
+        merges_needed = self.desired_vocab_size - current_vocab_size
+
+        while merges_needed > 0:
+            pair_counts = Counter()
+            prev = None
+            for token in tokens:
+                if prev is not None:
+                    pair_counts[(prev, token)] += 1
+                prev = token
+
+            if not pair_counts:
+                break
+
+            best_pair, best_count = pair_counts.most_common(1)[0]
+            if best_count < 2:
+                break
+
+            new_token = ''.join(best_pair)
+            if new_token in self.char_tokens:
+                # Already present, skip to avoid duplicates
+                tokens = self._apply_merge(tokens, best_pair, new_token)
+            else:
+                self.char_tokens.append(new_token)
+                tokens = self._apply_merge(tokens, best_pair, new_token)
+                merges_needed -= 1
+
+            current_vocab_size = 256 + len(self.char_tokens)
+            merges_needed = self.desired_vocab_size - current_vocab_size
+            if merges_needed <= 0:
+                break
+
+        self.sorted_char_tokens = sorted(self.char_tokens, key=lambda t: len(t), reverse=True)
+
+    @staticmethod
+    def _apply_merge(tokens, pair, new_token):
+        merged = []
+        i = 0
+        max_index = len(tokens) - 1
+        while i <= max_index:
+            if i < max_index and tokens[i] == pair[0] and tokens[i + 1] == pair[1]:
+                merged.append(new_token)
+                i += 2
+            else:
+                merged.append(tokens[i])
+                i += 1
+        return merged
+
+    def _build_vocab(self):
+        self.stoi = {}
+        self.itos = {}
+
+        for b in range(256):
+            key = bytes([b])
+            self.stoi[key] = b
+            self.itos[b] = key
+
+        offset = 256
+        for idx, token in enumerate(self.char_tokens):
+            token_id = offset + idx
+            self.stoi[token] = token_id
+            self.itos[token_id] = token
+
+        self.vocab_size = len(self.itos)
+        self.sorted_char_tokens = sorted(self.char_tokens, key=lambda t: len(t), reverse=True)
+
+    def tokenize(self, data):
+        if not data:
+            return []
+
+        ids = []
+        i = 0
+        data_len = len(data)
+        pbar = tqdm(total=data_len, desc="Tokenizing Char BPE")
+
+        while i < data_len:
+            matched = False
+            for token in self.sorted_char_tokens:
+                if data.startswith(token, i):
+                    token_id = self.stoi[token]
+                    ids.append(token_id)
+                    self.record_token(token_id)
+                    i += len(token)
+                    pbar.update(len(token))
+                    matched = True
+                    break
+
+            if matched:
+                continue
+
+            ch = data[i]
+            if ch in self.stoi:
+                token_id = self.stoi[ch]
+                ids.append(token_id)
+                self.record_token(token_id)
+                i += len(ch)
+                pbar.update(len(ch))
+            else:
+                ch_bytes = ch.encode('utf-8')
+                for b in ch_bytes:
+                    token_id = self.stoi[bytes([b])]
+                    ids.append(token_id)
+                    self.record_token(token_id)
+                    pbar.update(1)
+                i += 1
+
+        pbar.close()
+
+        meta = {
+            "vocab_size": self.vocab_size,
+            "tokenizer": "char_bpe",
+            "stoi": self.stoi,
+            "itos": self.itos,
+            "char_tokens": self.char_tokens,
+            "char_tokens_sorted": self.sorted_char_tokens,
+            "byte_fallback": True,
+        }
+        self.finalize_meta(meta)
+        return ids
+
+    def detokenize(self, ids):
+        out_pieces = []
+        byte_buffer = []
+
+        for token_id in ids:
+            token = self.itos.get(token_id)
+            if token is None:
+                continue
+
+            if isinstance(token, bytes):
+                byte_buffer.append(token)
+            else:
+                if byte_buffer:
+                    combined = b''.join(byte_buffer)
+                    out_pieces.append(combined.decode('utf-8', errors='replace'))
+                    byte_buffer = []
+                out_pieces.append(token)
+
+        if byte_buffer:
+            combined = b''.join(byte_buffer)
+            out_pieces.append(combined.decode('utf-8', errors='replace'))
+
+        return ''.join(out_pieces)
+
+    def finalize_meta(self, meta):
+        super().finalize_meta(meta)
+        self._write_vocab_jsons(meta)
+
+    def _write_vocab_jsons(self, meta):
+        vocab_json = []
+        for idx in range(self.vocab_size):
+            token = self.itos[idx]
+            vocab_json.append(self._format_token_for_json(token))
+
+        with open("char_bpe_vocab.json", "w", encoding="utf-8") as f:
+            json.dump(vocab_json, f, ensure_ascii=False, indent=2)
+
+        if self.token_counts is not None:
+            counts_json = []
+            counts = meta.get("token_counts", {})
+            for idx in range(self.vocab_size):
+                token = self.itos[idx]
+                counts_json.append({
+                    "id": idx,
+                    "token": self._format_token_for_json(token),
+                    "count": counts.get(idx, 0)
+                })
+            with open("char_bpe_token_counts.json", "w", encoding="utf-8") as f:
+                json.dump(counts_json, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _format_token_for_json(token):
+        if isinstance(token, bytes):
+            return f"<byte:{token[0]}>"
+        return token
+
 
 class CustomCharTokenizerWithByteFallback(Tokenizer):
     """
@@ -665,7 +874,7 @@ class SineWaveTokenizer:
         array = np.asarray(ids, dtype=np.int64)
         return ','.join(map(str, array.tolist()))
 
-
+      
 class WhisperMelCsvTokenizer(Tokenizer):
     """Generate Whisper-style log-mel spectrogram frames suitable for CSV export."""
 
@@ -738,3 +947,4 @@ class WhisperMelCsvTokenizer(Tokenizer):
         array = np.asarray(ids, dtype=np.float32)
         lines = [",".join(map(str, row)) for row in array.tolist()]
         return "\n".join(lines)
+      

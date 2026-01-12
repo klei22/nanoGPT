@@ -80,6 +80,18 @@ def parse_args():
     training_group.add_argument('--log_interval', default=10, type=int)
     training_group.add_argument('--eval_iters', default=200, type=int)
     training_group.add_argument('--eval_only', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument(
+        '--mezo_epsilon',
+        type=float,
+        default=1e-3,
+        help='Perturbation scale for MeZO forward-only training.',
+    )
+    training_group.add_argument(
+        '--mezo_seed',
+        type=int,
+        default=None,
+        help='Optional fixed seed for MeZO perturbations (defaults to random per step).',
+    )
 
     # latency / ETA estimate options
     training_group.add_argument('--eta_variant', choices=['iteration', 'eval_cycle'], default='eval_cycle', help="iteration - estimates only based on training iterations -- use if doing one eval at the end; eval_cycle -- use if doing multiple evals, will use a single cycle for the estimation.")
@@ -233,6 +245,8 @@ def parse_args():
     training_group.add_argument('--prev_run_ckpt', default='', type=str)
     training_group.add_argument('--csv_ckpt_dir', default='', type=str)
     training_group.add_argument('--init_from_ckpt', default='ckpt.pt', type=str, help="if save_major_ckpt_interval was set, can use to init from specific ckpts")
+    training_group.add_argument('--reset_best_val_loss_on_resume', default=False, action=argparse.BooleanOptionalAction,
+                                help="When resuming, reset best_val_loss tracking instead of loading it from the checkpoint.")
 
     # Training modes
     # TODO: find a way to merge this with the multicontext arg
@@ -650,14 +664,14 @@ def parse_args():
         '--attn_residual_combination',
         type=str,
         default='add',
-        choices=['add', 'lerp', 'slerp'],
+        choices=['add', 'rezero', 'lerp', 'slerp'],
         help='Residual combination method for attention block'
     )
     model_group.add_argument(
         '--mlp_residual_combination',
         type=str,
         default='add',
-        choices=['add', 'lerp', 'slerp'],
+        choices=['add', 'rezero', 'lerp', 'slerp'],
         help='Residual combination method for MLP block'
     )
     model_group.add_argument(
@@ -682,14 +696,14 @@ def parse_args():
         '--attn_residual_alpha_type',
         type=str,
         default='fixed',
-        choices=['fixed', 'learned', 'dot'],
+        choices=['fixed', 'learned', 'rezero', 'dot'],
         help='Alpha mode for attention residual combination'
     )
     model_group.add_argument(
         '--mlp_residual_alpha_type',
         type=str,
         default='fixed',
-        choices=['fixed', 'learned', 'dot'],
+        choices=['fixed', 'learned', 'rezero', 'dot'],
         help='Alpha mode for MLP residual combination'
     )
 
@@ -869,6 +883,8 @@ def parse_args():
     model_group.add_argument("--n_cproj_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--n_kv_group_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--attention_variant_layerlist", nargs='+', action=LayerListAction, default=None)
+    model_group.add_argument("--use_rotary_embeddings_layerlist", nargs='+', action=LayerListAction, default=None, help="Override use_rotary_embeddings per layer, cycling through the list.")
+    model_group.add_argument("--window_size_layerlist", nargs='+', action=LayerListAction, default=None, help="Override window_size per layer, cycling through the list.")
 
     ## Infinite Attention variation
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
@@ -1265,32 +1281,6 @@ def parse_args():
     model_group.add_argument('--use_gradient_checkpointing', default=False, action=argparse.BooleanOptionalAction, help="Memory efficient training, but takes longer time to train due to trading compute time for memory efficiency. For best memory tradeoff omit the --compile flag. For medium memory tradeoff add --compile.")
     model_group.add_argument('--recompute_backward_pass', default=False, action=argparse.BooleanOptionalAction, help="Recomputes for the backward pass, must use with --use_gradient_checkpointing")
 
-    ## Learned Position Embeddings
-    model_group.add_argument( '--n_lpe', type=int, default=0, help='Number of LearnedPositionEmbedding modules to instantiate (one per transformer block)')
-
-    model_group.add_argument('--lpe_block_size', default=256, type=int)
-    model_group.add_argument('--lpe_n_layer', default=3, type=int)
-    model_group.add_argument('--lpe_n_head', default=6, type=int)
-    model_group.add_argument('--lpe_n_kv_group', default=None, type=int)
-    model_group.add_argument('--lpe_use_abs_pos_embeddings', default=True, action=argparse.BooleanOptionalAction, help='Whether LPE modules add absolute position embeddings')
-    model_group.add_argument('--lpe_use_rotary_embeddings', default=True, action=argparse.BooleanOptionalAction, help='Whether LPE modules add absolute position embeddings')
-    model_group.add_argument('--lpe_n_qk_head_dim', default=None, type=int)
-    model_group.add_argument('--lpe_n_v_head_dim', default=None, type=int)
-    model_group.add_argument("--lpe_mlp_size", type=int, default=None, help="If not None, is used instead of mlp_expansion_factor")
-
-    model_group.add_argument('--target_layer_in_lpe', default=0, type=int)
-    model_group.add_argument('--target_layer_out_lpe', default=0, type=int)
-
-    model_group.add_argument(
-        "--lpe_attention_variant",
-        type=str,
-        default="causal",
-        choices=attention_variants,
-        help="Which attention variant to use for the Transformer blocks."
-    )
-
-
-    model_group.add_argument("--lpe_mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
     # Optimizer args
     training_group.add_argument('--max_iters', default=3500, type=int)
     training_group.add_argument('--weight_decay', default=1e-1, type=float)
@@ -1344,6 +1334,8 @@ def parse_args():
     logging_group.add_argument('--log_grad_norm', default=False, action=argparse.BooleanOptionalAction, help='Log gradient norm metrics')
     logging_group.add_argument('--log_grad_std', default=False, action=argparse.BooleanOptionalAction, help='Log gradient std metrics')
     logging_group.add_argument('--log_all_metrics', default=False, action=argparse.BooleanOptionalAction, help='Enable logging of all metrics including gns')
+    logging_group.add_argument('--log_rankme', default=True, action=argparse.BooleanOptionalAction, help='Log RankMe representation metric during validation')
+    logging_group.add_argument('--log_areq', default=True, action=argparse.BooleanOptionalAction, help='Log aReQ representation metric during validation')
 
     # Turn activation/weight statistics off to save CPU RAM and wall time.
     training_group.add_argument(
@@ -1449,4 +1441,3 @@ class LayerListAction(argparse.Action):
     """
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, list(values))
-

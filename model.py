@@ -46,43 +46,6 @@ from initializations.initialization_variations import init_dictionary
 from shared_param_utils import SharedParamGroupCreator
 from variations.block_variations import Block
 
-class LearnedPositionEmbedding(nn.Module):
-    """
-    Learns a position-aware residual using the same Block modules (transformer.h)
-    and config as the main GPT.  Each instance processes token+pos embeddings
-    through its own Block stack and returns a (b, t, n_embd) tensor.
-    """
-    def __init__(self, config):
-        super().__init__()
-        self.lpe_config = copy.deepcopy(config)
-
-        # override the config values by mapping config.lpe_value -> config.value
-        for key, val in vars(config).items():
-            if key.startswith('lpe_') and val is not None:
-                # strip 'lpe_' prefix to map to the actual config field
-                core_key = key[len('lpe_'):]
-                setattr(self.lpe_config, core_key, val)
-
-        if self.lpe_config.use_abs_pos_embeddings:
-            self.wpe = nn.Embedding(self.lpe_config.block_size, self.lpe_config.n_embd)
-
-        self.drop = nn.Dropout(config.dropout)
-        # reuse the same Block init as GPT.transformer.h
-        self.blocks = nn.ModuleList([Block(self.lpe_config) for _ in range(self.lpe_config.n_layer)])
-
-    def forward(self, b, t, x, iter_num=None):
-        # add absolute position embeddings if used
-        if self.lpe_config.use_abs_pos_embeddings:
-            pos = torch.arange(t, dtype=torch.long, device=x.device)
-            pos_emb = self.wpe(pos)
-            x = x + pos_emb
-        # dropout on combined embedding
-        x = self.drop(x)
-        # pass through Block modules
-        for block in self.blocks:
-            x = block(x, iter_num)
-        return x
-
 class GPT(nn.Module):
 
     def __init__(self, config):
@@ -159,12 +122,6 @@ class GPT(nn.Module):
             print(config.lsv_variant)
             self.lsv_variant = config.lsv_variant
             self.lsv_matrix = lsv_dictionary[self.lsv_variant](config)
-
-        if config.n_lpe != 0:
-            self.learned_position_embeddings = nn.ModuleList([
-                LearnedPositionEmbedding(config)
-                for _ in range(config.n_lpe)
-                ])
 
         self.transformer = nn.ModuleDict(dict())
         # Configure wte, with optional quantization and factoring
@@ -442,21 +399,6 @@ class GPT(nn.Module):
 
             x.requires_grad_(True)
 
-            # sum all learned position residuals
-            learned_sum = None
-
-
-            # TODO: abstact into a method
-            if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == 0:
-                for lpe in self.learned_position_embeddings:
-                    out = lpe(b, t, x, iter_num)
-                    # Accumulate embedding sum
-                    learned_sum = out if learned_sum is None else learned_sum + out
-
-            if self.config.n_lpe != 0 and self.config.target_layer_out_lpe == 0:
-                # Add learned embeddings to x
-                x = x + learned_sum
-
             # 2. Possibly apply LSV on input
             if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
                 x = self.lsv_matrix(x)
@@ -467,18 +409,6 @@ class GPT(nn.Module):
             layer_idx = 1
             for block in self.transformer.h:
                 x = block(x, iter_num)
-
-                # TODO: abstact into a method
-                if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == layer_idx:
-                    for lpe in self.learned_position_embeddings:
-                        out = lpe(b, t, x, iter_num)
-                        # Accumulate embedding sum
-                        learned_sum = out if learned_sum is None else learned_sum + out
-
-                if self.config.n_lpe != 0 and self.config.target_layer_out_lpe == layer_idx:
-                    # Add learned embeddings to x
-                    x = x + learned_sum
-                # END lpe section
 
                 # Steering logic
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -592,21 +522,6 @@ class GPT(nn.Module):
             else:
                 x = self.transformer.drop(tok_emb)
 
-            # sum all learned position residuals
-            learned_sum = None
-
-
-            # TODO: abstact into a method
-            if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == 0:
-                for lpe in self.learned_position_embeddings:
-                    out = lpe(b, t, x, iter_num)
-                    # Accumulate embedding sum
-                    learned_sum = out if learned_sum is None else learned_sum + out
-
-            if self.config.n_lpe != 0 and self.config.target_layer_out_lpe == 0:
-                # Add learned embeddings to x
-                x = x + learned_sum
-
             x.requires_grad_(True)  # Ensure requires_grad is True
 
             if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
@@ -624,18 +539,6 @@ class GPT(nn.Module):
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                     x = self.lsv_matrix(x)
                     # x = self.apply_learned_vector_to_layer_output(x)
-
-                # TODO: abstact into a method
-                if self.config.n_lpe != 0 and self.config.target_layer_in_lpe == layer_idx:
-                    for lpe in self.learned_position_embeddings:
-                        out = lpe(b, t, x, iter_num)
-                        # Accumulate embedding sum
-                        learned_sum = out if learned_sum is None else learned_sum + out
-
-                if self.config.n_lpe != 0 and self.config.target_layer_out_lpe == layer_idx:
-                    # Add learned embeddings to x
-                    x = x + learned_sum
-                # END lpe section
 
                 # Intercept for Steering Vectors
                 if self.config.apply_vector_at_layer_idx is not None and layer_idx == self.config.apply_vector_at_layer_idx:
@@ -737,8 +640,7 @@ class GPT(nn.Module):
         b, t, _ = x_emb.size()
         x = x_emb
 
-        # (learned position residuals, steering vectors, etc.)
-        learned_sum = None
+        # (steering vectors, etc.)
         if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
             x = self.lsv_matrix(x)
 
