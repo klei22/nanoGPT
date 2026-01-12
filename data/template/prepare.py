@@ -66,6 +66,10 @@ def parse_arguments():
 
     # Additional options
     parser.add_argument("-T", "--track_token_counts", action="store_true", help="Track how often each token appears and store in meta.pkl")
+    parser.add_argument("-s", "--output_tokenization_subdir", action="store_true",
+                        help="Write meta.pkl/train.bin/val.bin into a subdirectory named after the selected tokenization method")
+    parser.add_argument("-S", "--output_subdir_suffix", type=str, default="",
+                        help="Optional suffix to append to the tokenization subdirectory name (e.g. sp_1000_suffix)")
 
     return parser.parse_args()
 
@@ -93,6 +97,25 @@ def _read_input_data(path):
 
 def main():
     args = parse_arguments()
+    output_dir = None
+    if args.output_tokenization_subdir:
+        if args.method == "json_byte_fallback" and args.json_tokens_file:
+            output_dir = os.path.splitext(os.path.basename(args.json_tokens_file))[0]
+        elif args.method == "sentencepiece":
+            output_dir = f"sp_{args.vocab_size}"
+        else:
+            output_dir = args.method
+        if args.output_subdir_suffix:
+            output_dir = f"{output_dir}_{args.output_subdir_suffix}"
+    if output_dir:
+        args.meta_output_path = os.path.join(output_dir, "meta.pkl")
+        args.train_output = os.path.join(output_dir, os.path.basename(args.train_output))
+        if args.val_output:
+            args.val_output = os.path.join(output_dir, os.path.basename(args.val_output))
+    else:
+        args.meta_output_path = "meta.pkl"
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
 
     # Load training/validation data depending on tokenizer method
     if args.method == "sinewave":
@@ -152,13 +175,13 @@ def main():
     if args.method == "sinewave":
         dtype = np.uint16
     else:
-        with open("meta.pkl", "rb") as f:
+        with open(args.meta_output_path, "rb") as f:
             meta = pickle.load(f)
         vocab_size = meta["vocab_size"]
         dtype = np.uint32 if vocab_size > 65535 else np.uint16
 
     # Ensure output directories exist if paths include folders
-    for output_path in [args.train_output, args.val_output]:
+    for output_path in [args.train_output, args.val_output, args.meta_output_path]:
         if output_path:
             out_dir = os.path.dirname(output_path)
             if out_dir and not os.path.exists(out_dir):
@@ -178,14 +201,14 @@ def main():
             "sine_num_periods": args.sine_num_periods,
             "sine_amplitude": args.sine_amplitude,
         }
-        with open("meta.pkl", "wb") as f:
+        with open(args.meta_output_path, "wb") as f:
             pickle.dump(meta, f)
 
     # Save additional metadata for tiktoken if needed
     if args.method == "tiktoken" and args.additional_tokens_file:
         with open(args.additional_tokens_file, 'r') as f:
             additional_tokens = json.load(f)
-        with open("meta.pkl", "rb") as f:
+        with open(args.meta_output_path, "rb") as f:
             meta = pickle.load(f)
         meta.update({
             "has_additional_tokens": True,
@@ -193,9 +216,8 @@ def main():
             "tokenizer": "tiktoken",
             "tiktoken_encoding": args.tiktoken_encoding
         })
-        with open("meta.pkl", "wb") as f:
+        with open(args.meta_output_path, "wb") as f:
             pickle.dump(meta, f)
 
 if __name__ == "__main__":
     main()
-
