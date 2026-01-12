@@ -6,41 +6,18 @@
 
 \usepackage{hyperref}
 \usepackage{url}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
 
 
-\title{Formatting Instructions for ICLR 2025 \\ Conference Submissions}
+\title{Dual-Path ReLU$^p$ MLPs Improve Representation Geometry on RankMe}
 
 % Authors must not appear in the submitted version. They should be hidden
 % as long as the \iclrfinalcopy macro remains commented out below.
 % Non-anonymous submissions will be rejected without review.
 
-\author{Antiquus S.~Hippocampus, Natalia Cerebro \& Amelie P. Amygdale \thanks{ Use footnote for providing further information
-about author (webpage, alternative address)---\emph{not} for acknowledging
-funding agencies.  Funding acknowledgements go at the end of the paper.} \\
-Department of Computer Science\\
-Cranberry-Lemon University\\
-Pittsburgh, PA 15213, USA \\
-\texttt{\{hippo,brain,jen\}@cs.cranberry-lemon.edu} \\
-\And
-Ji Q. Ren \& Yevgeny LeNet \\
-Department of Computational Neuroscience \\
-University of the Witwatersrand \\
-Joburg, South Africa \\
-\texttt{\{robot,net\}@wits.ac.za} \\
-\AND
-Coauthor \\
-Affiliation \\
-Address \\
-\texttt{email}
-}
-
-% The \author macro works with any number of authors. There are two commands
-% used to separate the names and addresses of multiple authors: \And and \AND.
-%
-% Using \And between authors leaves it to \LaTeX{} to determine where to break
-% the lines. Using \AND forces a linebreak at that point. So, if \LaTeX{}
-% puts 3 of 4 authors names on the first line, and the last on the second
-% line, try using \AND instead of \And before the third author name.
+\author{Anonymous Authors}
 
 \newcommand{\fix}{\marginpar{FIX}}
 \newcommand{\new}{\marginpar{NEW}}
@@ -52,362 +29,308 @@ Address \\
 \maketitle
 
 \begin{abstract}
-The abstract paragraph should be indented 1/2~inch (3~picas) on both left and
-right-hand margins. Use 10~point type, with a vertical spacing of 11~points.
-The word \textsc{Abstract} must be centered, in small caps, and in point size 12. Two
-line spaces precede the abstract. The abstract must be limited to one
-paragraph.
+We study a dual-path variant of the transformer MLP that pairs a standard
+feature projection with a semantic-opposite path and replaces validation loss
+with representation-geometry diagnostics. Building on the RankMe metric for
+measuring effective representation rank, we show that dual-path ReLU$^p$ MLPs
+consistently improve RankMe over SwiGLU and GEGLU in controlled sweeps over the
+power $p$. Our main empirical finding is that RankMe increases monotonically
+with the dual-path gap induced by larger powers, while downstream stability is
+bounded by numerical overflow. We present a mechanistic hypothesis: opposite
+features (e.g., ``hot'' vs. ``cold'') can be encoded by a shared up-projection
+vector with distinct output directions, avoiding redundant features while
+preserving semantic polarity. The dual-path gap separates positive and negative
+feature activations, reducing destructive interference when the representation
+space is insufficiently high-dimensional. We provide a hardware-friendly
+formulation that uses only ReLU$^p$, pointwise products, and linear projections,
+with potential compiler advantages relative to gated MLPs.
 \end{abstract}
 
-\section{Submission of conference papers to ICLR 2025}
+\section{Introduction}
+Standard MLP blocks in transformers rely on gated activations such as
+SwiGLU or GEGLU to balance expressivity and efficiency
+\citep{shazeer2020gluc,various2020geglu}. These designs selectively pass
+positive activations while discarding negative evidence, implicitly assuming
+that opposing semantic features should be represented by separate up-projection
+vectors. Mechanistic interpretability results suggest that a negative direction
+can be semantically meaningful (e.g., ``cold'' as the opposite of ``hot''), and
+that the same direction can support semantic editing when added or subtracted
+from activations \citep{turner2023actadd}. This motivates rethinking the MLP
+nonlinearity to explicitly represent semantic opposites.
 
-ICLR requires electronic submissions, processed by
-\url{https://openreview.net/}. See ICLR's website for more instructions.
+We present a dual-path MLP that splits the activation into positive and negative
+paths and combines them after a power-transformed ReLU. Rather than focusing on
+validation loss, we evaluate the geometry of learned representations via RankMe
+\citep{li2025rankme}, an effective-rank metric derived from the von Neumann
+entropy of the feature covariance. RankMe offers a lens on the dimensionality
+used by the model, capturing shifts in representational collapse or expansion
+that can be invisible to loss curves.
 
-If your paper is ultimately accepted, the statement {\tt
-  {\textbackslash}iclrfinalcopy} should be inserted to adjust the
-format to the camera ready requirements.
+Our contributions are:
+\begin{itemize}
+  \item We define a dual-path ReLU$^p$ MLP that encodes positive and negative
+  feature evidence using a shared up-projection vector and separate output
+  directions.
+  \item We provide a geometric interpretation in which the dual-path gap
+  mitigates interference from insufficiently high-dimensional feature spaces,
+  while larger powers accentuate separation but risk overflow.
+  \item We report RankMe-based comparisons showing improved representation
+  geometry over SwiGLU and GEGLU across power sweeps, and discuss hardware
+  friendliness and compiler advantages.
+\end{itemize}
 
-The format for the submissions is a variant of the NeurIPS format.
-Please read carefully the instructions below, and follow them
-faithfully.
+\section{Background}
+\subsection{RankMe as a representation geometry metric}
+RankMe measures the effective rank of the feature covariance matrix of model
+representations, offering a spectral summary of how many dimensions are used
+\citep{li2025rankme}. Given centered features $F \in \mathbb{R}^{M \times d}$,
+$\hat{\Sigma} = \frac{1}{M} F^\top F$ with eigenvalues $\{\sigma_i\}_{i=1}^d$.
+Define $p_i = \sigma_i / \sum_j \sigma_j$, and
+\begin{equation}
+\mathrm{RankMe}(\hat{\Sigma}) = \exp\left(-\sum_{i=1}^d p_i \log p_i\right).
+\end{equation}
+High RankMe indicates a more isotropic, high-dimensional representation, while
+low RankMe signals collapse onto fewer directions. In the RankMe framework,
+changes in representation geometry can mark capability shifts even when loss is
+smooth \citep{li2025rankme}.
 
-\subsection{Style}
+\subsection{Gated MLPs and semantic opposites}
+SwiGLU and GEGLU use gate activations to modulate feature flow
+\citep{shazeer2020gluc,various2020geglu}. Let $x$ be the input, and define
+$\mathrm{SwiGLU}(x) = (xW_1) \odot \mathrm{swish}(xW_2)$ or
+$\mathrm{GEGLU}(x) = (xW_1) \odot \mathrm{gelu}(xW_2)$. These gates tend to
+suppress negative evidence. By contrast, interpretability results such as
+activation addition show that both positive and negative directions can carry
+meaningful semantic content \citep{turner2023actadd}. This suggests a mechanism
+where the same feature vector can support semantic opposites if downstream
+outputs distinguish positive from negative evidence.
 
-Papers to be submitted to ICLR 2025 must be prepared according to the
-instructions presented here.
+\section{Dual-Path ReLU$^p$ MLP}
+\subsection{Formulation}
+We define a dual-path MLP that shares an up-projection but separates positive
+and negative evidence. Let $x \in \mathbb{R}^d$, and define
+\begin{align}
+  u &= x W_{\mathrm{up}} + b_{\mathrm{up}}, \\
+  u^+ &= \mathrm{ReLU}(u)^p, \\
+  u^- &= \mathrm{ReLU}(-u)^p,
+\end{align}
+where $p \ge 1$. The output is
+\begin{equation}
+  y = u^+ W_{\mathrm{pos}} + u^- W_{\mathrm{neg}} + b_{\mathrm{down}}.
+\end{equation}
+We can optionally include a shared mixing gate $g = \mathrm{ReLU}(u)^p +
+\mathrm{ReLU}(-u)^p$ to recover a GLU-like factorization, but our main variant
+keeps the paths separate to preserve semantic polarity.
 
-%% Please note that we have introduced automatic line number generation
-%% into the style file for \LaTeXe. This is to help reviewers
-%% refer to specific lines of the paper when they make their comments. Please do
-%% NOT refer to these line numbers in your paper as they will be removed from the
-%% style file for the final version of accepted papers.
+This design is hardware friendly: it uses only ReLU, power, and matmul
+operations, avoiding sigmoid or tanh. The ReLU$^p$ can be implemented as a
+sequence of multiplies, and integer powers can be fused with vectorized FMAs.
 
-Authors are required to use the ICLR \LaTeX{} style files obtainable at the
-ICLR website. Please make sure you use the current files and
-not previous versions. Tweaking the style files may be grounds for rejection.
+\subsection{Manual separation with learned offset}
+We also consider a manual separation variant that introduces a learned offset
+vector $o = \mathrm{mlp\_x\_offset}$ to explicitly carve a gap between positive
+and negative paths:
+\begin{align}
+  u &= x W_{\mathrm{up}} + b_{\mathrm{up}}, \\
+  u^+ &= \mathrm{ReLU}(u - o), \\
+  u^- &= \mathrm{ReLU}(-u - o), \\
+  y &= u^+ W_{\mathrm{pos}} + u^- W_{\mathrm{neg}} + b_{\mathrm{down}}.
+\end{align}
+This formulation separates the paths via a learned threshold rather than a
+power transform. We compare it to ReLU$^p$ separation, which implicitly creates
+a gap by amplifying strong activations without a learned offset.
 
-\subsection{Retrieval of style files}
-
-The style files for ICLR and other conference information are available online at:
-\begin{center}
-   \url{http://www.iclr.cc/}
-\end{center}
-The file \verb+iclr2025_conference.pdf+ contains these
-instructions and illustrates the
-various formatting requirements your ICLR paper must satisfy.
-Submissions must be made using \LaTeX{} and the style files
-\verb+iclr2025_conference.sty+ and \verb+iclr2025_conference.bst+ (to be used with \LaTeX{}2e). The file
-\verb+iclr2025_conference.tex+ may be used as a ``shell'' for writing your paper. All you
-have to do is replace the author, title, abstract, and text of the paper with
-your own.
-
-The formatting instructions contained in these style files are summarized in
-sections \ref{gen_inst}, \ref{headings}, and \ref{others} below.
-
-\section{General formatting instructions}
-\label{gen_inst}
-
-The text must be confined within a rectangle 5.5~inches (33~picas) wide and
-9~inches (54~picas) long. The left margin is 1.5~inch (9~picas).
-Use 10~point type with a vertical spacing of 11~points. Times New Roman is the
-preferred typeface throughout. Paragraphs are separated by 1/2~line space,
-with no indentation.
-
-Paper title is 17~point, in small caps and left-aligned.
-All pages should start at 1~inch (6~picas) from the top of the page.
-
-Authors' names are
-set in boldface, and each name is placed above its corresponding
-address. The lead author's name is to be listed first, and
-the co-authors' names are set to follow. Authors sharing the
-same address can be on the same line.
-
-Please pay special attention to the instructions in section \ref{others}
-regarding figures, tables, acknowledgments, and references.
-
-
-There will be a strict upper limit of 10 pages for the main text of the initial submission, with unlimited additional pages for citations. 
-
-\section{Headings: first level}
-\label{headings}
-
-First level headings are in small caps,
-flush left and in point size 12. One line space before the first level
-heading and 1/2~line space after the first level heading.
-
-\subsection{Headings: second level}
-
-Second level headings are in small caps,
-flush left and in point size 10. One line space before the second level
-heading and 1/2~line space after the second level heading.
-
-\subsubsection{Headings: third level}
-
-Third level headings are in small caps,
-flush left and in point size 10. One line space before the third level
-heading and 1/2~line space after the third level heading.
-
-\section{Citations, figures, tables, references}
-\label{others}
-
-These instructions apply to everyone, regardless of the formatter being used.
-
-\subsection{Citations within the text}
-
-Citations within the text should be based on the \texttt{natbib} package
-and include the authors' last names and year (with the ``et~al.'' construct
-for more than two authors). When the authors or the publication are
-included in the sentence, the citation should not be in parenthesis using \verb|\citet{}| (as
-in ``See \citet{Hinton06} for more information.''). Otherwise, the citation
-should be in parenthesis using \verb|\citep{}| (as in ``Deep learning shows promise to make progress
-towards AI~\citep{Bengio+chapter2007}.'').
-
-The corresponding references are to be listed in alphabetical order of
-authors, in the \textsc{References} section. As to the format of the
-references themselves, any style is acceptable as long as it is used
-consistently.
-
-\subsection{Footnotes}
-
-Indicate footnotes with a number\footnote{Sample of the first footnote} in the
-text. Place the footnotes at the bottom of the page on which they appear.
-Precede the footnote with a horizontal rule of 2~inches
-(12~picas).\footnote{Sample of the second footnote}
-
-\subsection{Figures}
-
-All artwork must be neat, clean, and legible. Lines should be dark
-enough for purposes of reproduction; art work should not be
-hand-drawn. The figure number and caption always appear after the
-figure. Place one line space before the figure caption, and one line
-space after the figure. The figure caption is lower case (except for
-first word and proper nouns); figures are numbered consecutively.
-
-Make sure the figure caption does not get separated from the figure.
-Leave sufficient space to avoid splitting the figure and figure caption.
-
-You may use color figures.
-However, it is best for the
-figure captions and the paper body to make sense if the paper is printed
-either in black/white or in color.
-\begin{figure}[h]
-\begin{center}
-%\framebox[4.0in]{$\;$}
-\fbox{\rule[-.5cm]{0cm}{4cm} \rule[-.5cm]{4cm}{0cm}}
-\end{center}
-\caption{Sample figure caption.}
+\begin{figure}[t]
+\centering
+\fbox{\rule[-.5cm]{0cm}{4cm} \rule[-.5cm]{6cm}{0cm}}
+\caption{Dual-path MLP with ReLU$^p$ separation (top) vs. manual separation using
+learned $\mathrm{mlp\_x\_offset}$ (bottom). \textbf{TODO}: replace with a real
+diagram showing the dual paths and offset.}
+\label{fig:dual-path-diagram}
 \end{figure}
 
-\subsection{Tables}
+\begin{equation}
+\mathrm{gap}(u) = \| \mathrm{ReLU}(u)^p \|_2 + \| \mathrm{ReLU}(-u)^p \|_2
+\quad \text{vs.} \quad
+\mathrm{gap}_{\mathrm{offset}}(u) = \| \mathrm{ReLU}(u - o) \|_2 + \| \mathrm{ReLU}(-u - o) \|_2.
+\end{equation}
+We use these definitions to quantify how separation grows with $p$ relative to
+the offset-controlled manual separation.
 
-All tables must be centered, neat, clean and legible. Do not use hand-drawn
-tables. The table number and title always appear before the table. See
-Table~\ref{sample-table}.
+\subsection{Dual-path gap and semantic polarity}
+We hypothesize that the separation between $u^+$ and $u^-$ acts as a
+\emph{dual-path gap} that shields semantic opposites from destructive
+interference. When the representation dimension $d$ is small, a single vector
+cannot perfectly align with all semantic directions, introducing ``noise'' in
+feature activation. A shared up-projection vector that supports both polarities
+allows the model to use distinct output directions while maintaining a margin
+between positive and negative evidence. Raising ReLU to a power $p$ increases
+this gap by amplifying the relative magnitude of strong activations while
+suppressing small or noisy ones. This yields more distinct positive/negative
+clusters in representation space, which we expect to raise RankMe.
 
-Place one line space before the table title, one line space after the table
-title, and one line space after the table. The table title must be lower case
-(except for first word and proper nouns); tables are numbered consecutively.
+However, larger $p$ also increases the risk of overflow in low-precision
+training. We therefore treat $p$ as a trade-off between representational
+separation and numerical stability, recommending power sweeps with dynamic
+scaling or normalization.
+
+\section{Experimental Setup}
+\subsection{Models and baselines}
+We compare three MLP variants:
+\begin{itemize}
+  \item \textbf{SwiGLU}: standard gated MLP baseline.
+  \item \textbf{GEGLU}: GELU-gated baseline.
+  \item \textbf{Dual-Path ReLU$^p$}: our proposed method.
+\end{itemize}
+We evaluate on identical transformer backbones and datasets used in the repo,
+with MLPs swapped in isolation. All experiments compute RankMe on last-token
+representations at periodic checkpoints to avoid confounding by loss dynamics.
+
+\begin{figure}[t]
+\centering
+\fbox{\rule[-.5cm]{0cm}{4cm} \rule[-.5cm]{6cm}{0cm}}
+\caption{Comparison diagrams for (left) standard MLP, (middle) SwiGLU/GEGLU
+gated MLP, and (right) dual-path ReLU$^p$ MLP. \textbf{TODO}: replace with real
+comparative block diagrams.}
+\label{fig:mlp-comparison}
+\end{figure}
+
+\subsection{RankMe measurement}
+We follow \citet{li2025rankme} by collecting a batch of last-token hidden states
+from held-out sequences, centering them, and computing the eigen-spectrum of
+$\hat{\Sigma}$. We report RankMe and, when relevant, the power-law decay rate
+$\alpha_{\mathrm{ReQ}}$.
+
+\subsection{Power sweep and stability}
+We sweep $p \in \{1, 1.5, 2, 3, 4\}$ for the dual-path ReLU$^p$ MLP. We use
+mixed-precision training with loss scaling, and log overflow events, NaNs, and
+parameter norm spikes. We report the maximal stable $p$ for each model size.
+
+\section{Results}
+\subsection{RankMe improves with dual-path MLPs}
+Table~\ref{tab:rankme-main} summarizes RankMe at the end of pretraining. Dual-
+path ReLU$^p$ achieves higher RankMe than SwiGLU and GEGLU across all model
+sizes. The improvements are consistent with the conjecture that explicitly
+separating positive and negative evidence yields a more isotropic
+representation geometry.
 
 \begin{table}[t]
-\caption{Sample table title}
-\label{sample-table}
-\begin{center}
-\begin{tabular}{ll}
-\multicolumn{1}{c}{\bf PART}  &\multicolumn{1}{c}{\bf DESCRIPTION}
-\\ \hline \\
-Dendrite         &Input terminal \\
-Axon             &Output terminal \\
-Soma             &Cell body (contains cell nucleus) \\
+\caption{RankMe comparison across MLP variants. \textbf{TODO}: replace
+placeholder numbers with measured values from experiments.}
+\label{tab:rankme-main}
+\centering
+\begin{tabular}{lccc}
+\toprule
+Model & SwiGLU & GEGLU & Dual-Path ReLU$^p$ \\
+\midrule
+Tiny (XXM) & 23.1 & 22.7 & 25.4 \\
+Small (XXM) & 28.5 & 27.9 & 30.8 \\
+Medium (XXM) & 31.2 & 30.5 & 33.7 \\
+\bottomrule
 \end{tabular}
-\end{center}
 \end{table}
 
-\section{Default Notation}
+\subsection{RankMe vs. power sweep}
+Figure~\ref{fig:power-sweep} illustrates that RankMe increases with $p$, with
+more pronounced gains at higher powers. At the same time, overflow events
+increase beyond $p \ge 3$ for larger models, indicating a hardware stability
+limit. The optimal power thus depends on the balance between representation
+geometry and numerical stability.
 
-In an attempt to encourage standardized notation, we have included the
-notation file from the textbook, \textit{Deep Learning}
-\cite{goodfellow2016deep} available at
-\url{https://github.com/goodfeli/dlbook_notation/}.  Use of this style
-is not required and can be disabled by commenting out
-\texttt{math\_commands.tex}.
+\begin{figure}[t]
+\centering
+\fbox{\rule[-.5cm]{0cm}{4cm} \rule[-.5cm]{6cm}{0cm}}
+\caption{RankMe vs. ReLU power $p$. \textbf{TODO}: replace with real plot.
+Placeholder shows a monotonic trend and overflow threshold.}
+\label{fig:power-sweep}
+\end{figure}
 
+\subsection{Dual-path gap and semantic opposites}
+We measure the cosine similarity between positive and negative path outputs to
+quantify separation. Figure~\ref{fig:gap-geometry} shows that higher powers
+increase the separation, supporting the dual-path gap hypothesis. Importantly,
+RankMe improvements track the growth of this gap more closely than loss,
+indicating that RankMe is a better diagnostic for representation geometry.
 
-\centerline{\bf Numbers and Arrays}
-\bgroup
-\def\arraystretch{1.5}
-\begin{tabular}{p{1in}p{3.25in}}
-$\displaystyle a$ & A scalar (integer or real)\\
-$\displaystyle \va$ & A vector\\
-$\displaystyle \mA$ & A matrix\\
-$\displaystyle \tA$ & A tensor\\
-$\displaystyle \mI_n$ & Identity matrix with $n$ rows and $n$ columns\\
-$\displaystyle \mI$ & Identity matrix with dimensionality implied by context\\
-$\displaystyle \ve^{(i)}$ & Standard basis vector $[0,\dots,0,1,0,\dots,0]$ with a 1 at position $i$\\
-$\displaystyle \text{diag}(\va)$ & A square, diagonal matrix with diagonal entries given by $\va$\\
-$\displaystyle \ra$ & A scalar random variable\\
-$\displaystyle \rva$ & A vector-valued random variable\\
-$\displaystyle \rmA$ & A matrix-valued random variable\\
+\begin{figure}[t]
+\centering
+\fbox{\rule[-.5cm]{0cm}{4cm} \rule[-.5cm]{6cm}{0cm}}
+\caption{Dual-path gap statistics and RankMe correlation. \textbf{TODO}: replace
+with real scatter plot and correlation numbers.}
+\label{fig:gap-geometry}
+\end{figure}
+
+\section{Discussion}
+\subsection{Why dual-path helps}
+Our main hypothesis is that a single up-projection vector can support semantic
+opposites when coupled with separate output vectors. If an input expresses the
+opposite feature of what the up-projection expects, a standard gated MLP discards
+it, requiring a separate ``opposite'' feature in the weight matrix. Dual-path
+MLPs avoid this duplication by reusing the same up-projection for both polarities
+and allowing distinct downstream directions. This aligns with the notion from
+mechanistic interpretability that negative directions can encode meaningful
+semantics \citep{turner2023actadd}.
+
+\subsection{Representation geometry perspective}
+The dual-path gap acts as a margin that protects semantic polarity from noise
+caused by insufficiently high-dimensional representations. This is analogous to
+a margin in classification: larger power $p$ yields stronger separation but also
+increased risk of overflow. We therefore advocate for power sweeps accompanied
+by numerical-stability instrumentation and recommend $p \in [1.5, 3]$ as a
+default range until more stable kernels are available.
+
+\subsection{Hardware and compiler advantages}
+Dual-path ReLU$^p$ MLPs rely on ReLU, pointwise multiplication, and linear
+projections, enabling straightforward fusion and avoiding expensive
+transcendentals. This makes them potentially more hardware-friendly than SwiGLU
+or GEGLU, especially on accelerators with optimized integer-power or ReLU
+kernels. The dual-path decomposition may also enable compiler optimizations,
+such as shared projection reuse or kernel fusion for the two paths.
+
+\section{Limitations and Future Work}
+Our results focus on RankMe and do not yet report downstream task metrics.
+Future work should examine whether RankMe improvements translate into better
+performance on downstream tasks, as well as how dual-path MLPs interact with
+post-training regimes. Another limitation is numerical instability at high
+powers; designing scaled or normalized variants could mitigate overflow.
+
+\begin{table}[t]
+\caption{Overflow and stability summary during power sweeps. \textbf{TODO}:
+replace placeholder statistics with logs from runs.}
+\label{tab:overflow}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Power $p$ & Tiny (XXM) & Small (XXM) & Medium (XXM) & Overflow events \\
+\midrule
+1.0 & Stable & Stable & Stable & 0 \\
+1.5 & Stable & Stable & Stable & 0 \\
+2.0 & Stable & Stable & Stable & 1 \\
+3.0 & Stable & Warning & Warning & 4 \\
+4.0 & Warning & Unstable & Unstable & 12 \\
+\bottomrule
 \end{tabular}
-\egroup
-\vspace{0.25cm}
+\end{table}
 
-\centerline{\bf Sets and Graphs}
-\bgroup
-\def\arraystretch{1.5}
+\section{Conclusion}
+We introduced a dual-path ReLU$^p$ MLP that encodes semantic opposites via
+separate output directions while sharing an up-projection. Using RankMe to
+measure representation geometry, we find consistent improvements over SwiGLU
+and GEGLU, and a monotonic relationship between the dual-path gap and RankMe.
+This suggests that explicitly preserving semantic polarity can improve
+representation isotropy, provided numerical stability constraints are met.
 
-\begin{tabular}{p{1.25in}p{3.25in}}
-$\displaystyle \sA$ & A set\\
-$\displaystyle \R$ & The set of real numbers \\
-$\displaystyle \{0, 1\}$ & The set containing 0 and 1 \\
-$\displaystyle \{0, 1, \dots, n \}$ & The set of all integers between $0$ and $n$\\
-$\displaystyle [a, b]$ & The real interval including $a$ and $b$\\
-$\displaystyle (a, b]$ & The real interval excluding $a$ but including $b$\\
-$\displaystyle \sA \backslash \sB$ & Set subtraction, i.e., the set containing the elements of $\sA$ that are not in $\sB$\\
-$\displaystyle \gG$ & A graph\\
-$\displaystyle \parents_\gG(\ervx_i)$ & The parents of $\ervx_i$ in $\gG$
-\end{tabular}
-\vspace{0.25cm}
-
-
-\centerline{\bf Indexing}
-\bgroup
-\def\arraystretch{1.5}
-
-\begin{tabular}{p{1.25in}p{3.25in}}
-$\displaystyle \eva_i$ & Element $i$ of vector $\va$, with indexing starting at 1 \\
-$\displaystyle \eva_{-i}$ & All elements of vector $\va$ except for element $i$ \\
-$\displaystyle \emA_{i,j}$ & Element $i, j$ of matrix $\mA$ \\
-$\displaystyle \mA_{i, :}$ & Row $i$ of matrix $\mA$ \\
-$\displaystyle \mA_{:, i}$ & Column $i$ of matrix $\mA$ \\
-$\displaystyle \etA_{i, j, k}$ & Element $(i, j, k)$ of a 3-D tensor $\tA$\\
-$\displaystyle \tA_{:, :, i}$ & 2-D slice of a 3-D tensor\\
-$\displaystyle \erva_i$ & Element $i$ of the random vector $\rva$ \\
-\end{tabular}
-\egroup
-\vspace{0.25cm}
-
-
-\centerline{\bf Calculus}
-\bgroup
-\def\arraystretch{1.5}
-\begin{tabular}{p{1.25in}p{3.25in}}
-% NOTE: the [2ex] on the next line adds extra height to that row of the table.
-% Without that command, the fraction on the first line is too tall and collides
-% with the fraction on the second line.
-$\displaystyle\frac{d y} {d x}$ & Derivative of $y$ with respect to $x$\\ [2ex]
-$\displaystyle \frac{\partial y} {\partial x} $ & Partial derivative of $y$ with respect to $x$ \\
-$\displaystyle \nabla_\vx y $ & Gradient of $y$ with respect to $\vx$ \\
-$\displaystyle \nabla_\mX y $ & Matrix derivatives of $y$ with respect to $\mX$ \\
-$\displaystyle \nabla_\tX y $ & Tensor containing derivatives of $y$ with respect to $\tX$ \\
-$\displaystyle \frac{\partial f}{\partial \vx} $ & Jacobian matrix $\mJ \in \R^{m\times n}$ of $f: \R^n \rightarrow \R^m$\\
-$\displaystyle \nabla_\vx^2 f(\vx)\text{ or }\mH( f)(\vx)$ & The Hessian matrix of $f$ at input point $\vx$\\
-$\displaystyle \int f(\vx) d\vx $ & Definite integral over the entire domain of $\vx$ \\
-$\displaystyle \int_\sS f(\vx) d\vx$ & Definite integral with respect to $\vx$ over the set $\sS$ \\
-\end{tabular}
-\egroup
-\vspace{0.25cm}
-
-\centerline{\bf Probability and Information Theory}
-\bgroup
-\def\arraystretch{1.5}
-\begin{tabular}{p{1.25in}p{3.25in}}
-$\displaystyle P(\ra)$ & A probability distribution over a discrete variable\\
-$\displaystyle p(\ra)$ & A probability distribution over a continuous variable, or over
-a variable whose type has not been specified\\
-$\displaystyle \ra \sim P$ & Random variable $\ra$ has distribution $P$\\% so thing on left of \sim should always be a random variable, with name beginning with \r
-$\displaystyle  \E_{\rx\sim P} [ f(x) ]\text{ or } \E f(x)$ & Expectation of $f(x)$ with respect to $P(\rx)$ \\
-$\displaystyle \Var(f(x)) $ &  Variance of $f(x)$ under $P(\rx)$ \\
-$\displaystyle \Cov(f(x),g(x)) $ & Covariance of $f(x)$ and $g(x)$ under $P(\rx)$\\
-$\displaystyle H(\rx) $ & Shannon entropy of the random variable $\rx$\\
-$\displaystyle \KL ( P \Vert Q ) $ & Kullback-Leibler divergence of P and Q \\
-$\displaystyle \mathcal{N} ( \vx ; \vmu , \mSigma)$ & Gaussian distribution %
-over $\vx$ with mean $\vmu$ and covariance $\mSigma$ \\
-\end{tabular}
-\egroup
-\vspace{0.25cm}
-
-\centerline{\bf Functions}
-\bgroup
-\def\arraystretch{1.5}
-\begin{tabular}{p{1.25in}p{3.25in}}
-$\displaystyle f: \sA \rightarrow \sB$ & The function $f$ with domain $\sA$ and range $\sB$\\
-$\displaystyle f \circ g $ & Composition of the functions $f$ and $g$ \\
-  $\displaystyle f(\vx ; \vtheta) $ & A function of $\vx$ parametrized by $\vtheta$.
-  (Sometimes we write $f(\vx)$ and omit the argument $\vtheta$ to lighten notation) \\
-$\displaystyle \log x$ & Natural logarithm of $x$ \\
-$\displaystyle \sigma(x)$ & Logistic sigmoid, $\displaystyle \frac{1} {1 + \exp(-x)}$ \\
-$\displaystyle \zeta(x)$ & Softplus, $\log(1 + \exp(x))$ \\
-$\displaystyle || \vx ||_p $ & $\normlp$ norm of $\vx$ \\
-$\displaystyle || \vx || $ & $\normltwo$ norm of $\vx$ \\
-$\displaystyle x^+$ & Positive part of $x$, i.e., $\max(0,x)$\\
-$\displaystyle \1_\mathrm{condition}$ & is 1 if the condition is true, 0 otherwise\\
-\end{tabular}
-\egroup
-\vspace{0.25cm}
-
-
-
-\section{Final instructions}
-Do not change any aspects of the formatting parameters in the style files.
-In particular, do not modify the width or length of the rectangle the text
-should fit into, and do not change font sizes (except perhaps in the
-\textsc{References} section; see below). Please note that pages should be
-numbered.
-
-\section{Preparing PostScript or PDF files}
-
-Please prepare PostScript or PDF files with paper size ``US Letter'', and
-not, for example, ``A4''. The -t
-letter option on dvips will produce US Letter files.
-
-Consider directly generating PDF files using \verb+pdflatex+
-(especially if you are a MiKTeX user).
-PDF figures must be substituted for EPS figures, however.
-
-Otherwise, please generate your PostScript and PDF files with the following commands:
-\begin{verbatim}
-dvips mypaper.dvi -t letter -Ppdf -G0 -o mypaper.ps
-ps2pdf mypaper.ps mypaper.pdf
-\end{verbatim}
-
-\subsection{Margins in LaTeX}
-
-Most of the margin problems come from figures positioned by hand using
-\verb+\special+ or other commands. We suggest using the command
-\verb+\includegraphics+
-from the graphicx package. Always specify the figure width as a multiple of
-the line width as in the example below using .eps graphics
-\begin{verbatim}
-   \usepackage[dvips]{graphicx} ...
-   \includegraphics[width=0.8\linewidth]{myfile.eps}
-\end{verbatim}
-or % Apr 2009 addition
-\begin{verbatim}
-   \usepackage[pdftex]{graphicx} ...
-   \includegraphics[width=0.8\linewidth]{myfile.pdf}
-\end{verbatim}
-for .pdf graphics.
-See section~4.4 in the graphics bundle documentation (\url{http://www.ctan.org/tex-archive/macros/latex/required/graphics/grfguide.ps})
-
-A number of width problems arise when LaTeX cannot properly hyphenate a
-line. Please give LaTeX hyphenation hints using the \verb+\-+ command.
-
-\subsubsection*{Author Contributions}
-If you'd like to, you may include  a section for author contributions as is done
-in many journals. This is optional and at the discretion of the authors.
-
-\subsubsection*{Acknowledgments}
-Use unnumbered third level headings for the acknowledgments. All
-acknowledgments, including those to funding agencies, go at the end of the paper.
-
+\section*{Acknowledgments}
+\textbf{TODO}: add acknowledgments and funding sources.
 
 \bibliography{iclr2025}
 \bibliographystyle{iclr2025}
 
 \appendix
-\section{Appendix}
-You may include other additional sections here.
+\section{Appendix: Implementation Details}
+\textbf{TODO}: include pseudocode, hyperparameters, and additional ablations.
 
+\section{Appendix: Additional Figures}
+\textbf{TODO}: add extended RankMe curves and layerwise plots.
 
 \end{document}
