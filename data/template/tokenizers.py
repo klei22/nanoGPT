@@ -11,8 +11,12 @@ import math
 import numpy as np
 import importlib.util
 from pathlib import Path
-import torch
-import torchaudio
+try:
+    import torch
+    import torchaudio
+except ImportError:  # pragma: no cover - optional dependency
+    torch = None
+    torchaudio = None
 
 
 class Tokenizer:
@@ -667,6 +671,8 @@ class WhisperMelCsvTokenizer(Tokenizer):
 
     def __init__(self, args):
         super().__init__(args)
+        if torch is None or torchaudio is None:
+            raise ImportError("WhisperMelCsvTokenizer requires torch and torchaudio.")
         self.sample_rate = args.mel_sample_rate
         self.n_fft = args.mel_n_fft
         self.hop_length = args.mel_hop_length
