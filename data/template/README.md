@@ -116,6 +116,48 @@ Afterward it produces the train.bin and val.bin (and meta.pkl if not tiktoken)
 These files above are then utilized to train the model via the `train.py` or
 `run_experiments.py` wrapper scripts.
 
+## Tokenization Metrics
+
+The `utils/tokenization_metrics.py` script computes intrinsic metrics for any
+tokenization method supported in this template. It reports:
+
+- **Compression (CTC)** via total token count and tokens-per-character/byte.
+- **Rényi entropy** (α=2.5 by default) over the token frequency distribution.
+- **MorphScore** for morphological boundary alignment (optional).
+- **Byte premium** ratios when a content-matched reference text is provided.
+
+#### Examples
+
+Compute compression + Rényi entropy:
+
+```bash
+python3 utils/tokenization_metrics.py --text input.txt --method tiktoken
+```
+
+Compute MorphScore from a TSV file:
+
+```bash
+python3 utils/tokenization_metrics.py \
+  --text input.txt \
+  --method sentencepiece \
+  --vocab_size 32000 \
+  --morph_data morph_boundaries.tsv
+```
+
+The MorphScore input can be TSV or JSONL:
+
+* **TSV**: `word<TAB>boundary_index` or `word<TAB>left<TAB>right`
+* **JSONL**: `{"word": "...", "boundary_index": 4}` or `{"word": "...", "left": "...", "right": "..."}`
+
+Compute byte premium ratio against a matched reference text:
+
+```bash
+python3 utils/tokenization_metrics.py \
+  --text input_es.txt \
+  --method tiktoken \
+  --byte_premium_reference input_en.txt
+```
+
 ### (Optional) Pre-processing of input.txt
 
 There are a number of methods to preprocess data before tokenization.
