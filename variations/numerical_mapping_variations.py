@@ -58,15 +58,14 @@ class NumericalLinearOutput(nn.Module):
 class NumericalLinearOutputTied(nn.Module):
     def __init__(self, embedding_module, bias=True):
         super().__init__()
-        self.embedding_module = embedding_module
+        object.__setattr__(self, "_tied_weight", embedding_module.proj.weight)
         if bias:
             self.bias = nn.Parameter(torch.zeros(1))
         else:
             self.register_parameter("bias", None)
 
     def forward(self, x):
-        weight = self.embedding_module.proj.weight
-        return F.linear(x, weight.t(), self.bias)
+        return F.linear(x, self._tied_weight.t(), self.bias)
 
 
 numerical_embedding_dictionary = {
