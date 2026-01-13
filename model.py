@@ -69,8 +69,9 @@ class GPT(nn.Module):
             self.numerical_output_mlps = nn.ModuleDict()
             for idx in range(len(config.vocab_sizes)):
                 key = str(idx)
-                self.numerical_embeddings[key] = get_numerical_embedding(config)
-                self.numerical_output_mlps[key] = get_numerical_output(config)
+                embedding_module = get_numerical_embedding(config)
+                self.numerical_embeddings[key] = embedding_module
+                self.numerical_output_mlps[key] = get_numerical_output(config, embedding_module=embedding_module)
 
         # Final-logit softcapping
         self.final_logit_softcapping = config.final_logit_softcapping

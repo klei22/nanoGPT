@@ -271,6 +271,8 @@ def parse_args():
                                     help="Variant for numerical multicontext input mapping (e.g., mlp, linear)")
     model_group.add_argument('--numerical_output_variant', default="mlp", type=str,
                                     help="Variant for numerical multicontext output mapping (e.g., mlp, linear)")
+    model_group.add_argument('--numerical_mapping_weight_tying', default=True, action=argparse.BooleanOptionalAction,
+                                    help="Tie numerical embedding/output mapping weights when supported")
     model_group.add_argument('--multicontext', default=False, action=argparse.BooleanOptionalAction,
                                     help="Enable multi-context training on multiple simultaneous datasets")
     model_group.add_argument('--multidataset_wte', default=False, action=argparse.BooleanOptionalAction,
