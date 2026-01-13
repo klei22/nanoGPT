@@ -368,7 +368,8 @@ class GPT(nn.Module):
             for i, tokens in enumerate(token_list):
                 if self.uses_numerical_multicontext:
                     module = self.numerical_embeddings[str(i)]
-                    numeric_tokens = tokens.to(module[0].weight.dtype).unsqueeze(-1)
+                    param = next(module.parameters())
+                    numeric_tokens = tokens.to(param.dtype).unsqueeze(-1)
                     token_repr = module(numeric_tokens)
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
