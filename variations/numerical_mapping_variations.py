@@ -1,5 +1,6 @@
 # variations/numerical_mapping_variations.py
 
+import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
@@ -55,6 +56,25 @@ class NumericalLinearEmbedding(nn.Module):
         return self.proj(x)
 
 
+class NumericalCayleyEmbedding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.n_embd = config.n_embd
+        self.skew_param = nn.Parameter(torch.empty(self.n_embd, self.n_embd))
+        self.vector = nn.Parameter(torch.empty(1, self.n_embd))
+        nn.init.normal_(self.skew_param, mean=0.0, std=0.02)
+        nn.init.normal_(self.vector, mean=0.0, std=0.02)
+
+    def forward(self, x):
+        skew = self.skew_param - self.skew_param.t()
+        scaled = x.unsqueeze(-1) * skew
+        eye = torch.eye(self.n_embd, device=x.device, dtype=x.dtype)
+        eye = eye.view(1, 1, self.n_embd, self.n_embd)
+        q = torch.linalg.solve(eye - scaled, eye + scaled)
+        vector = self.vector.to(device=x.device, dtype=x.dtype)
+        return torch.matmul(vector, q).squeeze(-2)
+
+
 class NumericalLinearOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -81,6 +101,7 @@ class NumericalLinearOutputTied(nn.Module):
 numerical_embedding_dictionary = {
     "mlp": NumericalMLPEmbedding,
     "linear": NumericalLinearEmbedding,
+    "cayley": NumericalCayleyEmbedding,
 }
 
 numerical_output_dictionary = {
