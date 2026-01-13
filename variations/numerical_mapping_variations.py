@@ -1,21 +1,37 @@
 # variations/numerical_mapping_variations.py
 
-import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
+from variations.activation_variations import activation_dictionary
+
+
+def _get_numerical_mlp_hidden_dims(config):
+    if config.numerical_mlp_hidden_dims:
+        return list(config.numerical_mlp_hidden_dims)
+    if config.numerical_mlp_num_layers < 0:
+        raise ValueError("numerical_mlp_num_layers must be non-negative")
+    return [config.numerical_mlp_hidden_dim] * config.numerical_mlp_num_layers
+
+
+def _build_numerical_mlp(config, input_dim, output_dim):
+    hidden_dims = _get_numerical_mlp_hidden_dims(config)
+    activation_cls = activation_dictionary[config.numerical_mlp_activation_variant]
+
+    layers = []
+    prev_dim = input_dim
+    for hidden_dim in hidden_dims:
+        layers.append(nn.Linear(prev_dim, hidden_dim))
+        layers.append(activation_cls(config=config))
+        prev_dim = hidden_dim
+    layers.append(nn.Linear(prev_dim, output_dim))
+    return nn.Sequential(*layers)
 
 
 class NumericalMLPEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_dim = config.numerical_mlp_hidden_dim
-        self.net = nn.Sequential(
-            nn.Linear(1, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, config.n_embd),
-        )
+        self.net = _build_numerical_mlp(config, 1, config.n_embd)
 
     def forward(self, x):
         return self.net(x)
@@ -24,14 +40,7 @@ class NumericalMLPEmbedding(nn.Module):
 class NumericalMLPOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_dim = config.numerical_mlp_hidden_dim
-        self.net = nn.Sequential(
-            nn.Linear(config.n_embd, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-        )
+        self.net = _build_numerical_mlp(config, config.n_embd, 1)
 
     def forward(self, x):
         return self.net(x)
@@ -58,14 +67,15 @@ class NumericalLinearOutput(nn.Module):
 class NumericalLinearOutputTied(nn.Module):
     def __init__(self, embedding_module, bias=True):
         super().__init__()
-        object.__setattr__(self, "_tied_weight", embedding_module.proj.weight)
+        self.embedding_module = embedding_module
         if bias:
             self.bias = nn.Parameter(torch.zeros(1))
         else:
             self.register_parameter("bias", None)
 
     def forward(self, x):
-        return F.linear(x, self._tied_weight.t(), self.bias)
+        weight = self.embedding_module.proj.weight
+        return F.linear(x, weight.t(), self.bias)
 
 
 numerical_embedding_dictionary = {
