@@ -267,6 +267,14 @@ def parse_args():
                                     help="Interpret multicontext inputs as numerical values and use regression heads")
     model_group.add_argument('--numerical_mlp_hidden_dim', default=64, type=int,
                                     help="Hidden dimension for numerical multi-context embedding/output MLPs")
+    model_group.add_argument('--numerical_mapping_activation', default='relu', type=str,
+                                    help="Activation to use for numerical mapping MLPs")
+    model_group.add_argument('--numerical_embedding_mapping', default='mlp', type=str,
+                                    choices=['mlp', 'shallow_mlp', 'linear'],
+                                    help="Mapping variant for numerical multicontext embeddings")
+    model_group.add_argument('--numerical_output_mapping', default='mlp', type=str,
+                                    choices=['mlp', 'shallow_mlp', 'linear'],
+                                    help="Mapping variant for numerical multicontext output heads")
     model_group.add_argument('--multicontext', default=False, action=argparse.BooleanOptionalAction,
                                     help="Enable multi-context training on multiple simultaneous datasets")
     model_group.add_argument('--multidataset_wte', default=False, action=argparse.BooleanOptionalAction,
