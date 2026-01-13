@@ -377,6 +377,9 @@ class GPT(nn.Module):
 
                 x = token_repr if x is None else x + token_repr
 
+            if self.config.norm_variant_wte is not None:
+                x = self.transformer.post_embedding_norm(x)
+
             if self.config.use_embedding_scale:
                 x = x * self.embedding_scale
 
