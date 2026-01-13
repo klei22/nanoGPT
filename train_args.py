@@ -279,6 +279,11 @@ def parse_args():
                                     help="Variant for numerical multicontext output mapping (e.g., mlp, linear)")
     model_group.add_argument('--numerical_mapping_weight_tying', default=True, action=argparse.BooleanOptionalAction,
                                     help="Tie numerical embedding/output mapping weights when supported")
+    model_group.add_argument('--numerical_interpret', default="uint", type=str,
+                                    choices=["uint", "sint", "fp16_bits", "bf16_bits"],
+                                    help="Decode numeric token IDs before casting to model dtype")
+    model_group.add_argument('--numerical_interpret_bitwidth', default=16, type=int,
+                                    help="Bitwidth used for signed integer decoding in numerical multicontext mode")
     model_group.add_argument('--multicontext', default=False, action=argparse.BooleanOptionalAction,
                                     help="Enable multi-context training on multiple simultaneous datasets")
     model_group.add_argument('--multidataset_wte', default=False, action=argparse.BooleanOptionalAction,

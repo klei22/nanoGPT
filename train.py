@@ -41,6 +41,12 @@ from utils.statistic_plots import (
     create_statistics,
 )
 
+def _safe_exp(value: float) -> float:
+    max_log = math.log(sys.float_info.max)
+    if value >= max_log:
+        return math.inf
+    return math.exp(value)
+
 from utils.model_stats import (
     compute_weight_stats,
     compute_activation_stats,
@@ -1689,7 +1695,7 @@ class Trainer:
         self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
         if self.args.dataset_list is not None:
             for dataset, dataset_losses in losses['datasets'].items():
-                better_than_chance = self.model_args['vocab_size'] / math.exp(dataset_losses['val'].item())
+                better_than_chance = self.model_args['vocab_size'] / _safe_exp(dataset_losses['val'].item())
                 log_message=f"step {self.iter_num}: "
                 log_message+=f"{dataset:<20s}"
                 log_message+=f", {self.model.num_param}"
@@ -1718,10 +1724,10 @@ class Trainer:
                 log_message+=f", lr {self.lr:.4f}"
                 log_message+=f", tokens_trained {self.tokens_trained:.2e}"
                 self.console.print(log_message)
-                better_than_chance = self.vocab_sizes[dataset] / math.exp(dataset_losses['val'].item())
+                better_than_chance = self.vocab_sizes[dataset] / _safe_exp(dataset_losses['val'].item())
                 self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained, dataset, better_than_chance)
         else:
-            better_than_chance = self.model_args['vocab_size'] / math.exp(losses['val'].item())
+            better_than_chance = self.model_args['vocab_size'] / _safe_exp(losses['val'].item())
             log_message=f"step {self.iter_num}:"
             log_message+=f", {self.model.num_param}"
             log_message+=f", train loss {losses['train']:.4f}"

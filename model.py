@@ -39,6 +39,7 @@ from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from variations.output_vector_variants import output_vector_variant_dict
 from variations.numerical_mapping_variations import get_numerical_embedding, get_numerical_output
+from variations.numerical_token_decoding import NumericalTokenDecoder
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -72,6 +73,10 @@ class GPT(nn.Module):
                 embedding_module = get_numerical_embedding(config)
                 self.numerical_embeddings[key] = embedding_module
                 self.numerical_output_mlps[key] = get_numerical_output(config, embedding_module=embedding_module)
+            self.numerical_token_decoder = NumericalTokenDecoder(
+                interpret=config.numerical_interpret,
+                bitwidth=config.numerical_interpret_bitwidth,
+            )
 
         # Final-logit softcapping
         self.final_logit_softcapping = config.final_logit_softcapping
@@ -370,7 +375,8 @@ class GPT(nn.Module):
                 if self.uses_numerical_multicontext:
                     module = self.numerical_embeddings[str(i)]
                     param = next(module.parameters())
-                    numeric_tokens = tokens.to(param.dtype).unsqueeze(-1)
+                    decoded_tokens = self.numerical_token_decoder(tokens)
+                    numeric_tokens = decoded_tokens.to(param.dtype).unsqueeze(-1)
                     token_repr = module(numeric_tokens)
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
