@@ -76,6 +76,8 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
+from zeus_nanogpt_profiler import ZeusNanoGPTConfig, ZeusNanoGPTProfiler
+
 from variations.model_variations import model_variation_dictionary
 
 from model import GPT, GPTConfig
@@ -459,6 +461,24 @@ class Trainer:
             wandb.init(project=self.args.wandb_project, name=self.args.wandb_run_name, config=self.args)
         self.load_tokenizer()
 
+        zeus_cfg = ZeusNanoGPTConfig(
+            enabled=self.args.zeus_profile and self.device_type == 'cuda',
+            out_dir=self.args.out_dir,
+            window_prefix="nanogpt",
+            gpu_index=self.args.zeus_gpu_index,
+            profile_every=self.args.zeus_profile_every,
+            warmup_iters=self.args.zeus_warmup_iters,
+            power_trace=self.args.zeus_power_trace,
+            power_update_period=self.args.zeus_power_update_period,
+            power_max_samples_per_gpu=self.args.zeus_power_max_samples_per_gpu,
+            power_domains=self.args.zeus_power_domains,
+            temperature_trace=self.args.zeus_temperature_trace,
+            temperature_update_period=self.args.zeus_temperature_update_period,
+            temperature_max_samples_per_gpu=self.args.zeus_temperature_max_samples_per_gpu,
+        )
+        self.zeus_profiler = ZeusNanoGPTProfiler(zeus_cfg)
+        self.zeus_tb_enabled = self.args.tensorboard_log and self.args.zeus_tensorboard_log
+
 
     def _initialize_teacher_if_needed(self):
         teacher_path = getattr(self.args, "distillation_teacher_ckpt", None)
@@ -502,6 +522,29 @@ class Trainer:
         self.teacher_model = teacher_model
         if self.master_process:
             print(f"Loaded teacher checkpoint from {expanded}")
+
+    def _log_zeus_window(self, row):
+        if not row or not self.zeus_tb_enabled or self.writer is None:
+            return
+        step = row.get("iter", self.iter_num)
+        stage = row.get("stage", "stage")
+        base = f"zeus/{stage}"
+        self.writer.add_scalar(f"{base}/time_s", row.get("time_s"), step)
+        self.writer.add_scalar(f"{base}/energy_j", row.get("energy_j"), step)
+        self.writer.add_scalar(f"{base}/gpu_energy_j", row.get("gpu_energy_j"), step)
+        if row.get("avg_power_w") is not None:
+            self.writer.add_scalar(f"{base}/avg_power_w", row.get("avg_power_w"), step)
+        if row.get("j_per_token") is not None:
+            self.writer.add_scalar(f"{base}/j_per_token", row.get("j_per_token"), step)
+
+    def _log_zeus_summary(self, summary):
+        if not summary or not self.zeus_tb_enabled or self.writer is None:
+            return
+        step = self.iter_num if hasattr(self, "iter_num") else 0
+        self.writer.add_scalar("zeus/train_total/time_s", summary.get("time_s"), step)
+        self.writer.add_scalar("zeus/train_total/energy_j", summary.get("total_energy_j"), step)
+        self.writer.add_scalar("zeus/train_total/gpu_energy_j", summary.get("gpu_energy_j"), step)
+        self.writer.add_scalar("zeus/train_total/wall_duration_s", summary.get("wall_duration_s"), step)
 
 
     def create_optimizer(self):
@@ -1882,6 +1925,7 @@ class Trainer:
             self.X, self.Y, current_dataset = self.get_batch('train')
         self.X, self.Y, current_dataset = self.get_batch('train')
         t_start = time.time()
+        self.zeus_profiler.start()
         t0 = t_start
         local_iter_num = 0
         running_mfu = -1.0
@@ -1922,6 +1966,8 @@ class Trainer:
                 TextColumn("[bold dark_cyan]LnFcos95:[/bold dark_cyan]{task.fields[lnf_cos95]}") ,
                 console=self.console
                 )
+
+        tokens_per_iter = self.args.batch_size * self.args.block_size * self.args.gradient_accumulation_steps
 
         with Live(Group(progress.get_renderable(), cli_text), console=self.console, refresh_per_second=10) as live:
             task_id = progress.add_task(
@@ -1969,6 +2015,7 @@ class Trainer:
                 if self.args.eval_only:
                     break
 
+                self.zeus_profiler.begin_iter(self.iter_num, tokens_per_iter)
 
                 for micro_step in range(self.args.gradient_accumulation_steps):
                     if self.ddp:
@@ -2067,7 +2114,8 @@ class Trainer:
                         approx_gns_results = gather_hook_results(self.model)
                         self.gns_ema.update(*gns_utils.gnsify(approx_gns_results, self.args.batch_size, ddp=self.ddp))
 
-
+                fwdbwd_row = self.zeus_profiler.end_fwdbwd()
+                self._log_zeus_window(fwdbwd_row)
 
                 if self.args.grad_clip != 0.0:
                     self.scaler.unscale_(self.optimizer)
@@ -2088,6 +2136,9 @@ class Trainer:
                         self.scheduler.step()
 
                 self.optimizer.zero_grad(set_to_none=True)
+
+                opt_row = self.zeus_profiler.end_opt_step()
+                self._log_zeus_window(opt_row)
 
                 t1 = time.time()
                 dt = t1 - t0
@@ -2153,6 +2204,9 @@ class Trainer:
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
+                iter_row = self.zeus_profiler.end_iter()
+                self._log_zeus_window(iter_row)
+
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
                     print(self.best_val_loss, self.best_iter, self.best_tokens)
@@ -2170,6 +2224,9 @@ class Trainer:
 
             if self.args.plot_statistics:
                 plot_statistics(self.args, self.stats, graph_y_labels)
+
+            zeus_summary = self.zeus_profiler.finish()
+            self._log_zeus_summary(zeus_summary)
 
             if self.args.tensorboard_log:
                 self.writer.flush()
