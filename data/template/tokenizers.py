@@ -848,6 +848,8 @@ class SineWaveTokenizer:
         self.points_per_period = args.sine_points_per_period
         self.num_periods = args.sine_num_periods
         self.amplitude = args.sine_amplitude
+        self.numeric_encoding = getattr(args, "sine_numeric_encoding", "uint")
+        self.numeric_bitwidth = getattr(args, "sine_numeric_bitwidth", 16)
         self.max_val = 255
 
     def generate_wave(self):
@@ -862,8 +864,28 @@ class SineWaveTokenizer:
 
     def tokenize(self, data=None):
         # `data` is unused; generation is parameter driven.
-        return self.generate_wave()
+        values = self.generate_wave()
+        return self._encode_values(values)
 
     def detokenize(self, ids):
         array = np.asarray(ids, dtype=np.int64)
         return ','.join(map(str, array.tolist()))
+
+    def _encode_values(self, values):
+        if self.numeric_encoding == "uint":
+            return values
+
+        array = np.asarray(values, dtype=np.int64)
+        if self.numeric_encoding == "sint":
+            mask = (1 << self.numeric_bitwidth) - 1
+            encoded = np.bitwise_and(array, mask)
+            return encoded.tolist()
+        if self.numeric_encoding == "fp16_bits":
+            encoded = np.asarray(array, dtype=np.float16).view(np.uint16)
+            return encoded.astype(np.uint16).tolist()
+        if self.numeric_encoding == "bf16_bits":
+            float32 = np.asarray(array, dtype=np.float32)
+            u32 = float32.view(np.uint32)
+            encoded = (u32 >> 16).astype(np.uint16)
+            return encoded.tolist()
+        raise ValueError(f"Unsupported sinewave numeric encoding: {self.numeric_encoding}")

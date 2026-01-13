@@ -42,6 +42,11 @@ def parse_arguments():
                         help="Total number of periods to generate")
     parser.add_argument("--sine_amplitude", type=float, default=50.0,
                         help="Amplitude of the generated sine wave prior to clamping")
+    parser.add_argument("--sine_numeric_encoding", type=str, default="uint",
+                        choices=["uint", "sint", "fp16_bits", "bf16_bits"],
+                        help="Encoding to apply to sine wave samples before writing tokens")
+    parser.add_argument("--sine_numeric_bitwidth", type=int, default=16,
+                        help="Bitwidth used for signed integer sine wave encoding")
 
     # SentencePiece arguments
     parser.add_argument("--vocab_size", type=int, default=500, help="Vocabulary size for SentencePiece model")
@@ -173,7 +178,12 @@ def main():
 
     # Determine dtype based on vocabulary size from meta.pkl
     if args.method == "sinewave":
-        dtype = np.uint16
+        if args.sine_numeric_encoding in {"fp16_bits", "bf16_bits"}:
+            dtype = np.uint16
+        elif args.sine_numeric_bitwidth > 16:
+            dtype = np.uint32
+        else:
+            dtype = np.uint16
     else:
         with open(args.meta_output_path, "rb") as f:
             meta = pickle.load(f)
@@ -200,6 +210,8 @@ def main():
             "sine_points_per_period": args.sine_points_per_period,
             "sine_num_periods": args.sine_num_periods,
             "sine_amplitude": args.sine_amplitude,
+            "sine_numeric_encoding": args.sine_numeric_encoding,
+            "sine_numeric_bitwidth": args.sine_numeric_bitwidth,
         }
         with open(args.meta_output_path, "wb") as f:
             pickle.dump(meta, f)
