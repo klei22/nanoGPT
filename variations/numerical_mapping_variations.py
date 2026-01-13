@@ -98,10 +98,22 @@ class NumericalLinearOutputTied(nn.Module):
         return F.linear(x, weight.t(), self.bias)
 
 
+class NumericalScaledVectorEmbedding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.vector = nn.Parameter(torch.empty(1, config.n_embd))
+        nn.init.normal_(self.vector, mean=0.0, std=0.02)
+
+    def forward(self, x):
+        vector = self.vector.to(device=x.device, dtype=x.dtype)
+        return x * vector
+
+
 numerical_embedding_dictionary = {
     "mlp": NumericalMLPEmbedding,
     "linear": NumericalLinearEmbedding,
     "cayley": NumericalCayleyEmbedding,
+    "scaled_vector": NumericalScaledVectorEmbedding,
 }
 
 numerical_output_dictionary = {
