@@ -18,6 +18,9 @@ class GPTConfig:
     # numerical multicontext
     numerical_multicontext: bool = False
     numerical_mlp_hidden_dim: int = 64
+    numerical_mapping_activation: str = "relu"
+    numerical_embedding_mapping: str = "mlp"
+    numerical_output_mapping: str = "mlp"
 
     # Layerlists
     n_head_layerlist: List[int] = field(default_factory=list)
