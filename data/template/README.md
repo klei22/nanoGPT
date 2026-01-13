@@ -180,6 +180,16 @@ Afterward it produces the train.bin and val.bin (and meta.pkl if not tiktoken)
 These files above are then utilized to train the model via the `train.py` or
 `run_experiments.py` wrapper scripts.
 
+### Compare vocabularies from meta.pkl files
+
+Use the Textual-based TUI to compare two token vocabularies side-by-side and
+sort both lists by byte length or tracked frequency (requires `-T` when running
+`prepare.py`).
+
+```bash
+python3 compare_meta_vocab_tui.py /path/to/first/meta.pkl /path/to/second/meta.pkl
+```
+
 ### (Optional) Pre-processing of input.txt
 
 There are a number of methods to preprocess data before tokenization.
