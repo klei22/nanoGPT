@@ -10,6 +10,7 @@ import shutil
 import sys
 import time
 from collections import deque
+from typing import Optional
 from datetime import datetime, timedelta
 
 from rich.console import Group
@@ -190,6 +191,9 @@ class Trainer:
         self.distillation_loss_fn = build_distillation_loss(self.args)
         self.distillation_weight = getattr(self.args, "distillation_weight", 1.0)
         self.teacher_model = None
+        self.teacher_logits = None
+        self.teacher_logits_num_tokens = None
+        self.batch_indices = None
         self.latest_distillation_loss = float('nan')
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
@@ -462,17 +466,77 @@ class Trainer:
 
     def _initialize_teacher_if_needed(self):
         teacher_path = getattr(self.args, "distillation_teacher_ckpt", None)
-        if not teacher_path:
+        teacher_logits_path = getattr(self.args, "distillation_teacher_logits", None)
+        if teacher_path and teacher_logits_path:
+            raise ValueError(
+                "Specify only one of --distillation_teacher_ckpt or --distillation_teacher_logits."
+            )
+
+        if not teacher_path and not teacher_logits_path:
             if self.distillation_loss_fn is not None:
                 raise ValueError(
-                    "A distillation loss was selected but no teacher checkpoint was provided via --distillation_teacher_ckpt."
+                    "A distillation loss was selected but no teacher source was provided via "
+                    "--distillation_teacher_ckpt or --distillation_teacher_logits."
                 )
             return
 
         if self.distillation_loss_fn is None:
             raise ValueError(
-                "A teacher checkpoint was supplied without selecting a distillation loss variant. Use --distillation_loss."
+                "A teacher source was supplied without selecting a distillation loss variant. Use --distillation_loss."
             )
+
+        if teacher_logits_path:
+            if self.args.training_mode != "single" or self.args.dataset_list is not None:
+                raise ValueError(
+                    "Offline distillation currently supports only single-dataset training."
+                )
+
+            expanded = os.path.expanduser(teacher_logits_path)
+            if not os.path.exists(expanded):
+                candidate = os.path.join(self.args.out_dir, teacher_logits_path)
+                if os.path.exists(candidate):
+                    expanded = candidate
+                else:
+                    raise FileNotFoundError(
+                        f"Teacher logits file not found: {teacher_logits_path}"
+                    )
+
+            vocab_size = self.model_args.get("vocab_size")
+            if vocab_size is None:
+                raise ValueError("Model vocab_size must be set before loading teacher logits.")
+
+            dtype_name = getattr(self.args, "distillation_teacher_logits_dtype", "float16")
+            dtype_map = {"float16": np.float16, "float32": np.float32}
+            if dtype_name not in dtype_map:
+                raise ValueError(
+                    f"Unsupported distillation_teacher_logits_dtype '{dtype_name}'."
+                )
+
+            dtype = dtype_map[dtype_name]
+            file_size = os.path.getsize(expanded)
+            if file_size % np.dtype(dtype).itemsize != 0:
+                raise ValueError("Teacher logits file size is not aligned with dtype.")
+            total_elems = file_size // np.dtype(dtype).itemsize
+            if total_elems % vocab_size != 0:
+                raise ValueError(
+                    "Teacher logits file size is not divisible by vocab_size."
+                )
+            num_tokens = total_elems // vocab_size
+            if num_tokens < len(self.train_data):
+                raise ValueError(
+                    "Teacher logits file has fewer token rows than the training dataset."
+                )
+
+            self.teacher_logits_num_tokens = num_tokens
+            self.teacher_logits = np.memmap(
+                expanded,
+                dtype=dtype,
+                mode="r",
+                shape=(num_tokens, vocab_size),
+            )
+            if self.master_process:
+                print(f"Loaded teacher logits memmap from {expanded}")
+            return
 
         expanded = os.path.expanduser(teacher_path)
         if not os.path.exists(expanded):
@@ -782,6 +846,22 @@ class Trainer:
             self.dataset_size_tokens = len(self.train_data)
 
 
+    def _get_offline_teacher_logits(self, indices: torch.Tensor) -> Optional[torch.Tensor]:
+        if self.teacher_logits is None or indices is None:
+            return None
+
+        indices_np = indices.detach().cpu().numpy()
+        block_size = self.args.block_size
+        slices = [self.teacher_logits[i : i + block_size] for i in indices_np]
+        logits_np = np.stack(slices, axis=0)
+        logits = torch.from_numpy(logits_np)
+        if self.device_type == 'cuda':
+            logits = logits.to(self.device, non_blocking=True)
+        else:
+            logits = logits.to(self.device)
+        return logits
+
+
     def get_batch(self, split, target_dataset=None):
         dataset = None
         data = None
@@ -832,7 +912,7 @@ class Trainer:
                 x_dict[dataset_name] = x
                 y_dict[dataset_name] = y
 
-            return x_dict, y_dict, list(self.args.multicontext_datasets)
+            return x_dict, y_dict, list(self.args.multicontext_datasets), None
 
         elif self.args.training_mode == "multidataset":
             # If multi-dataset sampling is enabled, pick a dataset using sampling probabilities
@@ -964,7 +1044,7 @@ class Trainer:
             x, y = x.pin_memory().to(self.device, non_blocking=True), y.pin_memory().to(self.device, non_blocking=True)
         else:
             x, y = x.to(self.device), y.to(self.device)
-        return x, y, dataset
+        return x, y, dataset, ix
 
     @torch.no_grad()
     def estimate_loss(self):
@@ -981,7 +1061,7 @@ class Trainer:
                 rankme_vectors = []
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
-                        X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
+                        X, Y, test_dataset, _ = self.get_batch(split, target_dataset=dataset)
                         ln_f_out: list[torch.Tensor] = []
                         handle = self.model.transformer.ln_f.register_forward_hook(
                             lambda _m, _i, o: ln_f_out.append(o.detach())
@@ -1077,7 +1157,7 @@ class Trainer:
                     means[f"{i}"] = 0.0
 
                 for k in range(self.args.eval_iters):
-                    x_dict, y_dict, dataset_list = self.get_batch(split)
+                    x_dict, y_dict, dataset_list, _ = self.get_batch(split)
 
                     with self.ctx:
                         logits, loss_list = self.model(
@@ -1114,7 +1194,7 @@ class Trainer:
                 ln_f_cosines = []
                 rankme_vectors = []
                 for k in range(self.args.eval_iters):
-                    X, Y, _ = self.get_batch(split)
+                    X, Y, _, _ = self.get_batch(split)
                     ln_f_out: list[torch.Tensor] = []
                     handle = self.model.transformer.ln_f.register_forward_hook(
                         lambda _m, _i, o: ln_f_out.append(o.detach())
@@ -1178,7 +1258,7 @@ class Trainer:
 
         # compute statistics from a single validation batch
         if self.compute_model_stats:
-            X_stat, Y_stat, _ = self.get_batch('val')
+            X_stat, Y_stat, _, _ = self.get_batch('val')
             # ── Run heavy ops on the selected device (GPU keeps host‑RAM flat) ──
             act_stats,  overall_act  = compute_activation_stats(
                     self.model, X_stat, Y_stat, self.iter_num, device=self.stats_device
@@ -1875,12 +1955,12 @@ class Trainer:
 
     def train(self):
         if self.args.training_mode == 'multicontext':
-            self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
+            self.X_dict, self.Y_dict, dataset_list, self.batch_indices = self.get_batch('train')
             current_dataset = dataset_list[0]
             self.mc_btc_train = {}
         else:
-            self.X, self.Y, current_dataset = self.get_batch('train')
-        self.X, self.Y, current_dataset = self.get_batch('train')
+            self.X, self.Y, current_dataset, self.batch_indices = self.get_batch('train')
+        self.X, self.Y, current_dataset, self.batch_indices = self.get_batch('train')
         t_start = time.time()
         t0 = t_start
         local_iter_num = 0
@@ -2006,27 +2086,29 @@ class Trainer:
                         self.optimizer.set_entropy(float(ent))
 
                     distill_component = None
-                    if (
-                        self.teacher_model is not None
-                        and self.distillation_loss_fn is not None
-                        and self.args.training_mode != 'multicontext'
-                    ):
-                        with torch.no_grad():
-                            teacher_logits, _ = self.teacher_model(
-                                self.X,
-                                targets=self.Y,
+                    if self.distillation_loss_fn is not None and self.args.training_mode != 'multicontext':
+                        teacher_logits = None
+                        if self.teacher_model is not None:
+                            with torch.no_grad():
+                                teacher_logits, _ = self.teacher_model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=None,
+                                )
+                        elif self.teacher_logits is not None:
+                            teacher_logits = self._get_offline_teacher_logits(self.batch_indices)
+
+                        if teacher_logits is not None:
+                            distill_component = self.distillation_loss_fn(
+                                logits,
+                                teacher_logits,
+                                self.Y,
                                 iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=None,
                             )
-                        distill_component = self.distillation_loss_fn(
-                            logits,
-                            teacher_logits,
-                            self.Y,
-                            iter_num=self.iter_num,
-                        )
-                        distill_component = distill_component.to(loss.dtype)
-                        loss = loss + self.distillation_weight * distill_component
+                            distill_component = distill_component.to(loss.dtype)
+                            loss = loss + self.distillation_weight * distill_component
 
                     self.latest_distillation_loss = (
                         float(distill_component.detach().float().item())
@@ -2058,10 +2140,10 @@ class Trainer:
                     self.get_gradient_stats()
 
                     if self.args.training_mode == 'multicontext':
-                        self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
+                        self.X_dict, self.Y_dict, dataset_list, self.batch_indices = self.get_batch('train')
                         current_dataset = dataset_list[0]
                     else:
-                        self.X, self.Y, current_dataset = self.get_batch('train')
+                        self.X, self.Y, current_dataset, self.batch_indices = self.get_batch('train')
 
                     if self.args.gns_type is not None:
                         approx_gns_results = gather_hook_results(self.model)
