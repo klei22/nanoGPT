@@ -1016,7 +1016,13 @@ def parse_args():
                              help="Scheduler for change in quant level. When linear is set, the quantization will increase dynamically based on the training step")
 
     ## Quantization Method Options
-    quant_methods = ["ternary_quant", "symmetric_quant", "affine_quant", "stochastic_quant"]
+    quant_methods = [
+        "ternary_quant",
+        "symmetric_quant",
+        "affine_quant",
+        "stochastic_quant",
+        "kurtail_quant",
+    ]
 
     ## WTE
     model_group.add_argument("--quantize_wte", default=None, action=argparse.BooleanOptionalAction, help="Whether the word embedding is quantized")
