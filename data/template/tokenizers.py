@@ -284,6 +284,68 @@ class ByteTokenizer(Tokenizer):
         return bytes(ids).decode('utf-8', errors='replace')
 
 
+class NumericTokenizer(Tokenizer):
+    """Parse whitespace-delimited numeric values into token IDs."""
+
+    FLOAT_ENCODINGS = {"float16", "bfloat16"}
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.numeric_encoding = args.numeric_encoding
+        self.numeric_min_token = args.numeric_min_token
+        self.numeric_max_token = args.numeric_max_token
+        self.numeric_range = args.numeric_range
+        self.numeric_vocab_size = args.numeric_vocab_size
+
+    def _parse_value(self, raw_value):
+        if self.numeric_encoding in self.FLOAT_ENCODINGS:
+            return float(raw_value)
+        return int(raw_value)
+
+    def tokenize(self, data):
+        if data is None:
+            raise ValueError("NumericTokenizer requires input data.")
+        tokens = []
+        min_val = self.numeric_min_token
+        max_val = self.numeric_max_token
+
+        for raw_value in data.split():
+            value = self._parse_value(raw_value)
+            if self.numeric_range:
+                if min_val is not None and value < min_val:
+                    raise ValueError(f"Numeric token {value} below minimum {min_val}")
+                if max_val is not None and value > max_val:
+                    raise ValueError(f"Numeric token {value} above maximum {max_val}")
+            if min_val is None or value < min_val:
+                min_val = value
+            if max_val is None or value > max_val:
+                max_val = value
+            self.record_token(value)
+            tokens.append(value)
+
+        if self.numeric_vocab_size is not None:
+            vocab_size = self.numeric_vocab_size
+        elif min_val is not None and max_val is not None and self.numeric_encoding not in self.FLOAT_ENCODINGS:
+            vocab_size = int(max_val - min_val + 1)
+        else:
+            vocab_size = len(set(tokens))
+
+        meta = {
+            "vocab_size": vocab_size,
+            "tokenizer": "numeric",
+            "numeric_encoding": self.numeric_encoding,
+            "numeric_min_token": min_val,
+            "numeric_max_token": max_val,
+            "numeric_range": self.numeric_range,
+            "numeric_vocab_size": self.numeric_vocab_size,
+        }
+        self.finalize_meta(meta)
+        return tokens
+
+    def detokenize(self, ids):
+        return "\n".join(str(value) for value in ids)
+
+
 class CharTokenizer(Tokenizer):
     def __init__(self, args, train_data, val_data):
         super().__init__(args)
@@ -658,4 +720,3 @@ class SineWaveTokenizer:
     def detokenize(self, ids):
         array = np.asarray(ids, dtype=np.int64)
         return ','.join(map(str, array.tolist()))
-

@@ -78,6 +78,39 @@ from torch.utils.tensorboard import SummaryWriter
 
 from variations.model_variations import model_variation_dictionary
 
+NUMERIC_ENCODING_NUMPY_DTYPES = {
+    "uint16": np.uint16,
+    "int16": np.int16,
+    "float16": np.float16,
+    "bfloat16": "bfloat16",
+}
+
+NUMERIC_ENCODING_TORCH_DTYPES = {
+    "uint16": torch.int32,
+    "int16": torch.int16,
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+}
+
+
+def get_numeric_numpy_dtype(encoding):
+    dtype = NUMERIC_ENCODING_NUMPY_DTYPES.get(encoding)
+    if dtype is None:
+        raise ValueError(f"Unsupported numeric encoding: {encoding}")
+    if dtype == "bfloat16":
+        try:
+            return np.dtype("bfloat16")
+        except TypeError as exc:
+            raise ValueError("NumPy does not support bfloat16 on this system.") from exc
+    return dtype
+
+
+def get_numeric_torch_dtype(encoding):
+    dtype = NUMERIC_ENCODING_TORCH_DTYPES.get(encoding)
+    if dtype is None:
+        raise ValueError(f"Unsupported numeric encoding: {encoding}")
+    return dtype
+
 from model import GPT, GPTConfig
 
 # Inference related imports
@@ -707,6 +740,8 @@ class Trainer:
                 sys.exit("Error: When training_mode is 'multicontext', please provide --multicontext_datasets.")
             self.train_data_dict = {}
             self.val_data_dict = {}
+            if self.args.numerical_multicontext:
+                self.numerical_encodings = {}
             for dataset in self.args.multicontext_datasets:
                 meta_path = os.path.join('data', dataset, 'meta.pkl')
                 if not os.path.exists(meta_path):
@@ -717,8 +752,14 @@ class Trainer:
                     print(vocab_size, dataset)
                     self.vocab_sizes[dataset] = meta['vocab_size']
                 # Here we use np.uint16 for most datasets:
-                self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                self.val_data_dict[dataset]   = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+                if self.args.numerical_multicontext:
+                    numeric_encoding = meta.get("numeric_encoding", "uint16")
+                    self.numerical_encodings[dataset] = numeric_encoding
+                    dtype = get_numeric_numpy_dtype(numeric_encoding)
+                else:
+                    dtype = np.uint16
+                self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=dtype, mode='r')
+                self.val_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=dtype, mode='r')
 
             # Also store total token counts per dataset.
             self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.multicontext_datasets}
@@ -814,14 +855,26 @@ class Trainer:
                 if ix is None:
                     ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
                 # pick random offset
-                x = torch.stack([
-                    torch.from_numpy(data[i : i+self.args.block_size].astype(np.int64))
-                    for i in ix
-                    ])
-                y = torch.stack([
-                    torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.int64))
-                    for i in ix
-                    ])
+                if self.args.numerical_multicontext:
+                    numeric_encoding = self.numerical_encodings.get(dataset_name, "uint16")
+                    torch_dtype = get_numeric_torch_dtype(numeric_encoding)
+                    x = torch.stack([
+                        torch.tensor(data[i : i+self.args.block_size], dtype=torch_dtype)
+                        for i in ix
+                        ])
+                    y = torch.stack([
+                        torch.tensor(data[i+1 : i+1+self.args.block_size], dtype=torch_dtype)
+                        for i in ix
+                        ])
+                else:
+                    x = torch.stack([
+                        torch.from_numpy(data[i : i+self.args.block_size].astype(np.int64))
+                        for i in ix
+                        ])
+                    y = torch.stack([
+                        torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.int64))
+                        for i in ix
+                        ])
                 # Move to device
                 if self.device_type == 'cuda':
                     x = x.pin_memory().to(self.device, non_blocking=True)
