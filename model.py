@@ -38,6 +38,7 @@ from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from variations.output_vector_variants import output_vector_variant_dict
+from variations.numerical_mapping_variations import get_numerical_embedding, get_numerical_output
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -64,25 +65,13 @@ class GPT(nn.Module):
             if not config.vocab_sizes:
                 raise ValueError("numerical_multicontext requires vocab_sizes to be provided")
 
-            hidden_dim = config.numerical_mlp_hidden_dim
             self.numerical_embeddings = nn.ModuleDict()
             self.numerical_output_mlps = nn.ModuleDict()
             for idx in range(len(config.vocab_sizes)):
                 key = str(idx)
-                self.numerical_embeddings[key] = nn.Sequential(
-                    nn.Linear(1, hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(hidden_dim, hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(hidden_dim, config.n_embd),
-                )
-                self.numerical_output_mlps[key] = nn.Sequential(
-                    nn.Linear(config.n_embd, hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(hidden_dim, hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(hidden_dim, 1),
-                )
+                embedding_module = get_numerical_embedding(config)
+                self.numerical_embeddings[key] = embedding_module
+                self.numerical_output_mlps[key] = get_numerical_output(config, embedding_module=embedding_module)
 
         # Final-logit softcapping
         self.final_logit_softcapping = config.final_logit_softcapping
@@ -380,12 +369,16 @@ class GPT(nn.Module):
             for i, tokens in enumerate(token_list):
                 if self.uses_numerical_multicontext:
                     module = self.numerical_embeddings[str(i)]
-                    numeric_tokens = tokens.to(module[0].weight.dtype).unsqueeze(-1)
+                    param = next(module.parameters())
+                    numeric_tokens = tokens.to(param.dtype).unsqueeze(-1)
                     token_repr = module(numeric_tokens)
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
 
                 x = token_repr if x is None else x + token_repr
+
+            if self.config.norm_variant_wte is not None:
+                x = self.transformer.post_embedding_norm(x)
 
             if self.config.use_embedding_scale:
                 x = x * self.embedding_scale
