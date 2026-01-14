@@ -8,6 +8,7 @@ from tokenizers import (
     TiktokenTokenizer,
     CustomTokenizer,
     ByteTokenizer,
+    NumericTokenizer,
     CharTokenizer,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
@@ -16,6 +17,25 @@ from tokenizers import (
 )
 from tqdm import tqdm
 import pickle
+
+NUMERIC_ENCODING_DTYPES = {
+    "uint16": np.uint16,
+    "int16": np.int16,
+    "float16": np.float16,
+    "bfloat16": "bfloat16",
+}
+
+
+def get_numeric_numpy_dtype(encoding):
+    if encoding not in NUMERIC_ENCODING_DTYPES:
+        raise ValueError(f"Unsupported numeric encoding: {encoding}")
+    dtype = NUMERIC_ENCODING_DTYPES[encoding]
+    if dtype == "bfloat16":
+        try:
+            return np.dtype("bfloat16")
+        except TypeError as exc:
+            raise ValueError("NumPy does not support bfloat16 on this system.") from exc
+    return dtype
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Tokenize text data using different methods.")
@@ -29,7 +49,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave"],
+                       choices=["sentencepiece", "tiktoken", "char", "custom", "byte", "numeric", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave"],
                        default="tiktoken", help="Tokenization method")
 
     # Sine wave tokenizer arguments
@@ -62,6 +82,19 @@ def parse_arguments():
     parser.add_argument("--tokens_file", type=str, default=None, help="Path to the file containing newline-separated tokens for tokenization")
     parser.add_argument("--custom_chars_file", type=str, default=None, help="Path to the file containing custom characters for the tokenizer")
     parser.add_argument("--json_tokens_file", type=str, default=None, help="Path to JSON file containing tokens for json_byte_fallback tokenizer")
+
+    # Numeric tokenizer arguments
+    parser.add_argument("--numeric_encoding", type=str,
+                        choices=["uint16", "int16", "float16", "bfloat16"],
+                        default="uint16", help="Numeric encoding for numeric tokenization")
+    parser.add_argument("--numeric_min_token", type=float, default=None,
+                        help="Minimum allowed numeric token value")
+    parser.add_argument("--numeric_max_token", type=float, default=None,
+                        help="Maximum allowed numeric token value")
+    parser.add_argument("--numeric_range", action="store_true",
+                        help="Validate numeric tokens against min/max bounds")
+    parser.add_argument("--numeric_vocab_size", type=int, default=None,
+                        help="Override vocab size for numeric tokenization")
 
     # Additional options
     parser.add_argument("-T", "--track_token_counts", action="store_true", help="Track how often each token appears and store in meta.pkl")
@@ -117,6 +150,8 @@ def main():
         tokenizer = CustomTokenizer(args)
     elif args.method == "byte":
         tokenizer = ByteTokenizer(args)
+    elif args.method == "numeric":
+        tokenizer = NumericTokenizer(args)
     elif args.method == "char":
         tokenizer = CharTokenizer(args, train_data, val_data)
     elif args.method == "custom_char_byte_fallback":
@@ -148,6 +183,8 @@ def main():
     # Determine dtype based on vocabulary size from meta.pkl
     if args.method == "sinewave":
         dtype = np.uint16
+    elif args.method == "numeric":
+        dtype = get_numeric_numpy_dtype(args.numeric_encoding)
     else:
         with open("meta.pkl", "rb") as f:
             meta = pickle.load(f)
@@ -195,4 +232,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
