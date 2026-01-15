@@ -36,6 +36,7 @@ Hardware Related
   * [Prepare Training and Validation Data Sets](#prepare-training-and-validation-data-sets)
   * [Train Model From Scratch](#train-model-from-scratch)
   * [Perform Inference From Custom Model](#perform-inference-from-custom-model)
+  * [Knowledge Distillation](#knowledge-distillation)
 * [Explorations](#explorations)
   * [Start Exploration](#start-exploration)
   * [Inspect and Monitor Best Val Losses](#inspect-and-monitor-best-val-losses)
@@ -117,6 +118,36 @@ Train from scratch:
 ```bash
 python3 train_mezo.py --dataset shakespeare_char --max_iters 2000 --batch_size 64 --block_size 256
 ```
+
+### Knowledge Distillation
+
+Knowledge distillation uses an auxiliary loss that encourages the student to
+match teacher logits. Select a distillation loss variant and either load a
+teacher checkpoint (online distillation) or precomputed logits (offline
+distillation).
+
+Online distillation (teacher runs during training):
+
+```bash
+python3 train.py \
+  --distillation_teacher_ckpt path/to/teacher_ckpt.pt \
+  --distillation_loss kl_divergence \
+  --distillation_weight 1.0
+```
+
+Offline distillation (precomputed teacher logits; single-dataset training
+only):
+
+```bash
+python3 train.py \
+  --distillation_teacher_logits_train path/to/teacher_logits_train.npy \
+  --distillation_teacher_logits_val path/to/teacher_logits_val.npy \
+  --distillation_loss kl_divergence \
+  --distillation_weight 1.0
+```
+
+Offline logits should be stored as `.npy` arrays with shape
+`[num_tokens, vocab_size]`, aligned with the `train.bin`/`val.bin` token order.
 
 Resume from an existing checkpoint:
 
