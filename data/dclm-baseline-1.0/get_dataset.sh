@@ -80,14 +80,14 @@ shard_url() {
   local shard_id="$3"
   local global_fmt
   global_fmt=$(format_global "$global")
-  printf "%s/global-shard_%s_of_%s/local-shard_%s_of_%s/shard_%s_processed.parquet" \
+  printf "%s/global-shard_%s_of_%s/local-shard_%s_of_%s/shard_%s_processed.parquet?download=true" \
     "$BASE_URL" "$global_fmt" "$GLOBAL_TOTAL" "$local_shard" "$LOCAL_TOTAL" "$(format_shard "$shard_id")"
 }
 
 shard_exists() {
   local url="$1"
   local status
-  status=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+  status=$(curl -s -L -o /dev/null -w "%{http_code}" "$url")
   [[ "$status" == "200" ]]
 }
 
@@ -103,7 +103,7 @@ import pandas as pd
 
 url = sys.argv[1]
 output = sys.argv[2]
-filename = url.split("/")[-1]
+filename = url.split("/")[-1].split("?")[0]
 
 download_dir = Path("downloaded_parquets")
 download_dir.mkdir(exist_ok=True)
