@@ -713,7 +713,7 @@ class MonitorApp(App):
         elif key == "C":
             self._corr_mode, self._corr_digits = True, []
             self._corr_buffer = ""
-            self._msg("Correlation mode: type <col1> <col2> then Enter")
+            self._msg("Correlation mode: type col1 space col2 then Enter (e.g. 1 2)")
             return
         # ── Export CSV ──────────────────────────────────────────
         elif key == "e":
