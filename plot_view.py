@@ -88,6 +88,7 @@ def plot_rows(
     label: str = "formatted_name",
     connect_by: str | None = None,
     connect_label: str | None = None,
+    fit_line: bool = False,
 ) -> None:
     """
     Scatter-plot *y* vs *x*.
@@ -164,6 +165,27 @@ def plot_rows(
                     alpha=0.7,
                     label=f"{(connect_label or connect_by)}={gid}",   # NEW
                 )
+
+    if fit_line and xs:
+        x_arr = np.array(xs, dtype=float)
+        y_arr = np.array(ys, dtype=float)
+        slope, intercept = np.polyfit(x_arr, y_arr, 1)
+        y_pred = slope * x_arr + intercept
+        ss_res = np.sum((y_arr - y_pred) ** 2)
+        ss_tot = np.sum((y_arr - np.mean(y_arr)) ** 2)
+        r2 = 1.0 - ss_res / ss_tot if ss_tot != 0 else 0.0
+        order = np.argsort(x_arr)
+        plt.plot(x_arr[order], y_pred[order], color="black", linestyle="--", linewidth=1)
+        eq_text = f"y = {slope:.4f}x + {intercept:.4f}\nR² = {r2:.4f}"
+        plt.text(
+            0.02,
+            0.98,
+            eq_text,
+            transform=plt.gca().transAxes,
+            verticalalignment="top",
+            fontsize=9,
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.7),
+        )
 
     plt.xlabel(x)
     plt.ylabel(y)

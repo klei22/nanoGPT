@@ -615,7 +615,7 @@ class MonitorApp(App):
                     y_col = self._resolve_column_index(self._corr_digits[1])
                     x_vals, y_vals, rows = self._correlation_pairs(x_col, y_col)
                     corr = self._pearson_corr(x_vals, y_vals)
-                    plot_view.plot_rows(rows, x=x_col, y=y_col)
+                    plot_view.plot_rows(rows, x=x_col, y=y_col, fit_line=True)
                     self._msg(f"corr({y_col} vs {x_col}) = {corr:.4f}", timeout=5)
                 except Exception as exc:
                     self._msg(f"Correlation error: {exc}", timeout=5)
