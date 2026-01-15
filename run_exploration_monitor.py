@@ -25,7 +25,7 @@ Interactive keybindings:
   z # # - Δ-bar chart (trim baseline) – e.g. ‘z 3 2’
   r–y   - barcharts with labels merged (r=1, y=3)
   c     - toggle colour-map on first column (green → red)
-  C     - select two columns, show correlation, plot scatter
+  C # # - correlation + scatter for columns (1-based indexes, e.g. C 1 2)
   w     - toggle column width to fit largest visible cell
   u     - unsort / remove current column from the sort stack
   U     - clear *all* sorting
@@ -90,7 +90,7 @@ HOTKEYS_TEXT = (
     "z # #: Δ-bar chart (trim baseline) – e.g. ‘z 3 2’\n"
     "r–y: barcharts with labels merged (r=1, y=3)\n"
     "c: toggle colour-map on first column (green → red)\n"
-    "C: choose two columns for correlation + scatter plot\n"
+    "C # #: correlation + scatter (1-based indexes, e.g. C 1 2)\n"
     "w: toggle column width to fit largest visible cell\n"
     "u: unsort / remove current column from the sort stack\n"
     "U: clear *all* sorting\n"
@@ -119,38 +119,6 @@ class FileNameScreen(Screen[str | None]):
     @on(Button.Pressed, "#save")
     def _save(self) -> None:                                    #  Save btn
         name = self.query_one("#fname", Input).value.strip()
-        self.dismiss(name or None)
-
-    @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:                                  #  Cancel btn
-        self.dismiss(None)
-
-
-class ColumnPairScreen(Screen[str | None]):
-    """Modal screen that asks the user for two column names or indices."""
-
-    def __init__(self, default_value: str = "") -> None:
-        super().__init__()
-        self._default_value = default_value
-
-    def compose(self) -> ComposeResult:                         # noqa: D401
-        yield Label("Enter two columns (name or 1-based index), e.g. 1,2:", id="prompt")
-        yield Input(placeholder=self._default_value or "col_x,col_y", id="colpair")
-        yield Button("Plot", id="plot", variant="success")
-        yield Button("Cancel", id="cancel", variant="error")
-
-    def on_mount(self) -> None:
-        input_box = self.query_one("#colpair", Input)
-        input_box.value = self._default_value
-        input_box.focus()
-
-    @on(Input.Submitted, "#colpair")
-    def _submitted(self, ev: Input.Submitted) -> None:          #  ↵
-        self.dismiss(ev.value.strip() or None)
-
-    @on(Button.Pressed, "#plot")
-    def _plot(self) -> None:                                    #  Plot btn
-        name = self.query_one("#colpair", Input).value.strip()
         self.dismiss(name or None)
 
     @on(Button.Pressed, "#cancel")
@@ -191,6 +159,9 @@ class MonitorApp(App):
         self._bar_digits: List[int] = []       # collected numeric keys
         self._trim_mode: bool = False          # 'z' zoom-bar mode
         self._trim_digit: List[int] = []       # holds the single digit
+        self._corr_mode: bool = False          # 'C' correlation mode
+        self._corr_digits: List[int] = []      # collected numeric entries
+        self._corr_buffer: str = ""            # digit buffer for multi-digit cols
         self.csv_dir: str = csv_dir
 
     def compose(self) -> ComposeResult:
@@ -332,18 +303,10 @@ class MonitorApp(App):
             return entry.get(col_name)
         return entry.get("config", {}).get(col_name)
 
-    def _resolve_column(self, token: str) -> str:
-        token = token.strip()
-        if not token:
-            raise ValueError("Empty column reference")
-        if token.isdigit():
-            idx = int(token) - 1
-            if idx < 0 or idx >= len(self.columns):
-                raise ValueError(f"Column index {token} out of range")
-            return self.columns[idx]
-        if token in self.columns:
-            return token
-        raise ValueError(f"Unknown column '{token}'")
+    def _resolve_column_index(self, index: int) -> str:
+        if index < 1 or index > len(self.columns):
+            raise ValueError(f"Column index {index} out of range")
+        return self.columns[index - 1]
 
     @staticmethod
     def _is_real_num(value) -> bool:
@@ -632,6 +595,39 @@ class MonitorApp(App):
             return
         r, c = coord.row, coord.column
         key = event.key
+        if self._corr_mode:
+            if key.isdigit():
+                self._corr_buffer += key
+            elif key in (",", "space"):
+                if self._corr_buffer:
+                    self._corr_digits.append(int(self._corr_buffer))
+                    self._corr_buffer = ""
+            elif key == "enter":
+                if self._corr_buffer:
+                    self._corr_digits.append(int(self._corr_buffer))
+                    self._corr_buffer = ""
+                if len(self._corr_digits) != 2:
+                    self._corr_mode, self._corr_digits = False, []
+                    self._msg("Correlation mode needs two column numbers")
+                    return
+                try:
+                    x_col = self._resolve_column_index(self._corr_digits[0])
+                    y_col = self._resolve_column_index(self._corr_digits[1])
+                    x_vals, y_vals, rows = self._correlation_pairs(x_col, y_col)
+                    corr = self._pearson_corr(x_vals, y_vals)
+                    plot_view.plot_rows(rows, x=x_col, y=y_col)
+                    self._msg(f"corr({y_col} vs {x_col}) = {corr:.4f}", timeout=5)
+                except Exception as exc:
+                    self._msg(f"Correlation error: {exc}", timeout=5)
+                finally:
+                    self._corr_mode, self._corr_digits = False, []
+                    self._corr_buffer = ""
+                return
+            else:
+                self._corr_mode, self._corr_digits = False, []
+                self._corr_buffer = ""
+                self._msg("Correlation mode cancelled")
+            return
         if self._bar_mode:
             if key.isdigit() and key != "0":
                 self._bar_digits.append(int(key))
@@ -713,6 +709,11 @@ class MonitorApp(App):
         elif key == "z":
             self._trim_mode, self._trim_digits = True, []
             self._msg("Δ-bar mode: type <#metrics><#labels>")
+            return
+        elif key == "C":
+            self._corr_mode, self._corr_digits = True, []
+            self._corr_buffer = ""
+            self._msg("Correlation mode: type <col1> <col2> then Enter")
             return
         # ── Export CSV ──────────────────────────────────────────
         elif key == "e":
@@ -840,26 +841,6 @@ class MonitorApp(App):
             self.refresh_table(new_cursor=0)
         elif key == "p":
             self._msg(HOTKEYS_TEXT, timeout=10.0)
-        elif key == "C":
-            try:
-                if len(self.columns) < 2:
-                    raise ValueError("Need at least two visible columns")
-                default_pair = f"{self.columns[0]},{self.columns[1]}"
-                response = await self.push_screen_wait(ColumnPairScreen(default_pair))
-                if response is None:
-                    self._msg("Correlation cancelled")
-                    return
-                parts = [p.strip() for p in response.replace(" ", "").split(",") if p.strip()]
-                if len(parts) != 2:
-                    raise ValueError("Provide exactly two columns (comma separated)")
-                x_col = self._resolve_column(parts[0])
-                y_col = self._resolve_column(parts[1])
-                x_vals, y_vals, rows = self._correlation_pairs(x_col, y_col)
-                corr = self._pearson_corr(x_vals, y_vals)
-                plot_view.plot_rows(rows, x=x_col, y=y_col)
-                self._msg(f"corr({y_col} vs {x_col}) = {corr:.4f}", timeout=5)
-            except Exception as exc:
-                self._msg(f"Correlation error: {exc}", timeout=5)
         elif key == "g":
             # ── Graph using first two visible columns: col[0] ⇒ Y, col[1] ⇒ X ──
             try:
