@@ -1,0 +1,27 @@
+# grokking.yaml
+---
+
+dataset: ["grokking"]
+block_size: [32]
+batch_size: [64]
+max_iters: [200000]
+eval_interval: [1000]
+eval_iters: [200]
+learning_rate: [0.001]
+weight_decay: [0.1]
+
+n_layer: [4]
+n_head: [4]
+n_embd: [128]
+
+use_rotary_embeddings: [false]
+use_abs_pos_embeddings: [true]
+
+compile: [true]
+
+device: ["cuda"]
+dtype: ["bfloat16"]
+
+parameter_groups:
+  - weight_decay: [0.05, 0.1, 0.2]
+    tensorboard_run_name: ["grokking_weight_decay_sweep"]
