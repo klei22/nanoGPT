@@ -1,3 +1,6 @@
+import pytest
+
+pytest.importorskip("jamo")
 from jamo import h2j, j2hcj, j2h, is_jamo
 
 def korean_to_phonetic(text):
