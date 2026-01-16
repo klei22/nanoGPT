@@ -144,6 +144,35 @@ class GPT(nn.Module):
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
+        # KV-cache sharing
+        self.kv_cache_sharing = getattr(config, "kv_cache_sharing", True)
+        self.kv_cache_share_every_n = max(1, getattr(config, "kv_cache_share_every_n", 1))
+        self.kv_cache_share_sym = getattr(config, "kv_cache_share_sym", False)
+        self.kv_cache_global = getattr(config, "kv_cache_global", False)
+        self.kv_cache_map = []
+
+        if not self.kv_cache_sharing:
+            self.kv_cache_map = list(range(config.n_layer))
+        elif self.kv_cache_global:
+            self.kv_cache_map = [0] * config.n_layer
+        elif self.kv_cache_share_sym or self.kv_cache_share_every_n > 1:
+            for layer_idx in range(config.n_layer):
+                base_idx = (
+                    min(layer_idx, config.n_layer - 1 - layer_idx)
+                    if self.kv_cache_share_sym
+                    else layer_idx
+                )
+                group_idx = base_idx // self.kv_cache_share_every_n
+                self.kv_cache_map.append(group_idx)
+        else:
+            cache_indices = {}
+            for block in self.transformer.h:
+                key = id(block.attn)
+                cache_indices.setdefault(key, len(cache_indices))
+                self.kv_cache_map.append(cache_indices[key])
+
+        self.num_kv_cache = max(self.kv_cache_map) + 1
+
         # Optional post-embedding normalizations
         if self.config.norm_variant_wte is not None:
             self.transformer['post_embedding_norm'] = self.build_norm_from_variant(config, "norm_variant_wte", "norm_wte")
@@ -352,7 +381,7 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
+    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None, kv_cache=None):
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -524,9 +553,25 @@ class GPT(nn.Module):
                 layer_outputs = [x]
 
             layer_idx = 1
+            use_cache = kv_cache is not None
+            if use_cache and len(kv_cache) != self.num_kv_cache:
+                raise ValueError(f"Expected kv_cache with {self.num_kv_cache} entries, got {len(kv_cache)}")
+            next_kv_cache = [None] * self.num_kv_cache if use_cache else None
+
             for block in self.transformer.h:
                 # Propagate tokens through layers
-                x = block(x, iter_num)
+                current_cache = kv_cache[self.kv_cache_map[layer_idx - 1]] if use_cache else None
+                if use_cache and current_cache is None:
+                    current_cache = (None, None)
+                block_out = block(x, iter_num, kv_cache=current_cache)
+                if use_cache:
+                    if isinstance(block_out, tuple):
+                        x, updated_cache = block_out
+                    else:
+                        x, updated_cache = block_out, current_cache
+                    next_kv_cache[self.kv_cache_map[layer_idx - 1]] = updated_cache
+                else:
+                    x = block_out
 
                 # Intercept for Learned Steering Vectors
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -584,6 +629,9 @@ class GPT(nn.Module):
 
                 loss = None
 
+            if next_kv_cache is not None:
+                return logits, loss, next_kv_cache
+
             return logits, loss
     # ------------------------------------------------------------------
     #  LATENT-CHAINING
@@ -620,6 +668,10 @@ class GPT(nn.Module):
 
 
         return self.transformer.drop(tok_emb)
+
+    def init_kv_cache(self):
+        """Create an empty kv-cache structure aligned with shared attention blocks."""
+        return [None] * self.num_kv_cache
 
     def forward_embedded(self, x_emb, iter_num=None, return_hidden=False, dataset_idx=None):
         """
