@@ -151,6 +151,21 @@ class CausalSelfAttention(nn.Module):
         self.use_qk_norm_scale = config.use_qk_norm_scale
         self.use_v_norm = config.use_v_norm
 
+        # Approximate normalization factors (anGPT-style scaling)
+        self.use_approx_qkv_norm = config.use_approx_qkv_norm
+        self.use_approx_attn_out_norm = config.use_approx_attn_out_norm
+        head_dim = config.n_embd // config.n_head
+        self.qkv_norm_factor = (
+            config.approx_qkv_norm_factor
+            if config.approx_qkv_norm_factor is not None
+            else config.n_embd / head_dim
+        )
+        self.attn_out_norm_factor = (
+            config.approx_attn_out_norm_factor
+            if config.approx_attn_out_norm_factor is not None
+            else head_dim / config.n_embd
+        )
+
         # Flash Lobo
         self.use_flash_lobo = config.use_flash_lobo
         self.use_flash_lobo_per_head = config.use_flash_lobo_per_head
@@ -317,6 +332,11 @@ class CausalSelfAttention(nn.Module):
                 k = k * gate_kv
                 v = v * gate_kv
 
+        if self.use_approx_qkv_norm:
+            q = q * self.qkv_norm_factor
+            k = k * self.qkv_norm_factor
+            v = v * self.qkv_norm_factor
+
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
         k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
         v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
@@ -451,7 +471,10 @@ class CausalSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
-        y = self.resid_dropout(self.c_proj(y))
+        y = self.c_proj(y)
+        if self.use_approx_attn_out_norm:
+            y = y * self.attn_out_norm_factor
+        y = self.resid_dropout(y)
 
         if self.quantization_attn_dict["quantize_attn_act_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_output_bits"]

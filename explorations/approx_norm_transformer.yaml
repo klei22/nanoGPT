@@ -1,0 +1,79 @@
+---
+
+named_static_groups:
+  - named_group: "approx_qkv_norm_on"
+    use_approx_qkv_norm: [true]
+  - named_group: "approx_qkv_norm_off"
+    use_approx_qkv_norm: [false]
+
+  - named_group: "approx_attn_out_norm_on"
+    use_approx_attn_out_norm: [true]
+  - named_group: "approx_attn_out_norm_off"
+    use_approx_attn_out_norm: [false]
+
+  - named_group: "approx_mlp_up_norm_on"
+    use_approx_mlp_up_norm: [true]
+  - named_group: "approx_mlp_up_norm_off"
+    use_approx_mlp_up_norm: [false]
+
+  - named_group: "approx_mlp_act_norm_on"
+    use_approx_mlp_act_norm: [true]
+  - named_group: "approx_mlp_act_norm_off"
+    use_approx_mlp_act_norm: [false]
+
+  - named_group: "approx_mlp_down_norm_on"
+    use_approx_mlp_down_norm: [true]
+  - named_group: "approx_mlp_down_norm_off"
+    use_approx_mlp_down_norm: [false]
+
+  - named_group: "resid_add"
+    attn_residual_combination: ["add"]
+    mlp_residual_combination: ["add"]
+
+  - named_group: "resid_lerp_norm"
+    attn_residual_combination: ["lerp_to_out_norm"]
+    mlp_residual_combination: ["lerp_to_out_norm"]
+    attn_residual_alpha_type: ["learned"]
+    mlp_residual_alpha_type: ["learned"]
+    attn_residual_alpha: [0.05]
+    mlp_residual_alpha: [0.05]
+
+named_variation_groups:
+  - named_group: "approx_qkv_norm_toggle"
+    named_group_alternates: ["approx_qkv_norm_on", "approx_qkv_norm_off"]
+  - named_group: "approx_attn_out_norm_toggle"
+    named_group_alternates: ["approx_attn_out_norm_on", "approx_attn_out_norm_off"]
+  - named_group: "approx_mlp_up_norm_toggle"
+    named_group_alternates: ["approx_mlp_up_norm_on", "approx_mlp_up_norm_off"]
+  - named_group: "approx_mlp_act_norm_toggle"
+    named_group_alternates: ["approx_mlp_act_norm_on", "approx_mlp_act_norm_off"]
+  - named_group: "approx_mlp_down_norm_toggle"
+    named_group_alternates: ["approx_mlp_down_norm_on", "approx_mlp_down_norm_off"]
+  - named_group: "residual_norm_toggle"
+    named_group_alternates: ["resid_add", "resid_lerp_norm"]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: [2]
+  n_head: [4]
+  n_embd: [256]
+  block_size: [128]
+  batch_size: [8]
+  max_iters: [750]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  use_pre_ln: [false]
+  use_peri_ln: [false]
+  use_post_ln: [false]
+  norm_variant_attn: ["identity"]
+  norm_variant_output: ["identity"]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  - named_group_variations:
+      - "approx_qkv_norm_toggle"
+      - "approx_attn_out_norm_toggle"
+      - "approx_mlp_up_norm_toggle"
+      - "approx_mlp_act_norm_toggle"
+      - "approx_mlp_down_norm_toggle"
+      - "residual_norm_toggle"
