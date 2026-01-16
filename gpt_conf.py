@@ -286,6 +286,11 @@ class GPTConfig:
     ## ReLUMax options
     relu2max_divisor: float = 256.0
 
+    ## Softplus2Max options
+    softplus2max_divisor: float = 256.0
+    softplus2max_beta: float = 1.0
+    softplus2max_threshold: float = 20.0
+
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0
 
