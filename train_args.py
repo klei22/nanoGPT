@@ -647,6 +647,10 @@ def parse_args():
     model_group.add_argument('--shared_attn_size', default=1, type=int, help="every 'k' contiguous blocks of attn are shared")
     model_group.add_argument('--shared_attn_sym', default=False, action=argparse.BooleanOptionalAction, help="symmetrical attention sharing")
     model_group.add_argument('--shared_attn_seq', default=1, type=int, help="Sequence length for cyclic sharing of attention layers")
+    model_group.add_argument('--kv_cache_sharing', default=True, action=argparse.BooleanOptionalAction, help="Enable KV-cache sharing")
+    model_group.add_argument('--kv_cache_sharing_every', default=1, type=int, help="Share KV caches every N layers (by index) when enabled")
+    model_group.add_argument('--kv_cache_sharing_sym', default=False, action=argparse.BooleanOptionalAction, help="Mirror KV cache sharing across the layer stack")
+    model_group.add_argument('--kv_cache_global', default=False, action=argparse.BooleanOptionalAction, help="Use a single shared KV cache across all layers")
 
     ## Learned Confidence Residual Scaling
     confidence_variants = ["zeros", "ones", "gaussian"]

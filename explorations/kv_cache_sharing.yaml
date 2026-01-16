@@ -1,0 +1,26 @@
+# explorations/kv_cache_sharing.yaml
+# Sweep KV-cache sharing strategies against the default attention-topology cache map.
+#
+# Lists are expanded cartesian-product style by run_experiments.py.
+
+dataset: ["minipile"]
+device:  ["cuda"]
+compile: [true]
+never_save_checkpoint: [true]
+dtype: ["bfloat16"]
+
+max_iters: [2000]
+eval_interval: [2000]
+eta_variant: ["iteration"]
+
+n_layer: [8]
+n_embd: [512]
+n_head: [8]
+block_size: [512]
+batch_size: [64]
+
+# Cache sharing configurations (cartesian product)
+kv_cache_sharing: [true, false]
+kv_cache_sharing_every: [1, 4]
+kv_cache_sharing_sym: [false, true]
+kv_cache_global: [false, true]
