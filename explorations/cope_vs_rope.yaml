@@ -1,0 +1,31 @@
+---
+
+named_static_groups:
+  - named_group: "rope"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      use_abs_pos_embeddings: [false]
+      use_cope_embeddings: [false]
+  - named_group: "cope_phase"
+    named_group_settings:
+      use_rotary_embeddings: [false]
+      use_abs_pos_embeddings: [false]
+      use_cope_embeddings: [true]
+      cope_mode: ["phase"]
+      cope_alpha: [0.2]
+      cope_gamma: [1.0]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: ["6"]
+  n_head: ["8"]
+  n_embd: ["256"]
+  block_size: ["512"]
+  batch_size: ["8"]
+  max_iters: [500]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  - named_group_alternates: ["rope", "cope_phase"]
