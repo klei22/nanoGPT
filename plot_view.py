@@ -408,6 +408,63 @@ def plot_multi_bars_trim(                     # NEW
     fig.write_image(f"{safe}.png", scale=2)
     fig.show()
 
+# ───────────────────────────── radar chart ──────────────────────────────
+def plot_radar(
+    rows: List[Dict[str, Any]],
+    *,
+    y_cols: List[str],
+    label_cols: List[str],
+) -> None:
+    """Plot a radar chart for *y_cols* grouped by merged *label_cols*.
+
+    Parameters
+    ----------
+    rows : list of run dictionaries
+        Data rows from the exploration monitor.
+    y_cols : list of str
+        Numeric columns forming the radial spokes of the radar chart.
+    label_cols : list of str
+        Columns whose values are merged to form trace labels.
+    """
+    if not y_cols or not label_cols:
+        raise ValueError("Need ≥1 numeric-col and ≥1 label-col")
+
+    traces: List[tuple[str, List[float]]] = []
+    for r in rows:
+        merged = "-".join(
+            "None" if _extract(r, c) is None else str(_extract(r, c))
+            for c in label_cols
+        )
+        vals: List[float] = []
+        for yc in y_cols:
+            v = _extract(r, yc)
+            if v is None:
+                break
+            vals.append(float(v))
+        else:
+            traces.append((merged, vals))
+
+    if not traces:
+        raise ValueError("No plottable data for radar chart")
+
+    fig = go.Figure()
+    theta = y_cols + [y_cols[0]]
+    for label, vals in traces:
+        fig.add_trace(
+            go.Scatterpolar(r=vals + [vals[0]], theta=theta, name=label, fill="toself")
+        )
+
+    pretty = lambda s: s.replace("_", " ").title()
+    title_text = f"{' / '.join(map(pretty, y_cols))} by {' / '.join(map(pretty, label_cols))}"
+
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True)),
+        title=dict(text=_wrap_title(title_text, html=True), x=0.5, xanchor="center"),
+    )
+
+    fig.write_image(_safe_path(title_text), scale=2)
+    fig.show()
+
 # ───────────────────────────── CLI wrapper ──────────────────────────
 
 
