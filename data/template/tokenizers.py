@@ -144,20 +144,22 @@ class TiktokenTokenizer(Tokenizer):
         # Get base encoding
         base_enc = tiktoken.get_encoding(self.tiktoken_encoding)
 
+        # Always include base special tokens such as the end-of-text token
+        base_special_tokens = dict(base_enc._special_tokens)
+
         if self.additional_tokens:
             # Create custom encoding with additional tokens
+            self.special_tokens = {**base_special_tokens, **self.additional_tokens}
             self.enc = tiktoken.Encoding(
                 name=f"{self.tiktoken_encoding}_custom",
                 pat_str=base_enc._pat_str,
                 mergeable_ranks=base_enc._mergeable_ranks,
-                special_tokens={**base_enc._special_tokens,
-                                **self.additional_tokens},
+                special_tokens=self.special_tokens,
                 disallowed_special=(),
             )
-            self.special_tokens = self.additional_tokens
         else:
             self.enc = base_enc
-            self.special_tokens = {}
+            self.special_tokens = base_special_tokens
 
     def tokenize(self, data):
         """Tokenize the input data using tiktoken with support for special tokens."""
