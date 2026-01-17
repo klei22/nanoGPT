@@ -1,16 +1,29 @@
 # train_args.py
 import argparse
-import math
 import re
+import math
 
 from train_variations.loss_variants import LOSS_VARIANTS
 from train_variations.distillation_loss_variants import (
     DISTILLATION_LOSS_VARIANTS,
 )
+from train_variations.optimizer_variants import optimizer_dictionary
+from variations.activation_variations import activation_dictionary
+from variations.attention_variations import attention_dictionary
+from variations.linear_variations import linear_dictionary
+from variations.lsv_variations import lsv_dictionary
+from variations.mlp_variations import mlp_dictionary
+from variations.norm_variations import norm_dictionary
+from variations.softmax_variations import softmax_dictionary
 
 def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
+
+
+def variation_choices(variation_dict):
+    """Return stable, alphabetised CLI choices for a variation dictionary."""
+    return sorted(variation_dict.keys())
 
 def parse_args():
 
@@ -311,52 +324,7 @@ def parse_args():
 
 
     # Optimizer-specific arguments
-    optimizer_variations = [
-            "sgd",
-            "adam",
-            "adamw",
-            "adamw_act_reg",
-            "adamax",
-            "radam",
-            "nadam",
-            "adagrad",
-            "rmsprop",
-            "rprop",
-            "sparseadam",
-            "asgd",
-            "lbfgs",
-            "adabelief",
-            "orthoadam",
-            "adams",
-            "ademamix",
-            "adan",
-            "qhadam",
-            "yogi",
-            "adamp",
-            "lion",
-            "adafactor",
-            "accsgd",
-            "adabound",
-            "adamod",
-            "aggmo",
-            "diffgrad",
-            "lamb",
-            "lambdiff",
-            "adamod_diffgrad",
-            "novograd",
-            "pid",
-            "qhm",
-            "sgdp",
-            "sgdw",
-            "shampoo",
-            "swats",
-            "sophiag",
-            "soap",
-            "var_adaptive_lr",
-            "lookahead",
-            "entropy_aware_adamw",
-            "muon",
-            ]
+    optimizer_variations = variation_choices(optimizer_dictionary)
 
     training_group.add_argument("--optimizer", type=str, default="adamw",
                                  choices=optimizer_variations,
@@ -596,18 +564,7 @@ def parse_args():
     model_group.add_argument("--obtain_vector_file", type=str, default=None, help="initial KAN activation")
 
     ## Learned Steering Vector (LSV) Options
-    lsv_variations = [
-            "one_hot",
-            "linear_comb",
-            "one_hot_mlp",
-            "ohmg",
-            "ohmt",
-            "ohmm",
-            "ohma",
-            "ohmgu",
-            "ohmh",
-            "mol",
-        ]
+    lsv_variations = variation_choices(lsv_dictionary)
     model_group.add_argument("--use_lsv", default=False, action=argparse.BooleanOptionalAction, help="whether to use Learned Steering Vectors")
     model_group.add_argument("--lsv_index", default=None, type=int, help="Which steering vector to use")
     model_group.add_argument("--lsv_variant", default="one_hot", type=str, choices=lsv_variations, help="Which steering vector to use")
@@ -618,15 +575,7 @@ def parse_args():
     ## MLP Options
 
     # MLP Variations
-    mlp_variants = [
-            "mlp",
-            "edgellm_asic_mlp",
-            "kan",
-            "swiglu",
-            "dual_path",
-            "dual_path_swiglu",
-            "identity",
-            ]
+    mlp_variants = variation_choices(mlp_dictionary)
 
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
@@ -721,15 +670,7 @@ def parse_args():
 
 
     # NORM VARIATIONS
-    norm_variations = [
-            "krmsnorm",
-            "prmsnorm",
-            "rmsnorm",
-            "layernorm",
-            "hyperspherenorm",
-            "dact",
-            "identity",
-            ]
+    norm_variations = variation_choices(norm_dictionary)
 
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)
     model_group.add_argument("--norm_variant_output", type=str, default="rmsnorm", choices=norm_variations)
@@ -768,33 +709,7 @@ def parse_args():
     model_group.add_argument("--hsnorm_radius", type=float, default=None)
     model_group.add_argument("--hsnorm_radius_learning", default=False, action=argparse.BooleanOptionalAction)
 
-    activation_variations = [
-            "celu",
-            "elu",
-            "gelu",
-            "gelu_shifted",
-            "glu",
-            "leaky_relu",
-            "learned_spline",
-            "mish",
-            "piecewise",
-            "pfla",
-            "pfla_le",
-            "prelu",
-            "relu",
-            "relu6",
-            "rrelu",
-            "selu",
-            "sigmoid",
-            "silu",
-            "softplus",
-            "softsign",
-            "softshrink",
-            "squared_relu",
-            "squared_gelu",
-            "tanh",
-            "identity",
-        ]
+    activation_variations = variation_choices(activation_dictionary)
 
     ## DynamicActivations
     model_group.add_argument("--dact_activation", type=str, default="tanh", choices=activation_variations)
@@ -833,16 +748,7 @@ def parse_args():
 
 
     # Attention Variations
-    attention_variants = [
-                          "causal",
-                          "edgellm_asic_attn",
-                          "linear",
-                          "ssm",
-                          "identity",
-                          "infinite",
-                          "mla",
-                          "co4",
-                          ]
+    attention_variants = variation_choices(attention_dictionary)
 
     model_group.add_argument(
         "--attention_list",
@@ -927,15 +833,7 @@ def parse_args():
     model_group.add_argument("--ssm_io_bias",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="adds biases for nn.linear() of both in_proj and out_proj")
 
     # LINEAR VARIATIONS
-    linear_variants = [
-        "linear",
-        "bitlinear",
-        "bitlinear_1p58",
-        "bitlinear_optimized",
-        "kan",
-        "quantized_linear",
-        "adaptive_bit_linear",
-    ]
+    linear_variants = variation_choices(linear_dictionary)
     model_group.add_argument("--linear_variant_attn", type=str, default="linear", choices=linear_variants)
     model_group.add_argument("--linear_variant_q", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_q in attention (takes precedence over linear_variant_attn)")
     model_group.add_argument("--linear_variant_k", type=str, default=None, choices=linear_variants, help="sets the linear variant for c_attn_k in attention (takes precedence over linear_variant_attn)")
@@ -1137,28 +1035,7 @@ def parse_args():
     model_group.add_argument( "--fire_outermost_sigma", type=bool, default=False, action=argparse.BooleanOptionalAction, help="whether or not adding outermost sigma in mlp in FIRE")
 
     # SOFTMAX VARIATIONS
-    softmax_variations = [
-        "saturatingconsmax",
-        "consmax",
-        "consmax_v2",
-        "consmax_quan",
-        "polymax",
-        "relumax",
-        "relu2max",
-        "sigmoidmax",
-        "vpolymax",
-        "exppolymax",
-        "strongermax",
-        "softermax",
-        "sigsoftmax",
-        "softmax",
-        "softplus",
-        "squareplus",
-        "softshrink",
-        "gelumax",
-        "exppolymax",
-        "pfla_softmax",
-        ]
+    softmax_variations = variation_choices(softmax_dictionary)
 
     ## Selection of softmax variation for attention and output layers
     model_group.add_argument("--softmax_variant_attn", type=str, default="softmax", choices=softmax_variations)
