@@ -11,6 +11,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 
 from rich.console import Group
 from rich.console import Console
@@ -50,6 +51,9 @@ from utils.model_stats import (
 from sample import (
     sample_with_existing_model,
     get_tokenizer_functions,
+    load_prompt_entries,
+    resolve_score_variations,
+    score_generation_outputs,
 )
 
 from rich.progress import (
@@ -589,6 +593,88 @@ class Trainer:
         sample_iterations = 1
 
         self.model.eval()
+
+        prompt_entries: List[Dict[str, Optional[str]]] = []
+        prompt_path = getattr(self.args, "prompt_json", None)
+        if prompt_path:
+            prompt_entries = load_prompt_entries(prompt_path)
+
+        if prompt_entries:
+            variations = resolve_score_variations(getattr(self.args, "score_variations", None))
+            default_stop = getattr(self.args, "score_stop_string", "\n")
+            encode_fn = self.encode
+            decode_fn = self.decode
+
+            for idx, entry in enumerate(prompt_entries, start=1):
+                prompt_text = entry["input"]
+                target_text = entry.get("target_output")
+                stop_string = entry.get("stop_string") or default_stop
+
+                self.console.rule(f"[bold cyan]Prompt {idx}[/bold cyan]")
+                self.console.print(f"[bold white]Input:[/bold white] {prompt_text!r}")
+                if target_text is not None:
+                    self.console.print(f"[bold white]Target:[/bold white] {target_text!r}")
+
+                prompt_ids = encode_fn(prompt_text)
+                if len(prompt_ids) == 0:
+                    raise ValueError(
+                        f"Prompt {idx} produced no tokens. Provide a non-empty prompt for inference."
+                    )
+
+                generated_map = sample_with_existing_model(
+                    model=self.model,
+                    start_ids=torch.tensor(prompt_ids, dtype=torch.long, device=self.device)[None, ...],
+                    start_tokens=prompt_text,
+                    decode=decode_fn,
+                    device=self.device,
+                    out_dir=self.args.out_dir,
+                    max_new_tokens=self.args.max_sample_tokens,
+                    temperature=self.args.temperature,
+                    top_k=self.args.top_k,
+                    colorize_output=self.args.colorize_output,
+                    colorize_mode=self.args.colorize_mode,
+                    token_boundary=(self.args.token_boundary or None),
+                    show_heatmaps=self.args.show_heatmaps,
+                    sample_file=self.args.sample_file,
+                    num_samples=self.args.num_samples,
+                    iter_num=self.iter_num,
+                    best_val_loss=self.best_val_loss,
+                    run_name=self.args.tensorboard_run_name,
+                    args=self.args,
+                    writer=self.writer if self.args.tensorboard_log else None,
+                    dataset_idx=None,
+                    console=self.console,
+                )
+
+                score_rows = score_generation_outputs(
+                    generated_map,
+                    target_text,
+                    encode_fn,
+                    variations,
+                    stop_string,
+                )
+
+                if target_text is None:
+                    self.console.print("[yellow]No target output provided; skipping score computation.[/yellow]")
+                elif score_rows:
+                    table = Table(title=f"Scores for prompt {idx}")
+                    table.add_column("Sample")
+                    for name in variations:
+                        table.add_column(name, justify="right")
+                    for row in score_rows:
+                        formatted = [row["label"]]
+                        for name in variations:
+                            value = row["scores"].get(name, math.nan)
+                            formatted.append("nan" if math.isnan(value) else f"{value:.3f}")
+                        table.add_row(*formatted)
+                    self.console.print(table)
+                else:
+                    self.console.print("[yellow]Scores could not be computed for this prompt.[/yellow]")
+
+            self.model.train()
+            self.console.rule("[bold green]End Samples[/bold green]")
+            self.console.print("\n"*8)
+            return
 
         if self.args.dataset_list is not None:
             sample_iterations = len(self.args.dataset_list)
