@@ -42,14 +42,14 @@ def plot_gen_scatter(
                 
         population = Population.load_checkpoint(json_file_name, from_pkl=False)
 
-        val_loss_vals = [eva.objs[0] for eva in population.evaluations ]
-        energy_vals = [eva.objs[1] for eva in population.evaluations ]
-        ttft_vals = [eva.objs[2] for eva in population.evaluations ]
+        val_loss_vals = [eva.aux["val_loss"] for eva in population.evaluations ]
+        # energy_vals = [eva.aux["energy_per_token"] for eva in population.evaluations ]
+        # ttft_vals = [eva.aux["ttft"] for eva in population.evaluations ]
 
         perplexity = [np.exp(va) for va in val_loss_vals]
 
         # Ensure all lists have the same length
-        min_len = min(len(val_loss_vals), len(energy_vals), len(ttft_vals))
+        min_len = len(val_loss_vals)
         
         for i in range(min_len):
             size = float(population.evaluations[i].aux.get('params', np.nan))
@@ -59,8 +59,8 @@ def plot_gen_scatter(
             pop_data.append({
                 'generation': gen,
                 'validation_loss': val_loss_vals[i],
-                'energy_per_token': energy_vals[i],
-                'ttft': ttft_vals[i],
+                # 'energy_per_token': energy_vals[i],
+                # 'ttft': ttft_vals[i],
                 'perplexity': perplexity[i],
                 'individual_id': i,
                 'params': size / 1e6,  # in millions
