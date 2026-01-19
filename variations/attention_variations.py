@@ -223,13 +223,14 @@ class CausalSelfAttention(nn.Module):
         self.tau_use_bounding = config.tau_use_bounding
         self.tau_bounding_tau = config.tau_bounding_tau
         self.tau_distance_variant = config.tau_distance_variant
-        self.tau_laplacian = None
         if self.attn_score_variant == "tau":
             laplacian = self._init_tau_laplacian(config, self.head_dim)
             if config.tau_laplacian_trainable:
                 self.tau_laplacian = nn.Parameter(laplacian)
             else:
                 self.register_buffer("tau_laplacian", laplacian)
+        else:
+            self.tau_laplacian = None
 
         self.flash = True
         if self.window_size is not None:
