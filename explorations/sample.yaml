@@ -40,9 +40,9 @@ named_static_groups:
     named_group_settings:
       norm_variant_attn: ["rmsnorm"]
       norm_variant_output: ["rmsnorm"]
-  - named_group: "rmsnorm_attn_hsnorm_out"
+  - named_group: "hsnorm_all"
     named_group_settings:
-      norm_variant_attn: ["rmsnorm"]
+      norm_variant_attn: ["hyperspherenorm"]
       norm_variant_output: ["hyperspherenorm"]
 
 # Higher Level Groupings
@@ -53,8 +53,12 @@ named_variation_groups:
         n_head: [4, 8]
       - n_embd: 320
         n_head: [5, 4]
-  - named_group: "positional_embeddings"
+  - named_group: "pe_var"
     named_group_alternates: ["rotary", "abs"]
+  - named_group: "norm_var"
+    named_group_alternates: ["rmsnorm_all", "hsnorm_all"]
+  - named_group: "arch_var"
+    named_group_alternates: ["pre_ln", "peri_ln"]
 
 # Common_group: parameters applied to every run, but omitted from run names
 common_group:
@@ -72,13 +76,13 @@ parameter_groups:
   - compile: [true, false]
     named_group_static: ["qk_norm", "pre_ln"]
     named_group_variations:
-      - "embedding_head_variations"
-      - "positional_embeddings"
-    named_group_alternates: ["rmsnorm_all", "rmsnorm_attn_hsnorm_out"]
+      - "norm_var"
+      - "pe_var"
+    named_group_alternates: ["rmsnorm_all", "hsnorm_all"]
   - compile: [true, false]
     named_group_static: ["no_qk_norm", "peri_ln"]
     named_group_variations:
       - "embedding_head_variations"
-      - "positional_embeddings"
-    named_group_alternates: ["rmsnorm_all", "rmsnorm_attn_hsnorm_out"]
+      - "pe_var"
+    named_group_alternates: ["rmsnorm_all", "hsnorm_all"]
 

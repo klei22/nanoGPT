@@ -23,4 +23,3 @@ rich==14.0.0
 sentencepiece==0.1.99
 spacy==3.7.2
 tqdm==4.66.4
-lm_eval==0.4.8

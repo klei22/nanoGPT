@@ -1,0 +1,48 @@
+# rezero_vs_default.yaml
+---
+parameter_groups:
+  # Default residual behavior
+  - attn_residual_combination: ["add"]
+    mlp_residual_combination: ["add"]
+    attn_residual_alpha_type: ["fixed"]
+    mlp_residual_alpha_type: ["fixed"]
+    norm_variant_wte: ['rmsnorm']
+
+  - attn_residual_combination: ["add"]
+    mlp_residual_combination: ["add"]
+    attn_residual_alpha_type: ["fixed"]
+    mlp_residual_alpha_type: ["fixed"]
+
+  # ReZero residual gates (x + alpha * F(x), alpha initialized to 0)
+  - attn_residual_combination: ["rezero"]
+    mlp_residual_combination: ["rezero"]
+    attn_residual_alpha_type: ["rezero"]
+    mlp_residual_alpha_type: ["rezero"]
+    norm_variant_wte: ['rmsnorm']
+
+  - attn_residual_combination: ["rezero"]
+    mlp_residual_combination: ["rezero"]
+    attn_residual_alpha_type: ["rezero"]
+    mlp_residual_alpha_type: ["rezero"]
+
+# base hyperparameters (defaults)
+block_size: [256]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_peri_ln: [true, false]
+
+# training configuration
+dataset: "minipile"
+max_iters: 10000
+eval_interval: 1000
+eta_variant: ["iteration"]
+
+# compilation
+compile: [true]
+never_save_checkpoint: [true]

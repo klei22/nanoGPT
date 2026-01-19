@@ -1,0 +1,119 @@
+# infinite_post_attn_norm_comparison.yaml
+---
+
+# Named static groupings shared by all runs
+named_static_groups:
+  # norm arch
+  - named_group: "pre_ln_relu2max"
+    softmax_variant_attn: ["relu2max"]
+    use_pre_ln: [true]
+    use_peri_ln: [false]
+    use_post_ln: [false]
+
+  - named_group: "peri_ln_softmax"
+    softmax_variant_attn: ["softmax"]
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # norm type
+  - named_group: "hsnorm_all"
+    norm_variant_attn: ["hyperspherenorm"]
+    norm_variant_output: ["hyperspherenorm"]
+    norm_variant_wte: ["hyperspherenorm"]
+    hsnorm_radius_learning: [true]
+    norm_wte_radius_learning: [true]
+
+  - named_group: "rmsnorm_all"
+    norm_variant_attn: ["rmsnorm"]
+    norm_variant_output: ["rmsnorm"]
+    norm_variant_wte: ["rmsnorm"]
+
+  # activation
+  - named_group: "mlp_relu2"
+    mlp_variant: ["mlp"]
+    activation_variant: ["squared_relu"]
+
+  - named_group: "mlp_gelu"
+    mlp_variant: ["mlp"]
+    activation_variant: ["gelu"]
+
+# Named variation group to swap MLP activations
+named_variation_groups:
+  - named_group: "mlp_activation"
+    named_group_alternates: ["mlp_relu2", "mlp_gelu"]
+  - named_group: "norm_type"
+    named_group_alternates: ["hsnorm_all", "rmsnorm_all"]
+
+# Parameters applied to every run (omitted from run names)
+common_group:
+  dataset: ["minipile"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  max_iters: [10000]
+  eval_interval: [2000]
+  never_save_checkpoint: [true]
+
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+
+  attention_variant: ["infinite"]
+  use_concat_heads: [true]
+  n_head: [3]
+  n_qk_head_dim: [150]
+  n_v_head_dim: [150]
+
+  # Memory savings
+  compile: [true]
+
+  compute_model_stats: [true]
+
+print_model_stats_table: ["print_stats/${RUN_NAME}.csv"]
+
+# Parameter groups to compare attention post-activation normalization and scaling
+parameter_groups:
+  # Baseline infinite attention without post-attention normalization
+  - attn_post_act_l2_norm: [false]
+    mlp_post_act_l2_norm: [false]
+    named_group_static: ["pre_ln_relu2max"]
+    named_group_variations: ["mlp_activation", "norm_type"]
+  - attn_post_act_l2_norm: [true]
+    mlp_post_act_l2_norm: [false]
+    named_group_static: ["pre_ln_relu2max"]
+    named_group_variations: ["mlp_activation", "norm_type"]
+  - attn_post_act_l2_norm: [false]
+    mlp_post_act_l2_norm: [true]
+    named_group_static: ["pre_ln_relu2max"]
+    named_group_variations: ["mlp_activation", "norm_type"]
+
+  # Enable post-attention L2 norm and allow mild scaling sweep
+  - attn_post_act_l2_norm: [true]
+    attn_cproj_scale: [1.0, 2.0]
+    mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [1.0, 2.0]
+    named_group_static: ["pre_ln_relu2max"]
+    named_group_variations: ["mlp_activation", "norm_type"]
+
+  # Baseline infinite attention without post-attention normalization
+  - attn_post_act_l2_norm: [false]
+    mlp_post_act_l2_norm: [false]
+    named_group_static: ["peri_ln_softmax"]
+    named_group_variations: ["mlp_activation", "norm_type"]
+  - attn_post_act_l2_norm: [true]
+    mlp_post_act_l2_norm: [false]
+    named_group_static: ["peri_ln_softmax"]
+    named_group_variations: ["mlp_activation", "norm_type"]
+  - attn_post_act_l2_norm: [false]
+    mlp_post_act_l2_norm: [true]
+    named_group_static: ["peri_ln_softmax"]
+    named_group_variations: ["mlp_activation", "norm_type"]
+
+  # Enable post-attention L2 norm and allow mild scaling sweep
+  - attn_post_act_l2_norm: [true]
+    attn_cproj_scale: [1.0, 2.0]
+    mlp_post_act_l2_norm: [true]
+    mlp_cproj_scale: [1.0, 2.0]
+    named_group_static: ["peri_ln_softmax"]
+    named_group_variations: ["mlp_activation", "norm_type"]

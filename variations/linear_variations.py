@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import math
 import torch.nn.functional as F
+from typing import Optional
 from .activation_variations import *
 from functools import lru_cache
 from quantization.quantize import _fake_quantize, quantize_dictionary, dequantize
@@ -98,6 +99,107 @@ class QuantizedLinear(nn.Linear):
             # Uses quantized weights and bias to compute the output
             out = self.inference_quantized_forward(input)
         return out
+
+
+class AdaptiveBitLinear(nn.Linear):
+    """Linear layer with learnable bit-width using STE fake quantization."""
+
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        config=None,
+        method=None,
+        bits=None,
+        bias=True,
+        min_bits: Optional[float] = None,
+        max_bits: Optional[float] = None,
+        activation_bits: Optional[float] = None,
+        quantize_input: Optional[bool] = None,
+    ):
+        super().__init__(in_features, out_features, bias)
+
+        default_min_bits = 1.0
+        default_max_bits = 8.0
+        default_activation_bits = 8.0
+        default_quantize_input = True
+
+        if config is not None:
+            default_min_bits = getattr(config, "adaptive_linear_min_bits", default_min_bits)
+            default_max_bits = getattr(config, "adaptive_linear_max_bits", default_max_bits)
+            default_activation_bits = getattr(
+                config, "adaptive_linear_activation_bits", default_activation_bits
+            )
+            default_quantize_input = getattr(
+                config, "adaptive_linear_quantize_input", default_quantize_input
+            )
+            if bits is None:
+                bits = getattr(config, "adaptive_linear_init_bits", None)
+
+        self.min_bits = float(default_min_bits if min_bits is None else min_bits)
+        self.max_bits = float(default_max_bits if max_bits is None else max_bits)
+        self.quantize_input = default_quantize_input if quantize_input is None else quantize_input
+        self.activation_bits = float(
+            default_activation_bits if activation_bits is None else activation_bits
+        )
+
+        init_bits = float(bits if bits is not None else self.max_bits)
+        init_bits = max(self.min_bits, min(init_bits, self.max_bits))
+        self.bit_param = nn.Parameter(torch.tensor(init_bits, dtype=torch.float32))
+
+        self.quant_method = method
+        self.register_buffer("_last_bitwidth", torch.tensor(init_bits, dtype=torch.float32))
+
+    @staticmethod
+    def _ste_round(value: torch.Tensor) -> torch.Tensor:
+        return value + (torch.round(value) - value).detach()
+
+    def current_bitwidth(self) -> torch.Tensor:
+        clipped = torch.clamp(self.bit_param, self.min_bits, self.max_bits)
+        bitwidth = self._ste_round(clipped)
+        self._last_bitwidth = bitwidth.detach()
+        return bitwidth
+
+    def _fake_quantize_tensor(self, tensor: torch.Tensor, bits: torch.Tensor) -> torch.Tensor:
+        orig_dtype = tensor.dtype
+        tensor_fp32 = tensor.to(torch.float32)
+        bits_fp32 = bits.to(tensor_fp32.dtype)
+
+        levels = torch.pow(torch.tensor(2.0, device=tensor_fp32.device), bits_fp32 - 1.0)
+        qmax = torch.clamp(levels - 1.0, min=1.0)
+        qmin = -levels
+
+        max_val = tensor_fp32.abs().max()
+        scale = max_val / qmax
+        scale = torch.where(scale == 0, torch.ones_like(scale), scale)
+
+        quantized = torch.clamp(torch.round(tensor_fp32 / scale), qmin, qmax) * scale
+        return (tensor_fp32 + (quantized - tensor_fp32).detach()).to(orig_dtype)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        bitwidth = self.current_bitwidth()
+        weight = self._fake_quantize_tensor(self.weight, bitwidth)
+
+        if self.quantize_input:
+            input_bits = torch.tensor(self.activation_bits, device=input.device, dtype=bitwidth.dtype)
+            input = self._fake_quantize_tensor(input, input_bits)
+
+        return F.linear(input, weight, self.bias)
+
+    def bit_usage(self) -> torch.Tensor:
+        bits = self.current_bitwidth()
+        total = bits * self.weight.numel()
+        if self.bias is not None:
+            total = total + bits * self.bias.numel()
+        return total
+
+    def extra_repr(self) -> str:
+        return (
+            f"in_features={self.in_features}, out_features={self.out_features}, "
+            f"min_bits={self.min_bits}, max_bits={self.max_bits}, "
+            f"quantize_input={self.quantize_input}, activation_bits={self.activation_bits}"
+        )
+
 
 class BitLinear1p58(nn.Linear):
     """ BitLinear from Era of 1.58 LLMs Paper
@@ -452,6 +554,7 @@ linear_dictionary = {
     "bitlinear": BitLinear,
     "bitlinear_optimized": BitLinearOptimized,
     "bitlinear_1p58": BitLinear1p58,
+    "adaptive_bit_linear": AdaptiveBitLinear,
     "kan": KAL_Net,
     "quantized_linear": QuantizedLinear,
 }

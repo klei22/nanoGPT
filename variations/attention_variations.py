@@ -109,6 +109,10 @@ class CausalSelfAttention(nn.Module):
         self.resid_dropout = nn.Dropout(config.dropout)
         self.dropout = config.dropout
 
+        # Post-attention normalization/scaling (mirrors MLP behavior)
+        self.post_act_l2_norm = getattr(config, "attn_post_act_l2_norm", False)
+        self.cproj_scale = getattr(config, "attn_cproj_scale", 1.0)
+
         # Embedding
         self.n_embd = config.n_embd
         self.dropout = config.dropout
@@ -1051,10 +1055,25 @@ class InfiniteHeadAttention(nn.Module):
         self.linear_variant_v = linear_dictionary[config.linear_variant_attn]
         self.linear_variant_attn_proj = linear_dictionary[config.linear_variant_attn]
 
+        self.l2_norm_attn_q = config.l2_norm_attn_q
+        self.l2_norm_attn_k = config.l2_norm_attn_k
+        self.l2_norm_attn_v = config.l2_norm_attn_v
+        self.l2_norm_attn_cproj = config.l2_norm_attn_cproj
+        self.l2_norm_attn_q_dim = config.l2_norm_attn_q_dim
+        self.l2_norm_attn_k_dim = config.l2_norm_attn_k_dim
+        self.l2_norm_attn_v_dim = config.l2_norm_attn_v_dim
+        self.l2_norm_attn_cproj_dim = config.l2_norm_attn_cproj_dim
+        self.l2_norm_print_dims = config.l2_norm_print_dims
+
         # TODO: no reason for qk and v to have same dimension
         self.c_attn_q = self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
+
+        self.q_norm_dim = 1 if self.l2_norm_attn_q_dim == "embed" else 0
+        self.k_norm_dim = 1 if self.l2_norm_attn_k_dim == "embed" else 0
+        self.v_norm_dim = 1 if self.l2_norm_attn_v_dim == "embed" else 0
+        self.cproj_norm_dim = 0 if self.l2_norm_attn_cproj_dim == "embed" else 1
 
         if self.use_concat_heads:
             print("use_concat_heads")
@@ -1074,6 +1093,20 @@ class InfiniteHeadAttention(nn.Module):
                 ]
             )
 
+        if self.l2_norm_print_dims:
+            if self.l2_norm_attn_q:
+                self._maybe_print_attn_norm("q", self.c_attn_q.weight, self.q_norm_dim)
+            if self.l2_norm_attn_k:
+                self._maybe_print_attn_norm("k", self.c_attn_k.weight, self.k_norm_dim)
+            if self.l2_norm_attn_v:
+                self._maybe_print_attn_norm("v", self.c_attn_v.weight, self.v_norm_dim)
+            if self.l2_norm_attn_cproj:
+                if self.use_concat_heads or self.n_cproj == 1:
+                    self._maybe_print_attn_norm("c_proj", self.c_proj.weight, self.cproj_norm_dim)
+                else:
+                    for idx, proj in enumerate(self.c_proj_list):
+                        self._maybe_print_attn_norm(f"c_proj[{idx}]", proj.weight, self.cproj_norm_dim)
+
         # option to turn off flash attention
         self.disable_flash_attention = config.disable_flash_attention
 
@@ -1081,6 +1114,10 @@ class InfiniteHeadAttention(nn.Module):
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
         self.dropout = config.dropout
+
+        # Post-attention normalization/scaling (mirrors MLP behavior)
+        self.post_act_l2_norm = getattr(config, "attn_post_act_l2_norm", False)
+        self.cproj_scale = getattr(config, "attn_cproj_scale", 1.0)
 
         # Embedding
         self.n_embd = config.n_embd
@@ -1113,6 +1150,10 @@ class InfiniteHeadAttention(nn.Module):
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                              .view(1, 1, config.block_size, config.block_size))
 
+    def _maybe_print_attn_norm(self, name, weight, dim):
+        if self.l2_norm_print_dims:
+            print(f"L2-normalizing attention {name} over dim {dim} (size {weight.size(dim)})")
+
     def _expand_kv(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.n_head == self.n_kv_group:
             return tensor
@@ -1121,9 +1162,23 @@ class InfiniteHeadAttention(nn.Module):
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
-        q = self.c_attn_q(x)
-        k = self.c_attn_k(x)
-        v = self.c_attn_v(x)
+        if self.l2_norm_attn_q:
+            q_weight = F.normalize(self.c_attn_q.weight, p=2, dim=self.q_norm_dim)
+            q = F.linear(x, q_weight, self.c_attn_q.bias)
+        else:
+            q = self.c_attn_q(x)
+
+        if self.l2_norm_attn_k:
+            k_weight = F.normalize(self.c_attn_k.weight, p=2, dim=self.k_norm_dim)
+            k = F.linear(x, k_weight, self.c_attn_k.bias)
+        else:
+            k = self.c_attn_k(x)
+
+        if self.l2_norm_attn_v:
+            v_weight = F.normalize(self.c_attn_v.weight, p=2, dim=self.v_norm_dim)
+            v = F.linear(x, v_weight, self.c_attn_v.bias)
+        else:
+            v = self.c_attn_v(x)
 
         q = q.view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2) # (B, n_h, T, hs)
         k = k.view(B, T, self.n_kv_group, self.n_qk_head_dim).transpose(1, 2) # (B, n_kv, T, hs)
@@ -1213,22 +1268,43 @@ class InfiniteHeadAttention(nn.Module):
 
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
+        if self.post_act_l2_norm:
+            y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            y = y / self.cproj_scale
+
         # Concat Heads or Inf Concat Heads
         if self.use_concat_heads:
             # (B, nh, T, v_dim) → (B, T, nh*v_dim); avoid extra .contiguous()
             # flatten heads → (B, T, n_head * n_v_head_dim)
             y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
-            y = self.c_proj(y)
+            if self.l2_norm_attn_cproj:
+                cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
+                y = F.linear(y, cproj_weight, self.c_proj.bias)
+            else:
+                y = self.c_proj(y)
         elif self.n_cproj == 1:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y = y.sum(dim=1)
-            y = self.c_proj(y)
+            if self.l2_norm_attn_cproj:
+                cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
+                y = F.linear(y, cproj_weight, self.c_proj.bias)
+            else:
+                y = self.c_proj(y)
         else:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y_sum = y.sum(dim=1)
 
             # Parallel small projections then fuse; avoids Python-level loop
-            y = torch.stack([proj(y_sum) for proj in self.c_proj_list ], dim=0).sum(dim=0)
+            if self.l2_norm_attn_cproj:
+                proj_outputs = [
+                    F.linear(y_sum, F.normalize(proj.weight, p=2, dim=self.cproj_norm_dim), proj.bias)
+                    for proj in self.c_proj_list
+                ]
+            else:
+                proj_outputs = [proj(y_sum) for proj in self.c_proj_list]
+            y = torch.stack(proj_outputs, dim=0).sum(dim=0)
 
         # output projection
         y = self.resid_dropout(y)
