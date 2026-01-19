@@ -91,6 +91,18 @@ class GPTConfig:
     attn_logit_softcapping: float | None = None
     final_logit_softcapping: float | None = None
 
+    # Attention score kernel (dot-product vs tau distance)
+    attn_score_variant: str = "dot"  # Choices: "dot", "tau"
+    tau_laplacian_path: str | None = None
+    tau_laplacian_init: str = "identity"  # "identity", "zeros", "random"
+    tau_laplacian_trainable: bool = False
+    tau_laplacian_random_std: float = 0.02
+    tau_temperature: float = 1.0
+    tau_eps: float = 1e-6
+    tau_use_bounding: bool = True
+    tau_bounding_tau: float = 1.0
+    tau_distance_variant: str = "abs"  # "abs", "squared"
+
     # Final ln_f input mixing
     use_ln_f_input_mixer: bool = False
     ln_f_input_mixer_variant: str = "linear"

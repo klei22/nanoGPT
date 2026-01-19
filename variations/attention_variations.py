@@ -1,7 +1,9 @@
 # variations/attention_variations.py
 
 import math
+import os
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -13,6 +15,19 @@ from variations.position_encoding_variations import (
     FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
 from variations.softmax_variations import softmax_dictionary
 from variations.triadic_modulation_variations import mod_fn_dict
+
+
+def _load_tau_laplacian(path: str) -> torch.Tensor:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in {".pt", ".pth"}:
+        laplacian = torch.load(path, map_location="cpu")
+    elif ext == ".npy":
+        laplacian = torch.from_numpy(np.load(path))
+    else:
+        raise ValueError(f"Unsupported tau_laplacian_path extension: {ext}")
+    if not torch.is_tensor(laplacian):
+        laplacian = torch.tensor(laplacian)
+    return laplacian
 
 
 def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
@@ -201,6 +216,22 @@ class CausalSelfAttention(nn.Module):
             g0 = math.log2(L*L - L)
             self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
 
+        # Attention score kernel
+        self.attn_score_variant = config.attn_score_variant
+        self.tau_eps = config.tau_eps
+        self.tau_temperature = config.tau_temperature
+        self.tau_use_bounding = config.tau_use_bounding
+        self.tau_bounding_tau = config.tau_bounding_tau
+        self.tau_distance_variant = config.tau_distance_variant
+        if self.attn_score_variant == "tau":
+            laplacian = self._init_tau_laplacian(config, self.head_dim)
+            if config.tau_laplacian_trainable:
+                self.tau_laplacian = nn.Parameter(laplacian)
+            else:
+                self.register_buffer("tau_laplacian", laplacian)
+        else:
+            self.tau_laplacian = None
+
         self.flash = True
         if self.window_size is not None:
             # TODO: look into supporting sliding window attn for flash attn
@@ -229,6 +260,11 @@ class CausalSelfAttention(nn.Module):
         if self.disable_flash_attention:
             self.flash = False
 
+        if self.attn_score_variant != "dot":
+            self.flash = False
+            self.use_flex_attn = False
+            print("flash attention removed due to attention score variant")
+
         # Softmax Variant Selection
         self.softmax_variant_attn = config.softmax_variant_attn
         if self.softmax_variant_attn == "softmax":
@@ -250,6 +286,56 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
+
+    def _init_tau_laplacian(self, config, head_dim: int) -> torch.Tensor:
+        if config.tau_laplacian_path:
+            laplacian = _load_tau_laplacian(config.tau_laplacian_path)
+        else:
+            if config.tau_laplacian_init == "identity":
+                laplacian = torch.eye(head_dim)
+            elif config.tau_laplacian_init == "zeros":
+                laplacian = torch.zeros(head_dim, head_dim)
+            elif config.tau_laplacian_init == "random":
+                laplacian = torch.randn(head_dim, head_dim) * config.tau_laplacian_random_std
+            else:
+                raise ValueError(f"Unsupported tau_laplacian_init: {config.tau_laplacian_init}")
+        if laplacian.ndim != 2 or laplacian.shape[0] != laplacian.shape[1]:
+            raise ValueError(
+                "tau_laplacian must be a square matrix, "
+                f"got shape {tuple(laplacian.shape)}"
+            )
+        if laplacian.shape[0] != head_dim:
+            raise ValueError(
+                "tau_laplacian size must match attention head_dim, "
+                f"got {laplacian.shape[0]} vs {head_dim}"
+            )
+        return laplacian.to(dtype=torch.float32)
+
+    def _compute_tau_lambdas(self, x: torch.Tensor) -> torch.Tensor:
+        if self.tau_laplacian is None:
+            raise RuntimeError("Tau attention requested but tau_laplacian is not initialized.")
+        b, h, t, d = x.shape
+        x_flat = x.reshape(b * h * t, d)
+        y_flat = x_flat @ self.tau_laplacian
+        numerator = (x_flat * y_flat).sum(dim=-1)
+        denom = (x_flat * x_flat).sum(dim=-1) + self.tau_eps
+        lambda_raw = numerator / denom
+        if self.tau_use_bounding:
+            lambda_raw = lambda_raw / (lambda_raw + self.tau_bounding_tau)
+        return lambda_raw.view(b, h, t)
+
+    def _tau_distance_logits(self, q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+        lambda_q = self._compute_tau_lambdas(q)
+        lambda_k = self._compute_tau_lambdas(k)
+        delta = lambda_q.unsqueeze(-1) - lambda_k.unsqueeze(-2)
+        if self.tau_distance_variant == "squared":
+            dist = delta.pow(2)
+        elif self.tau_distance_variant == "abs":
+            dist = delta.abs()
+        else:
+            raise ValueError(f"Unsupported tau_distance_variant: {self.tau_distance_variant}")
+        temperature = max(self.tau_temperature, self.tau_eps)
+        return -(dist / temperature)
 
     # Flex Attention Related
     def sliding_window_causal(self, b, h, q_idx, kv_idx):
@@ -391,13 +477,16 @@ class CausalSelfAttention(nn.Module):
             att = None
             # manual implementation of attention
             k_attn = self._expand_kv(k)
-            head_dim = math.sqrt(k_attn.size(-1))
-            att = (q @ k_attn.transpose(-2, -1))
-
-            if self.use_qk_norm_scale:
-                att = att * self.qk_norm_factor
+            if self.attn_score_variant == "tau":
+                att = self._tau_distance_logits(q, k_attn)
             else:
-                att = att / head_dim
+                head_dim = math.sqrt(k_attn.size(-1))
+                att = (q @ k_attn.transpose(-2, -1))
+
+                if self.use_qk_norm_scale:
+                    att = att * self.qk_norm_factor
+                else:
+                    att = att / head_dim
 
             # apply logit softcapping after qk but before masking
             if self.attn_logit_softcapping is not None:
@@ -459,6 +548,14 @@ class CausalSelfAttention(nn.Module):
             y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method, iter_num)
 
         return y
+
+
+class TauSelfAttention(CausalSelfAttention):
+    def __init__(self, config, fire_pos_enc=None):
+        if getattr(config, "attn_score_variant", "dot") != "tau":
+            config.attn_score_variant = "tau"
+        super().__init__(config, fire_pos_enc=fire_pos_enc)
+
 
 class EdgeLLMASICAttention(nn.Module):
     def __init__(self, config, fire_pos_enc=None):
@@ -1533,6 +1630,7 @@ class Co4Attention(nn.Module):
 
 attention_dictionary = {
     "causal": CausalSelfAttention,
+    "tau": TauSelfAttention,
     "edgellm_asic_attn": EdgeLLMASICAttention,
     "linear": LinearAttention,
     # "ssm": MambaBlock,
