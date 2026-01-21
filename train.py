@@ -1687,7 +1687,7 @@ class Trainer:
             if positive_targets:
                 self.max_tokens_target = min(positive_targets)
                 derived_max_iters = max(1, math.ceil(self.max_tokens_target / self.tokens_per_iter))
-                self.args.max_iters = derived_max_iters
+                self.args.max_iters = min(self.args.max_iters, derived_max_iters)
                 if self.args.lr_decay_match_max_iters:
                     self.args.lr_decay_iters = self.args.max_iters
 
@@ -1720,9 +1720,10 @@ class Trainer:
             self.next_eval_tokens += self.eval_interval_tokens
 
     def _reached_training_limit(self) -> bool:
+        tokens_reached = False
         if self.max_tokens_target is not None:
-            return self._get_main_tokens_trained() >= self.max_tokens_target
-        return self.iter_num >= self.args.max_iters
+            tokens_reached = self._get_main_tokens_trained() >= self.max_tokens_target
+        return tokens_reached or self.iter_num >= self.args.max_iters
 
     def save_checkpoint(self, filename):
         if self.args.never_save_checkpoint:
