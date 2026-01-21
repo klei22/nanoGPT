@@ -1722,7 +1722,7 @@ class Trainer:
     def _reached_training_limit(self) -> bool:
         if self.max_tokens_target is not None:
             return self._get_main_tokens_trained() >= self.max_tokens_target
-        return self.iter_num > self.args.max_iters
+        return self.iter_num >= self.args.max_iters
 
     def save_checkpoint(self, filename):
         if self.args.never_save_checkpoint:
