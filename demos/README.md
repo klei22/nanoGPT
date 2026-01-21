@@ -21,3 +21,9 @@ python3 demos/check_ckpt_for_gelu_shift.py \
 
 `adam_vs_adamw.sh` trains two tiny Shakespeare models, one with Adam and one
 with AdamW, then compares their statistics using `view_model_stats.py`.
+
+## Recurrent RL Demo
+
+`recurrent_rl_demo.sh` prepares a tiny Shakespeare checkpoint and then runs
+`train_recurrent.py` with a SimpleSnake reward signal injected at configurable
+intervals.

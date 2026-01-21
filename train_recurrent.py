@@ -14,6 +14,7 @@ import os
 import time
 import math
 import pickle
+import importlib
 
 import numpy as np
 import torch
@@ -45,6 +46,14 @@ recur_parser.add_argument("--skip_steps",    type=int, default=0,
 recur_parser.add_argument("--weight_start",  type=float, default=1.0)
 recur_parser.add_argument("--weight_end",    type=float, default=1.0)
 recur_parser.add_argument("--reset_optim", action="store_true", help="Ignore optimiser state in the checkpoint")
+recur_parser.add_argument("--rl_game", default=None,
+                          help="Optional RL gym module name in data/rl_gyms (e.g. simple_snake)")
+recur_parser.add_argument("--rl_interval", type=int, default=0,
+                          help="Apply RL reward loss every N steps (0 disables)")
+recur_parser.add_argument("--rl_weight", type=float, default=1.0,
+                          help="Scale for the RL reward loss")
+recur_parser.add_argument("--rl_action_dim", type=int, default=3,
+                          help="Number of discrete actions for RL games")
 
 # -- split cmdline -----------------------------------------------------
 latent_args, remaining = recur_parser.parse_known_args()
@@ -71,6 +80,9 @@ ckpt   = torch.load(args.resume_ckpt, map_location=device)
 
 gpt_conf = GPTConfig(**ckpt["model_args"])
 model    = GPT(gpt_conf).to(device)
+action_head = None
+if args.rl_game:
+    action_head = torch.nn.Linear(gpt_conf.n_embd, args.rl_action_dim).to(device)
 
 def unwrap_state_dict(wrapped_sd):
     """
@@ -88,6 +100,8 @@ def unwrap_state_dict(wrapped_sd):
 
 state_dict = unwrap_state_dict(ckpt["model"])
 missing, unexpected = model.load_state_dict(state_dict, strict=False)
+if action_head and ckpt.get("action_head"):
+    action_head.load_state_dict(ckpt["action_head"])
 
 if missing:
     print(f"warning: {len(missing)} missing params (OK if all zero-grad)")
@@ -106,6 +120,9 @@ param_groups = [
     {"params": decay,     "weight_decay": args.opt_weight_decay},
     {"params": no_decay,  "weight_decay": 0.0},
 ]
+if action_head:
+    param_groups.append({"params": action_head.parameters(),
+                         "weight_decay": args.opt_weight_decay})
 
 optimizer = optimizer_dictionary[args.optimizer](param_groups, args)
 
@@ -139,10 +156,16 @@ def make_loss_weights(bsz: int, T: int, device):
         w[:, :args.skip_steps] = 0.0
     return w
 
+def load_rl_envs(batch_size: int):
+    module = importlib.import_module(f"data.rl_gyms.{args.rl_game}")
+    if not hasattr(module, "make_env"):
+        raise ValueError(f"{args.rl_game} must expose make_env()")
+    return [module.make_env() for _ in range(batch_size)]
+
 # ----------------------------------------------------------------------
 # 5)  ONE BLOCK (B,T)  →  scalar loss
 # ----------------------------------------------------------------------
-def train_block(x_tokens, y_tokens):
+def train_block(x_tokens, y_tokens, is_train: bool):
     """
     One recurrent block that **preserves full self-attention context**.
     We build a `hidden_buf` (B, ≤T, E); at each step we append either
@@ -158,6 +181,9 @@ def train_block(x_tokens, y_tokens):
     hidden_buf  = None        # grows (B,t,E)
     hidden_prev = None        # last latent state (B,1,E)
     total_loss  = 0.0
+    rl_loss     = 0.0
+    rl_count    = 0
+    envs        = load_rl_envs(B) if args.rl_game and args.rl_interval > 0 else None
 
     for t in range(T):
         # ---- decide what to append ---------------------------------
@@ -165,7 +191,7 @@ def train_block(x_tokens, y_tokens):
         if t < args.latent_steps:
             new_piece = embed_tokens(x_tokens[:, t:t+1])  # GT token
         else:
-            new_piece = hidden_prev                       # latent
+            new_piece = hidden_prev                       # latent (LM head input)
 
         # ---- grow the buffer ---------------------------------------
         hidden_buf = new_piece if hidden_buf is None else \
@@ -180,7 +206,29 @@ def train_block(x_tokens, y_tokens):
         ce = F.cross_entropy(logits_step, y_tokens[:, t], reduction="none")
         total_loss += (ce * weights[:, t]).sum()
 
-    return total_loss / nz_sum
+        if envs:
+            action_logits = action_head(h_all[:, -1, :])
+            if is_train:
+                action_dist = torch.distributions.Categorical(logits=action_logits)
+                action = action_dist.sample()
+                log_prob = action_dist.log_prob(action)
+            else:
+                action = action_logits.argmax(dim=-1)
+                action_dist = torch.distributions.Categorical(logits=action_logits)
+                log_prob = action_dist.log_prob(action)
+            rewards = torch.tensor(
+                [env.step(int(action[i].item())) for i, env in enumerate(envs)],
+                device=device,
+                dtype=log_prob.dtype,
+            )
+            if (t + 1) % args.rl_interval == 0:
+                rl_loss += -(log_prob * rewards).sum()
+                rl_count += B
+
+    total_loss = total_loss / nz_sum
+    if rl_count > 0:
+        total_loss = total_loss + args.rl_weight * (rl_loss / rl_count)
+    return total_loss
 
 # ----------------------------------------------------------------------
 # 6)  EPOCH LOOPS
@@ -198,7 +246,7 @@ def run_epoch(split):
         if split == "train":
             model.train()
             optimizer.zero_grad()
-            loss = train_block(x, y)
+            loss = train_block(x, y, is_train=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
@@ -222,6 +270,7 @@ def run_epoch(split):
                     best_val_loss = val
                     torch.save(
                         {"model": model.state_dict(),
+                         "action_head": action_head.state_dict() if action_head else None,
                          "model_args": ckpt["model_args"],
                          "iter_num":   global_step,
                          "best_val_loss": best_val_loss},
@@ -234,7 +283,7 @@ def run_epoch(split):
 
             model.eval()
             with torch.no_grad():
-                loss = train_block(x, y)
+                loss = train_block(x, y, is_train=False)
 
         losses.append(loss.item())
         ptr += block_size
@@ -262,6 +311,7 @@ while global_step < args.max_iters:
             best_val_loss = val_loss
             torch.save(
                 {"model": model.state_dict(),
+                 "action_head": action_head.state_dict() if action_head else None,
                  "model_args": ckpt["model_args"],
                  "iter_num":   global_step,
                  "best_val_loss": best_val_loss},
@@ -285,4 +335,3 @@ if tb:
 
 print("done.")
 # ======================================================================
-
