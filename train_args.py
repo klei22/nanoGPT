@@ -201,6 +201,18 @@ def parse_args():
         help='Path to a teacher checkpoint (ckpt.pt) for knowledge distillation.',
     )
     training_group.add_argument(
+        '--distillation_teacher_logits_train',
+        type=str,
+        default=None,
+        help='Path to a .npy file containing offline teacher logits for the train split.',
+    )
+    training_group.add_argument(
+        '--distillation_teacher_logits_val',
+        type=str,
+        default=None,
+        help='Path to a .npy file containing offline teacher logits for the val split.',
+    )
+    training_group.add_argument(
         '--distillation_loss',
         type=str,
         default=None,
