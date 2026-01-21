@@ -21,14 +21,20 @@ url_array["test"]="$test_url"
 
 for split_name in "${!url_array[@]}"; do
   url="${url_array[$split_name]}"
+  echo "$url"
   python3 ./utils/get_parquet_dataset.py \
     --url "$url" \
     --include_keys "dialogue" "summary" \
     --value_prefix $'\n#U: Please summarize the following:\n' $'\n#B:\n' \
     --output_text_file "${split_name}.txt"
+  if [ -f "json_output/0000.json" ]; then
+    rm -rf json_output/0000.json
+  fi
+  if [ -f "downloaded_parquets/0000.parquet" ]; then
+    rm -rf "downloaded_parquets/0000.parquet"
+  fi
 done
 
-rm input.txt
 
 for split_name in "${!url_array[@]}"; do
   text_file="${split_name}.txt"
