@@ -11,9 +11,14 @@ from __future__ import annotations
 import argparse
 import os
 import pickle
+import sys
 
 import numpy as np
 import torch
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from gpt_conf import GPTConfig
 from model import GPT
