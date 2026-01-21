@@ -251,7 +251,7 @@ def parse_args():
     training_group.add_argument('--only_save_checkpoint_at_end', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--always_save_checkpoint', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--never_save_checkpoint', default=False, action=argparse.BooleanOptionalAction, help="If set, disables saving of all checkpoints.")
-    training_group.add_argument('--final_eval', default=False, action=argparse.BooleanOptionalAction, help="Run one final validation pass at the end of training.")
+    training_group.add_argument('--final_eval', default=True, action=argparse.BooleanOptionalAction, help="Run one final validation pass at the end of training.")
     training_group.add_argument('--final_eval_save_checkpoint', default=False, action=argparse.BooleanOptionalAction, help="If set with --final_eval, save a checkpoint after the final validation.")
     training_group.add_argument('--patience', default=None, type=int, help="if set, will stop training if the number of evaluations since val loss was seen to decrease exceeds 'patience' setting.")
     training_group.add_argument('--init_from', default='scratch', choices=['scratch', 'prev_run', 'resume', 'gpt2'], type=str)
