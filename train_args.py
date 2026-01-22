@@ -521,7 +521,7 @@ def parse_args():
     training_group.add_argument('--stop_string', type=str, default='~W', help="String to stop generation and allow user input (used when --interactive).")
     training_group.add_argument('--colorize_output', default=True, action=argparse.BooleanOptionalAction, help="Colorize tokens based on predicted probabilities.")
     training_group.add_argument('--colorize_mode', type=str, default='minmax',
-                                choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'all'],
+                                choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'byte_fallback', 'all'],
                                 help="Colorization mode for tokens (see sample.py).")
     training_group.add_argument('--colorize_topk', type=int, default=10,
                                 help="Number of top predictions to display when colorize_mode='topk'.")
