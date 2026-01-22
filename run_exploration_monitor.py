@@ -158,7 +158,7 @@ class MonitorApp(App):
         self._bar_mode: bool = False           # are we collecting digits?
         self._bar_digits: List[int] = []       # collected numeric keys
         self._trim_mode: bool = False          # 'z' zoom-bar mode
-        self._trim_digit: List[int] = []       # holds the single digit
+        self._trim_digits: List[int] = []      # holds the single digit
         self._corr_mode: bool = False          # 'C' correlation mode
         self._corr_digits: List[int] = []      # collected numeric entries
         self._corr_buffer: str = ""            # digit buffer for multi-digit cols
