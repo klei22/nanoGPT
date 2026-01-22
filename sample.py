@@ -185,12 +185,26 @@ def colorize_text(
     text = Text()
 
     if colorize_mode == "byte_fallback":
+        if byte_fallback_checker is None:
+            text.append(decode(tokens))
+            return text
+
+        byte_buffer: list[int] = []
+
+        def flush_bytes() -> None:
+            if byte_buffer:
+                text.append(decode(byte_buffer), style="bold #ff8800")
+                byte_buffer.clear()
+
         for token_id in tokens:
-            token_str = decode([token_id])
-            if byte_fallback_checker and byte_fallback_checker(token_id):
-                text.append(token_str, style="bold #ff8800")
-            else:
-                text.append(token_str)
+            if byte_fallback_checker(token_id):
+                byte_buffer.append(token_id)
+                continue
+
+            flush_bytes()
+            text.append(decode([token_id]))
+
+        flush_bytes()
         return text
 
     norm_values = None
