@@ -28,10 +28,10 @@ for split_name in "${!url_array[@]}"; do
     --value_prefix $'\n#U: Please summarize the following:\n' $'\n#B:\n' \
     --output_text_file "${split_name}.txt"
   if [ -f "json_output/0000.json" ]; then
-    rm -rf json_output/0000.json
+    rm -f json_output/0000.json
   fi
   if [ -f "downloaded_parquets/0000.parquet" ]; then
-    rm -rf "downloaded_parquets/0000.parquet"
+    rm -f "downloaded_parquets/0000.parquet"
   fi
 done
 
