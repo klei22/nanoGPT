@@ -140,6 +140,7 @@ def main() -> None:
         checkpoint_a["iter_num"] = 0
         checkpoint_a["best_val_loss"] = 1e9
         checkpoint_a["best_iter"] = 0
+        checkpoint_a["best_tokens"] = 0
 
     out_dir = args.out_dir or f"{args.ckpt_dir_a.rstrip('/').rstrip(os.sep)}_merge"
     os.makedirs(out_dir, exist_ok=True)
