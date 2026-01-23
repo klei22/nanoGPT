@@ -1,0 +1,25 @@
+# relu_power_minipile.yaml
+---
+parameter_groups:
+  - relu_power: [1.2, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0]
+
+activation_variant: ["relu_power"]
+
+# normalization + rotary options
+use_peri_ln: [true]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+norm_variant_wte: ["rmsnorm"]
+
+# training configuration
+max_iters: [10000]
+eval_interval: [1000]
+eta_variant: ["iteration"]
+warmup_iters: [1000]
+compile: [true]
+never_save_checkpoint: [true]
+
+# dataset configuration
+dataset: ["minipile"]
