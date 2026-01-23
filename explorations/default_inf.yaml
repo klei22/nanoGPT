@@ -39,7 +39,7 @@ named_static_groups:
     attention_variant: ["infinite"]
     use_concat_heads: [true]
 
-  # Infinite Attention
+  # Head Dimension
   - named_group: "hd_100"
     n_qk_head_dim: [100]
     n_v_head_dim: [100]
