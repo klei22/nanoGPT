@@ -41,6 +41,8 @@ class GPTConfig:
     # Use separate embeddings/LM heads per dataset in multidataset mode
     multidataset_wte: bool = False
     vocab_sizes: List[int] = field(default_factory=lambda: []) # Used in place of vocab
+    multicontext_transform_variant: str = "none"
+    reuse_multicontext_embeddings: bool = False
 
     # MLP bias configuration
     mlp_up_bias: bool | None = None  # If None, uses global bias setting

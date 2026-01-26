@@ -283,6 +283,10 @@ def parse_args():
                                     help="Enable multi-context training on multiple simultaneous datasets")
     model_group.add_argument('--multidataset_wte', default=False, action=argparse.BooleanOptionalAction,
                                     help='Use separate token embeddings and lm heads per dataset when training_mode is multidataset')
+    model_group.add_argument('--multicontext_transform_variant', default="none", type=str,
+                                    help="Transform variant applied per multicontext channel (e.g., none, learned_vector_add, random_orthonormal, learned_orthonormal)")
+    model_group.add_argument('--reuse_multicontext_embeddings', default=False, action=argparse.BooleanOptionalAction,
+                                    help="Reuse the same token embedding table across multicontext channels (requires equal vocab sizes).")
     training_group.add_argument('--multicontext_datasets', default=None, nargs='+', type=str,
                                     help="List of datasets to train on in multi-context mode (e.g., --multicontext_datasets shakespeare wikitext103 openwebtext)")
     model_group.add_argument('--vocab_sizes', default=None, nargs='+', type=int,
