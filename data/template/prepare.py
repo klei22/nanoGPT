@@ -133,6 +133,24 @@ def _print_byte_token_report(tokenizer, label):
     if getattr(tokenizer, "has_byte_tokens", False) and hasattr(tokenizer, "print_byte_token_report"):
         tokenizer.print_byte_token_report(label)
 
+def _write_byte_token_report(tokenizer, label, report_dir):
+    if not report_dir:
+        return
+    if not (getattr(tokenizer, "has_byte_tokens", False) and hasattr(tokenizer, "get_byte_token_report")):
+        return
+    report = tokenizer.get_byte_token_report()
+    if report is None:
+        return
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, "byte_token_report.txt")
+    line = (
+        f"{label}: byte={report['byte_tokens']} ({report['byte_percentage']:.2f}%), "
+        f"non-byte={report['non_byte_tokens']} ({report['non_byte_percentage']:.2f}%), "
+        f"total={report['total_tokens']}"
+    )
+    with open(report_path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
 def main():
     args = parse_arguments()
     output_dir = None
@@ -203,6 +221,8 @@ def main():
         _reset_byte_token_report(tokenizer)
         train_ids = tokenizer.tokenize(train_data)
         _print_byte_token_report(tokenizer, "train")
+        if args.output_subdir_suffix:
+            _write_byte_token_report(tokenizer, "train", output_dir)
     if args.method == "tiktoken":
         print(f"[tiktoken] Total train tokens: {tokenizer.last_token_count:,}")
     if args.method == "whisper_mel_csv" and args.val_input is None:
@@ -220,6 +240,8 @@ def main():
             _reset_byte_token_report(tokenizer)
             val_ids = tokenizer.tokenize(val_data)
             _print_byte_token_report(tokenizer, "val")
+            if args.output_subdir_suffix:
+                _write_byte_token_report(tokenizer, "val", output_dir)
         if args.method == "tiktoken":
             print(f"[tiktoken] Total val tokens: {tokenizer.last_token_count:,}")
     else:
