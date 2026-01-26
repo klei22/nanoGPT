@@ -91,6 +91,8 @@ def parse_arguments():
 
     # Additional options
     parser.add_argument("-T", "--track_token_counts", action="store_true", help="Track how often each token appears and store in meta.pkl")
+    parser.add_argument("--report_byte_tokenization", action="store_true",
+                        help="Report byte vs non-byte token counts after tokenization (byte-fallback tokenizers only)")
     parser.add_argument("-s", "--output_tokenization_subdir", action="store_true",
                         help="Write meta.pkl/train.bin/val.bin into a subdirectory named after the selected tokenization method")
     parser.add_argument("-S", "--output_subdir_suffix", type=str, default="",
@@ -123,6 +125,13 @@ def _read_input_data(path):
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         return f.read()
 
+def _reset_byte_token_report(tokenizer):
+    if getattr(tokenizer, "has_byte_tokens", False) and hasattr(tokenizer, "reset_byte_token_counts"):
+        tokenizer.reset_byte_token_counts()
+
+def _print_byte_token_report(tokenizer, label):
+    if getattr(tokenizer, "has_byte_tokens", False) and hasattr(tokenizer, "print_byte_token_report"):
+        tokenizer.print_byte_token_report(label)
 
 def main():
     args = parse_arguments()
@@ -191,7 +200,9 @@ def main():
     if args.method == "whisper_mel_csv":
         train_ids = tokenizer.tokenize(args.train_input)
     else:
+        _reset_byte_token_report(tokenizer)
         train_ids = tokenizer.tokenize(train_data)
+        _print_byte_token_report(tokenizer, "train")
     if args.method == "tiktoken":
         print(f"[tiktoken] Total train tokens: {tokenizer.last_token_count:,}")
     if args.method == "whisper_mel_csv" and args.val_input is None:
@@ -206,7 +217,9 @@ def main():
         if args.method == "whisper_mel_csv":
             val_ids = tokenizer.tokenize(args.val_input)
         else:
+            _reset_byte_token_report(tokenizer)
             val_ids = tokenizer.tokenize(val_data)
+            _print_byte_token_report(tokenizer, "val")
         if args.method == "tiktoken":
             print(f"[tiktoken] Total val tokens: {tokenizer.last_token_count:,}")
     else:
