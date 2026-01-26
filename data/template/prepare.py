@@ -142,14 +142,18 @@ def _write_byte_token_report(tokenizer, label, report_dir):
     if report is None:
         return
     os.makedirs(report_dir, exist_ok=True)
-    report_path = os.path.join(report_dir, "byte_token_report.txt")
-    line = (
-        f"{label}: byte={report['byte_tokens']} ({report['byte_percentage']:.2f}%), "
-        f"non-byte={report['non_byte_tokens']} ({report['non_byte_percentage']:.2f}%), "
-        f"total={report['total_tokens']}"
-    )
-    with open(report_path, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    report_path = os.path.join(report_dir, f"byte_token_report_{label}.yaml")
+    report_payload = {
+        "label": label,
+        "byte_tokens": report["byte_tokens"],
+        "non_byte_tokens": report["non_byte_tokens"],
+        "total_tokens": report["total_tokens"],
+        "byte_percentage": round(report["byte_percentage"], 4),
+        "non_byte_percentage": round(report["non_byte_percentage"], 4),
+    }
+    lines = [f"{key}: {value}" for key, value in report_payload.items()]
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 def main():
     args = parse_arguments()
@@ -266,14 +270,15 @@ def main():
                 os.makedirs(out_dir, exist_ok=True)
 
     # Save tokenized data
-    if args.method == "whisper_mel_csv":
-        save_mel_csv(train_ids, args.train_output, args.mel_csv_float_format)
-        if val_ids is not None:
-            save_mel_csv(val_ids, args.val_output, args.mel_csv_float_format)
-    else:
-        save_tokens(train_ids, args.train_output, dtype)
-        if val_ids is not None:
-            save_tokens(val_ids, args.val_output, dtype)
+    if not args.skip_tokenization:
+        if args.method == "whisper_mel_csv":
+            save_mel_csv(train_ids, args.train_output, args.mel_csv_float_format)
+            if val_ids is not None:
+                save_mel_csv(val_ids, args.val_output, args.mel_csv_float_format)
+        else:
+            save_tokens(train_ids, args.train_output, dtype)
+            if val_ids is not None:
+                save_tokens(val_ids, args.val_output, dtype)
 
     if args.method == "sinewave":
         meta = {
