@@ -949,7 +949,7 @@ class SineWaveTokenizer:
         array = np.asarray(ids, dtype=np.int64)
         return ','.join(map(str, array.tolist()))
 
-      
+
 class WhisperMelCsvTokenizer(Tokenizer):
     """Generate Whisper-style log-mel spectrogram frames suitable for CSV export."""
 
@@ -1022,4 +1022,4 @@ class WhisperMelCsvTokenizer(Tokenizer):
         array = np.asarray(ids, dtype=np.float32)
         lines = [",".join(map(str, row)) for row in array.tolist()]
         return "\n".join(lines)
-      
+
