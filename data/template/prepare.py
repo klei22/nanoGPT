@@ -221,7 +221,7 @@ def main():
         _reset_byte_token_report(tokenizer)
         train_ids = tokenizer.tokenize(train_data)
         _print_byte_token_report(tokenizer, "train")
-        if args.output_subdir_suffix:
+        if args.output_tokenization_subdir:
             _write_byte_token_report(tokenizer, "train", output_dir)
     if args.method == "tiktoken":
         print(f"[tiktoken] Total train tokens: {tokenizer.last_token_count:,}")
@@ -240,7 +240,7 @@ def main():
             _reset_byte_token_report(tokenizer)
             val_ids = tokenizer.tokenize(val_data)
             _print_byte_token_report(tokenizer, "val")
-            if args.output_subdir_suffix:
+            if args.output_tokenization_subdir:
                 _write_byte_token_report(tokenizer, "val", output_dir)
         if args.method == "tiktoken":
             print(f"[tiktoken] Total val tokens: {tokenizer.last_token_count:,}")

@@ -568,12 +568,14 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
         self._write_vocab_jsons(meta)
 
     def _write_vocab_jsons(self, meta):
+        output_dir = os.path.dirname(getattr(self.args, "meta_output_path", "")) or "."
         vocab_json = []
         for idx in range(self.vocab_size):
             token = self.itos[idx]
             vocab_json.append(self._format_token_for_json(token))
 
-        with open("char_bpe_vocab.json", "w", encoding="utf-8") as f:
+        vocab_path = os.path.join(output_dir, "char_bpe_vocab.json")
+        with open(vocab_path, "w", encoding="utf-8") as f:
             json.dump(vocab_json, f, ensure_ascii=False, indent=2)
 
         if self.token_counts is not None:
@@ -586,7 +588,8 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
                     "token": self._format_token_for_json(token),
                     "count": counts.get(idx, 0)
                 })
-            with open("char_bpe_token_counts.json", "w", encoding="utf-8") as f:
+            counts_path = os.path.join(output_dir, "char_bpe_token_counts.json")
+            with open(counts_path, "w", encoding="utf-8") as f:
                 json.dump(counts_json, f, ensure_ascii=False, indent=2)
 
     @staticmethod
