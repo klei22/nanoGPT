@@ -83,6 +83,8 @@ def parse_arguments():
 
     # Char tokenizer arguments
     parser.add_argument("--reuse_chars", action="store_true", help="Reuse character list from meta.pkl")
+    parser.add_argument("--char_bpe_vocab_path", type=str, default=None,
+                        help="Path to a char_bpe meta.pkl to reuse its vocabulary/merges")
 
     # Custom tokenizer arguments
     parser.add_argument("--tokens_file", type=str, default=None, help="Path to the file containing newline-separated tokens for tokenization")
