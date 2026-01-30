@@ -69,7 +69,7 @@ def main():
     time.sleep(5)  # wait a bit before polling
     trainer.poll_jobs() 
 
-    trainer.wait_for_all(poll_interval=120, timeout=10000, verbose=True)
+    trainer.wait_for_all(poll_interval=120, timeout=100000, verbose=True)
     data_csv = trainer.fetch_results(local_dir="train", gen=None)
 
     print(f"Fetched results to {data_csv}")

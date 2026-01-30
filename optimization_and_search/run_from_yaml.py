@@ -225,7 +225,7 @@ def main(yaml_path, base, args) -> int:
         overrides = {
             "batch_size": batch_size,  # Reduced from 128 to save memory
             "device": "cuda",
-            "dataset": "minipile",
+            "dataset": args.dataset,
             "eval_iters": 50,  # Reduced from default to save memory
             "gradient_accumulation_steps": 2,  # Compensate for smaller batch with grad accumulation
             # "compute_model_stats": False,  # Disable model stats to save memory
@@ -260,6 +260,7 @@ if __name__ == "__main__":
     parser.add_argument("--prefix", type=str, default="train", help="Prefix for run names")
     parser.add_argument("--override_args", type=str, nargs='*', help="Additional args to override YAML configs, e.g., --override_args batch_size=32 learning_rate=0.001")
     parser.add_argument("--dry_run", action="store_true", help="If set, only print commands without executing")
+    parser.add_argument("--dataset", type=str, default="minipile", help="Dataset name for training evaluations")
     args, unknown = parser.parse_known_args()
 
     yaml_path = Path(args.yaml)
