@@ -907,6 +907,15 @@ def parse_args():
     model_group.add_argument('--attn_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction,
                              help="L2 normalize attention outputs before c_proj (Infinite Attention)")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
+    model_group.add_argument(
+        "--inf_kv_cproj_mode",
+        type=str,
+        default=None,
+        choices=["static", "learned_tied"],
+        help="Append an extra K/V + c_proj path in infinite attention (concat heads only). "
+             "'static' freezes V/c_proj with approximate inverse init; "
+             "'learned_tied' ties c_proj to V^T to stay near inverse.",
+    )
 
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")

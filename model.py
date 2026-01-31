@@ -214,6 +214,10 @@ class GPT(nn.Module):
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
+        for block in self.transformer.h:
+            if hasattr(block.attn, "reset_inf_kv_cproj_weights"):
+                block.attn.reset_inf_kv_cproj_weights()
+
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
 
