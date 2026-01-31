@@ -1020,6 +1020,14 @@ class InfiniteHeadAttention(nn.Module):
         self.n_qk_head_dim = config.n_qk_head_dim
         self.n_v_head_dim = config.n_v_head_dim
 
+        # Optional identity-like KV append (concat-heads only)
+        self.infinite_kv_identity_mode = getattr(config, "infinite_kv_identity_mode", "none")
+        if self.infinite_kv_identity_mode not in ("none", "static", "learned"):
+            raise ValueError(f"Unknown infinite_kv_identity_mode={self.infinite_kv_identity_mode}")
+        if self.infinite_kv_identity_mode != "none" and not config.use_concat_heads:
+            raise ValueError("infinite_kv_identity_mode requires use_concat_heads=True")
+        self.identity_v_dim = self.n_v_head_dim if self.infinite_kv_identity_mode != "none" else 0
+        self.concat_v_dim = self.n_head * self.n_v_head_dim + self.identity_v_dim
 
         # Concat Heads
         self.use_concat_heads = config.use_concat_heads
@@ -1070,6 +1078,13 @@ class InfiniteHeadAttention(nn.Module):
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
 
+        if self.infinite_kv_identity_mode in ("static", "learned"):
+            self.kv_identity_wv = nn.Parameter(
+                torch.empty(self.n_embd, self.n_v_head_dim),
+                requires_grad=self.infinite_kv_identity_mode == "learned",
+            )
+            nn.init.orthogonal_(self.kv_identity_wv)
+
         self.q_norm_dim = 1 if self.l2_norm_attn_q_dim == "embed" else 0
         self.k_norm_dim = 1 if self.l2_norm_attn_k_dim == "embed" else 0
         self.v_norm_dim = 1 if self.l2_norm_attn_v_dim == "embed" else 0
@@ -1079,8 +1094,11 @@ class InfiniteHeadAttention(nn.Module):
             print("use_concat_heads")
             # Usually c_proj dim are (n_head * n_head dim = n_embd), here we have to provide the factorized version
             self.c_proj = self.linear_variant_attn_proj(
-                self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias
+                self.concat_v_dim, self.n_embd, config, bias=config.bias
             )
+            if self.infinite_kv_identity_mode == "static":
+                with torch.no_grad():
+                    self.c_proj.weight[:, :self.identity_v_dim].copy_(self.kv_identity_wv.transpose(0, 1))
         elif self.n_cproj==1:
             print("use n_cproj 1", self.n_v_head_dim, self.n_embd)
             self.c_proj = self.linear_variant_attn_proj(self.n_v_head_dim, self.n_embd, config, bias=config.bias)
@@ -1153,6 +1171,16 @@ class InfiniteHeadAttention(nn.Module):
     def _maybe_print_attn_norm(self, name, weight, dim):
         if self.l2_norm_print_dims:
             print(f"L2-normalizing attention {name} over dim {dim} (size {weight.size(dim)})")
+
+    def _concat_cproj_weight(self) -> torch.Tensor:
+        if self.infinite_kv_identity_mode == "learned":
+            identity_block = self.kv_identity_wv.transpose(0, 1)
+            weight = torch.cat([identity_block, self.c_proj.weight[:, self.identity_v_dim:]], dim=1)
+        else:
+            weight = self.c_proj.weight
+        if self.l2_norm_attn_cproj:
+            weight = F.normalize(weight, p=2, dim=self.cproj_norm_dim)
+        return weight
 
     def _expand_kv(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.n_head == self.n_kv_group:
@@ -1279,7 +1307,11 @@ class InfiniteHeadAttention(nn.Module):
             # (B, nh, T, v_dim) → (B, T, nh*v_dim); avoid extra .contiguous()
             # flatten heads → (B, T, n_head * n_v_head_dim)
             y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
-            if self.l2_norm_attn_cproj:
+            if self.infinite_kv_identity_mode != "none":
+                v_identity = x @ self.kv_identity_wv
+                y = torch.cat([v_identity, y], dim=-1)
+                y = F.linear(y, self._concat_cproj_weight(), self.c_proj.bias)
+            elif self.l2_norm_attn_cproj:
                 cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
                 y = F.linear(y, cproj_weight, self.c_proj.bias)
             else:

@@ -907,6 +907,13 @@ def parse_args():
     model_group.add_argument('--attn_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction,
                              help="L2 normalize attention outputs before c_proj (Infinite Attention)")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
+    model_group.add_argument(
+        "--infinite_kv_identity_mode",
+        type=str,
+        default="none",
+        choices=["none", "static", "learned"],
+        help="Append an identity-like KV projection in infinite attention (use_concat_heads only).",
+    )
 
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
