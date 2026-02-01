@@ -41,6 +41,10 @@ python huggingface_model/gemma/270M/jl_head_eval.py \
   --top_n_values 1000,2000,5000,10000 \
   --target_dimensions 500,400,300,200,100 \
   --projection orthonormal \
+  --approx_logits_device cpu \
+  --approx_logits_dtype float16 \
+  --approx_chunk_size 5000 \
+  --exact_chunk_size 5000 \
   --annotate_stats true \
   --output_dir jl_eval_outputs
 ```

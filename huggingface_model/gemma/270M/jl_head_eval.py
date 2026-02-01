@@ -29,6 +29,10 @@ class EvalConfig:
     device: str
     output_dir: str
     annotate_stats: bool
+    approx_logits_device: str
+    approx_logits_dtype: str
+    approx_chunk_size: int
+    exact_chunk_size: int
 
 
 def _parse_int_list(value: str) -> List[int]:
@@ -98,6 +102,7 @@ def _compute_topk_id_delta(
     approx_logits: torch.Tensor,
     top_n: int,
     top_k: int,
+    exact_chunk_size: int,
 ) -> torch.Tensor:
     topk = approx_logits.topk(k=top_n, dim=-1).indices
 
@@ -111,8 +116,7 @@ def _compute_topk_id_delta(
     blended_logits = approx_logits.clone()
     blended_logits = blended_logits.scatter(-1, topk, exact_logits)
 
-    full_logits = torch.matmul(hidden_states, weight.T)
-    topk_exact = full_logits.topk(k=top_k, dim=-1).indices.sort(dim=-1).values
+    topk_exact = _topk_chunked(hidden_states, weight, top_k, chunk_size=exact_chunk_size)
     topk_est = blended_logits.topk(k=top_k, dim=-1).indices.sort(dim=-1).values
     id_delta = (topk_exact - topk_est).abs().float()
     return id_delta
@@ -127,6 +131,80 @@ def _summarize_stats(values: torch.Tensor) -> dict[str, float]:
         "min": flat.min().item(),
         "std": flat.std(unbiased=False).item(),
     }
+
+
+def _parse_dtype(value: str) -> torch.dtype:
+    if value == "float32":
+        return torch.float32
+    if value == "float16":
+        return torch.float16
+    if value == "bfloat16":
+        return torch.bfloat16
+    raise ValueError(f"Unsupported dtype: {value}")
+
+
+def _topk_chunked(
+    hidden_states: torch.Tensor,
+    weight: torch.Tensor,
+    k: int,
+    chunk_size: int,
+) -> torch.Tensor:
+    if chunk_size <= 0:
+        logits = torch.matmul(hidden_states, weight.T)
+        return logits.topk(k=k, dim=-1).indices.sort(dim=-1).values
+
+    batch, seq_len, hidden_dim = hidden_states.shape
+    flat_hidden = hidden_states.reshape(-1, hidden_dim)
+    topk_values = None
+    topk_indices = None
+    offset = 0
+    while offset < weight.size(0):
+        chunk = weight[offset : offset + chunk_size]
+        chunk_logits = torch.matmul(flat_hidden, chunk.T)
+        chunk_topk_values, chunk_topk_indices = chunk_logits.topk(
+            k=min(k, chunk.size(0)), dim=-1
+        )
+        chunk_topk_indices = chunk_topk_indices + offset
+        if topk_values is None:
+            topk_values = chunk_topk_values
+            topk_indices = chunk_topk_indices
+        else:
+            merged_values = torch.cat([topk_values, chunk_topk_values], dim=-1)
+            merged_indices = torch.cat([topk_indices, chunk_topk_indices], dim=-1)
+            topk_values, topk_idx = merged_values.topk(k=k, dim=-1)
+            topk_indices = merged_indices.gather(-1, topk_idx)
+        offset += chunk_size
+
+    if topk_indices is None:
+        raise ValueError("chunk_size must be > 0")
+    topk_indices = topk_indices.view(batch, seq_len, k).sort(dim=-1).values
+    return topk_indices
+
+
+def _compute_approx_logits(
+    projected_hidden: torch.Tensor,
+    projected_weight: torch.Tensor,
+    device: str,
+    dtype: torch.dtype,
+    chunk_size: int,
+) -> torch.Tensor:
+    if device == "cuda" and not torch.cuda.is_available():
+        raise ValueError("Requested CUDA for approx logits, but CUDA is not available.")
+
+    projected_hidden = projected_hidden.to(device=device, dtype=dtype)
+    projected_weight = projected_weight.to(device=device, dtype=dtype)
+
+    if chunk_size <= 0:
+        return torch.matmul(projected_hidden, projected_weight.T)
+
+    chunks = []
+    offset = 0
+    while offset < projected_weight.size(0):
+        chunk = projected_weight[offset : offset + chunk_size]
+        chunk_logits = torch.matmul(projected_hidden, chunk.T)
+        chunks.append(chunk_logits)
+        offset += chunk_size
+    return torch.cat(chunks, dim=-1)
 
 
 def _evaluate_grid(config: EvalConfig) -> tuple[List[List[float]], List[List[dict[str, float]]]]:
@@ -162,19 +240,33 @@ def _evaluate_grid(config: EvalConfig) -> tuple[List[List[float]], List[List[dic
         with torch.no_grad():
             projected_hidden = torch.matmul(hidden_states, projection.T)
             projected_weight = torch.matmul(model.lm_head.weight, projection.T)
-            approx_logits = torch.matmul(projected_hidden, projected_weight.T)
+            approx_logits = _compute_approx_logits(
+                projected_hidden,
+                projected_weight,
+                device=config.approx_logits_device,
+                dtype=_parse_dtype(config.approx_logits_dtype),
+                chunk_size=config.approx_chunk_size,
+            )
         row_results: List[float] = []
         row_stats: List[dict[str, float]] = []
         for top_n in config.top_n_values:
             if top_n <= 0 or top_n > vocab_size:
                 raise ValueError(f"top_n must be in (0, {vocab_size}], got {top_n}")
+            approx_logits_for_eval = approx_logits
+            exact_hidden = hidden_states
+            exact_weight = model.lm_head.weight
+            if config.approx_logits_device == "cpu":
+                approx_logits_for_eval = approx_logits.cpu()
+                exact_hidden = hidden_states.cpu()
+                exact_weight = model.lm_head.weight.cpu()
             with torch.no_grad():
                 id_delta = _compute_topk_id_delta(
-                    hidden_states,
-                    model.lm_head.weight,
-                    approx_logits,
+                    exact_hidden,
+                    exact_weight,
+                    approx_logits_for_eval,
                     top_n,
                     config.top_k,
+                    config.exact_chunk_size,
                 )
             summary = _summarize_stats(id_delta)
             row_results.append(summary["mean"])
@@ -309,6 +401,32 @@ def _parse_args() -> EvalConfig:
         help="Directory to store CSV and heatmap outputs.",
     )
     parser.add_argument(
+        "--approx_logits_device",
+        type=str,
+        choices=("cuda", "cpu"),
+        default="cuda",
+        help="Device to store approximate logits (use cpu to save VRAM).",
+    )
+    parser.add_argument(
+        "--approx_logits_dtype",
+        type=str,
+        choices=("float32", "float16", "bfloat16"),
+        default="float32",
+        help="Datatype for approximate logits to reduce memory usage.",
+    )
+    parser.add_argument(
+        "--approx_chunk_size",
+        type=int,
+        default=0,
+        help="Chunk size for approximate logits matmul (0 = no chunking).",
+    )
+    parser.add_argument(
+        "--exact_chunk_size",
+        type=int,
+        default=0,
+        help="Chunk size for exact logits top-k (0 = no chunking).",
+    )
+    parser.add_argument(
         "--annotate_stats",
         type=str,
         default="true",
@@ -330,6 +448,10 @@ def _parse_args() -> EvalConfig:
         device=args.device,
         output_dir=args.output_dir,
         annotate_stats=annotate_stats,
+        approx_logits_device=args.approx_logits_device,
+        approx_logits_dtype=args.approx_logits_dtype,
+        approx_chunk_size=args.approx_chunk_size,
+        exact_chunk_size=args.exact_chunk_size,
     )
 
 
