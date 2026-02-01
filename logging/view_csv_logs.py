@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from shutil import get_terminal_size
-from typing import Iterable, Optional
+from typing import Optional, TypeVar
 
 from rich.columns import Columns
 from rich.console import Console, Group
@@ -85,6 +85,12 @@ def parse_args() -> argparse.Namespace:
         help="ASCII chart height in rows (default: 20).",
     )
     parser.add_argument(
+        "--max-x",
+        type=float,
+        default=3000.0,
+        help="Maximum X-axis value to scale the plot (default: 3000).",
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="Render once and exit (no live updates).",
@@ -127,7 +133,10 @@ def collect_series(paths: list[str], x_col_index: int, max_points: int) -> list[
     return [load_csv_series(path, x_col_index, max_points) for path in paths]
 
 
-def _sample_values(values: list[float], width: int) -> list[float]:
+SampledType = TypeVar("SampledType")
+
+
+def _sample_values(values: list[SampledType], width: int) -> list[SampledType]:
     if width <= 0:
         return []
     if len(values) <= width:
@@ -140,19 +149,13 @@ def _sample_values(values: list[float], width: int) -> list[float]:
     return sampled
 
 
-def _format_range(values: Iterable[float]) -> str:
-    values = list(values)
-    if not values:
-        return "n/a"
-    return f"{min(values):.4f}-{max(values):.4f}"
-
-
 def _build_plot_lines(
     width: int,
     height: int,
     series_list: list[CsvSeries],
     min_value: float,
     max_value: float,
+    max_x: float,
     train_styles: list[str],
     val_styles: list[str],
 ) -> list[Text]:
@@ -164,19 +167,37 @@ def _build_plot_lines(
     for idx, series in enumerate(series_list):
         if not series.x_values:
             continue
-        train_points = _sample_values(series.train_values, width)
-        val_points = _sample_values(series.val_values, width)
-        for x_pos, value in enumerate(train_points):
-            normalized = (value - min_value) / span
-            y_pos = height - 1 - int(normalized * (height - 1))
-            grid[y_pos][x_pos] = ("●", train_styles[idx % len(train_styles)])
-        for x_pos, value in enumerate(val_points):
-            normalized = (value - min_value) / span
-            y_pos = height - 1 - int(normalized * (height - 1))
-            if grid[y_pos][x_pos] is None:
-                grid[y_pos][x_pos] = ("○", val_styles[idx % len(val_styles)])
-            else:
-                grid[y_pos][x_pos] = ("◆", val_styles[idx % len(val_styles)])
+        train_style = train_styles[idx % len(train_styles)]
+        val_style = val_styles[idx % len(val_styles)]
+        train_points = list(zip(series.x_values, series.train_values))
+        val_points = list(zip(series.x_values, series.val_values))
+
+        def draw_series(points: list[tuple[float, float]], style: str, char: str) -> None:
+            if not points:
+                return
+            sampled_points = _sample_values(points, width)
+            last_x = None
+            last_y = None
+            for x_value, y_value in sampled_points:
+                clamped_x = max(0.0, min(max_x, x_value))
+                x_pos = int((clamped_x / max_x) * (width - 1)) if max_x > 0 else 0
+                normalized = (y_value - min_value) / span
+                y_pos = height - 1 - int(normalized * (height - 1))
+                if last_x is not None and last_y is not None:
+                    dx = x_pos - last_x
+                    dy = y_pos - last_y
+                    steps = max(abs(dx), abs(dy), 1)
+                    for step in range(steps + 1):
+                        interp_x = int(last_x + dx * (step / steps))
+                        interp_y = int(last_y + dy * (step / steps))
+                        grid[interp_y][interp_x] = (char, style)
+                else:
+                    grid[y_pos][x_pos] = (char, style)
+                last_x = x_pos
+                last_y = y_pos
+
+        draw_series(train_points, train_style, "─")
+        draw_series(val_points, val_style, "═")
 
     lines: list[Text] = []
     for row in grid:
@@ -196,9 +217,11 @@ def render_ascii_plot(
     x_axis_label: str,
     layout: str,
     height: int,
+    max_x: float,
 ) -> Group:
     term_width = get_terminal_size((120, 30)).columns
-    plot_width = max(20, min(120, term_width - 10))
+    label_width = 10
+    plot_width = max(20, min(120, term_width - label_width - 6))
 
     if not series_list:
         empty_text = Text("No matching files found.", style="bold yellow")
@@ -229,11 +252,49 @@ def render_ascii_plot(
         series_list,
         min_value,
         max_value,
+        max_x,
         train_styles,
         val_styles,
     )
+    tick_count = 5
+    tick_values = [
+        min_value + i * (max_value - min_value) / (tick_count - 1)
+        for i in range(tick_count)
+    ]
+    tick_rows = {
+        max(
+            0,
+            min(
+                len(plot_lines) - 1,
+                len(plot_lines) - 1 - int(i * (len(plot_lines) - 1) / (tick_count - 1)),
+            ),
+        )
+        for i in range(tick_count)
+    }
+    labeled_lines: list[Text] = []
+    for row_idx, line in enumerate(plot_lines):
+        label = ""
+        if row_idx in tick_rows:
+            tick_index = tick_count - 1 - int(row_idx * (tick_count - 1) / (len(plot_lines) - 1))
+            label = f"{tick_values[tick_index]:>7.3f}"
+        prefix = Text(f"{label:>{label_width}} │", style="dim")
+        combined = Text()
+        combined.append_text(prefix)
+        combined.append_text(line)
+        labeled_lines.append(combined)
+
+    axis_line = Text(f"{' ' * label_width} └" + "─" * plot_width, style="dim")
+    tick_positions = [0, plot_width // 2, plot_width - 1]
+    tick_labels = [f"0", f"{max_x / 2:.0f}", f"{max_x:.0f}"]
+    axis_labels = Text(" " * (label_width + 2))
+    last_pos = 0
+    for pos, label in zip(tick_positions, tick_labels):
+        spacing = max(0, pos - last_pos)
+        axis_labels.append(" " * spacing)
+        axis_labels.append(label)
+        last_pos = pos + len(label)
     axis_info = Text(
-        f"{x_axis_label} | loss range {min_value:.4f}-{max_value:.4f}",
+        f"{x_axis_label} (max {max_x:.0f}) | loss range {min_value:.4f}-{max_value:.4f}",
         style="dim",
     )
 
@@ -242,13 +303,13 @@ def render_ascii_plot(
         train_style = train_styles[idx % len(train_styles)]
         val_style = val_styles[idx % len(val_styles)]
         legend = Text()
-        legend.append("● train ", style=train_style)
-        legend.append("○ val ", style=val_style)
+        legend.append("─ train ", style=train_style)
+        legend.append("═ val ", style=val_style)
         legend.append(series.name, style="bold")
         legend_lines.append(legend)
 
     plot_panel = Panel(
-        Group(*plot_lines, axis_info),
+        Group(*labeled_lines, axis_line, axis_labels, axis_info),
         title="CSV Logs (train/val loss)",
         padding=(0, 1),
     )
@@ -326,6 +387,7 @@ def main() -> None:
                             args.x_axis,
                             args.layout,
                             args.height,
+                            args.max_x,
                         )
                         live.update(plot)
                         last_signatures = signatures
