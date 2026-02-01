@@ -33,6 +33,35 @@ def emit_tokenlist(tokens):
         encoding="utf-8",
     )
 
+
+def transform_lowercase(text):
+    """
+    Convert text to lowercase while preserving non-letter characters.
+    """
+    transformed = text.lower()
+    emit_tokenlist(sorted(set(transformed)))
+    return transformed
+
+
+def transform_case_map(text):
+    """
+    Map each character:
+      - 'L' if lowercase
+      - 'U' if uppercase
+      - '_' for everything else
+    """
+    transformed_chars = []
+    for char in text:
+        if char.islower():
+            transformed_chars.append("L")
+        elif char.isupper():
+            transformed_chars.append("U")
+        else:
+            transformed_chars.append("_")
+    emit_tokenlist(["L", "U", "_"])
+    return "".join(transformed_chars)
+
+
 def transform_cvp(text):
     """
     The original basic transformation:
@@ -324,7 +353,11 @@ def transform_file(filename, method, max_positions, newline_modulus):
             # Read the entire file content
             file_content = file.read()
 
-            if method == 'cvp':
+            if method == 'lowercase':
+                transformed_content = transform_lowercase(file_content)
+            elif method == 'case_map':
+                transformed_content = transform_case_map(file_content)
+            elif method == 'cvp':
                 transformed_content = transform_cvp(file_content)
             elif method == 'part_of_speech':
                 transformed_content = transform_part_of_speech(file_content)
@@ -357,7 +390,15 @@ if __name__ == "__main__":
     parser.add_argument("input_file", help="The input text file to transform.")
     parser.add_argument(
         "--method", 
-        choices=["cvp", "part_of_speech", "in_word_position", "since_newline", "newlines_mod"],
+        choices=[ 
+            "lowercase",
+            "case_map",
+            "cvp",
+            "part_of_speech",
+            "in_word_position",
+            "since_newline",
+            "newlines_mod"
+        ],
         default="cvp",
         help="Which transformation method to use."
     )
