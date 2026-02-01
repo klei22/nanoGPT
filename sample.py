@@ -118,6 +118,18 @@ def parse_args():
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
+    parser.add_argument(
+        "--eval_output_dir",
+        type=str,
+        default=None,
+        help="Optional directory to also write eval_loss.txt when running --eval_only.",
+    )
+    parser.add_argument(
+        "--embedding_gaussian_noise_std",
+        type=float,
+        default=None,
+        help="Override embedding gaussian noise std at inference time (None uses checkpoint value).",
+    )
 
     parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size to use for evaluation")
@@ -1268,6 +1280,9 @@ def main():
             setattr(gptconf, k, v)
         model = GPT.from_pretrained(gptconf, model_type=args.init_from)
 
+    if args.embedding_gaussian_noise_std is not None:
+        model.config.embedding_gaussian_noise_std = args.embedding_gaussian_noise_std
+
     if args.init_from == 'resume' and args.multicontext is None:
         args.multicontext = bool(getattr(model.config, "multicontext", False))
 
@@ -1387,11 +1402,15 @@ def main():
         summary.setdefault("timestamp", timestamp)
         summary.setdefault("out_dir", args.out_dir)
         summary.setdefault("init_from", args.init_from)
+        summary.setdefault("embedding_gaussian_noise_std", model.config.embedding_gaussian_noise_std)
 
+        extra_dirs = [out_dir]
+        if args.eval_output_dir:
+            extra_dirs.append(args.eval_output_dir)
         write_eval_summary(
             args.out_dir,
             summary,
-            extra_dirs=[out_dir],
+            extra_dirs=extra_dirs,
         )
         return
 
@@ -1552,4 +1571,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
