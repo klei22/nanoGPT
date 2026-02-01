@@ -114,7 +114,7 @@ def _compute_topk_id_delta(
     exact_logits = exact_logits.view(batch, seq_len, top_n)
 
     blended_logits = approx_logits.clone()
-    blended_logits = blended_logits.scatter(-1, topk, exact_logits)
+    blended_logits = blended_logits.scatter(-1, topk, exact_logits.to(blended_logits.dtype))
 
     topk_exact = _topk_chunked(hidden_states, weight, top_k, chunk_size=exact_chunk_size)
     topk_est = blended_logits.topk(k=top_k, dim=-1).indices.sort(dim=-1).values
