@@ -79,10 +79,15 @@ def _build_projection_matrix(
         matrix = torch.zeros((target_dim, hidden_dim))
         matrix[probs < 1 / 6] = 1.0
         matrix[(probs >= 1 / 6) & (probs < 2 / 6)] = -1.0
+    elif projection == "orthonormal":
+        raw = torch.randn((hidden_dim, target_dim), generator=generator)
+        q, _ = torch.linalg.qr(raw, mode="reduced")
+        matrix = q.T
     else:
         raise ValueError(f"Unknown projection type: {projection}")
 
-    matrix = matrix / math.sqrt(target_dim)
+    if projection != "orthonormal":
+        matrix = matrix / math.sqrt(target_dim)
     return matrix.to(device)
 
 
@@ -248,8 +253,8 @@ def _parse_args() -> EvalConfig:
     parser.add_argument(
         "--projection",
         type=str,
-        choices=("gaussian", "achlioptas"),
-        default="gaussian",
+        choices=("orthonormal", "gaussian", "achlioptas"),
+        default="orthonormal",
         help="JL projection matrix type.",
     )
     parser.add_argument(

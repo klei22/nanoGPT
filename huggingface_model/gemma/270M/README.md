@@ -40,5 +40,6 @@ python huggingface_model/gemma/270M/jl_head_eval.py \
   --top_k 65 \
   --top_n_values 1000,2000,5000,10000 \
   --target_dimensions 500,400,300,200,100 \
+  --projection orthonormal \
   --output_dir jl_eval_outputs
 ```
