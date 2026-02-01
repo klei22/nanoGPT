@@ -28,6 +28,7 @@ class EvalConfig:
     projection: str
     device: str
     output_dir: str
+    annotate_stats: bool
 
 
 def _parse_int_list(value: str) -> List[int]:
@@ -113,11 +114,22 @@ def _compute_topk_id_delta(
     full_logits = torch.matmul(hidden_states, weight.T)
     topk_exact = full_logits.topk(k=top_k, dim=-1).indices.sort(dim=-1).values
     topk_est = blended_logits.topk(k=top_k, dim=-1).indices.sort(dim=-1).values
-    id_delta = (topk_exact - topk_est).abs().float().mean()
+    id_delta = (topk_exact - topk_est).abs().float()
     return id_delta
 
 
-def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
+def _summarize_stats(values: torch.Tensor) -> dict[str, float]:
+    flat = values.reshape(-1).float()
+    return {
+        "mean": flat.mean().item(),
+        "median": flat.median().item(),
+        "max": flat.max().item(),
+        "min": flat.min().item(),
+        "std": flat.std(unbiased=False).item(),
+    }
+
+
+def _evaluate_grid(config: EvalConfig) -> tuple[List[List[float]], List[List[dict[str, float]]]]:
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -136,6 +148,7 @@ def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
 
     vocab_size, hidden_dim = model.lm_head.weight.shape
     results: List[List[float]] = []
+    stats: List[List[dict[str, float]]] = []
     for target_dim in config.target_dimensions:
         if target_dim <= 0 or target_dim > hidden_dim:
             raise ValueError(f"target_dimension must be in (0, {hidden_dim}], got {target_dim}")
@@ -151,6 +164,7 @@ def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
             projected_weight = torch.matmul(model.lm_head.weight, projection.T)
             approx_logits = torch.matmul(projected_hidden, projected_weight.T)
         row_results: List[float] = []
+        row_stats: List[dict[str, float]] = []
         for top_n in config.top_n_values:
             if top_n <= 0 or top_n > vocab_size:
                 raise ValueError(f"top_n must be in (0, {vocab_size}], got {top_n}")
@@ -162,10 +176,19 @@ def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
                     top_n,
                     config.top_k,
                 )
-            row_results.append(id_delta.item())
-            print(f"target_dim={target_dim} top_n={top_n} avg_id_delta={id_delta.item():.4f}")
+            summary = _summarize_stats(id_delta)
+            row_results.append(summary["mean"])
+            row_stats.append(summary)
+            print(
+                "target_dim={target_dim} top_n={top_n} avg_id_delta={mean:.4f}".format(
+                    target_dim=target_dim,
+                    top_n=top_n,
+                    mean=summary["mean"],
+                )
+            )
         results.append(row_results)
-    return results
+        stats.append(row_stats)
+    return results, stats
 
 
 def _write_csv(
@@ -186,6 +209,8 @@ def _plot_heatmap(
     target_dimensions: Sequence[int],
     top_n_values: Sequence[int],
     results: Sequence[Sequence[float]],
+    stats: Sequence[Sequence[dict[str, float]]],
+    annotate_stats: bool,
 ) -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
     image = ax.imshow(results, aspect="auto", origin="lower")
@@ -195,6 +220,20 @@ def _plot_heatmap(
     ax.set_ylabel("Target dimension")
     ax.set_title("JL-projected LM head top-k ID delta")
     fig.colorbar(image, ax=ax, label="Average |ID delta|")
+    if annotate_stats:
+        for row_idx, row in enumerate(stats):
+            for col_idx, entry in enumerate(row):
+                ax.text(
+                    col_idx,
+                    row_idx,
+                    "μ {mean:.2f}\nmed {median:.2f}\nmax {max:.2f}\nmin {min:.2f}\nσ {std:.2f}".format(
+                        **entry
+                    ),
+                    ha="center",
+                    va="center",
+                    color="white",
+                    fontsize=7,
+                )
     fig.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)
@@ -269,8 +308,15 @@ def _parse_args() -> EvalConfig:
         default="jl_eval_outputs",
         help="Directory to store CSV and heatmap outputs.",
     )
+    parser.add_argument(
+        "--annotate_stats",
+        type=str,
+        default="true",
+        help="Whether to annotate heatmap cells with summary stats (true/false).",
+    )
     args = parser.parse_args()
     fineweb_subset = args.fineweb_subset or None
+    annotate_stats = args.annotate_stats.lower() in {"1", "true", "yes", "y"}
     return EvalConfig(
         model_name=args.model_name,
         dataset_split=args.dataset_split,
@@ -283,18 +329,26 @@ def _parse_args() -> EvalConfig:
         projection=args.projection,
         device=args.device,
         output_dir=args.output_dir,
+        annotate_stats=annotate_stats,
     )
 
 
 def main() -> None:
     config = _parse_args()
     os.makedirs(config.output_dir, exist_ok=True)
-    results = _evaluate_grid(config)
+    results, stats = _evaluate_grid(config)
 
     csv_path = os.path.join(config.output_dir, "jl_head_eval_results.csv")
     heatmap_path = os.path.join(config.output_dir, "jl_head_eval_heatmap.png")
     _write_csv(csv_path, config.target_dimensions, config.top_n_values, results)
-    _plot_heatmap(heatmap_path, config.target_dimensions, config.top_n_values, results)
+    _plot_heatmap(
+        heatmap_path,
+        config.target_dimensions,
+        config.top_n_values,
+        results,
+        stats,
+        config.annotate_stats,
+    )
     print(f"Saved results to {csv_path} and {heatmap_path}")
 
 
