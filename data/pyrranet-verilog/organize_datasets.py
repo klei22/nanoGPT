@@ -13,14 +13,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Download the PyraNet-Verilog dataset and split each code sample into"
-            " its own file named orig_<index>.txt."
+            " its own file named orig_<index>.v."
         )
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path(__file__).resolve().parent / "orig",
-        help="Directory to write orig_<index>.txt files.",
+        help="Directory to write orig_<index>.v files.",
     )
     parser.add_argument(
         "--max-rows",
@@ -47,7 +47,7 @@ def write_samples(output_dir: Path, max_rows: int | None, streaming: bool, overw
 
     count = 0
     for row in dataset:
-        filename = output_dir / f"orig_{count:07d}.txt"
+        filename = output_dir / f"orig_{count:07d}.v"
         if filename.exists() and not overwrite:
             count += 1
             if max_rows is not None and count >= max_rows:

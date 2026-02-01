@@ -4,5 +4,5 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/orig"
 
-python3 "${SCRIPT_DIR}/prepare.py" \
+python3 "${SCRIPT_DIR}/organize_datasets.py" \
   --output-dir "${OUTPUT_DIR}"
