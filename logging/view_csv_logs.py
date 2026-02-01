@@ -302,10 +302,19 @@ def render_ascii_plot(
     for idx, series in enumerate(series_list):
         train_style = train_styles[idx % len(train_styles)]
         val_style = val_styles[idx % len(val_styles)]
+        best_val = None
+        best_iter = None
+        if series.val_values and series.x_values:
+            best_val = min(series.val_values)
+            best_index = series.val_values.index(best_val)
+            if best_index < len(series.x_values):
+                best_iter = series.x_values[best_index]
         legend = Text()
         legend.append("─ train ", style=train_style)
         legend.append("═ val ", style=val_style)
         legend.append(series.name, style="bold")
+        if best_val is not None and best_iter is not None:
+            legend.append(f" | best val {best_val:.4f} @ {best_iter:.0f}")
         legend_lines.append(legend)
 
     plot_panel = Panel(
