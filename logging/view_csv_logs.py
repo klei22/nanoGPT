@@ -7,8 +7,12 @@ import glob
 import os
 import time
 from dataclasses import dataclass
+from shutil import get_terminal_size
+from typing import Iterable
 
-import matplotlib.pyplot as plt
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
 
 
 TRAIN_COL_INDEX = 2
@@ -61,6 +65,12 @@ def parse_args() -> argparse.Namespace:
         help="Maximum number of points to display (0 for all).",
     )
     parser.add_argument(
+        "--mode",
+        choices=("ascii", "matplotlib"),
+        default="ascii",
+        help="Render mode (default: ascii).",
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="Render once and exit (no live updates).",
@@ -103,25 +113,74 @@ def collect_series(paths: list[str], x_col_index: int, max_points: int) -> list[
     return [load_csv_series(path, x_col_index, max_points) for path in paths]
 
 
-def plot_series(series_list: list[CsvSeries], x_axis_label: str) -> None:
-    plt.cla()
+def _sample_values(values: list[float], width: int) -> list[float]:
+    if width <= 0:
+        return []
+    if len(values) <= width:
+        return values
+    step = len(values) / width
+    sampled = []
+    for i in range(width):
+        index = int(i * step)
+        sampled.append(values[index])
+    return sampled
+
+
+def _sparkline(values: list[float], width: int, min_value: float, max_value: float) -> str:
+    if not values:
+        return ""
+    blocks = "▁▂▃▄▅▆▇█"
+    span = max(max_value - min_value, 1e-12)
+    sampled = _sample_values(values, width)
+    chars = []
+    for value in sampled:
+        normalized = (value - min_value) / span
+        idx = min(len(blocks) - 1, max(0, int(normalized * (len(blocks) - 1))))
+        chars.append(blocks[idx])
+    return "".join(chars)
+
+
+def _format_range(values: Iterable[float]) -> str:
+    values = list(values)
+    if not values:
+        return "n/a"
+    return f"{min(values):.4f}-{max(values):.4f}"
+
+
+def render_ascii_table(series_list: list[CsvSeries], x_axis_label: str) -> Table:
+    table = Table(title="CSV Logs (train/val loss)", show_lines=True)
+    table.add_column("run")
+    table.add_column(f"{x_axis_label} range", justify="right")
+    table.add_column("train", no_wrap=True)
+    table.add_column("val", no_wrap=True)
+    table.add_column("train range", justify="right")
+    table.add_column("val range", justify="right")
+
+    term_width = get_terminal_size((120, 30)).columns
+    spark_width = max(10, min(80, term_width - 60))
+
     if not series_list:
-        plt.title("CSV Logs (no matching files found)")
-        plt.xlabel(x_axis_label)
-        plt.ylabel("loss")
-        plt.pause(0.1)
-        return
+        table.add_row("no matching files", "-", "-", "-", "-", "-")
+        return table
+
     for series in series_list:
         if not series.x_values:
+            table.add_row(series.name, "-", "-", "-", "-", "-")
             continue
-        plt.plot(series.x_values, series.train_values, label=f"{series.name} train")
-        plt.plot(series.x_values, series.val_values, label=f"{series.name} val")
-    plt.title("CSV Logs (train/val loss)")
-    plt.xlabel(x_axis_label)
-    plt.ylabel("loss")
-    plt.grid(True, alpha=0.3)
-    plt.legend(fontsize="small")
-    plt.tight_layout()
+        combined_min = min(series.train_values + series.val_values)
+        combined_max = max(series.train_values + series.val_values)
+        x_range = f"{series.x_values[0]:.0f}-{series.x_values[-1]:.0f}"
+        train_spark = _sparkline(series.train_values, spark_width, combined_min, combined_max)
+        val_spark = _sparkline(series.val_values, spark_width, combined_min, combined_max)
+        table.add_row(
+            series.name,
+            x_range,
+            train_spark,
+            val_spark,
+            _format_range(series.train_values),
+            _format_range(series.val_values),
+        )
+    return table
 
 
 def get_file_signatures(paths: list[str]) -> dict[str, tuple[float, int]]:
@@ -138,24 +197,57 @@ def get_file_signatures(paths: list[str]) -> dict[str, tuple[float, int]]:
 def main() -> None:
     args = parse_args()
     x_col_index = ITER_COL_INDEX if args.x_axis == "iter" else TOKENS_COL_INDEX
-
-    plt.ion()
-    fig, _ = plt.subplots()
-    fig.canvas.manager.set_window_title("nanoGPT CSV Log Viewer")
+    console = Console()
+    use_matplotlib = args.mode == "matplotlib"
+    if use_matplotlib:
+        import matplotlib.pyplot as plt
+        plt.ion()
+        fig, _ = plt.subplots()
+        fig.canvas.manager.set_window_title("nanoGPT CSV Log Viewer")
 
     last_signatures: dict[str, tuple[float, int]] = {}
     try:
-        while True:
-            paths = find_csv_files(args.csv_dir, args.pattern)
-            signatures = get_file_signatures(paths)
-            if signatures != last_signatures or args.once:
-                series_list = collect_series(paths, x_col_index, args.max_points)
-                plot_series(series_list, args.x_axis)
-                last_signatures = signatures
-                plt.pause(0.1)
-            if args.once:
-                break
-            time.sleep(args.refresh_seconds)
+        if use_matplotlib:
+            while True:
+                paths = find_csv_files(args.csv_dir, args.pattern)
+                signatures = get_file_signatures(paths)
+                if signatures != last_signatures or args.once:
+                    series_list = collect_series(paths, x_col_index, args.max_points)
+                    plt.cla()
+                    if not series_list:
+                        plt.title("CSV Logs (no matching files found)")
+                        plt.xlabel(args.x_axis)
+                        plt.ylabel("loss")
+                    else:
+                        for series in series_list:
+                            if not series.x_values:
+                                continue
+                            plt.plot(series.x_values, series.train_values, label=f"{series.name} train")
+                            plt.plot(series.x_values, series.val_values, label=f"{series.name} val")
+                        plt.title("CSV Logs (train/val loss)")
+                        plt.xlabel(args.x_axis)
+                        plt.ylabel("loss")
+                        plt.grid(True, alpha=0.3)
+                        plt.legend(fontsize="small")
+                        plt.tight_layout()
+                    last_signatures = signatures
+                    plt.pause(0.1)
+                if args.once:
+                    break
+                time.sleep(args.refresh_seconds)
+        else:
+            with Live(console=console, refresh_per_second=4, screen=True) as live:
+                while True:
+                    paths = find_csv_files(args.csv_dir, args.pattern)
+                    signatures = get_file_signatures(paths)
+                    if signatures != last_signatures or args.once:
+                        series_list = collect_series(paths, x_col_index, args.max_points)
+                        table = render_ascii_table(series_list, args.x_axis)
+                        live.update(table)
+                        last_signatures = signatures
+                    if args.once:
+                        break
+                    time.sleep(args.refresh_seconds)
     except KeyboardInterrupt:
         pass
 
