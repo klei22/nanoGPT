@@ -7,7 +7,7 @@ import csv
 import math
 import os
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 import matplotlib.pyplot as plt
 import torch
@@ -98,12 +98,10 @@ def _ensure_labels_in_topk(topk: torch.Tensor, labels: torch.Tensor) -> torch.Te
 def _compute_topn_loss(
     hidden_states: torch.Tensor,
     weight: torch.Tensor,
-    projected_hidden: torch.Tensor,
-    projected_weight: torch.Tensor,
+    approx_logits: torch.Tensor,
     top_n: int,
     labels: torch.Tensor,
 ) -> torch.Tensor:
-    approx_logits = torch.matmul(projected_hidden, projected_weight.T)
     topk = approx_logits.topk(k=top_n, dim=-1).indices
     topk = _ensure_labels_in_topk(topk, labels)
 
@@ -112,11 +110,13 @@ def _compute_topn_loss(
     flat_indices = topk.reshape(-1, top_n)
     gathered_weight = weight[flat_indices]
     exact_logits = torch.einsum("bkh,bh->bk", gathered_weight, flat_hidden)
+    exact_logits = exact_logits.view(batch, seq_len, top_n)
 
     flat_labels = labels.reshape(-1)
-    label_positions = (flat_indices == flat_labels.unsqueeze(-1)).float().argmax(dim=-1)
-    log_probs = torch.log_softmax(exact_logits, dim=-1)
-    nll = -log_probs[torch.arange(log_probs.size(0)), label_positions]
+    blended_logits = approx_logits.clone()
+    blended_logits = blended_logits.scatter(-1, topk, exact_logits)
+    log_probs = torch.log_softmax(blended_logits, dim=-1)
+    nll = -log_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
     return nll.mean()
 
 
@@ -153,6 +153,7 @@ def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
         with torch.no_grad():
             projected_hidden = torch.matmul(hidden_states, projection.T)
             projected_weight = torch.matmul(model.lm_head.weight, projection.T)
+            approx_logits = torch.matmul(projected_hidden, projected_weight.T)
         row_results: List[float] = []
         for top_n in config.top_n_values:
             if top_n <= 0 or top_n > vocab_size:
@@ -161,8 +162,7 @@ def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
                 loss = _compute_topn_loss(
                     hidden_states,
                     model.lm_head.weight,
-                    projected_hidden,
-                    projected_weight,
+                    approx_logits,
                     top_n,
                     labels,
                 )
