@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from shutil import get_terminal_size
-from typing import Iterable
+from typing import Iterable, Optional
 
 from rich.console import Console
 from rich.live import Live
@@ -43,8 +43,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--pattern",
-        default="bulk_*.csv",
-        help="Glob pattern for CSV files (default: bulk_*.csv).",
+        default="**/bulk_*.csv",
+        help="Glob pattern for CSV files (default: **/bulk_*.csv).",
     )
     parser.add_argument(
         "--refresh-seconds",
@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
 
 def find_csv_files(csv_dir: str, pattern: str) -> list[str]:
     search_pattern = os.path.join(csv_dir, pattern)
-    return sorted(glob.glob(search_pattern))
+    return sorted(glob.glob(search_pattern, recursive=True))
 
 
 def load_csv_series(path: str, x_col_index: int, max_points: int) -> CsvSeries:
@@ -205,13 +205,13 @@ def main() -> None:
         fig, _ = plt.subplots()
         fig.canvas.manager.set_window_title("nanoGPT CSV Log Viewer")
 
-    last_signatures: dict[str, tuple[float, int]] = {}
+    last_signatures: Optional[dict[str, tuple[float, int]]] = None
     try:
         if use_matplotlib:
             while True:
                 paths = find_csv_files(args.csv_dir, args.pattern)
                 signatures = get_file_signatures(paths)
-                if signatures != last_signatures or args.once:
+                if last_signatures is None or signatures != last_signatures or args.once:
                     series_list = collect_series(paths, x_col_index, args.max_points)
                     plt.cla()
                     if not series_list:
@@ -240,7 +240,7 @@ def main() -> None:
                 while True:
                     paths = find_csv_files(args.csv_dir, args.pattern)
                     signatures = get_file_signatures(paths)
-                    if signatures != last_signatures or args.once:
+                    if last_signatures is None or signatures != last_signatures or args.once:
                         series_list = collect_series(paths, x_col_index, args.max_points)
                         table = render_ascii_table(series_list, args.x_axis)
                         live.update(table)

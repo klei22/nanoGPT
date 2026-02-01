@@ -225,7 +225,7 @@ To plot the bulk CSV logs in a live-updating, tensorboard-like view (train/val o
 the same chart with filenames as labels), run:
 
 ```bash
-python3 logging/view_csv_logs.py --csv-dir csv_logs --pattern "bulk_*.csv"
+python3 logging/view_csv_logs.py --csv-dir csv_logs --pattern "**/bulk_*.csv"
 ```
 
 By default the viewer renders an ASCII chart in the terminal, refreshes every 5
