@@ -1098,7 +1098,7 @@ class InfiniteHeadAttention(nn.Module):
             )
             if self.infinite_kv_identity_mode == "static":
                 with torch.no_grad():
-                    self.c_proj.weight[:, :self.identity_v_dim].copy_(self.kv_identity_wv.transpose(0, 1))
+                    self.c_proj.weight[:, :self.identity_v_dim].copy_(self.kv_identity_wv)
         elif self.n_cproj==1:
             print("use n_cproj 1", self.n_v_head_dim, self.n_embd)
             self.c_proj = self.linear_variant_attn_proj(self.n_v_head_dim, self.n_embd, config, bias=config.bias)
@@ -1174,8 +1174,7 @@ class InfiniteHeadAttention(nn.Module):
 
     def _concat_cproj_weight(self) -> torch.Tensor:
         if self.infinite_kv_identity_mode == "learned":
-            identity_block = self.kv_identity_wv.transpose(0, 1)
-            weight = torch.cat([identity_block, self.c_proj.weight[:, self.identity_v_dim:]], dim=1)
+            weight = torch.cat([self.kv_identity_wv, self.c_proj.weight[:, self.identity_v_dim:]], dim=1)
         else:
             weight = self.c_proj.weight
         if self.l2_norm_attn_cproj:
