@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from shutil import get_terminal_size
 from typing import Iterable, Optional
 
-from rich.console import Console
+from rich.columns import Columns
+from rich.console import Console, Group
 from rich.live import Live
-from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
 
 
 TRAIN_COL_INDEX = 2
@@ -71,6 +73,18 @@ def parse_args() -> argparse.Namespace:
         help="Render mode (default: ascii).",
     )
     parser.add_argument(
+        "--layout",
+        choices=("vertical", "horizontal"),
+        default="vertical",
+        help="ASCII layout for legend placement (default: vertical).",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=20,
+        help="ASCII chart height in rows (default: 20).",
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="Render once and exit (no live updates).",
@@ -126,20 +140,6 @@ def _sample_values(values: list[float], width: int) -> list[float]:
     return sampled
 
 
-def _sparkline(values: list[float], width: int, min_value: float, max_value: float) -> str:
-    if not values:
-        return ""
-    blocks = "▁▂▃▄▅▆▇█"
-    span = max(max_value - min_value, 1e-12)
-    sampled = _sample_values(values, width)
-    chars = []
-    for value in sampled:
-        normalized = (value - min_value) / span
-        idx = min(len(blocks) - 1, max(0, int(normalized * (len(blocks) - 1))))
-        chars.append(blocks[idx])
-    return "".join(chars)
-
-
 def _format_range(values: Iterable[float]) -> str:
     values = list(values)
     if not values:
@@ -147,40 +147,119 @@ def _format_range(values: Iterable[float]) -> str:
     return f"{min(values):.4f}-{max(values):.4f}"
 
 
-def render_ascii_table(series_list: list[CsvSeries], x_axis_label: str) -> Table:
-    table = Table(title="CSV Logs (train/val loss)", show_lines=True)
-    table.add_column("run")
-    table.add_column(f"{x_axis_label} range", justify="right")
-    table.add_column("train", no_wrap=True)
-    table.add_column("val", no_wrap=True)
-    table.add_column("train range", justify="right")
-    table.add_column("val range", justify="right")
+def _build_plot_lines(
+    width: int,
+    height: int,
+    series_list: list[CsvSeries],
+    min_value: float,
+    max_value: float,
+    train_styles: list[str],
+    val_styles: list[str],
+) -> list[Text]:
+    grid: list[list[Optional[tuple[str, str]]]] = [
+        [None for _ in range(width)] for _ in range(height)
+    ]
+    span = max(max_value - min_value, 1e-12)
 
+    for idx, series in enumerate(series_list):
+        if not series.x_values:
+            continue
+        train_points = _sample_values(series.train_values, width)
+        val_points = _sample_values(series.val_values, width)
+        for x_pos, value in enumerate(train_points):
+            normalized = (value - min_value) / span
+            y_pos = height - 1 - int(normalized * (height - 1))
+            grid[y_pos][x_pos] = ("●", train_styles[idx % len(train_styles)])
+        for x_pos, value in enumerate(val_points):
+            normalized = (value - min_value) / span
+            y_pos = height - 1 - int(normalized * (height - 1))
+            if grid[y_pos][x_pos] is None:
+                grid[y_pos][x_pos] = ("○", val_styles[idx % len(val_styles)])
+            else:
+                grid[y_pos][x_pos] = ("◆", val_styles[idx % len(val_styles)])
+
+    lines: list[Text] = []
+    for row in grid:
+        line = Text()
+        for cell in row:
+            if cell is None:
+                line.append(" ")
+            else:
+                char, style = cell
+                line.append(char, style=style)
+        lines.append(line)
+    return lines
+
+
+def render_ascii_plot(
+    series_list: list[CsvSeries],
+    x_axis_label: str,
+    layout: str,
+    height: int,
+) -> Group:
     term_width = get_terminal_size((120, 30)).columns
-    spark_width = max(10, min(80, term_width - 60))
+    plot_width = max(20, min(120, term_width - 10))
 
     if not series_list:
-        table.add_row("no matching files", "-", "-", "-", "-", "-")
-        return table
+        empty_text = Text("No matching files found.", style="bold yellow")
+        return Group(Panel(empty_text, title="CSV Logs (train/val loss)"))
 
-    for series in series_list:
-        if not series.x_values:
-            table.add_row(series.name, "-", "-", "-", "-", "-")
-            continue
-        combined_min = min(series.train_values + series.val_values)
-        combined_max = max(series.train_values + series.val_values)
-        x_range = f"{series.x_values[0]:.0f}-{series.x_values[-1]:.0f}"
-        train_spark = _sparkline(series.train_values, spark_width, combined_min, combined_max)
-        val_spark = _sparkline(series.val_values, spark_width, combined_min, combined_max)
-        table.add_row(
-            series.name,
-            x_range,
-            train_spark,
-            val_spark,
-            _format_range(series.train_values),
-            _format_range(series.val_values),
-        )
-    return table
+    combined_values = [
+        value
+        for series in series_list
+        for value in (series.train_values + series.val_values)
+    ]
+    min_value = min(combined_values)
+    max_value = max(combined_values)
+
+    train_styles = ["red", "green", "yellow", "blue", "magenta", "cyan", "white"]
+    val_styles = [
+        "bright_red",
+        "bright_green",
+        "bright_yellow",
+        "bright_blue",
+        "bright_magenta",
+        "bright_cyan",
+        "bright_white",
+    ]
+
+    plot_lines = _build_plot_lines(
+        plot_width,
+        max(5, height),
+        series_list,
+        min_value,
+        max_value,
+        train_styles,
+        val_styles,
+    )
+    axis_info = Text(
+        f"{x_axis_label} | loss range {min_value:.4f}-{max_value:.4f}",
+        style="dim",
+    )
+
+    legend_lines: list[Text] = []
+    for idx, series in enumerate(series_list):
+        train_style = train_styles[idx % len(train_styles)]
+        val_style = val_styles[idx % len(val_styles)]
+        legend = Text()
+        legend.append("● train ", style=train_style)
+        legend.append("○ val ", style=val_style)
+        legend.append(series.name, style="bold")
+        legend_lines.append(legend)
+
+    plot_panel = Panel(
+        Group(*plot_lines, axis_info),
+        title="CSV Logs (train/val loss)",
+        padding=(0, 1),
+    )
+    legend_panel = Panel(
+        Group(*legend_lines) if legend_lines else Text("No runs"),
+        title="Legend",
+    )
+
+    if layout == "horizontal":
+        return Group(Columns([plot_panel, legend_panel], expand=True))
+    return Group(plot_panel, legend_panel)
 
 
 def get_file_signatures(paths: list[str]) -> dict[str, tuple[float, int]]:
@@ -242,8 +321,13 @@ def main() -> None:
                     signatures = get_file_signatures(paths)
                     if last_signatures is None or signatures != last_signatures or args.once:
                         series_list = collect_series(paths, x_col_index, args.max_points)
-                        table = render_ascii_table(series_list, args.x_axis)
-                        live.update(table)
+                        plot = render_ascii_plot(
+                            series_list,
+                            args.x_axis,
+                            args.layout,
+                            args.height,
+                        )
+                        live.update(plot)
                         last_signatures = signatures
                     if args.once:
                         break

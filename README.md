@@ -229,8 +229,9 @@ python3 logging/view_csv_logs.py --csv-dir csv_logs --pattern "**/bulk_*.csv"
 ```
 
 By default the viewer renders an ASCII chart in the terminal, refreshes every 5
-seconds, and can be switched to a tokens X-axis with `--x-axis tokens`. For a
-matplotlib window, add `--mode matplotlib`.
+seconds, and can be switched to a tokens X-axis with `--x-axis tokens`. Use
+`--layout horizontal` to place the legend beside the graph, or set the chart
+height with `--height`. For a matplotlib window, add `--mode matplotlib`.
 
 You can view live validation loss updates on url: [http://localhost:6006](http://localhost:6006)
 
