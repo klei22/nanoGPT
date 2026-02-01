@@ -352,6 +352,12 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
+    def add_embedding_gaussian_noise(self, embeddings):
+        if self.config.embedding_gaussian_noise_std and self.config.embedding_gaussian_noise_std > 0:
+            noise = torch.randn_like(embeddings) * self.config.embedding_gaussian_noise_std
+            return embeddings + noise
+        return embeddings
+
     def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
         if token_dict is not None:
             token_list = list(token_dict.values())
@@ -375,6 +381,7 @@ class GPT(nn.Module):
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
 
+                token_repr = self.add_embedding_gaussian_noise(token_repr)
                 x = token_repr if x is None else x + token_repr
 
             if self.config.norm_variant_wte is not None:
@@ -496,6 +503,7 @@ class GPT(nn.Module):
                 tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
             x = None
 
+            tok_emb = self.add_embedding_gaussian_noise(tok_emb)
             if self.n_embd_wte:
                 tok_emb = self.transformer.scale_up(tok_emb)
 
@@ -601,6 +609,8 @@ class GPT(nn.Module):
             tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
         else:
             tok_emb = self.transformer.wte(idx)
+
+        tok_emb = self.add_embedding_gaussian_noise(tok_emb)
 
         if self.n_embd_wte:
             tok_emb = self.transformer.scale_up(tok_emb)

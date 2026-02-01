@@ -1,0 +1,17 @@
+# embedding_gaussian_noise_sweep.yaml
+---
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: [2]
+  n_head: [4]
+  n_embd: [128]
+  block_size: [128]
+  batch_size: [64]
+  max_iters: [5000]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  - embedding_gaussian_noise_std: [0.0, 0.01, 0.05, 0.1]
