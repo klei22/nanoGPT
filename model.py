@@ -354,7 +354,9 @@ class GPT(nn.Module):
 
     def add_embedding_gaussian_noise(self, embeddings):
         if self.config.embedding_gaussian_noise_std and self.config.embedding_gaussian_noise_std > 0:
-            noise = torch.randn_like(embeddings) * self.config.embedding_gaussian_noise_std
+            noise = torch.randn_like(embeddings)
+            noise = noise / (noise.norm(dim=-1, keepdim=True) + 1e-6)
+            noise = noise * self.config.embedding_gaussian_noise_std
             return embeddings + noise
         return embeddings
 

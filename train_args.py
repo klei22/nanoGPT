@@ -1131,7 +1131,7 @@ def parse_args():
         "--embedding_gaussian_noise_std",
         type=float,
         default=0.0,
-        help="Stddev of Gaussian noise added to token embeddings immediately after lookup.",
+        help="Scale for L2-normalized Gaussian noise added to token embeddings after lookup.",
     )
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)

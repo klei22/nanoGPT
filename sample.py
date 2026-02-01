@@ -128,7 +128,7 @@ def parse_args():
         "--embedding_gaussian_noise_std",
         type=float,
         default=None,
-        help="Override embedding gaussian noise std at inference time (None uses checkpoint value).",
+        help="Override embedding gaussian noise scale at inference time (None uses checkpoint value).",
     )
 
     parser.add_argument('--batch_size', type=int, default=1,
