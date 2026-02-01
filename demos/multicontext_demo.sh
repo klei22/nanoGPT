@@ -1,6 +1,36 @@
 #!/bin/bash
 # multicontext_demo.sh
 
+
+# Check for dependencies
+check_spacy() {
+  python3 - <<'PY'
+import sys
+
+try:
+    import spacy
+    spacy.load("en_core_web_sm", disable=["parser", "ner"])
+except Exception as exc:
+    print(f"spaCy check failed: {exc}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+ensure_spacy() {
+  if check_spacy; then
+    return
+  fi
+
+  echo "spaCy and its English model are required for part-of-speech conversion." >&2
+  echo "To install them, run:" >&2
+  echo "  python3 -m pip install --upgrade pip" >&2
+  echo "  python3 -m pip install spacy" >&2
+  echo "  python3 -m spacy download en_core_web_sm" >&2
+  exit 1
+}
+
+ensure_spacy
+
 pushd data/shakespeare_char
 bash get_dataset.sh
 popd
@@ -49,13 +79,15 @@ popd
     --dropout 0.2 \
     --top_k 1 \
     --sample_each_eval \
+    --use_qk_norm \
+    --use_qk_norm_scale \
     --use_rotary_embeddings \
     --no-use_abs_pos_embeddings \
-    --out_dir ./fl_out_weight_tying \
+    --out_dir ./out_mc_shakespeare \
     --compile
 
 python3 sample.py \
-  --out_dir ./fl_out_weight_tying \
+  --out_dir ./out_mc_shakespeare \
   --multicontext \
   --multicontext_datasets \
     shakespeare_char \
