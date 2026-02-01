@@ -21,6 +21,7 @@ class EvalConfig:
     dataset_split: str
     fineweb_subset: str | None
     eval_tokens: int
+    top_k: int
     top_n_values: Sequence[int]
     target_dimensions: Sequence[int]
     seed: int
@@ -85,25 +86,14 @@ def _build_projection_matrix(
     return matrix.to(device)
 
 
-def _ensure_labels_in_topk(topk: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    labels_expanded = labels.unsqueeze(-1)
-    in_topk = (topk == labels_expanded).any(dim=-1)
-    if in_topk.all():
-        return topk
-    updated = topk.clone()
-    updated[~in_topk, -1] = labels[~in_topk]
-    return updated
-
-
-def _compute_topn_loss(
+def _compute_topk_id_delta(
     hidden_states: torch.Tensor,
     weight: torch.Tensor,
     approx_logits: torch.Tensor,
     top_n: int,
-    labels: torch.Tensor,
+    top_k: int,
 ) -> torch.Tensor:
     topk = approx_logits.topk(k=top_n, dim=-1).indices
-    topk = _ensure_labels_in_topk(topk, labels)
 
     batch, seq_len, hidden_dim = hidden_states.shape
     flat_hidden = hidden_states.reshape(-1, hidden_dim)
@@ -112,12 +102,14 @@ def _compute_topn_loss(
     exact_logits = torch.einsum("bkh,bh->bk", gathered_weight, flat_hidden)
     exact_logits = exact_logits.view(batch, seq_len, top_n)
 
-    flat_labels = labels.reshape(-1)
     blended_logits = approx_logits.clone()
     blended_logits = blended_logits.scatter(-1, topk, exact_logits)
-    log_probs = torch.log_softmax(blended_logits, dim=-1)
-    nll = -log_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
-    return nll.mean()
+
+    full_logits = torch.matmul(hidden_states, weight.T)
+    topk_exact = full_logits.topk(k=top_k, dim=-1).indices.sort(dim=-1).values
+    topk_est = blended_logits.topk(k=top_k, dim=-1).indices.sort(dim=-1).values
+    id_delta = (topk_exact - topk_est).abs().float().mean()
+    return id_delta
 
 
 def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
@@ -131,7 +123,6 @@ def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
     input_ids = _load_fineweb_tokens(
         tokenizer, config.dataset_split, config.fineweb_subset, config.eval_tokens
     ).to(config.device)
-    labels = input_ids[:, 1:]
     input_ids = input_ids[:, :-1]
 
     with torch.no_grad():
@@ -159,15 +150,15 @@ def _evaluate_grid(config: EvalConfig) -> List[List[float]]:
             if top_n <= 0 or top_n > vocab_size:
                 raise ValueError(f"top_n must be in (0, {vocab_size}], got {top_n}")
             with torch.no_grad():
-                loss = _compute_topn_loss(
+                id_delta = _compute_topk_id_delta(
                     hidden_states,
                     model.lm_head.weight,
                     approx_logits,
                     top_n,
-                    labels,
+                    config.top_k,
                 )
-            row_results.append(loss.item())
-            print(f"target_dim={target_dim} top_n={top_n} loss={loss.item():.4f}")
+            row_results.append(id_delta.item())
+            print(f"target_dim={target_dim} top_n={top_n} avg_id_delta={id_delta.item():.4f}")
         results.append(row_results)
     return results
 
@@ -197,8 +188,8 @@ def _plot_heatmap(
     ax.set_yticks(range(len(target_dimensions)), labels=[str(v) for v in target_dimensions])
     ax.set_xlabel("Top-N candidates")
     ax.set_ylabel("Target dimension")
-    ax.set_title("JL-projected LM head validation loss")
-    fig.colorbar(image, ax=ax, label="Validation loss")
+    ax.set_title("JL-projected LM head top-k ID delta")
+    fig.colorbar(image, ax=ax, label="Average |ID delta|")
     fig.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)
@@ -229,6 +220,12 @@ def _parse_args() -> EvalConfig:
         type=int,
         default=1000,
         help="Number of tokens to evaluate (uses eval_tokens + 1 for the shift).",
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=65,
+        help="Top-k size used to compare token ID differences.",
     )
     parser.add_argument(
         "--top_n_values",
@@ -274,6 +271,7 @@ def _parse_args() -> EvalConfig:
         dataset_split=args.dataset_split,
         fineweb_subset=fineweb_subset,
         eval_tokens=args.eval_tokens,
+        top_k=args.top_k,
         top_n_values=args.top_n_values,
         target_dimensions=args.target_dimensions,
         seed=args.seed,

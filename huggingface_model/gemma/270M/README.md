@@ -27,8 +27,9 @@ The scripts rely on `AutoModelForCausalLM.from_pretrained(...)`, so you can poin
 2. Compute approximate logits, select the top-`n` candidate tokens, and then compute
    exact logits only for that subset.
 
-It reports validation loss over a fixed number of tokens and can plot a heatmap
-for a sweep of `top_n` values and `target_dimension` sizes.
+It reports the average absolute token-id difference between the estimated top-k
+tokens and the exact top-k tokens, and plots a heatmap for a sweep of `top_n`
+values and `target_dimension` sizes.
 
 ```bash
 python huggingface_model/gemma/270M/jl_head_eval.py \
@@ -36,6 +37,7 @@ python huggingface_model/gemma/270M/jl_head_eval.py \
   --dataset_split "train[:1%]" \
   --fineweb_subset sample-10BT \
   --eval_tokens 1000 \
+  --top_k 65 \
   --top_n_values 1000,2000,5000,10000 \
   --target_dimensions 500,400,300,200,100 \
   --output_dir jl_eval_outputs
