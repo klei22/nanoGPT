@@ -286,8 +286,36 @@ def transform_position_since_newline(
 
     return "".join(out)
 
+def transform_newlines_mod(
+    text: str,
+    modulus: int = 256,
+    token_file: str | Path = TOKENS_FILE,
+) -> str:
+    """
+    Replace every character with a symbol representing the number of newlines
+    seen so far (modulo *modulus*). Newline characters are also replaced, but
+    they increment the counter for subsequent characters.
+    """
+    if modulus < 1:
+        raise ValueError("modulus must be >= 1")
 
-def transform_file(filename, method, max_positions):
+    position_chars: str = build_position_chars(modulus)
+    max_idx: int = len(position_chars)
+
+    emit_tokenlist(list(position_chars))
+
+    out: list[str] = []
+    newline_count = 0
+
+    for ch in text:
+        out.append(position_chars[newline_count % max_idx])
+        if ch == "\n":
+            newline_count += 1
+
+    return "".join(out)
+
+
+def transform_file(filename, method, max_positions, newline_modulus):
     """
     Transforms a file in-place using the selected method.
     """
@@ -308,6 +336,10 @@ def transform_file(filename, method, max_positions):
                 transformed_content = transform_position_since_newline(
                     file_content, max_positions=max_positions
                 )
+            elif method == 'newlines_mod':
+                transformed_content = transform_newlines_mod(
+                    file_content, modulus=newline_modulus
+                )
             else:
                 raise ValueError(f"Unknown method: {method}")
 
@@ -325,17 +357,22 @@ if __name__ == "__main__":
     parser.add_argument("input_file", help="The input text file to transform.")
     parser.add_argument(
         "--method", 
-        choices=["cvp", "part_of_speech", "in_word_position", "since_newline"],
+        choices=["cvp", "part_of_speech", "in_word_position", "since_newline", "newlines_mod"],
         default="cvp",
         help="Which transformation method to use."
     )
-    args = parser.add_argument(
+    parser.add_argument(
         "--max-positions",
         type=int,
         default=64,
         help="Maximum distinct position markers before wrapping (used by "
              "`in_word_position` and `since_newline`).",
     )
+    parser.add_argument(
+        "--newline-modulus",
+        type=int,
+        default=256,
+        help="Modulo value for `newlines_mod` (default: 256).",
+    )
     args = parser.parse_args()
-    transform_file(args.input_file, args.method, args.max_positions)
-
+    transform_file(args.input_file, args.method, args.max_positions, args.newline_modulus)
