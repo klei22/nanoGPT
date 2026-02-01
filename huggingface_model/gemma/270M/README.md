@@ -31,6 +31,20 @@ It reports the average absolute token-id difference between the estimated top-k
 tokens and the exact top-k tokens, and plots a heatmap for a sweep of `top_n`
 values and `target_dimension` sizes.
 
+**How `avg_id_delta` is computed**
+
+For each token position, the script compares the top-`k` token IDs from the
+exact logits against the top-`k` token IDs from the JL-approximated logits. It
+sorts both ID lists, computes the elementwise absolute difference between the
+sorted IDs, and averages those differences across all token positions.
+
+Example (top-`k` = 5):
+
+* Exact top-`k` IDs: `[2, 7, 11, 19, 42]`
+* Estimated top-`k` IDs: `[3, 8, 11, 21, 40]`
+* Absolute differences: `|2-3|, |7-8|, |11-11|, |19-21|, |42-40|`
+* Average: `(1 + 1 + 0 + 2 + 2) / 5 = 1.2`
+
 ```bash
 python huggingface_model/gemma/270M/jl_head_eval.py \
   --model_name google/gemma-3-270m \
