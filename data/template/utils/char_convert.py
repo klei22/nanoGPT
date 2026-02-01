@@ -5,7 +5,21 @@ import spacy
 from tqdm import tqdm
 from pathlib import Path
 
-nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+_NLP = None
+
+def get_nlp():
+    global _NLP
+    if _NLP is None:
+        try:
+            _NLP = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        except OSError as exc:
+            raise RuntimeError(
+                "spaCy model 'en_core_web_sm' is required for POS conversion. "
+                "Install it with: python -m spacy download en_core_web_sm"
+            ) from exc
+    return _NLP
+
+
 
 TOKENS_FILE = "tokensfile.txt" # methods will write their alphabet here
 
@@ -112,6 +126,7 @@ def transform_part_of_speech(text):
     # We'll store the transformed result as a list of characters (one per input char)
     result = list(text)
     text_length = len(text)
+    nlp = get_nlp()
 
     # Helper function: yield (chunk_of_text, chunk_start_index)
     # so that each chunk is below spaCy's nlp.max_length
@@ -262,9 +277,9 @@ def transform_position_since_newline(
         if ch == "\n":
             out.append("\n")
             col = 0  # reset at newline
-        elif ch.isspace():
-            out.append("_")
-            col += 1
+        # elif ch.isspace():
+        #     out.append("_")
+        #     col += 1
         else:
             col += 1
             out.append(position_chars[(col - 1) % max_idx])
