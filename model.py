@@ -357,6 +357,7 @@ class GPT(nn.Module):
             noise = torch.randn_like(embeddings)
             noise = noise / (noise.norm(dim=-1, keepdim=True) + 1e-6)
             noise = noise * self.config.embedding_gaussian_noise_std
+            embeddings = embeddings / (embeddings.norm(dim=-1, keepdim=True) + 1e-6)
             return embeddings + noise
         return embeddings
 
