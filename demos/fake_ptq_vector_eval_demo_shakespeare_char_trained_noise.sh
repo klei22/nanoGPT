@@ -17,8 +17,8 @@ BLOCK_SIZE=256
 BIT_START=8
 BIT_STOP=3
 BIT_STEP=-1
-TRAIN_NOISE_LEVELS=(0.01 0.05 0.10)
-EVAL_NOISE_LEVELS=(0.00 0.01 0.025 0.05 0.10)
+TRAIN_NOISE_LEVELS=(0.00 0.01 0.05 0.10 0.15 0.20)
+EVAL_NOISE_LEVELS=(0.00 0.01 0.025 0.05 0.10 0.15 0.20)
 
 usage() {
   cat <<'USAGE'
@@ -119,6 +119,7 @@ for train_noise in "${TRAIN_NOISE_LEVELS[@]}"; do
       --eval_interval 1000 \
       --eval_iters "$EVAL_ITERS" \
       --learning_rate 1e-3 \
+      --norm_variant_wte hyperspherenorm \
       --attention_variant infinite \
       --use_concat_heads \
       --n_qk_head_dim 100 \

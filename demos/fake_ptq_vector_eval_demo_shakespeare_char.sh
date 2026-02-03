@@ -110,6 +110,7 @@ if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
     --eval_interval 1000 \
     --eval_iters "$EVAL_ITERS" \
     --learning_rate 1e-3 \
+    --norm_variant_wte hyperspherenorm \
     --compile
 else
   echo "Found existing checkpoint at $OUT_DIR/ckpt.pt; skipping training."
