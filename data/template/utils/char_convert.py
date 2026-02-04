@@ -306,9 +306,6 @@ def transform_position_since_newline(
         if ch == "\n":
             out.append("\n")
             col = 0  # reset at newline
-        # elif ch.isspace():
-        #     out.append("_")
-        #     col += 1
         else:
             col += 1
             out.append(position_chars[(col - 1) % max_idx])
