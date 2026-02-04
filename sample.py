@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument('--rope_length', type=int, default=None, help="Number of embeddings to rotate (must be an even number <= total embedding size)")
     parser.add_argument('--token_boundary', type=str, default=None, help="optional separator between emitted tokens")
     parser.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction, help="print info about model before infernece")
-    parser.add_argument('--weights_only', default=False, action=argparse.BooleanOptionalAction, help="disable to allow full pickle loading for legaxcy checkpoints")
+    parser.add_argument('--weights_only', default=False, action=argparse.BooleanOptionalAction, help="disable to allow full pickle loading for legacy checkpoints")
 
     parser.add_argument(
         '--cosine_penalty',
