@@ -6,6 +6,7 @@ import math
 import os
 import pickle
 import time
+from inspect import signature
 from contextlib import nullcontext
 from datetime import datetime
 
@@ -55,7 +56,8 @@ def parse_args():
     parser.add_argument('--sym_rot_num_angles', type=int, default=None, help="Number of angles for symmetrical rotary embedding")
     parser.add_argument('--rope_length', type=int, default=None, help="Number of embeddings to rotate (must be an even number <= total embedding size)")
     parser.add_argument('--token_boundary', type=str, default=None, help="optional separator between emitted tokens")
-    parser.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction, help="print info about model before infernece")
+    parser.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction, help="print info about model before inference")
+    parser.add_argument('--weights_only', default=False, action=argparse.BooleanOptionalAction, help="disable to allow full pickle loading for legacy checkpoints")
 
     parser.add_argument(
         '--cosine_penalty',
@@ -1226,7 +1228,10 @@ def main():
 
     if args.init_from == 'resume':
         ckpt_path = os.path.join(args.out_dir, 'ckpt.pt')
-        checkpoint = torch.load(ckpt_path, map_location=args.device)
+        load_kwargs = {"map_location": args.device}
+        if "weights_only" in signature(torch.load).parameters:
+            load_kwargs["weights_only"] = args.weights_only
+        checkpoint = torch.load(ckpt_path, **load_kwargs)
         checkpoint_config = checkpoint.get('config', {})
         checkpoint['model_args']['dropout'] = 0.0
         if args.save_avg_vector:

@@ -1102,8 +1102,8 @@ class Trainer:
                     out['datasets'][dataset][f"{split}_std"] = std_devs[f"{i}"]
 
                 # general train and val losses, as well as std dev
-                out[split] = np.array(mean_avg / len(self.args.multicontext_datasets))
-                out[split + "_std"] = np.array(loss_std / len(self.args.multicontext_datasets))
+                out[split] = mean_avg / len(self.args.multicontext_datasets)
+                out[split + "_std"] = loss_std / len(self.args.multicontext_datasets)
             out['rankme'] = torch.tensor(float('nan'))
             out['areq'] = torch.tensor(float('nan'))
         else:
