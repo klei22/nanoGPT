@@ -20,6 +20,8 @@ activation_variation=("celu"
             "silu"
             "softplus"
             "softsign"
+            "softshrink"
+            "softshrink_squared"
             "squared_relu"
             "tanh")
 
