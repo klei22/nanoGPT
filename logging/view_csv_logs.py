@@ -232,6 +232,9 @@ def render_ascii_plot(
         for series in series_list
         for value in (series.train_values + series.val_values)
     ]
+    if not combined_values:
+        empty_text = Text("No data points yet.", style="bold yellow")
+        return Group(Panel(empty_text, title="CSV Logs (train/val loss)"))
     min_value = min(combined_values)
     max_value = max(combined_values)
 
