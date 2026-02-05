@@ -331,6 +331,7 @@ class GPTConfig:
     ## Embedding Intialization Options
     embedding_mean_init: float= 0.0
     embedding_std_init: float= 0.02
+    embedding_gaussian_noise_std: float = 0.0
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
     fire_log_bias: float = 1.0

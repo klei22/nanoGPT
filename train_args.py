@@ -1131,6 +1131,12 @@ def parse_args():
     ## Positional Embedding Weight Initialization Options
     model_group.add_argument( "--embedding_mean_init", type=float, default=0.0)
     model_group.add_argument( "--embedding_std_init", type=float, default=0.02)
+    model_group.add_argument(
+        "--embedding_gaussian_noise_std",
+        type=float,
+        default=0.0,
+        help="Scale for L2-normalized Gaussian noise added to token embeddings after lookup.",
+    )
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
     model_group.add_argument( "--fire_log_bias", type=float, default=1.0, help="bias in the function psi(x) = log(cx + bias)")
