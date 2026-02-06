@@ -153,16 +153,21 @@ def generate_parquet_links(url_base, start_num, stop_num, total_shards, padding_
     links = []
     # Format the total number of shards with padding
     total_str = str(total_shards).zfill(padding_digits)
-    
+
     # Loop from start to stop number (inclusive)
     for i in range(start_num, stop_num + 1):
         # Format the current shard index number with padding
         index_str = str(i).zfill(padding_digits)
-        
+
         # Construct the full URL based on the common pattern
-        link = f"{url_base}-{index_str}-of-{total_str}.parquet?download=true"
-        links.append(link)
-    
+        if total_shards == -1:
+            # Assume if total_shards is -1, that we just have the index string
+            link = f"{url_base}{index_str}.parquet?download=true"
+            links.append(link)
+        else:
+            link = f"{url_base}-{index_str}-of-{total_str}.parquet?download=true"
+            links.append(link)
+
     print(f"Generated {len(links)} links, from index {start_num} to {stop_num}.")
     return links
 
@@ -260,7 +265,7 @@ if __name__ == "__main__":
         default=5,
         help="Number of digits to pad shard numbers with (default: 5, e.g., '00001').",
     )
-    
+
     # --- Existing arguments ---
     parser.add_argument(
         "-o",
@@ -327,7 +332,7 @@ if __name__ == "__main__":
         metavar=("ROLE", "PREFIX"),
         help="Specify prefixes for roles. Use the format: --role_prefixes ROLE PREFIX [ROLE PREFIX ...]",
     )
-    
+
     args = parser.parse_args()
 
     # Pass all arguments to main

@@ -5,7 +5,21 @@ import spacy
 from tqdm import tqdm
 from pathlib import Path
 
-nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+_NLP = None
+
+def get_nlp():
+    global _NLP
+    if _NLP is None:
+        try:
+            _NLP = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        except OSError as exc:
+            raise RuntimeError(
+                "spaCy model 'en_core_web_sm' is required for POS conversion. "
+                "Install it with: python -m spacy download en_core_web_sm"
+            ) from exc
+    return _NLP
+
+
 
 TOKENS_FILE = "tokensfile.txt" # methods will write their alphabet here
 
@@ -18,6 +32,35 @@ def emit_tokenlist(tokens):
         ''.join(tokens),
         encoding="utf-8",
     )
+
+
+def transform_lowercase(text):
+    """
+    Convert text to lowercase while preserving non-letter characters.
+    """
+    transformed = text.lower()
+    emit_tokenlist(sorted(set(transformed)))
+    return transformed
+
+
+def transform_case_map(text):
+    """
+    Map each character:
+      - 'L' if lowercase
+      - 'U' if uppercase
+      - '_' for everything else
+    """
+    transformed_chars = []
+    for char in text:
+        if char.islower():
+            transformed_chars.append("L")
+        elif char.isupper():
+            transformed_chars.append("U")
+        else:
+            transformed_chars.append("_")
+    emit_tokenlist(["L", "U", "_"])
+    return "".join(transformed_chars)
+
 
 def transform_cvp(text):
     """
@@ -112,6 +155,7 @@ def transform_part_of_speech(text):
     # We'll store the transformed result as a list of characters (one per input char)
     result = list(text)
     text_length = len(text)
+    nlp = get_nlp()
 
     # Helper function: yield (chunk_of_text, chunk_start_index)
     # so that each chunk is below spaCy's nlp.max_length
@@ -262,17 +306,42 @@ def transform_position_since_newline(
         if ch == "\n":
             out.append("\n")
             col = 0  # reset at newline
-        elif ch.isspace():
-            out.append("_")
-            col += 1
         else:
             col += 1
             out.append(position_chars[(col - 1) % max_idx])
 
     return "".join(out)
 
+def transform_newlines_mod(
+    text: str,
+    modulus: int = 256,
+    token_file: str | Path = TOKENS_FILE,
+) -> str:
+    """
+    Replace every character with a symbol representing the number of newlines
+    seen so far (modulo *modulus*). Newline characters are also replaced, but
+    they increment the counter for subsequent characters.
+    """
+    if modulus < 1:
+        raise ValueError("modulus must be >= 1")
 
-def transform_file(filename, method, max_positions):
+    position_chars: str = build_position_chars(modulus)
+    max_idx: int = len(position_chars)
+
+    emit_tokenlist(list(position_chars))
+
+    out: list[str] = []
+    newline_count = 0
+
+    for ch in text:
+        out.append(position_chars[newline_count % max_idx])
+        if ch == "\n":
+            newline_count += 1
+
+    return "".join(out)
+
+
+def transform_file(filename, method, max_positions, newline_modulus):
     """
     Transforms a file in-place using the selected method.
     """
@@ -281,7 +350,11 @@ def transform_file(filename, method, max_positions):
             # Read the entire file content
             file_content = file.read()
 
-            if method == 'cvp':
+            if method == 'lowercase':
+                transformed_content = transform_lowercase(file_content)
+            elif method == 'case_map':
+                transformed_content = transform_case_map(file_content)
+            elif method == 'cvp':
                 transformed_content = transform_cvp(file_content)
             elif method == 'part_of_speech':
                 transformed_content = transform_part_of_speech(file_content)
@@ -292,6 +365,10 @@ def transform_file(filename, method, max_positions):
             elif method == 'since_newline':
                 transformed_content = transform_position_since_newline(
                     file_content, max_positions=max_positions
+                )
+            elif method == 'newlines_mod':
+                transformed_content = transform_newlines_mod(
+                    file_content, modulus=newline_modulus
                 )
             else:
                 raise ValueError(f"Unknown method: {method}")
@@ -310,17 +387,30 @@ if __name__ == "__main__":
     parser.add_argument("input_file", help="The input text file to transform.")
     parser.add_argument(
         "--method", 
-        choices=["cvp", "part_of_speech", "in_word_position", "since_newline"],
+        choices=[ 
+            "lowercase",
+            "case_map",
+            "cvp",
+            "part_of_speech",
+            "in_word_position",
+            "since_newline",
+            "newlines_mod"
+        ],
         default="cvp",
         help="Which transformation method to use."
     )
-    args = parser.add_argument(
+    parser.add_argument(
         "--max-positions",
         type=int,
         default=64,
         help="Maximum distinct position markers before wrapping (used by "
              "`in_word_position` and `since_newline`).",
     )
+    parser.add_argument(
+        "--newline-modulus",
+        type=int,
+        default=256,
+        help="Modulo value for `newlines_mod` (default: 256).",
+    )
     args = parser.parse_args()
-    transform_file(args.input_file, args.method, args.max_positions)
-
+    transform_file(args.input_file, args.method, args.max_positions, args.newline_modulus)

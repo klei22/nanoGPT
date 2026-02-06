@@ -331,6 +331,18 @@ class CharTokenizer(Tokenizer):
 class CharBPETokenizerWithByteFallback(Tokenizer):
     def __init__(self, args, train_data, val_data=None):
         super().__init__(args)
+        self.reuse_meta_path = getattr(args, "char_bpe_vocab_path", None)
+        if self.reuse_meta_path:
+            meta = self._load_char_bpe_meta(self.reuse_meta_path)
+            self.desired_vocab_size = meta["vocab_size"]
+            self.char_tokens = meta["char_tokens"]
+            self.sorted_char_tokens = meta.get(
+                "char_tokens_sorted",
+                sorted(self.char_tokens, key=lambda t: len(t), reverse=True),
+            )
+            self._build_vocab()
+            return
+
         if getattr(args, "vocab_size", None) is None:
             raise ValueError("vocab_size must be provided for char_bpe method.")
         if args.vocab_size <= 256:
@@ -348,6 +360,18 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
         self.char_tokens = list(self.unique_chars)
         self._train_merges(corpus_text)
         self._build_vocab()
+
+    @staticmethod
+    def _load_char_bpe_meta(meta_path):
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"Char-BPE meta file not found: {meta_path}")
+        with open(meta_path, "rb") as f:
+            meta = pickle.load(f)
+        if meta.get("tokenizer") != "char_bpe":
+            raise ValueError("Provided meta file is not from a char_bpe tokenizer.")
+        if "char_tokens" not in meta or "vocab_size" not in meta:
+            raise ValueError("Meta file missing required char_bpe vocabulary fields.")
+        return meta
 
     def _train_merges(self, text):
         tokens = list(text)
