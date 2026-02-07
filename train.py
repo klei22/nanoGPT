@@ -966,11 +966,79 @@ class Trainer:
             x, y = x.to(self.device), y.to(self.device)
         return x, y, dataset
 
+    def _compute_prelm_logits_loss(self, X, Y, dataset_idx, n_steps):
+        if n_steps < 1:
+            raise ValueError("prelm_prediction_steps must be >= 1.")
+        if n_steps == 1:
+            context_len = X.size(1)
+        else:
+            if n_steps >= X.size(1):
+                raise ValueError(
+                    "prelm_prediction_steps must be < block_size when using prelm_tplusn."
+                )
+            context_len = X.size(1) - n_steps
+
+        context = X[:, :context_len]
+        targets = Y[:, context_len - 1 : context_len - 1 + n_steps]
+
+        pre_lm_hidden = self.model.get_pre_lm_hidden(
+            context,
+            iter_num=self.iter_num,
+            dataset_idx=dataset_idx if self.args.multidataset_wte else None,
+        )
+        pre_lm = pre_lm_hidden[:, -1:, :]
+
+        logits_steps = []
+        hidden = pre_lm
+        for _ in range(n_steps):
+            logits_step, hidden_out = self.model.forward_with_prelm_prefix(
+                hidden,
+                idx=None,
+                iter_num=self.iter_num,
+                return_hidden=True,
+                dataset_idx=dataset_idx if self.args.multidataset_wte else None,
+            )
+            logits_steps.append(logits_step[:, -1, :])
+            hidden = hidden_out[:, -1:, :]
+
+        logits = torch.stack(logits_steps, dim=1)
+
+        if self.loss_fn is None:
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=-1,
+            )
+        else:
+            loss = self.loss_fn(logits, targets, iter_num=self.iter_num)
+
+        return logits, loss, targets
+
     @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
 
         self.model.eval()
+        def _append_metrics(logits, targets, top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs):
+            probs = F.softmax(logits, dim=-1)
+            top1_prob, top1_idx = probs.max(dim=-1)
+            top1_probs.append(top1_prob)
+            top1_corrects.append((top1_idx == targets).float())
+            target_logits = logits.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+            ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
+            target_ranks.append(ranks.float())
+            target_prob = probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1).float()
+            target_probs.append(target_prob)
+            left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
+            target_left_probs.append(left_prob)
+            left_inclusive_probs.append(left_prob + target_prob)
+
+        def _flatten_for_metrics(logits, targets):
+            if logits.dim() == 2:
+                return logits, targets
+            logits_flat = logits.reshape(-1, logits.size(-1))
+            targets_flat = targets.reshape(-1)
+            return logits_flat, targets_flat
         # If multi-dataset sampling is enabled, we calculate loss per dataset
         if self.args.dataset_list:
             for dataset in self.args.dataset_list:
@@ -982,48 +1050,69 @@ class Trainer:
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
-                        ln_f_out: list[torch.Tensor] = []
-                        handle = self.model.transformer.ln_f.register_forward_hook(
-                            lambda _m, _i, o: ln_f_out.append(o.detach())
-                        )
-                        with self.ctx:
-                            idx = self.args.dataset_list.index(dataset)
-                            logits, loss = self.model(
-                                X,
-                                Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
-                            )
-                        handle.remove()
-                        dataset_losses[split][k] = loss.item()
-                        if split == 'val':
-                            probs = F.softmax(logits, dim=-1)
-                            top1_prob, top1_idx = probs.max(dim=-1)
-                            top1_probs.append(top1_prob)
-                            top1_corrects.append((top1_idx == Y).float())
-                            target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
-                            ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
-                            target_ranks.append(ranks.float())
-                            target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
-                            target_probs.append(target_prob)
-                            left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
-                            target_left_probs.append(left_prob)
-                            left_inclusive_probs.append(left_prob + target_prob)
-                            lm_head = (
-                                self.model.transformer[f'lm_head_{idx}']
-                                if self.args.multidataset_wte
-                                else self.model.lm_head
-                            )
-                            target_vecs = lm_head.weight[Y]
-                            cos = F.cosine_similarity(
-                                ln_f_out[0].float(), target_vecs.float(), dim=-1
-                            )
-                            ln_f_cosines.append(cos)
-                            if self.args.log_rankme or self.args.log_areq:
-                                rankme_vectors.append(
-                                    ln_f_out[0][:, -1, :].float().detach().cpu()
+                        idx = self.args.dataset_list.index(dataset)
+                        if self.args.training_mode in {"prelm_tplus1", "prelm_tplusn"}:
+                            n_steps = 1 if self.args.training_mode == "prelm_tplus1" else self.args.prelm_prediction_steps
+                            with self.ctx:
+                                logits, loss, targets = self._compute_prelm_logits_loss(
+                                    X,
+                                    Y,
+                                    idx,
+                                    n_steps,
                                 )
+                            dataset_losses[split][k] = loss.item()
+                            if split == 'val':
+                                logits_flat, targets_flat = _flatten_for_metrics(logits, targets)
+                                _append_metrics(
+                                    logits_flat,
+                                    targets_flat,
+                                    top1_probs,
+                                    top1_corrects,
+                                    target_ranks,
+                                    target_probs,
+                                    target_left_probs,
+                                    left_inclusive_probs,
+                                )
+                        else:
+                            ln_f_out: list[torch.Tensor] = []
+                            handle = self.model.transformer.ln_f.register_forward_hook(
+                                lambda _m, _i, o: ln_f_out.append(o.detach())
+                            )
+                            with self.ctx:
+                                logits, loss = self.model(
+                                    X,
+                                    Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
+                            handle.remove()
+                            dataset_losses[split][k] = loss.item()
+                            if split == 'val':
+                                _append_metrics(
+                                    logits,
+                                    Y,
+                                    top1_probs,
+                                    top1_corrects,
+                                    target_ranks,
+                                    target_probs,
+                                    target_left_probs,
+                                    left_inclusive_probs,
+                                )
+                                lm_head = (
+                                    self.model.transformer[f'lm_head_{idx}']
+                                    if self.args.multidataset_wte
+                                    else self.model.lm_head
+                                )
+                                target_vecs = lm_head.weight[Y]
+                                cos = F.cosine_similarity(
+                                    ln_f_out[0].float(), target_vecs.float(), dim=-1
+                                )
+                                ln_f_cosines.append(cos)
+                                if self.args.log_rankme or self.args.log_areq:
+                                    rankme_vectors.append(
+                                        ln_f_out[0][:, -1, :].float().detach().cpu()
+                                    )
                 rankme = torch.tensor(float('nan'))
                 areq = torch.tensor(float('nan'))
                 if rankme_vectors:
@@ -1115,47 +1204,68 @@ class Trainer:
                 rankme_vectors = []
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
-                    ln_f_out: list[torch.Tensor] = []
-                    handle = self.model.transformer.ln_f.register_forward_hook(
-                        lambda _m, _i, o: ln_f_out.append(o.detach())
-                    )
-                    with self.ctx:
-                        logits, loss = self.model(
-                            X,
-                            Y,
-                            iter_num=self.iter_num,
-                            dataset_idx=0 if self.args.multidataset_wte else None,
-                            loss_fn=self.loss_fn,
-                        )
-                    handle.remove()
-                    losses[k] = loss.item()
-                    if split == 'val':
-                        probs = F.softmax(logits, dim=-1)
-                        top1_prob, top1_idx = probs.max(dim=-1)
-                        top1_probs.append(top1_prob)
-                        top1_corrects.append((top1_idx == Y).float())
-                        target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
-                        ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
-                        target_ranks.append(ranks.float())
-                        target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
-                        target_probs.append(target_prob)
-                        left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
-                        target_left_probs.append(left_prob)
-                        left_inclusive_probs.append(left_prob + target_prob)
-                        lm_head = (
-                            self.model.transformer['lm_head_0']
-                            if self.args.multidataset_wte
-                            else self.model.lm_head
-                        )
-                        target_vecs = lm_head.weight[Y]
-                        cos = F.cosine_similarity(
-                            ln_f_out[0].float(), target_vecs.float(), dim=-1
-                        )
-                        ln_f_cosines.append(cos)
-                        if self.args.log_rankme or self.args.log_areq:
-                            rankme_vectors.append(
-                                ln_f_out[0][:, -1, :].float().detach().cpu()
+                    if self.args.training_mode in {"prelm_tplus1", "prelm_tplusn"}:
+                        n_steps = 1 if self.args.training_mode == "prelm_tplus1" else self.args.prelm_prediction_steps
+                        with self.ctx:
+                            logits, loss, targets = self._compute_prelm_logits_loss(
+                                X,
+                                Y,
+                                0,
+                                n_steps,
                             )
+                        losses[k] = loss.item()
+                        if split == 'val':
+                            logits_flat, targets_flat = _flatten_for_metrics(logits, targets)
+                            _append_metrics(
+                                logits_flat,
+                                targets_flat,
+                                top1_probs,
+                                top1_corrects,
+                                target_ranks,
+                                target_probs,
+                                target_left_probs,
+                                left_inclusive_probs,
+                            )
+                    else:
+                        ln_f_out: list[torch.Tensor] = []
+                        handle = self.model.transformer.ln_f.register_forward_hook(
+                            lambda _m, _i, o: ln_f_out.append(o.detach())
+                        )
+                        with self.ctx:
+                            logits, loss = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
+                        handle.remove()
+                        losses[k] = loss.item()
+                        if split == 'val':
+                            _append_metrics(
+                                logits,
+                                Y,
+                                top1_probs,
+                                top1_corrects,
+                                target_ranks,
+                                target_probs,
+                                target_left_probs,
+                                left_inclusive_probs,
+                            )
+                            lm_head = (
+                                self.model.transformer['lm_head_0']
+                                if self.args.multidataset_wte
+                                else self.model.lm_head
+                            )
+                            target_vecs = lm_head.weight[Y]
+                            cos = F.cosine_similarity(
+                                ln_f_out[0].float(), target_vecs.float(), dim=-1
+                            )
+                            ln_f_cosines.append(cos)
+                            if self.args.log_rankme or self.args.log_areq:
+                                rankme_vectors.append(
+                                    ln_f_out[0][:, -1, :].float().detach().cpu()
+                                )
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
                 if split == 'val':
@@ -1988,6 +2098,15 @@ class Trainer:
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
+                        elif self.args.training_mode in {"prelm_tplus1", "prelm_tplusn"}:
+                            idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else 0
+                            n_steps = 1 if self.args.training_mode == "prelm_tplus1" else self.args.prelm_prediction_steps
+                            logits, loss, _targets = self._compute_prelm_logits_loss(
+                                self.X,
+                                self.Y,
+                                idx_ds,
+                                n_steps,
+                            )
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
                             logits, loss = self.model(
@@ -2009,7 +2128,7 @@ class Trainer:
                     if (
                         self.teacher_model is not None
                         and self.distillation_loss_fn is not None
-                        and self.args.training_mode != 'multicontext'
+                        and self.args.training_mode not in {'multicontext', 'prelm_tplus1', 'prelm_tplusn'}
                     ):
                         with torch.no_grad():
                             teacher_logits, _ = self.teacher_model(

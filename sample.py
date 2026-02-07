@@ -56,6 +56,18 @@ def parse_args():
     parser.add_argument('--rope_length', type=int, default=None, help="Number of embeddings to rotate (must be an even number <= total embedding size)")
     parser.add_argument('--token_boundary', type=str, default=None, help="optional separator between emitted tokens")
     parser.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction, help="print info about model before infernece")
+    parser.add_argument(
+        '--prelm_start',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Use the pre-LM-head vector from the prompt as a single start token before decoding.",
+    )
+    parser.add_argument(
+        '--prelm_chain',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="During decoding, feed the next pre-LM-head vector instead of the sampled token.",
+    )
 
     parser.add_argument(
         '--cosine_penalty',
@@ -544,6 +556,16 @@ def sample_with_existing_model(
             # ------------- END LSV per-sample section -------------------
 
             x = start_ids.clone()
+            generated_ids = torch.empty((x.size(0), 0), dtype=x.dtype, device=x.device)
+            use_prelm_start = bool(args and getattr(args, "prelm_start", False))
+            use_prelm_chain = bool(args and getattr(args, "prelm_chain", False))
+            if use_prelm_start and use_prelm_chain:
+                raise ValueError("Only one of --prelm_start or --prelm_chain can be enabled.")
+            prelm_prefix = None
+            if use_prelm_start or use_prelm_chain:
+                with torch.no_grad():
+                    prelm_hidden = model.get_pre_lm_hidden(start_ids, dataset_idx=dataset_idx)
+                prelm_prefix = prelm_hidden[:, -1:, :]
 
             # storage for colouring
             tokens_for_color: List[int] = []
@@ -555,14 +577,36 @@ def sample_with_existing_model(
 
             with torch.no_grad():
                 for _step in range(max_new_tokens):
-                    idx_cond = (
-                        x
-                        if x.size(1) <= model.config.block_size
-                        else x[:, -model.config.block_size :]
-                    )
-
-                    model_logits, _ = model(idx_cond, dataset_idx=dataset_idx)
-                    raw_logits_row = model_logits[:, -1, :]      # Raw logits from model
+                    if use_prelm_chain:
+                        model_logits, hidden_out = model.forward_with_prelm_prefix(
+                            prelm_prefix,
+                            idx=None,
+                            return_hidden=True,
+                            dataset_idx=dataset_idx,
+                        )
+                        raw_logits_row = model_logits[:, -1, :]
+                        prelm_prefix = hidden_out[:, -1:, :]
+                    elif use_prelm_start:
+                        max_ctx = model.config.block_size - 1
+                        idx_cond = (
+                            generated_ids
+                            if generated_ids.size(1) <= max_ctx
+                            else generated_ids[:, -max_ctx:]
+                        )
+                        model_logits, _ = model.forward_with_prelm_prefix(
+                            prelm_prefix,
+                            idx=idx_cond,
+                            dataset_idx=dataset_idx,
+                        )
+                        raw_logits_row = model_logits[:, -1, :]
+                    else:
+                        idx_cond = (
+                            x
+                            if x.size(1) <= model.config.block_size
+                            else x[:, -model.config.block_size :]
+                        )
+                        model_logits, _ = model(idx_cond, dataset_idx=dataset_idx)
+                        raw_logits_row = model_logits[:, -1, :]      # Raw logits from model
 
                     # --- Apply Cosine Similarity Penalty (if enabled) ---
                     if args.cosine_penalty is not None:
@@ -636,6 +680,8 @@ def sample_with_existing_model(
                         idx_next = torch.multinomial(probs, num_samples=1)
 
                     x = torch.cat((x, idx_next), dim=1)
+                    if use_prelm_start:
+                        generated_ids = torch.cat((generated_ids, idx_next), dim=1)
 
                     if colorize_output:
                         chosen = idx_next.item()
@@ -1552,4 +1598,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
