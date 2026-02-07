@@ -253,8 +253,18 @@ def parse_args():
     training_group.add_argument(
         '--training_mode',
         default='single',
-        choices=['single', 'multidataset', 'multicontext'],
-        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously."
+        choices=['single', 'multidataset', 'multicontext', 'prelm_tplus1', 'prelm_tplusn'],
+        help=(
+            "Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. "
+            "'multicontext' processes multiple contexts simultaneously. "
+            "'prelm_tplus1' and 'prelm_tplusn' predict future tokens using a pre-LM-head vector seed."
+        )
+    )
+    training_group.add_argument(
+        '--prelm_prediction_steps',
+        type=int,
+        default=4,
+        help="Number of T+n steps to predict when using training_mode=prelm_tplusn.",
     )
 
     # Data args

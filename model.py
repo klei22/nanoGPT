@@ -589,7 +589,7 @@ class GPT(nn.Module):
     #  LATENT-CHAINING
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def embed_tokens(self, idx, dataset_idx=None):
+    def embed_tokens(self, idx, dataset_idx=None, pos_offset: int = 0):
         """
         Return the (B,T,E) tensor right *after* token embeddings,
         factor-scale-up, positional embedding and dropout.  Exactly the
@@ -613,13 +613,46 @@ class GPT(nn.Module):
 
         if self.config.use_abs_pos_embeddings:
             t = idx.size(1)
-            pos = torch.arange(0, t, dtype=torch.long, device=device)
+            pos = torch.arange(pos_offset, pos_offset + t, dtype=torch.long, device=device)
             tok_emb = tok_emb + self.transformer.wpe(pos)
             if self.config.norm_variant_abs is not None:
                 tok_emb = self.transformer.post_abs_norm(tok_emb)
 
 
         return self.transformer.drop(tok_emb)
+
+    def get_pre_lm_hidden(self, idx, iter_num=None, dataset_idx=None):
+        """Return the pre-LM-head hidden states (B,T,E) for the provided tokens."""
+        x_emb = self.embed_tokens(idx, dataset_idx=dataset_idx)
+        _, hidden = self.forward_embedded(
+            x_emb,
+            iter_num=iter_num,
+            return_hidden=True,
+            dataset_idx=dataset_idx,
+        )
+        return hidden
+
+    def forward_with_prelm_prefix(
+        self,
+        pre_lm: torch.Tensor,
+        idx: torch.Tensor | None = None,
+        *,
+        iter_num=None,
+        return_hidden: bool = False,
+        dataset_idx=None,
+    ):
+        """Run a forward pass using a pre-LM vector as the first token."""
+        if idx is None or idx.size(1) == 0:
+            x_emb = pre_lm
+        else:
+            tok_emb = self.embed_tokens(idx, dataset_idx=dataset_idx, pos_offset=1)
+            x_emb = torch.cat([pre_lm.to(tok_emb.dtype), tok_emb], dim=1)
+        return self.forward_embedded(
+            x_emb,
+            iter_num=iter_num,
+            return_hidden=return_hidden,
+            dataset_idx=dataset_idx,
+        )
 
     def forward_embedded(self, x_emb, iter_num=None, return_hidden=False, dataset_idx=None):
         """

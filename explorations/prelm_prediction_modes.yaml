@@ -1,0 +1,15 @@
+# Compare standard training to pre-LM-head prediction modes.
+---
+
+common_group:
+  dataset: ["shakespeare_char"]
+  block_size: ["64"]
+  batch_size: ["8"]
+  max_iters: [500]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  - training_mode: ["single", "prelm_tplus1", "prelm_tplusn"]
+    prelm_prediction_steps: [4]
