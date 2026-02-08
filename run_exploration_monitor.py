@@ -24,7 +24,7 @@ Interactive keybindings:
   q # # - multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels.
   z # # - Δ-bar chart (trim baseline) – e.g. ‘z 3 2’
   r–y   - barcharts with labels merged (r=1, y=3)
-  c     - toggle colour-map on first column (green → red)
+  c     - cycle colour-map for current column (high→low, low→high, off)
   w     - toggle column width to fit largest visible cell
   u     - unsort / remove current column from the sort stack
   U     - clear *all* sorting
@@ -88,7 +88,7 @@ HOTKEYS_TEXT = (
     "q # #: multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels\n"
     "z # #: Δ-bar chart (trim baseline) – e.g. ‘z 3 2’\n"
     "r–y: barcharts with labels merged (r=1, y=3)\n"
-    "c: toggle colour-map on first column (green → red)\n"
+    "c: cycle colour-map for current column (high→low, low→high, off)\n"
     "w: toggle column width to fit largest visible cell\n"
     "u: unsort / remove current column from the sort stack\n"
     "U: clear *all* sorting\n"
@@ -151,7 +151,7 @@ class MonitorApp(App):
         self.original_entries: List[Dict] = []  # Unfiltered data
         self.current_entries: List[Dict] = []  # View data with filters
         self.row_filters: List[tuple] = []     # (col, op, val) triples
-        self.colour_columns: set[int] = set()   # columns currently colourised
+        self.colour_columns: dict[int, str] = {}   # col index -> colour mode
         self.auto_fit_columns: set[str] = set()
         self._bar_mode: bool = False           # are we collecting digits?
         self._bar_digits: List[int] = []       # collected numeric keys
@@ -205,7 +205,13 @@ class MonitorApp(App):
             self.hidden_cols = set(cfg.get("hidden_cols", []))
             self.columns = [c for c in self.all_columns if c not in self.hidden_cols]
             self.sort_stack = [tuple(p) for p in cfg.get("sort_stack", [])]
-            self.colour_columns = set(cfg.get("colour_columns", []))
+            raw_modes = cfg.get("colour_columns", {})
+            if isinstance(raw_modes, list):
+                self.colour_columns = {idx: "low_high" for idx in raw_modes}
+            else:
+                self.colour_columns = {
+                    int(idx): str(mode) for idx, mode in raw_modes.items()
+                }
             self.auto_fit_columns = set(cfg.get("auto_fit_columns", []))
             # Restore saved row filters
             self.row_filters = cfg.get("row_filters", [])
@@ -417,9 +423,12 @@ class MonitorApp(App):
         colour_by_col: dict[int, list[str | None]] = {}
         if self.colour_columns and self.current_entries:
             # helper to rank values by our sort order (lowest→0)
-            for col_idx in self.colour_columns:
+            for col_idx, mode in self.colour_columns.items():
+                if col_idx >= len(self.columns):
+                    continue
                 col_name = self.columns[col_idx]
                 vals = [self.get_cell(e, col_name) for e in self.current_entries]
+                reverse = mode == "high_low"
 
                 # strip out bools from 'numeric' test (bool isa int)
                 def _is_real_num(v):
@@ -442,6 +451,8 @@ class MonitorApp(App):
                                 cmap.append(ORANGE)
                             elif _is_real_num(v):
                                 t = max(0.0, min(1.0, v))
+                                if reverse:
+                                    t = 1 - t
                                 r = int(255 * (1 - t))
                                 g = int(255 * t)
                                 cmap.append(f"#{r:02x}{g:02x}00")
@@ -461,6 +472,8 @@ class MonitorApp(App):
                             cmap.append(ORANGE)          # special orange
                         elif _is_real_num(v):
                             t = (v - lo) / rng
+                            if reverse:
+                                t = 1 - t
                             cmap.append(f"#{int(255*t):02x}{int(255*(1-t)):02x}00")
                         elif isinstance(v, bool):        # shouldn’t appear here
                             cmap.append("#00ff00" if v else "#ff0000")
@@ -472,6 +485,8 @@ class MonitorApp(App):
                 else:  # categorical
                     # categorical:  fixed colours for special values
                     uniques = sorted(set(vals), key=self._sort_key)
+                    if reverse:
+                        uniques = list(reversed(uniques))
                     if len(uniques) == 1:
                         palette = {uniques[0]: "#00ff00"}
                     else:
@@ -651,7 +666,7 @@ class MonitorApp(App):
                 "all_columns": self.all_columns,
                 "hidden_cols": list(self.hidden_cols),
                 "sort_stack":  [[i, asc] for i, asc in self.sort_stack],
-                "colour_columns": list(self.colour_columns),
+                "colour_columns": self.colour_columns,
                 "auto_fit_columns": list(self.auto_fit_columns),
                 "row_filters": getattr(self, "row_filters", []),
             }
@@ -785,14 +800,18 @@ class MonitorApp(App):
             except Exception as exc:
                 self._msg(f"Graph error: {exc}", timeout=4)
         elif key == "c":
-            # toggle colour for the *current* column
+            # cycle colour modes for the *current* column
             cur = self.table.cursor_coordinate.column
-            if cur in self.colour_columns:
-                self.colour_columns.remove(cur)
-                self._msg(f"Colour OFF for {self.columns[cur]}")
+            mode = self.colour_columns.get(cur)
+            if mode is None:
+                self.colour_columns[cur] = "high_low"
+                self._msg(f"Colour high→low for {self.columns[cur]}")
+            elif mode == "high_low":
+                self.colour_columns[cur] = "low_high"
+                self._msg(f"Colour low→high for {self.columns[cur]}")
             else:
-                self.colour_columns.add(cur)
-                self._msg(f"Colour ON for {self.columns[cur]}")
+                self.colour_columns.pop(cur, None)
+                self._msg(f"Colour OFF for {self.columns[cur]}")
             self.refresh_table()
         elif key == "w":
             col = self.columns[c]
