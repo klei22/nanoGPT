@@ -116,7 +116,12 @@ def apply_noise_to_vectors(
     generator: torch.Generator,
 ) -> torch.Tensor:
     alphas = alphas.to(dtype=vectors.dtype)
-    noise = torch.randn_like(vectors, generator=generator)
+    noise = torch.randn(
+        vectors.shape,
+        generator=generator,
+        device=vectors.device,
+        dtype=vectors.dtype,
+    )
     noise = noise / (_vector_norm(noise) + EPS)
     weight_norm = _vector_norm(vectors)
     scaled_noise = noise.unsqueeze(0) * alphas.view(-1, *([1] * vectors.ndim))
