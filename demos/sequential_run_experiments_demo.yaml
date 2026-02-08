@@ -45,4 +45,4 @@
             mezo_epsilon: 0.001
             mezo_seed: 123
             dataset: minipile
-            output_ckpt: ckpt_mezo.pt
+            mezo_output_ckpt: ckpt_mezo.pt

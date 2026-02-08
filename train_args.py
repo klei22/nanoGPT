@@ -95,7 +95,7 @@ def parse_args():
         help='Optional fixed seed for MeZO perturbations (defaults to random per step).',
     )
     mezo_group.add_argument(
-        '--output_ckpt',
+        '--mezo_output_ckpt',
         type=str,
         default='ckpt.pt',
         help='Checkpoint filename for train_mezo outputs.',

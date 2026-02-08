@@ -284,7 +284,7 @@ def main() -> None:
             if is_best:
                 state.best_val_loss = val_loss
                 state.best_iter = state.iter_num
-                save_checkpoint(args.out_dir, model, model_args, state, args.output_ckpt)
+                save_checkpoint(args.out_dir, model, model_args, state, args.mezo_output_ckpt)
             if args.max_sample_tokens is not None and (is_best or args.sample_each_eval):
                 if encode is None or decode is None:
                     meta = load_meta(args.dataset, args.out_dir)
@@ -293,7 +293,7 @@ def main() -> None:
 
         state.iter_num += 1
 
-    save_checkpoint(args.out_dir, model, model_args, state, args.output_ckpt)
+    save_checkpoint(args.out_dir, model, model_args, state, args.mezo_output_ckpt)
 
 
 if __name__ == "__main__":
