@@ -2,7 +2,6 @@
     dataset: ["minipile"]
     eval_interval: [1000]
     max_iters: [10000]
-    never_save_checkpoint: [true]
   parameter_groups:
     - block_size: [128]
       batch_size: [12]
@@ -12,17 +11,30 @@
       loss_fn: ["cross_entropy"]
       log_interval: [5]
       sequential_runs:
-        - script: train.py
+        - name: train_base
+          script: train.py
           args:
             max_iters: 20
             eval_interval: 10
             eval_iters: 5
             loss_fn: cross_entropy
-            never_save_checkpoint: false
             always_save_checkpoint: true
-        - script: train_recurrent.py
+            output_ckpt: ckpt_train_base.pt
+        - name: train_finetune
+          script: train.py
           resume: true
-          output_ckpt: ckpt_lat.pt
+          input_ckpt: train_base
+          args:
+            max_iters: 10
+            eval_interval: 5
+            eval_iters: 5
+            loss_fn: cross_entropy
+            always_save_checkpoint: true
+            output_ckpt: ckpt_train_finetune.pt
+        - name: recurrent_latent
+          script: train_recurrent.py
+          resume: true
+          input_ckpt: train_finetune
           args:
             max_iters: 10
             eval_interval: 5
@@ -36,9 +48,10 @@
             reset_optim: true
             always_save_checkpoint: true
             output_ckpt: ckpt_lat.pt
-            never_save_checkpoint: false
-        - script: train_mezo.py
+        - name: mezo_stage
+          script: train_mezo.py
           resume: true
+          input_ckpt: recurrent_latent
           args:
             max_iters: 10
             eval_interval: 5

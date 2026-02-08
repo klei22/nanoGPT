@@ -734,6 +734,7 @@ def run_experiment(
 
     prev_out_dir = out_dir
     prev_ckpt_name = combo.get("init_from_ckpt", "ckpt.pt")
+    stage_outputs: dict[str, str] = {}
 
     for idx, stage in enumerate(sequential_runs, 1):
         if not isinstance(stage, dict):
@@ -742,10 +743,24 @@ def run_experiment(
         stage_args = stage.get("args", {})
         if not isinstance(stage_args, dict):
             raise TypeError("Stage 'args' must be a mapping of CLI arguments")
+        stage_name = stage.get("name", f"stage_{idx}")
 
         stage_combo = _prepare_stage_combo(combo, stage_args)
         stage_combo['out_dir'] = out_dir
         stage_combo.setdefault('tensorboard_run_name', run_name)
+
+        input_ckpt = stage.get("input_ckpt")
+        if input_ckpt:
+            if input_ckpt in stage_outputs:
+                prev_ckpt_name = stage_outputs[input_ckpt]
+            elif input_ckpt in stage_outputs.values():
+                prev_ckpt_name = input_ckpt
+            elif not str(input_ckpt).endswith(".pt"):
+                raise ValueError(
+                    f"Unknown input_ckpt '{input_ckpt}'. Expected a prior stage name or .pt filename."
+                )
+            else:
+                prev_ckpt_name = input_ckpt
 
         resume = stage.get("resume", idx > 1)
         if resume:
@@ -768,9 +783,12 @@ def run_experiment(
 
         prev_out_dir = out_dir
         if stage_script == "train_recurrent.py":
-            prev_ckpt_name = stage.get("output_ckpt", prev_ckpt_name)
+            prev_ckpt_name = stage_combo.get("output_ckpt", prev_ckpt_name)
+        elif stage_script == "train_mezo.py":
+            prev_ckpt_name = stage_combo.get("mezo_output_ckpt", prev_ckpt_name)
         else:
-            prev_ckpt_name = stage_combo.get("init_from_ckpt", prev_ckpt_name)
+            prev_ckpt_name = stage_combo.get("output_ckpt", prev_ckpt_name)
+        stage_outputs[stage_name] = prev_ckpt_name
 
     # Read metrics (use existing or nan on failure)
     try:

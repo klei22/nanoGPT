@@ -82,6 +82,12 @@ def parse_args():
     training_group.add_argument('--log_interval', default=10, type=int)
     training_group.add_argument('--eval_iters', default=200, type=int)
     training_group.add_argument('--eval_only', default=False, action=argparse.BooleanOptionalAction)
+    training_group.add_argument(
+        '--output_ckpt',
+        type=str,
+        default='ckpt.pt',
+        help='Checkpoint filename for train.py outputs.',
+    )
     mezo_group.add_argument(
         '--mezo_epsilon',
         type=float,
