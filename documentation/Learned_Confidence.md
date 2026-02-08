@@ -1,13 +1,13 @@
 # Learned Confidence Residual Scaling
 
-This feature lets each transformer block learn a scalar "confidence" for its output before adding it back to the residual stream. A learned vector takes a dot product with the attention or MLP output, optionally adds a constant, and the result scales the activation.
+This feature lets each transformer block learn a scalar "confidence" for its output before adding it back to the residual stream. A learned vector takes a dot product with the attention or MLP output, optionally adds a constant, and the result scales the activation. A matrix variant instead multiplies the activation by a learned matrix, sums the resulting values, and uses that scalar to scale the activation.
 
 ## Configuration
 
 Enable the scalers and choose their initialization in `gpt_conf.py` or via `train_args.py`:
 
 - `--use_attn_resid_scaling`, `--use_mlp_resid_scaling`
-- `--attn_confidence_variant`, `--mlp_confidence_variant` (`zeros`, `ones`, `gaussian`)
+- `--attn_confidence_variant`, `--mlp_confidence_variant` (`zeros`, `ones`, `gaussian`, `matrix`)
 - `--use_attn_resid_const`, `--attn_resid_const`, `--learn_attn_resid_const`
 - `--use_mlp_resid_const`, `--mlp_resid_const`, `--learn_mlp_resid_const`
 
