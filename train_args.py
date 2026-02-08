@@ -128,6 +128,18 @@ def parse_args():
         type=str,
         help='Which recurrent block variant to use (train_recurrent).',
     )
+    recurrent_group.add_argument(
+        '--max_tokens_per_epoch',
+        type=int,
+        default=None,
+        help='Limit train_recurrent epochs to a contiguous slice of tokens.',
+    )
+    recurrent_group.add_argument(
+        '--progress_bar',
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help='Show a stdout progress bar during train_recurrent epochs.',
+    )
 
     # latency / ETA estimate options
     training_group.add_argument('--eta_variant', choices=['iteration', 'eval_cycle'], default='eval_cycle', help="iteration - estimates only based on training iterations -- use if doing one eval at the end; eval_cycle -- use if doing multiple evals, will use a single cycle for the estimation.")

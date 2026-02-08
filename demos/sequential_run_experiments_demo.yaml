@@ -27,6 +27,7 @@
             max_iters: 10
             eval_interval: 5
             log_interval: 1
+            max_tokens_per_epoch: 4096
             latent_steps: 4
             skip_steps: 1
             weight_start: 1.0

@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+import random
 
 import numpy as np
 import torch
@@ -65,6 +66,18 @@ def build_recurrent_parser() -> argparse.ArgumentParser:
         default="latent_chaining",
         choices=sorted(RECURRENT_BLOCK_VARIANTS.keys()),
         help="Which recurrent block variant to use.",
+    )
+    parser.add_argument(
+        "--max_tokens_per_epoch",
+        type=int,
+        default=None,
+        help="Limit each epoch to a contiguous slice of tokens.",
+    )
+    parser.add_argument(
+        "--progress_bar",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Show a stdout progress bar during epochs.",
     )
     return parser
 
@@ -230,10 +243,27 @@ def run_epoch(
 ) -> float:
     losses = []
     ptr = 0
+    data_view = data
+    total_tokens = len(data_view) - 1
 
-    while ptr + block_size + 1 < len(data):
+    if args.max_tokens_per_epoch:
+        if args.max_tokens_per_epoch < block_size + 1:
+            raise ValueError(
+                "--max_tokens_per_epoch must be larger than block_size + 1"
+            )
+        if args.max_tokens_per_epoch < len(data_view):
+            max_start = len(data_view) - args.max_tokens_per_epoch - 1
+            start = random.randint(0, max_start) if max_start > 0 else 0
+            end = start + args.max_tokens_per_epoch + 1
+            data_view = data_view[start:end]
+            total_tokens = len(data_view) - 1
+
+    total_blocks = max(1, (total_tokens - 1) // block_size)
+    last_print_len = 0
+
+    while ptr + block_size + 1 < len(data_view):
         seq = torch.from_numpy(
-            np.array(data[ptr : ptr + block_size + 1], dtype=np.int64)
+            np.array(data_view[ptr : ptr + block_size + 1], dtype=np.int64)
         ).to(device)
         x, y = seq[:-1].unsqueeze(0), seq[1:].unsqueeze(0)
 
@@ -286,6 +316,20 @@ def run_epoch(
 
         losses.append(loss.item())
         ptr += block_size
+
+        if args.progress_bar:
+            completed = min(total_blocks, ptr // block_size)
+            pct = completed / total_blocks
+            bar_width = 24
+            filled = int(bar_width * pct)
+            bar = "#" * filled + "-" * (bar_width - filled)
+            line = f"{split} [{bar}] {completed}/{total_blocks} ({pct:.0%})"
+            padding = max(0, last_print_len - len(line))
+            print(f"\r{line}{' ' * padding}", end="", flush=True)
+            last_print_len = len(line)
+
+    if args.progress_bar:
+        print()
 
     return sum(losses) / len(losses)
 
