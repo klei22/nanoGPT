@@ -198,10 +198,15 @@ def _merge_config_dicts(base: dict, addition: dict) -> dict:
     return result
 
 
+NON_EXPANDING_KEYS = {"sequential_runs"}
+
+
 def _collect_param_keys(cfg: dict) -> set[str]:
     keys: set[str] = set()
     for key in cfg:
         if key in {'parameter_groups', '_named_group_fragments', '_named_group_param_keys'}:
+            continue
+        if key in NON_EXPANDING_KEYS:
             continue
         if key.startswith('_'):
             continue
@@ -416,12 +421,17 @@ def generate_combinations(config: dict):
 
     def _expand_base_and_conditionals(cfg: dict):
         # Split plain parameters (base) from conditional specs
-        base = {
-            k: (expand_range(v) if isinstance(v, dict) and 'range' in v else v)
-            for k, v in cfg.items()
-            if not (isinstance(v, dict) and 'conditions' in v)
-               and k != 'parameter_groups'
-        }
+        base = {}
+        for key, value in cfg.items():
+            if isinstance(value, dict) and 'conditions' in value:
+                continue
+            if key == 'parameter_groups':
+                continue
+            if key in NON_EXPANDING_KEYS:
+                base[key] = [value]
+                continue
+            normalized = expand_range(value) if isinstance(value, dict) and 'range' in value else value
+            base[key] = normalized
         # Ensure each base value is iterable for cartesian product
         base = {k: (v if isinstance(v, list) else [v]) for k, v in base.items()}
 

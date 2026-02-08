@@ -21,10 +21,3 @@ python3 demos/check_ckpt_for_gelu_shift.py \
 
 `adam_vs_adamw.sh` trains two tiny Shakespeare models, one with Adam and one
 with AdamW, then compares their statistics using `view_model_stats.py`.
-
-## Sequential run_experiments demo
-
-`sequential_run_experiments_demo.sh` runs a small sequential pipeline via
-`optimization_and_search/run_experiments.py`, exercising resume defaults for
-`train.py`, `train_recurrent.py`, and `train_mezo.py` using the accompanying
-`sequential_run_experiments_demo.yaml` configuration.
