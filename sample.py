@@ -234,6 +234,8 @@ def _topk_table(
     rows: List[torch.Tensor],
     decode: Callable[[Sequence[int]], str],
     k: int,
+    ln_f_rows: List[torch.Tensor],
+    embed_weight: torch.Tensor,
     max_token_chars: int = 20,
     escape_ws: bool = True,
 ) -> Table:
@@ -242,17 +244,31 @@ def _topk_table(
     table.add_column("target", no_wrap=True)
     table.add_column("xent", justify="right", no_wrap=True)
     table.add_column("rank", justify="right", no_wrap=True)
+    table.add_column("cos", justify="right", no_wrap=True)
+    table.add_column("angle", justify="right", no_wrap=True)
     table.add_column("p_tgt", justify="right", no_wrap=True)
     table.add_column("p_left", justify="right", no_wrap=True)
     for _ in range(k):
         table.add_column(justify="center", no_wrap=True)
 
-    for tid, row in zip(token_ids, rows):
+    for tid, row, ln_f_vec in zip(token_ids, rows, ln_f_rows):
         probs = F.softmax(row, dim=-1)
         tgt_prob = probs[tid].item()
         rank = int((row > row[tid]).sum().item()) + 1
         prob_left = probs[row > row[tid]].sum().item()
         ce = -math.log(tgt_prob + 1e-12)
+
+        ln_f_norm = F.normalize(ln_f_vec, dim=0)
+        embed_norm = F.normalize(embed_weight[tid], dim=0)
+        cos_sim = torch.dot(ln_f_norm, embed_norm).item()
+        cos_val = max(cos_sim, 0.0)
+        r = int((1 - cos_val) * 255); g = int(cos_val * 255)
+        cos_text = Text(f"{cos_sim:.4f}", style=f"bold #{r:02x}{g:02x}00")
+
+        angle = torch.rad2deg(torch.acos(torch.clamp(torch.tensor(cos_sim), -1.0, 1.0))).item()
+        ang_norm = 1 - min(abs(angle), 90) / 90
+        r = int((1 - ang_norm) * 255); g = int(ang_norm * 255)
+        angle_text = Text(f"{abs(angle):.2f}", style=f"bold #{r:02x}{g:02x}00")
 
         topv, topi = row.topk(k)
         norm = (topv - topv.min()) / (topv.max() - topv.min() + 1e-6)
@@ -288,7 +304,16 @@ def _topk_table(
         if escape_ws:
             target_word = _escape_ws(target_word)
 
-        table.add_row(Text(target_word, style="bold cyan"), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text, *words)
+        table.add_row(
+            Text(target_word, style="bold cyan"),
+            f"{ce:.4f}",
+            rank_text,
+            cos_text,
+            angle_text,
+            p_tgt_text,
+            p_left_text,
+            *words,
+        )
 
     return table
 
@@ -566,6 +591,13 @@ def sample_with_existing_model(
             pre_temp_scalar_rows: List[torch.Tensor] = []
             scalar_rows: List[torch.Tensor] = []
             ranks_list: List[int] = []  # NEW
+            ln_f_rows: List[torch.Tensor] = []
+
+            if colorize_output:
+                def ln_f_hook(module, inp, out):
+                    ln_f_rows.append(out[0, -1, :].detach())
+
+                ln_f_handle = model.transformer.ln_f.register_forward_hook(ln_f_hook)
 
             with torch.no_grad():
                 for _step in range(max_new_tokens):
@@ -679,6 +711,8 @@ def sample_with_existing_model(
                             args,
 
                         )
+            if colorize_output:
+                ln_f_handle.remove()
 
             # ---------- Print summary statistics for this sample ------------------
             if kl_divergences:
@@ -746,7 +780,12 @@ def sample_with_existing_model(
                         )
                     elif cm == "topk":
                         coloured = _topk_table(
-                            tokens_for_color, full_rows, decode, args.colorize_topk
+                            tokens_for_color,
+                            full_rows,
+                            decode,
+                            args.colorize_topk,
+                            ln_f_rows,
+                            model.lm_head.weight,
                         )
                     else:
                         continue  # Should not happen if data_for_color is None
