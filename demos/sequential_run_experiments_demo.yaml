@@ -34,6 +34,8 @@
             weight_end: 0.5
             recurrent_variant: latent_chaining
             reset_optim: true
+            always_save_checkpoint: true
+            output_ckpt: ckpt_lat.pt
         - script: train_mezo.py
           resume: true
           args:
@@ -43,3 +45,4 @@
             mezo_epsilon: 0.001
             mezo_seed: 123
             dataset: minipile
+            output_ckpt: ckpt_mezo.pt

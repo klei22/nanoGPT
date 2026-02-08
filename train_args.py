@@ -94,6 +94,12 @@ def parse_args():
         default=None,
         help='Optional fixed seed for MeZO perturbations (defaults to random per step).',
     )
+    mezo_group.add_argument(
+        '--output_ckpt',
+        type=str,
+        default='ckpt.pt',
+        help='Checkpoint filename for train_mezo outputs.',
+    )
 
     # Recurrent / latent chaining options
     recurrent_group.add_argument(
@@ -139,6 +145,12 @@ def parse_args():
         default=True,
         action=argparse.BooleanOptionalAction,
         help='Show a stdout progress bar during train_recurrent epochs.',
+    )
+    recurrent_group.add_argument(
+        '--output_ckpt',
+        type=str,
+        default='ckpt_lat.pt',
+        help='Checkpoint filename for train_recurrent outputs.',
     )
 
     # latency / ETA estimate options

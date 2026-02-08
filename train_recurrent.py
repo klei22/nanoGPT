@@ -79,6 +79,12 @@ def build_recurrent_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="Show a stdout progress bar during epochs.",
     )
+    parser.add_argument(
+        "--output_ckpt",
+        type=str,
+        default="ckpt_lat.pt",
+        help="Checkpoint filename for train_recurrent outputs.",
+    )
     return parser
 
 
@@ -222,6 +228,27 @@ def save_best_checkpoint(
     )
 
 
+def save_checkpoint(
+    *,
+    model: GPT,
+    ckpt_model_args: dict,
+    ckpt_path: str,
+    best_val_loss: float,
+    global_step: int,
+    tag: str,
+):
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "model_args": ckpt_model_args,
+            "iter_num": global_step,
+            "best_val_loss": best_val_loss,
+        },
+        ckpt_path,
+    )
+    print(f"  ➜ {tag} checkpoint saved to {ckpt_path}")
+
+
 def run_epoch(
     *,
     split: str,
@@ -295,12 +322,22 @@ def run_epoch(
 
                 if val < state.best_val_loss:
                     state.best_val_loss = val
-                    save_best_checkpoint(
+                    if not args.never_save_checkpoint:
+                        save_best_checkpoint(
+                            model=model,
+                            ckpt_model_args=ckpt_model_args,
+                            best_ckpt_path=best_ckpt_path,
+                            best_val_loss=state.best_val_loss,
+                            global_step=state.global_step,
+                        )
+                if args.always_save_checkpoint and not args.never_save_checkpoint:
+                    save_checkpoint(
                         model=model,
                         ckpt_model_args=ckpt_model_args,
-                        best_ckpt_path=best_ckpt_path,
+                        ckpt_path=best_ckpt_path,
                         best_val_loss=state.best_val_loss,
                         global_step=state.global_step,
+                        tag="latest",
                     )
         else:
             model.eval()
@@ -366,12 +403,12 @@ def main() -> None:
     recurrent_block = select_recurrent_block(args)
 
     tb = SummaryWriter() if getattr(args, "tensorboard_log", False) else None
-    best_ckpt_path = os.path.join(os.path.dirname(args.resume_ckpt), "ckpt_lat.pt")
+    best_ckpt_path = os.path.join(os.path.dirname(args.resume_ckpt), args.output_ckpt)
 
     val_loss = 999.9
 
     def evaluate_validation() -> float:
-        return run_epoch(
+        val = run_epoch(
             split="val",
             data=val_bin,
             model=model,
@@ -388,6 +425,8 @@ def main() -> None:
             ckpt_model_args=ckpt["model_args"],
             best_ckpt_path=best_ckpt_path,
         )
+        print(f"val loss {val:.4f}")
+        return val
 
     while state.global_step < args.max_iters:
         t0 = time.time()
@@ -418,12 +457,22 @@ def main() -> None:
 
             if val_loss < state.best_val_loss:
                 state.best_val_loss = val_loss
-                save_best_checkpoint(
+                if not args.never_save_checkpoint:
+                    save_best_checkpoint(
+                        model=model,
+                        ckpt_model_args=ckpt["model_args"],
+                        best_ckpt_path=best_ckpt_path,
+                        best_val_loss=state.best_val_loss,
+                        global_step=state.global_step,
+                    )
+            if args.always_save_checkpoint and not args.never_save_checkpoint:
+                save_checkpoint(
                     model=model,
                     ckpt_model_args=ckpt["model_args"],
-                    best_ckpt_path=best_ckpt_path,
+                    ckpt_path=best_ckpt_path,
                     best_val_loss=state.best_val_loss,
                     global_step=state.global_step,
+                    tag="latest",
                 )
 
         if tb:
