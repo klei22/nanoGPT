@@ -345,6 +345,7 @@ class GPTConfig:
     use_post_ln: bool = False
     use_pre_ln: bool = True
     use_peri_ln: bool = False
+    use_b2t_connection: bool = False
     use_pre_ln_attn: bool | None = None
     use_pre_ln_mlp: bool | None = None
     use_peri_ln_attn: bool | None = None
