@@ -36,6 +36,7 @@
             reset_optim: true
             always_save_checkpoint: true
             output_ckpt: ckpt_lat.pt
+            never_save_checkpoint: false
         - script: train_mezo.py
           resume: true
           args:

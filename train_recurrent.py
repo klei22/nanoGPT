@@ -272,6 +272,7 @@ def run_epoch(
     ptr = 0
     data_view = data
     total_tokens = len(data_view) - 1
+    save_enabled = args.always_save_checkpoint or not args.never_save_checkpoint
 
     if args.max_tokens_per_epoch:
         if args.max_tokens_per_epoch < block_size + 1:
@@ -322,7 +323,7 @@ def run_epoch(
 
                 if val < state.best_val_loss:
                     state.best_val_loss = val
-                    if not args.never_save_checkpoint:
+                    if save_enabled:
                         save_best_checkpoint(
                             model=model,
                             ckpt_model_args=ckpt_model_args,
@@ -330,7 +331,7 @@ def run_epoch(
                             best_val_loss=state.best_val_loss,
                             global_step=state.global_step,
                         )
-                if args.always_save_checkpoint and not args.never_save_checkpoint:
+                if args.always_save_checkpoint:
                     save_checkpoint(
                         model=model,
                         ckpt_model_args=ckpt_model_args,
@@ -404,6 +405,7 @@ def main() -> None:
 
     tb = SummaryWriter() if getattr(args, "tensorboard_log", False) else None
     best_ckpt_path = os.path.join(os.path.dirname(args.resume_ckpt), args.output_ckpt)
+    save_enabled = args.always_save_checkpoint or not args.never_save_checkpoint
 
     val_loss = 999.9
 
@@ -457,7 +459,7 @@ def main() -> None:
 
             if val_loss < state.best_val_loss:
                 state.best_val_loss = val_loss
-                if not args.never_save_checkpoint:
+                if save_enabled:
                     save_best_checkpoint(
                         model=model,
                         ckpt_model_args=ckpt["model_args"],
@@ -465,7 +467,7 @@ def main() -> None:
                         best_val_loss=state.best_val_loss,
                         global_step=state.global_step,
                     )
-            if args.always_save_checkpoint and not args.never_save_checkpoint:
+            if args.always_save_checkpoint:
                 save_checkpoint(
                     model=model,
                     ckpt_model_args=ckpt["model_args"],
