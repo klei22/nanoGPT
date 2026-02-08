@@ -20,6 +20,8 @@ def parse_args():
     model_group = parser.add_argument_group('model_group')
     training_group = parser.add_argument_group('training_group')
     logging_group = parser.add_argument_group('logging_group')
+    recurrent_group = parser.add_argument_group('recurrent_group')
+    mezo_group = parser.add_argument_group('mezo_group')
 
     # MLP Bias Configuration
     model_group.add_argument('--mlp_up_bias', default=None, action=argparse.BooleanOptionalAction, help='Whether to use bias in MLP up projections. If None, uses global bias setting.')
@@ -80,17 +82,51 @@ def parse_args():
     training_group.add_argument('--log_interval', default=10, type=int)
     training_group.add_argument('--eval_iters', default=200, type=int)
     training_group.add_argument('--eval_only', default=False, action=argparse.BooleanOptionalAction)
-    training_group.add_argument(
+    mezo_group.add_argument(
         '--mezo_epsilon',
         type=float,
         default=1e-3,
         help='Perturbation scale for MeZO forward-only training.',
     )
-    training_group.add_argument(
+    mezo_group.add_argument(
         '--mezo_seed',
         type=int,
         default=None,
         help='Optional fixed seed for MeZO perturbations (defaults to random per step).',
+    )
+
+    # Recurrent / latent chaining options
+    recurrent_group.add_argument(
+        '--resume_ckpt',
+        type=str,
+        default=None,
+        help='Path to .pt checkpoint produced by train.py (for train_recurrent).',
+    )
+    recurrent_group.add_argument(
+        '--latent_steps',
+        type=int,
+        default=0,
+        help='Chain this many hidden states before teacher-forcing.',
+    )
+    recurrent_group.add_argument(
+        '--skip_steps',
+        type=int,
+        default=0,
+        help='Mask loss for the first K positions in every block.',
+    )
+    recurrent_group.add_argument('--weight_start', type=float, default=1.0)
+    recurrent_group.add_argument('--weight_end', type=float, default=1.0)
+    recurrent_group.add_argument(
+        '--reset_optim',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Ignore optimiser state in the checkpoint (train_recurrent).',
+    )
+    recurrent_group.add_argument(
+        '--recurrent_variant',
+        default='latent_chaining',
+        type=str,
+        help='Which recurrent block variant to use (train_recurrent).',
     )
 
     # latency / ETA estimate options

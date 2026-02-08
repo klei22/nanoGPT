@@ -604,11 +604,11 @@ def append_progress(log_file: Path, message: str) -> None:
         f.write(f"[{timestamp}] {message}\n")
 
 
-def build_command(combo: dict) -> list[str]:
+def build_command(combo: dict, script: str = "train.py") -> list[str]:
     """
-    Construct the command-line invocation for train.py.
+    Construct the command-line invocation for a training script.
     """
-    cmd = ['python3', 'train.py']
+    cmd = ['python3', script]
     for k, v in combo.items():
         if k.startswith('_'):
             continue
@@ -625,6 +625,49 @@ def build_command(combo: dict) -> list[str]:
     return cmd
 
 
+def _normalize_sequential_runs(sequential_runs: object) -> list[dict]:
+    if sequential_runs is None:
+        return []
+    if isinstance(sequential_runs, dict):
+        return [sequential_runs]
+    if isinstance(sequential_runs, list):
+        return sequential_runs
+    raise TypeError("'sequential_runs' must be a list of stage mappings or a single mapping")
+
+
+def _prepare_stage_combo(base_combo: dict, stage_args: dict) -> dict:
+    combined = deepcopy(base_combo)
+    for key, value in stage_args.items():
+        combined[key] = deepcopy(value)
+    return combined
+
+
+def _apply_resume_defaults(
+    stage_script: str,
+    stage_combo: dict,
+    prev_out_dir: str,
+    prev_ckpt_name: str,
+    stage_idx: int,
+) -> dict:
+    if stage_script == "train_recurrent.py":
+        resume_ckpt = stage_combo.get("resume_ckpt")
+        if resume_ckpt is None:
+            stage_combo["resume_ckpt"] = os.path.join(prev_out_dir, prev_ckpt_name)
+        return stage_combo
+
+    if stage_script in {"train.py", "train_mezo.py"}:
+        stage_combo.setdefault("init_from", "resume")
+        stage_combo.setdefault("init_from_ckpt", prev_ckpt_name)
+        return stage_combo
+
+    if stage_idx > 0:
+        print(
+            f"[yellow]Warning:[/] resume defaults are only supported for train.py, "
+            f"train_mezo.py, and train_recurrent.py (got {stage_script})."
+        )
+    return stage_combo
+
+
 def run_experiment(
     combo: dict,
     base: str,
@@ -636,6 +679,10 @@ def run_experiment(
     """
     named_fragments = combo.pop('_named_group_fragments', [])
     named_param_keys = combo.pop('_named_group_param_keys', {})
+    sequential_runs = _normalize_sequential_runs(combo.pop('sequential_runs', None))
+    log_combo = deepcopy(combo)
+    if sequential_runs:
+        log_combo['sequential_runs'] = deepcopy(sequential_runs)
     exclude = set() if args.include_common_group_in_name else common_keys
     run_name = format_run_name(
         combo,
@@ -654,7 +701,8 @@ def run_experiment(
     # Prepare output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S') if args.use_timestamp else None
     out_dir_name = f"{timestamp}_{run_name}" if timestamp else run_name
-    combo['out_dir'] = os.path.join(args.output_dir, out_dir_name)
+    out_dir = os.path.join(args.output_dir, out_dir_name)
+    combo['out_dir'] = out_dir
 
     # Prepare tensorboard run name
     combo['tensorboard_run_name'] = run_name
@@ -671,13 +719,48 @@ def run_experiment(
         table.add_row(k, str(v))
     console.print(table)
 
-    # Build and run
-    cmd = build_command(combo)
-    print(f"Running: {' '.join(cmd)}")
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError:
-        print(f"[red]Process exited with error for run:[/] {run_name}")
+    if not sequential_runs:
+        sequential_runs = [{"script": "train.py"}]
+
+    prev_out_dir = out_dir
+    prev_ckpt_name = combo.get("init_from_ckpt", "ckpt.pt")
+
+    for idx, stage in enumerate(sequential_runs, 1):
+        if not isinstance(stage, dict):
+            raise TypeError("Each sequential run stage must be a mapping")
+        stage_script = stage.get("script", "train.py")
+        stage_args = stage.get("args", {})
+        if not isinstance(stage_args, dict):
+            raise TypeError("Stage 'args' must be a mapping of CLI arguments")
+
+        stage_combo = _prepare_stage_combo(combo, stage_args)
+        stage_combo['out_dir'] = out_dir
+        stage_combo.setdefault('tensorboard_run_name', run_name)
+
+        resume = stage.get("resume", idx > 1)
+        if resume:
+            stage_combo = _apply_resume_defaults(
+                stage_script,
+                stage_combo,
+                prev_out_dir=prev_out_dir,
+                prev_ckpt_name=prev_ckpt_name,
+                stage_idx=idx,
+            )
+
+        stage_combo = _substitute_run_name(stage_combo, run_name)
+        cmd = build_command(stage_combo, script=stage_script)
+        print(f"Running: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError:
+            print(f"[red]Process exited with error for run:[/] {run_name}")
+            break
+
+        prev_out_dir = out_dir
+        if stage_script == "train_recurrent.py":
+            prev_ckpt_name = stage.get("output_ckpt", prev_ckpt_name)
+        else:
+            prev_ckpt_name = stage_combo.get("init_from_ckpt", prev_ckpt_name)
 
     # Read metrics (use existing or nan on failure)
     try:
@@ -685,7 +768,9 @@ def run_experiment(
     except Exception:
         metrics = {k: float("nan") for k in METRIC_KEYS}
 
-    append_log(log_file, run_name, combo, metrics)
+    log_combo['out_dir'] = out_dir
+    log_combo['tensorboard_run_name'] = run_name
+    append_log(log_file, run_name, log_combo, metrics)
 
 
 def main():
