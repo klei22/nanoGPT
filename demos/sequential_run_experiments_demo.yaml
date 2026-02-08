@@ -47,7 +47,7 @@
             recurrent_variant: latent_chaining
             reset_optim: true
             always_save_checkpoint: true
-            output_ckpt: ckpt_lat.pt
+            recurrent_output_ckpt: ckpt_lat.pt
         - name: mezo_stage
           script: train_mezo.py
           resume: true

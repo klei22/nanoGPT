@@ -153,7 +153,7 @@ def parse_args():
         help='Show a stdout progress bar during train_recurrent epochs.',
     )
     recurrent_group.add_argument(
-        '--output_ckpt',
+        '--recurrent_output_ckpt',
         type=str,
         default='ckpt_lat.pt',
         help='Checkpoint filename for train_recurrent outputs.',

@@ -783,7 +783,7 @@ def run_experiment(
 
         prev_out_dir = out_dir
         if stage_script == "train_recurrent.py":
-            prev_ckpt_name = stage_combo.get("output_ckpt", prev_ckpt_name)
+            prev_ckpt_name = stage_combo.get("recurrent_output_ckpt", prev_ckpt_name)
         elif stage_script == "train_mezo.py":
             prev_ckpt_name = stage_combo.get("mezo_output_ckpt", prev_ckpt_name)
         else:

@@ -80,7 +80,7 @@ def build_recurrent_parser() -> argparse.ArgumentParser:
         help="Show a stdout progress bar during epochs.",
     )
     parser.add_argument(
-        "--output_ckpt",
+        "--recurrent_output_ckpt",
         type=str,
         default="ckpt_lat.pt",
         help="Checkpoint filename for train_recurrent outputs.",
@@ -404,7 +404,9 @@ def main() -> None:
     recurrent_block = select_recurrent_block(args)
 
     tb = SummaryWriter() if getattr(args, "tensorboard_log", False) else None
-    best_ckpt_path = os.path.join(os.path.dirname(args.resume_ckpt), args.output_ckpt)
+    best_ckpt_path = os.path.join(
+        os.path.dirname(args.resume_ckpt), args.recurrent_output_ckpt
+    )
     save_enabled = args.always_save_checkpoint or not args.never_save_checkpoint
 
     val_loss = 999.9
