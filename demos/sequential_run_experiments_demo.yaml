@@ -18,6 +18,8 @@
             eval_interval: 10
             eval_iters: 5
             loss_fn: cross_entropy
+            never_save_checkpoint: false
+            always_save_checkpoint: true
         - script: train_recurrent.py
           resume: true
           output_ckpt: ckpt_lat.pt
