@@ -1,0 +1,66 @@
+# default.yaml using named group mechanisms from sample.yaml
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "pre_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [false]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      use_abs_pos_embeddings: [false]
+
+  # Embedding Norm
+  - named_group: "rmsnorm_wte"
+    named_group_settings:
+      norm_variant_wte: ["rmsnorm"]
+
+  # MLP Activation
+  - named_group: "squared_relu"
+    named_group_settings:
+      activation_variant: ["squared_relu"]
+
+  # MLP Activation
+  - named_group: "swiglu"
+    named_group_settings:
+      activation_variant: ["silu"]
+      mlp_variant: ["swiglu"]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  use_gradient_checkpointing: [true]
+  attention_variant: ["infinite"]
+  use_concat_heads: [true]
+
+
+parameter_groups:
+  - named_group_static:
+    - "qk_norm"
+    - "peri_ln"
+    - "rotary"
+    - "rmsnorm_wte"
+    - "swiglu"
+    softmax_variant_attn: ["relu2max", "softmax"]
+    n_qk_head_dim: [200]
+    n_v_head_dim: [200]
+    n_head: [1, 2, 3, 4, 5, 6]
+    n_embd: [768]
+    n_layer: [18]
