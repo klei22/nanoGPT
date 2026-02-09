@@ -1146,6 +1146,9 @@ class InfiniteHeadAttention(nn.Module):
         self.softmax_variant_attn = config.softmax_variant_attn
         if self.softmax_variant_attn != 'softmax':
             self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
+            if not self.disable_flash_attention:
+                print("flash attention removed due to softmax alternative")
+            self.disable_flash_attention = True
 
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                              .view(1, 1, config.block_size, config.block_size))
