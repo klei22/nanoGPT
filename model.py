@@ -39,6 +39,7 @@ from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from variations.output_vector_variants import output_vector_variant_dict
 from variations.numerical_mapping_variations import get_numerical_embedding, get_numerical_output
+from variations.multicontext_transform_variations import get_multicontext_transform
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -72,6 +73,19 @@ class GPT(nn.Module):
                 embedding_module = get_numerical_embedding(config)
                 self.numerical_embeddings[key] = embedding_module
                 self.numerical_output_mlps[key] = get_numerical_output(config, embedding_module=embedding_module)
+
+        self.uses_multicontext_transform = bool(
+            config.multicontext
+            and not self.uses_numerical_multicontext
+            and config.multicontext_transform_variant != "none"
+        )
+        if self.uses_multicontext_transform:
+            if not config.vocab_sizes:
+                raise ValueError("multicontext_transform_variant requires vocab_sizes to be provided")
+            self.multicontext_transforms = nn.ModuleDict()
+            for idx in range(len(config.vocab_sizes)):
+                key = str(idx)
+                self.multicontext_transforms[key] = get_multicontext_transform(config)
 
         # Final-logit softcapping
         self.final_logit_softcapping = config.final_logit_softcapping
@@ -383,6 +397,8 @@ class GPT(nn.Module):
                     token_repr = module(numeric_tokens)
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
+                    if self.uses_multicontext_transform:
+                        token_repr = self.multicontext_transforms[str(i)](token_repr)
 
                 token_repr = self.add_embedding_gaussian_noise(token_repr)
                 x = token_repr if x is None else x + token_repr
