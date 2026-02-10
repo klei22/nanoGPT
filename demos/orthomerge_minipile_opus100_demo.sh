@@ -5,7 +5,7 @@
 #   1) Prepare + train 10k iterations on minipile (tiktoken).
 #   2) Download + tiktoken-tokenize OPUS-100 en-pt and en-id with -s/-S.
 #   3) Finetune each for 2k iterations from the minipile checkpoint.
-#   4) Merge the two finetuned checkpoints with l2/simple/orthomerge and sample.
+#   4) Merge the two finetuned checkpoints with l2/simple and sample.
 
 set -euo pipefail
 
@@ -31,7 +31,6 @@ FT_EN_ID_OUT_DIR="out_opus_en_id_2k"
 
 MERGE_L2_OUT_DIR="out_merge_l2"
 MERGE_SIMPLE_OUT_DIR="out_merge_simple"
-MERGE_ORTHO_OUT_DIR="out_merge_orthomerge"
 
 BLOCK_SIZE=256
 BATCH_SIZE=64
@@ -144,16 +143,9 @@ merge_models() {
 
   echo -e "${CYAN}=== Merging checkpoints (${merge_mode}) ===${RESET}"
   if [ ! -f "${out_dir}/ckpt.pt" ]; then
-    if [ "${merge_mode}" = "orthomerge" ]; then
-      python3 model_merge.py "${FT_EN_PT_OUT_DIR}" "${FT_EN_ID_OUT_DIR}" \
-        --out_dir "${out_dir}" \
-        --merge_mode orthomerge \
-        --base_ckpt_dir "${BASE_OUT_DIR}"
-    else
-      python3 model_merge.py "${FT_EN_PT_OUT_DIR}" "${FT_EN_ID_OUT_DIR}" \
-        --out_dir "${out_dir}" \
-        --merge_mode "${merge_mode}"
-    fi
+    python3 model_merge.py "${FT_EN_PT_OUT_DIR}" "${FT_EN_ID_OUT_DIR}" \
+      --out_dir "${out_dir}" \
+      --merge_mode "${merge_mode}"
   else
     echo -e "${YELLOW}[SKIP]${RESET} Found merged checkpoint at ${out_dir}/ckpt.pt"
   fi
@@ -188,8 +180,5 @@ finetune_opus "opus-100/en-id/${TOKEN_SUBDIR_EN_ID}" "${FT_EN_ID_OUT_DIR}" "OPUS
 
 merge_models "l2" "${MERGE_L2_OUT_DIR}"
 merge_models "simple" "${MERGE_SIMPLE_OUT_DIR}"
-merge_models "orthomerge" "${MERGE_ORTHO_OUT_DIR}"
-
 sample_merge "${MERGE_L2_OUT_DIR}" "L2 merge"
 sample_merge "${MERGE_SIMPLE_OUT_DIR}" "Simple merge"
-sample_merge "${MERGE_ORTHO_OUT_DIR}" "OrthoMerge"
