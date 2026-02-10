@@ -1,0 +1,478 @@
+# huggingface_model/gemma/270M/jl_head_eval.py
+"""Evaluate JL-projected LM head top-n selection for Gemma 270M."""
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+import os
+from dataclasses import dataclass
+from typing import List, Sequence
+
+import matplotlib.pyplot as plt
+import torch
+from datasets import load_dataset, load_dataset_builder
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+@dataclass
+class EvalConfig:
+    model_name: str
+    dataset_split: str
+    fineweb_subset: str | None
+    eval_tokens: int
+    top_k: int
+    top_n_values: Sequence[int]
+    target_dimensions: Sequence[int]
+    seed: int
+    projection: str
+    device: str
+    output_dir: str
+    annotate_stats: bool
+    approx_logits_device: str
+    approx_logits_dtype: str
+    approx_chunk_size: int
+    exact_chunk_size: int
+
+
+def _parse_int_list(value: str) -> List[int]:
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def _load_fineweb_tokens(
+    tokenizer: AutoTokenizer, dataset_split: str, fineweb_subset: str | None, max_tokens: int
+) -> torch.Tensor:
+    try:
+        dataset = load_dataset("HuggingFaceFW/fineweb", fineweb_subset or None, split=dataset_split)
+    except ValueError as err:
+        if "BuilderConfig" in str(err):
+            builder = load_dataset_builder("HuggingFaceFW/fineweb")
+            available = ", ".join(sorted(builder.builder_configs))
+            raise ValueError(
+                "Unknown FineWeb subset '{subset_name}'. Available configurations: {options}".format(
+                    subset_name=fineweb_subset,
+                    options=available,
+                )
+            ) from err
+        raise
+
+    tokens: List[int] = []
+    target_len = max_tokens + 1
+    for example in dataset:
+        ids = tokenizer(example["text"])["input_ids"]
+        tokens.extend(ids)
+        if len(tokens) >= target_len:
+            break
+
+    if len(tokens) < target_len:
+        raise ValueError(
+            f"Need at least {target_len} tokens for evaluation, but only found {len(tokens)} tokens."
+        )
+
+    return torch.tensor(tokens[:target_len], dtype=torch.long).unsqueeze(0)
+
+
+def _build_projection_matrix(
+    hidden_dim: int, target_dim: int, seed: int, projection: str, device: str
+) -> torch.Tensor:
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    if projection == "gaussian":
+        matrix = torch.randn((target_dim, hidden_dim), generator=generator)
+    elif projection == "achlioptas":
+        probs = torch.rand((target_dim, hidden_dim), generator=generator)
+        matrix = torch.zeros((target_dim, hidden_dim))
+        matrix[probs < 1 / 6] = 1.0
+        matrix[(probs >= 1 / 6) & (probs < 2 / 6)] = -1.0
+    elif projection == "orthonormal":
+        raw = torch.randn((hidden_dim, target_dim), generator=generator)
+        q, _ = torch.linalg.qr(raw, mode="reduced")
+        matrix = q.T
+    else:
+        raise ValueError(f"Unknown projection type: {projection}")
+
+    if projection != "orthonormal":
+        matrix = matrix / math.sqrt(target_dim)
+    return matrix.to(device)
+
+
+def _compute_topk_id_delta(
+    hidden_states: torch.Tensor,
+    weight: torch.Tensor,
+    approx_logits: torch.Tensor,
+    top_n: int,
+    top_k: int,
+    exact_chunk_size: int,
+) -> torch.Tensor:
+    topk = approx_logits.topk(k=top_n, dim=-1).indices
+
+    batch, seq_len, hidden_dim = hidden_states.shape
+    flat_hidden = hidden_states.reshape(-1, hidden_dim)
+    flat_indices = topk.reshape(-1, top_n)
+    gathered_weight = weight[flat_indices]
+    exact_logits = torch.einsum("bkh,bh->bk", gathered_weight, flat_hidden)
+    exact_logits = exact_logits.view(batch, seq_len, top_n)
+
+    blended_logits = approx_logits.clone()
+    blended_logits = blended_logits.scatter(-1, topk, exact_logits.to(blended_logits.dtype))
+
+    topk_exact = _topk_chunked(hidden_states, weight, top_k, chunk_size=exact_chunk_size)
+    topk_est = blended_logits.topk(k=top_k, dim=-1).indices.sort(dim=-1).values
+    id_delta = (topk_exact - topk_est).abs().float()
+    return id_delta
+
+
+def _summarize_stats(values: torch.Tensor) -> dict[str, float]:
+    flat = values.reshape(-1).float()
+    return {
+        "mean": flat.mean().item(),
+        "median": flat.median().item(),
+        "max": flat.max().item(),
+        "min": flat.min().item(),
+        "std": flat.std(unbiased=False).item(),
+    }
+
+
+def _parse_dtype(value: str) -> torch.dtype:
+    if value == "float32":
+        return torch.float32
+    if value == "float16":
+        return torch.float16
+    if value == "bfloat16":
+        return torch.bfloat16
+    raise ValueError(f"Unsupported dtype: {value}")
+
+
+def _topk_chunked(
+    hidden_states: torch.Tensor,
+    weight: torch.Tensor,
+    k: int,
+    chunk_size: int,
+) -> torch.Tensor:
+    if chunk_size <= 0:
+        logits = torch.matmul(hidden_states, weight.T)
+        return logits.topk(k=k, dim=-1).indices.sort(dim=-1).values
+
+    batch, seq_len, hidden_dim = hidden_states.shape
+    flat_hidden = hidden_states.reshape(-1, hidden_dim)
+    topk_values = None
+    topk_indices = None
+    offset = 0
+    while offset < weight.size(0):
+        chunk = weight[offset : offset + chunk_size]
+        chunk_logits = torch.matmul(flat_hidden, chunk.T)
+        chunk_topk_values, chunk_topk_indices = chunk_logits.topk(
+            k=min(k, chunk.size(0)), dim=-1
+        )
+        chunk_topk_indices = chunk_topk_indices + offset
+        if topk_values is None:
+            topk_values = chunk_topk_values
+            topk_indices = chunk_topk_indices
+        else:
+            merged_values = torch.cat([topk_values, chunk_topk_values], dim=-1)
+            merged_indices = torch.cat([topk_indices, chunk_topk_indices], dim=-1)
+            topk_values, topk_idx = merged_values.topk(k=k, dim=-1)
+            topk_indices = merged_indices.gather(-1, topk_idx)
+        offset += chunk_size
+
+    if topk_indices is None:
+        raise ValueError("chunk_size must be > 0")
+    topk_indices = topk_indices.view(batch, seq_len, k).sort(dim=-1).values
+    return topk_indices
+
+
+def _compute_approx_logits(
+    projected_hidden: torch.Tensor,
+    projected_weight: torch.Tensor,
+    device: str,
+    dtype: torch.dtype,
+    chunk_size: int,
+) -> torch.Tensor:
+    if device == "cuda" and not torch.cuda.is_available():
+        raise ValueError("Requested CUDA for approx logits, but CUDA is not available.")
+
+    projected_hidden = projected_hidden.to(device=device, dtype=dtype)
+    projected_weight = projected_weight.to(device=device, dtype=dtype)
+
+    if chunk_size <= 0:
+        return torch.matmul(projected_hidden, projected_weight.T)
+
+    chunks = []
+    offset = 0
+    while offset < projected_weight.size(0):
+        chunk = projected_weight[offset : offset + chunk_size]
+        chunk_logits = torch.matmul(projected_hidden, chunk.T)
+        chunks.append(chunk_logits)
+        offset += chunk_size
+    return torch.cat(chunks, dim=-1)
+
+
+def _evaluate_grid(config: EvalConfig) -> tuple[List[List[float]], List[List[dict[str, float]]]]:
+    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(config.model_name, attn_implementation="eager")
+    model.to(config.device)
+    model.eval()
+
+    input_ids = _load_fineweb_tokens(
+        tokenizer, config.dataset_split, config.fineweb_subset, config.eval_tokens
+    ).to(config.device)
+    input_ids = input_ids[:, :-1]
+
+    with torch.no_grad():
+        outputs = model(input_ids, output_hidden_states=True, use_cache=False)
+        hidden_states = outputs.hidden_states[-1]
+
+    vocab_size, hidden_dim = model.lm_head.weight.shape
+    results: List[List[float]] = []
+    stats: List[List[dict[str, float]]] = []
+    for target_dim in config.target_dimensions:
+        if target_dim <= 0 or target_dim > hidden_dim:
+            raise ValueError(f"target_dimension must be in (0, {hidden_dim}], got {target_dim}")
+        projection = _build_projection_matrix(
+            hidden_dim=hidden_dim,
+            target_dim=target_dim,
+            seed=config.seed + target_dim,
+            projection=config.projection,
+            device=config.device,
+        )
+        with torch.no_grad():
+            projected_hidden = torch.matmul(hidden_states, projection.T)
+            projected_weight = torch.matmul(model.lm_head.weight, projection.T)
+            approx_logits = _compute_approx_logits(
+                projected_hidden,
+                projected_weight,
+                device=config.approx_logits_device,
+                dtype=_parse_dtype(config.approx_logits_dtype),
+                chunk_size=config.approx_chunk_size,
+            )
+        row_results: List[float] = []
+        row_stats: List[dict[str, float]] = []
+        for top_n in config.top_n_values:
+            if top_n <= 0 or top_n > vocab_size:
+                raise ValueError(f"top_n must be in (0, {vocab_size}], got {top_n}")
+            approx_logits_for_eval = approx_logits
+            exact_hidden = hidden_states
+            exact_weight = model.lm_head.weight
+            if config.approx_logits_device == "cpu":
+                approx_logits_for_eval = approx_logits.cpu()
+                exact_hidden = hidden_states.cpu()
+                exact_weight = model.lm_head.weight.cpu()
+            with torch.no_grad():
+                id_delta = _compute_topk_id_delta(
+                    exact_hidden,
+                    exact_weight,
+                    approx_logits_for_eval,
+                    top_n,
+                    config.top_k,
+                    config.exact_chunk_size,
+                )
+            summary = _summarize_stats(id_delta)
+            row_results.append(summary["mean"])
+            row_stats.append(summary)
+            print(
+                "target_dim={target_dim} top_n={top_n} avg_id_delta={mean:.4f}".format(
+                    target_dim=target_dim,
+                    top_n=top_n,
+                    mean=summary["mean"],
+                )
+            )
+        results.append(row_results)
+        stats.append(row_stats)
+    return results, stats
+
+
+def _write_csv(
+    output_path: str,
+    target_dimensions: Sequence[int],
+    top_n_values: Sequence[int],
+    results: Sequence[Sequence[float]],
+) -> None:
+    with open(output_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["target_dimension", *top_n_values])
+        for target_dim, row in zip(target_dimensions, results):
+            writer.writerow([target_dim, *row])
+
+
+def _plot_heatmap(
+    output_path: str,
+    target_dimensions: Sequence[int],
+    top_n_values: Sequence[int],
+    results: Sequence[Sequence[float]],
+    stats: Sequence[Sequence[dict[str, float]]],
+    annotate_stats: bool,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 6))
+    image = ax.imshow(results, aspect="auto", origin="lower")
+    ax.set_xticks(range(len(top_n_values)), labels=[str(v) for v in top_n_values])
+    ax.set_yticks(range(len(target_dimensions)), labels=[str(v) for v in target_dimensions])
+    ax.set_xlabel("Top-N candidates")
+    ax.set_ylabel("Target dimension")
+    ax.set_title("JL-projected LM head top-k ID delta")
+    fig.colorbar(image, ax=ax, label="Average |ID delta|")
+    if annotate_stats:
+        for row_idx, row in enumerate(stats):
+            for col_idx, entry in enumerate(row):
+                ax.text(
+                    col_idx,
+                    row_idx,
+                    "μ {mean:.2f}\nmed {median:.2f}\nmax {max:.2f}\nmin {min:.2f}\nσ {std:.2f}".format(
+                        **entry
+                    ),
+                    ha="center",
+                    va="center",
+                    color="white",
+                    fontsize=7,
+                )
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _parse_args() -> EvalConfig:
+    parser = argparse.ArgumentParser(description="Evaluate JL-projected LM head top-n filtering.")
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="google/gemma-3-270m",
+        help="Hugging Face model ID or local checkpoint path.",
+    )
+    parser.add_argument(
+        "--dataset_split",
+        type=str,
+        default="train[:1%]",
+        help="FineWeb dataset split to sample tokens from.",
+    )
+    parser.add_argument(
+        "--fineweb_subset",
+        type=str,
+        default="sample-10BT",
+        help="FineWeb subset configuration. Use empty string for the default config.",
+    )
+    parser.add_argument(
+        "--eval_tokens",
+        type=int,
+        default=1000,
+        help="Number of tokens to evaluate (uses eval_tokens + 1 for the shift).",
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=65,
+        help="Top-k size used to compare token ID differences.",
+    )
+    parser.add_argument(
+        "--top_n_values",
+        type=_parse_int_list,
+        default=_parse_int_list("1000,2000,5000,10000"),
+        help="Comma-separated list of top-n vocabulary sizes to evaluate.",
+    )
+    parser.add_argument(
+        "--target_dimensions",
+        type=_parse_int_list,
+        default=_parse_int_list("500,400,300,200,100"),
+        help="Comma-separated list of JL target dimensions.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for JL projections.",
+    )
+    parser.add_argument(
+        "--projection",
+        type=str,
+        choices=("orthonormal", "gaussian", "achlioptas"),
+        default="orthonormal",
+        help="JL projection matrix type.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device to run evaluation on.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="jl_eval_outputs",
+        help="Directory to store CSV and heatmap outputs.",
+    )
+    parser.add_argument(
+        "--approx_logits_device",
+        type=str,
+        choices=("cuda", "cpu"),
+        default="cuda",
+        help="Device to store approximate logits (use cpu to save VRAM).",
+    )
+    parser.add_argument(
+        "--approx_logits_dtype",
+        type=str,
+        choices=("float32", "float16", "bfloat16"),
+        default="float32",
+        help="Datatype for approximate logits to reduce memory usage.",
+    )
+    parser.add_argument(
+        "--approx_chunk_size",
+        type=int,
+        default=0,
+        help="Chunk size for approximate logits matmul (0 = no chunking).",
+    )
+    parser.add_argument(
+        "--exact_chunk_size",
+        type=int,
+        default=0,
+        help="Chunk size for exact logits top-k (0 = no chunking).",
+    )
+    parser.add_argument(
+        "--annotate_stats",
+        type=str,
+        default="true",
+        help="Whether to annotate heatmap cells with summary stats (true/false).",
+    )
+    args = parser.parse_args()
+    fineweb_subset = args.fineweb_subset or None
+    annotate_stats = args.annotate_stats.lower() in {"1", "true", "yes", "y"}
+    return EvalConfig(
+        model_name=args.model_name,
+        dataset_split=args.dataset_split,
+        fineweb_subset=fineweb_subset,
+        eval_tokens=args.eval_tokens,
+        top_k=args.top_k,
+        top_n_values=args.top_n_values,
+        target_dimensions=args.target_dimensions,
+        seed=args.seed,
+        projection=args.projection,
+        device=args.device,
+        output_dir=args.output_dir,
+        annotate_stats=annotate_stats,
+        approx_logits_device=args.approx_logits_device,
+        approx_logits_dtype=args.approx_logits_dtype,
+        approx_chunk_size=args.approx_chunk_size,
+        exact_chunk_size=args.exact_chunk_size,
+    )
+
+
+def main() -> None:
+    config = _parse_args()
+    os.makedirs(config.output_dir, exist_ok=True)
+    results, stats = _evaluate_grid(config)
+
+    csv_path = os.path.join(config.output_dir, "jl_head_eval_results.csv")
+    heatmap_path = os.path.join(config.output_dir, "jl_head_eval_heatmap.png")
+    _write_csv(csv_path, config.target_dimensions, config.top_n_values, results)
+    _plot_heatmap(
+        heatmap_path,
+        config.target_dimensions,
+        config.top_n_values,
+        results,
+        stats,
+        config.annotate_stats,
+    )
+    print(f"Saved results to {csv_path} and {heatmap_path}")
+
+
+if __name__ == "__main__":
+    main()
