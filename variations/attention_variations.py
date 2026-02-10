@@ -1024,6 +1024,10 @@ class InfiniteHeadAttention(nn.Module):
         # Concat Heads
         self.use_concat_heads = config.use_concat_heads
         self.n_cproj         = config.n_cproj
+        self.inf_kv_cproj_mode = getattr(config, "inf_kv_cproj_mode", None)
+        self.use_inf_kv_cproj = self.use_concat_heads and self.inf_kv_cproj_mode is not None
+        if self.inf_kv_cproj_mode is not None and not self.use_concat_heads:
+            raise ValueError("inf_kv_cproj_mode requires use_concat_heads=True for infinite attention.")
 
         # QK Norm
         self.use_qk_norm        = config.use_qk_norm
@@ -1069,6 +1073,20 @@ class InfiniteHeadAttention(nn.Module):
         self.c_attn_q = self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
+        if self.use_inf_kv_cproj:
+            self.inf_k_proj = self.linear_variant_k(
+                self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias
+            )
+            self.inf_v_proj = self.linear_variant_v(
+                self.n_embd, self.n_head * self.n_v_head_dim, config, bias=config.bias
+            )
+            if self.inf_kv_cproj_mode == "learned_tied":
+                self.inf_c_proj_bias = nn.Parameter(torch.zeros(self.n_embd)) if config.bias else None
+            else:
+                self.inf_c_proj = self.linear_variant_attn_proj(
+                    self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias
+                )
+            self.inf_kv_cproj_initialized = False
 
         self.q_norm_dim = 1 if self.l2_norm_attn_q_dim == "embed" else 0
         self.k_norm_dim = 1 if self.l2_norm_attn_k_dim == "embed" else 0
@@ -1159,6 +1177,31 @@ class InfiniteHeadAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
+    def reset_inf_kv_cproj_weights(self):
+        if not self.use_inf_kv_cproj or self.inf_kv_cproj_initialized:
+            return
+
+        with torch.no_grad():
+            torch.nn.init.normal_(self.inf_v_proj.weight, mean=0.0, std=0.02)
+            if self.inf_v_proj.bias is not None:
+                torch.nn.init.zeros_(self.inf_v_proj.bias)
+
+            if self.inf_kv_cproj_mode == "learned_tied":
+                torch.nn.init.orthogonal_(self.inf_v_proj.weight)
+                if self.inf_c_proj_bias is not None:
+                    torch.nn.init.zeros_(self.inf_c_proj_bias)
+            else:
+                inf_c_proj_weight = torch.linalg.pinv(self.inf_v_proj.weight)
+                self.inf_c_proj.weight.copy_(inf_c_proj_weight)
+                if self.inf_c_proj.bias is not None:
+                    torch.nn.init.zeros_(self.inf_c_proj.bias)
+                for param in self.inf_v_proj.parameters():
+                    param.requires_grad = False
+                for param in self.inf_c_proj.parameters():
+                    param.requires_grad = False
+
+        self.inf_kv_cproj_initialized = True
+
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -1197,68 +1240,49 @@ class InfiniteHeadAttention(nn.Module):
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
 
-        y = None
-        att = None
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if not self.disable_flash_attention:
-            k_attn = self._expand_kv(k)
-            v_attn = self._expand_kv(v)
+        if not self.disable_flash_attention and self.use_qk_norm_scale:
+            sqrt_head_dim = math.sqrt(self.n_qk_head_dim)
+            qk_scaling_factor = self.qk_norm_factor * sqrt_head_dim
+            q = q * qk_scaling_factor
 
-            # Flash QK Norm
-            if self.use_qk_norm_scale:
-                # pre-scale Q so that built-in √dₕ division becomes our g scaling
-                sqrt_head_dim = math.sqrt(k_attn.size(-1))
-                qk_scaling_factor = self.qk_norm_factor * sqrt_head_dim
-                q = q * qk_scaling_factor
+        def compute_attention(q_in, k_in, v_in):
+            if not self.disable_flash_attention:
+                k_attn = k_in
+                v_attn = v_in
 
-            # Flash Lobo
-            attn_bias = None
-            if self.use_flash_lobo:
-                # 2-a  Make dummy key/value column of zeros
-                dummy_k = q.new_zeros(B, k_attn.size(1), 1, q.size(-1))
-                dummy_v = q.new_zeros(B, v_attn.size(1), 1, v.size(-1))
+                attn_bias = None
+                if self.use_flash_lobo:
+                    dummy_k = q_in.new_zeros(B, k_attn.size(1), 1, q_in.size(-1))
+                    dummy_v = q_in.new_zeros(B, v_attn.size(1), 1, v_in.size(-1))
 
-                k_attn = torch.cat([dummy_k, k_attn], dim=2)   # prepend → causal mask still valid
-                v_attn = torch.cat([dummy_v, v_attn], dim=2)
+                    k_attn = torch.cat([dummy_k, k_attn], dim=2)
+                    v_attn = torch.cat([dummy_v, v_attn], dim=2)
 
-                # 2-b  Bias only that column with log C
-                attn_bias = q.new_zeros(1, self.n_head, 1, k_attn.size(2))
-                if self.use_flash_lobo_per_head:
-                    attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
-                else:
-                    attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
+                    attn_bias = q_in.new_zeros(1, self.n_head, 1, k_attn.size(2))
+                    if self.use_flash_lobo_per_head:
+                        attn_bias[..., 0] = self.flash_lobo_log_const.view(1, self.n_head, 1)
+                    else:
+                        attn_bias[..., 0] = self.flash_lobo_log_const
 
+                return torch.nn.functional.scaled_dot_product_attention(
+                    q_in,
+                    k_attn,
+                    v_attn,
+                    attn_mask=attn_bias,
+                    dropout_p=self.dropout if self.training else 0,
+                    is_causal=True,
+                )
 
-            # Efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                k_attn,
-                v_attn,
-                attn_mask=attn_bias,
-                dropout_p=self.dropout if self.training else 0,
-                is_causal=True,
-            )
-
-        else:
-            # Manual implementation of attention
-
-            k_attn = self._expand_kv(k)
-            v_attn = self._expand_kv(v)
-
-            att = (q @ k_attn.transpose(-2, -1))
+            att = (q_in @ k_in.transpose(-2, -1))
 
             if self.use_qk_norm_scale:
-                # utilize learned qk_norm_scaling factor
                 att = att * self.qk_norm_factor
             else:
-                sqrt_head_dim = math.sqrt(k_attn.size(-1))
-                # divide by sqrt of head dimension if not
+                sqrt_head_dim = math.sqrt(k_in.size(-1))
                 att = att / sqrt_head_dim
 
-            # apply lower triangle attention mask
             att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
 
-            # softmax variation
             if self.softmax_variant_attn != 'softmax':
                 att = self.softmax_layer_attn(att)
             else:
@@ -1266,13 +1290,46 @@ class InfiniteHeadAttention(nn.Module):
 
             att = self.attn_dropout(att)
 
-            y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            return att @ v_in
+
+        y = compute_attention(q, self._expand_kv(k), self._expand_kv(v))
+        y_extra = None
+        if self.use_inf_kv_cproj:
+            if self.l2_norm_attn_k:
+                k_weight = F.normalize(self.inf_k_proj.weight, p=2, dim=self.k_norm_dim)
+                k_extra = F.linear(x, k_weight, self.inf_k_proj.bias)
+            else:
+                k_extra = self.inf_k_proj(x)
+
+            if self.l2_norm_attn_v:
+                v_weight = F.normalize(self.inf_v_proj.weight, p=2, dim=self.v_norm_dim)
+                v_extra = F.linear(x, v_weight, self.inf_v_proj.bias)
+            else:
+                v_extra = self.inf_v_proj(x)
+            k_extra = k_extra.view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2)
+            v_extra = v_extra.view(B, T, self.n_head, self.n_v_head_dim).transpose(1, 2)
+
+            if self.rotary_emb_k is not None:
+                k_extra = self.rotary_emb_k(k_extra)
+
+            if self.use_qk_norm:
+                k_extra = k_extra / (k_extra.norm(dim=-1, keepdim=True) + 1e-6)
+            if self.use_v_norm:
+                v_extra = v_extra / (v_extra.norm(dim=-1, keepdim=True) + 1e-6)
+
+            y_extra = compute_attention(q, k_extra, v_extra)
 
         if self.post_act_l2_norm:
             y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
         if self.cproj_scale is not None and self.cproj_scale != 1.0:
             y = y / self.cproj_scale
+
+        if y_extra is not None:
+            if self.post_act_l2_norm:
+                y_extra = y_extra / y_extra.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            if self.cproj_scale is not None and self.cproj_scale != 1.0:
+                y_extra = y_extra / self.cproj_scale
 
         # Concat Heads or Inf Concat Heads
         if self.use_concat_heads:
@@ -1284,6 +1341,21 @@ class InfiniteHeadAttention(nn.Module):
                 y = F.linear(y, cproj_weight, self.c_proj.bias)
             else:
                 y = self.c_proj(y)
+
+            if y_extra is not None:
+                y_extra = y_extra.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
+                if self.inf_kv_cproj_mode == "learned_tied":
+                    tied_weight = self.inf_v_proj.weight.t()
+                    if self.l2_norm_attn_cproj:
+                        tied_weight = F.normalize(tied_weight, p=2, dim=self.cproj_norm_dim)
+                    y_extra = F.linear(y_extra, tied_weight, self.inf_c_proj_bias)
+                else:
+                    if self.l2_norm_attn_cproj:
+                        extra_weight = F.normalize(self.inf_c_proj.weight, p=2, dim=self.cproj_norm_dim)
+                        y_extra = F.linear(y_extra, extra_weight, self.inf_c_proj.bias)
+                    else:
+                        y_extra = self.inf_c_proj(y_extra)
+                y = y + y_extra
         elif self.n_cproj == 1:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y = y.sum(dim=1)
