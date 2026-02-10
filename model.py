@@ -39,6 +39,7 @@ from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from variations.output_vector_variants import output_vector_variant_dict
 from variations.numerical_mapping_variations import get_numerical_embedding, get_numerical_output
+from variations.multicontext_transform_variations import get_multicontext_transform
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -72,6 +73,19 @@ class GPT(nn.Module):
                 embedding_module = get_numerical_embedding(config)
                 self.numerical_embeddings[key] = embedding_module
                 self.numerical_output_mlps[key] = get_numerical_output(config, embedding_module=embedding_module)
+
+        self.uses_multicontext_transform = bool(
+            config.multicontext
+            and not self.uses_numerical_multicontext
+            and config.multicontext_transform_variant != "none"
+        )
+        if self.uses_multicontext_transform:
+            if not config.vocab_sizes:
+                raise ValueError("multicontext_transform_variant requires vocab_sizes to be provided")
+            self.multicontext_transforms = nn.ModuleDict()
+            for idx in range(len(config.vocab_sizes)):
+                key = str(idx)
+                self.multicontext_transforms[key] = get_multicontext_transform(config)
 
         # Final-logit softcapping
         self.final_logit_softcapping = config.final_logit_softcapping
@@ -130,10 +144,23 @@ class GPT(nn.Module):
             else:
                 #TODO: currently multicontext is in own category, add support later for WTE factorization
                 if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
+                    reuse_multicontext_embeddings = bool(config.reuse_multicontext_embeddings)
+                    if reuse_multicontext_embeddings:
+                        if len(set(self.config.vocab_sizes)) != 1:
+                            raise ValueError("reuse_multicontext_embeddings requires all vocab_sizes to match")
+                        shared_vocab_size = self.config.vocab_sizes[0]
+                        self.transformer['wte_shared'] = nn.Embedding(shared_vocab_size, config.n_embd)
+                        self.transformer['lm_head_shared'] = nn.Linear(config.n_embd, shared_vocab_size, bias=False)
                     for i, vocab_size in enumerate(self.config.vocab_sizes):
-                        embedding_layer = nn.Embedding(vocab_size, config.n_embd)
-                        self.transformer[f'wte_{i}'] = embedding_layer
-                        self.transformer[f'lm_head_{i}'] = nn.Linear(config.n_embd, vocab_size, bias=False)
+                        if reuse_multicontext_embeddings:
+                            if vocab_size != self.config.vocab_sizes[0]:
+                                raise ValueError("reuse_multicontext_embeddings requires all vocab_sizes to match")
+                            self.transformer[f'wte_{i}'] = self.transformer['wte_shared']
+                            self.transformer[f'lm_head_{i}'] = self.transformer['lm_head_shared']
+                        else:
+                            embedding_layer = nn.Embedding(vocab_size, config.n_embd)
+                            self.transformer[f'wte_{i}'] = embedding_layer
+                            self.transformer[f'lm_head_{i}'] = nn.Linear(config.n_embd, vocab_size, bias=False)
                 else:
                     # no factorization
                     word_embd = nn.Embedding(config.vocab_size, config.n_embd)
@@ -169,6 +196,8 @@ class GPT(nn.Module):
             if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
+                if config.reuse_multicontext_embeddings:
+                    self.transformer.lm_head_shared.weight = self.transformer.wte_shared.weight
             else:
                 self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
@@ -383,6 +412,8 @@ class GPT(nn.Module):
                     token_repr = module(numeric_tokens)
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
+                    if self.uses_multicontext_transform:
+                        token_repr = self.multicontext_transforms[str(i)](token_repr)
 
                 token_repr = self.add_embedding_gaussian_noise(token_repr)
                 x = token_repr if x is None else x + token_repr
