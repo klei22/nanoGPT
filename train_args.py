@@ -356,6 +356,7 @@ def parse_args():
             "lookahead",
             "entropy_aware_adamw",
             "muon",
+            "rotation_only",
             ]
 
     training_group.add_argument("--optimizer", type=str, default="adamw",
@@ -368,6 +369,19 @@ def parse_args():
     # --------  MUON --------------------------------------------------
     training_group.add_argument("--muon_momentum", type=float, default=0.95,
                                 help="Momentum for the Muon optimizer.")
+    # --------  Rotation-only optimiser ---------------------------------
+    training_group.add_argument(
+        "--rotation_embedding_dim",
+        type=int,
+        default=None,
+        help="Override the embedding dimension used to form rotation-only vectors.",
+    )
+    training_group.add_argument(
+        "--rotation_eps",
+        type=float,
+        default=1e-8,
+        help="Stability epsilon for the rotation-only optimiser.",
+    )
     # --------  ADAMW --------------------------------------------------
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
