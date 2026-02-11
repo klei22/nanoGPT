@@ -38,29 +38,61 @@ class LSVBase(nn.Module):
 
 class OneHotLSV(LSVBase):
     """
-    Refactored to use nn.Embedding. This is the idiomatic PyTorch way to
-    handle lookups. It's more efficient and automatically handles sparse
-    gradients, so only the selected vector is updated during training.
+    Uses a learned parameter matrix with manual one-hot selection and
+    optional gradient masking to freeze unused vectors.
     """
     def __init__(self, config):
         super().__init__(config)
-        self.lsv_embedding = nn.Embedding(self.lsv_dataset_num, config.n_embd)
-        torch.nn.init.normal_(self.lsv_embedding.weight, mean=0.00, std=0.02)
+        self.lsv_matrix = nn.Parameter(torch.empty(self.lsv_dataset_num, config.n_embd))
+        torch.nn.init.normal_(self.lsv_matrix, mean=0.00, std=0.02)
         self.mixture_weights = torch.zeros(self.lsv_dataset_num, device=self.device)
+        self._freeze_unused_active = False
+        self._freeze_hook_handle = None
 
     def set_mixture(self, mixture_list):
         """ mixture of different vectors """
         self.mixture_weights = torch.tensor(mixture_list, device=self.device)
         print("mixture weights set to:", self.mixture_weights)
 
+    def update_lsv_index(self, new_index):
+        super().update_lsv_index(new_index)
+        if self._freeze_unused_active:
+            self._refresh_freeze_mask()
+
+    def freeze_unused_lsv_vectors(self):
+        """Freeze all non-selected vectors by masking their gradients."""
+        if self.mode != 1:
+            raise ValueError("freeze_unused_lsv_vectors only applies in one-hot mode.")
+        self._freeze_unused_active = True
+        self._refresh_freeze_mask()
+
+    def unfreeze_unused_lsv_vectors(self):
+        """Remove the gradient mask and allow all vectors to update again."""
+        if self._freeze_hook_handle is not None:
+            self._freeze_hook_handle.remove()
+            self._freeze_hook_handle = None
+        self._freeze_unused_active = False
+
+    def _refresh_freeze_mask(self):
+        if self._freeze_hook_handle is not None:
+            self._freeze_hook_handle.remove()
+        mask = torch.zeros_like(self.lsv_matrix)
+        mask[self.lsv_index] = 1.0
+
+        def _mask_grad(grad):
+            return grad * mask
+
+        self._freeze_hook_handle = self.lsv_matrix.register_hook(_mask_grad)
+
     def forward(self, x):
         if self.mode == 1:
             # Directly look up the embedding vector for the current index.
-            lsv_index_tensor = torch.tensor(self.lsv_index, dtype=torch.long, device=self.device)
-            selected_vector = self.lsv_embedding(lsv_index_tensor) * self.lsv_scaling_factor
+            one_hot = torch.zeros(self.lsv_dataset_num, device=self.device)
+            one_hot[self.lsv_index] = 1.0
+            selected_vector = torch.matmul(one_hot, self.lsv_matrix) * self.lsv_scaling_factor
         else: # Mixture mode
             # Perform a weighted sum of all embedding vectors
-            selected_vector = torch.matmul(self.mixture_weights, self.lsv_embedding.weight)
+            selected_vector = torch.matmul(self.mixture_weights, self.lsv_matrix)
 
         # Add the selected vector to the input tensor x
         x = x + selected_vector

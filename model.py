@@ -695,6 +695,16 @@ class GPT(nn.Module):
     def set_lsv_index(self, index):
         self.lsv_matrix.update_lsv_index(index)
 
+    def freeze_unused_lsv_vectors(self):
+        """Freeze non-selected LSVs for one-hot mode (if supported by variant)."""
+        if hasattr(self.lsv_matrix, "freeze_unused_lsv_vectors"):
+            self.lsv_matrix.freeze_unused_lsv_vectors()
+
+    def unfreeze_unused_lsv_vectors(self):
+        """Unfreeze LSVs previously frozen by freeze_unused_lsv_vectors()."""
+        if hasattr(self.lsv_matrix, "unfreeze_unused_lsv_vectors"):
+            self.lsv_matrix.unfreeze_unused_lsv_vectors()
+
     def freeze_non_lsv_parameters(self):
         """Freeze all parameters except for lsv_matrix if lsv_focused_training is enabled."""
 
