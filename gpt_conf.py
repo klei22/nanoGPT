@@ -327,6 +327,12 @@ class GPTConfig:
     sym_rot_num_angles: int = 512
     rope_variant: str = "rope" # options: "shortrope", "rope"
     rope_length: int = 8 # number of embeddings to use in shortrope
+    use_cope_embeddings: bool = False
+    cope_first_layer_only: bool = True
+    cope_mode: str = "phase"
+    cope_alpha: float = 0.2
+    cope_gamma: float = 1.0
+    cope_eps: float = 1e-6
 
     ## Embedding Intialization Options
     embedding_mean_init: float= 0.0
