@@ -190,6 +190,12 @@ class Trainer:
         self.distillation_loss_fn = build_distillation_loss(self.args)
         self.distillation_weight = getattr(self.args, "distillation_weight", 1.0)
         self.teacher_model = None
+        self.teacher_logits_train = None
+        self.teacher_logits_val = None
+        self.use_offline_distillation = False
+        self.last_batch_ix = None
+        self.last_batch_dataset = None
+        self.latest_student_loss = float('nan')
         self.latest_distillation_loss = float('nan')
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
@@ -462,6 +468,23 @@ class Trainer:
 
     def _initialize_teacher_if_needed(self):
         teacher_path = getattr(self.args, "distillation_teacher_ckpt", None)
+        offline_train = getattr(self.args, "distillation_teacher_logits_train", None)
+        offline_val = getattr(self.args, "distillation_teacher_logits_val", None)
+
+        if offline_train or offline_val:
+            if teacher_path:
+                raise ValueError(
+                    "Offline distillation logits were provided alongside --distillation_teacher_ckpt. Choose one source."
+                )
+            if self.distillation_loss_fn is None:
+                raise ValueError(
+                    "Offline distillation logits were provided without selecting a distillation loss variant."
+                )
+            if self.args.training_mode != 'single':
+                raise ValueError("Offline distillation logits are only supported in single-dataset training mode.")
+            self._load_offline_teacher_logits()
+            return
+
         if not teacher_path:
             if self.distillation_loss_fn is not None:
                 raise ValueError(
@@ -502,6 +525,94 @@ class Trainer:
         self.teacher_model = teacher_model
         if self.master_process:
             print(f"Loaded teacher checkpoint from {expanded}")
+
+    def _load_offline_teacher_logits(self):
+        if self.args.dataset_list is not None:
+            raise ValueError("Offline distillation logits do not yet support multidataset training.")
+        train_data = getattr(self, "train_data", None)
+        val_data = getattr(self, "val_data", None)
+        if train_data is None or val_data is None:
+            raise ValueError("Training data must be loaded before initializing offline distillation logits.")
+
+        train_path = getattr(self.args, "distillation_teacher_logits_train", None)
+        if not train_path:
+            raise ValueError("Offline distillation requires --distillation_teacher_logits_train to be set.")
+
+        vocab_size = self.model.config.vocab_size
+        expected_train_starts = len(train_data) - self.args.block_size
+        if expected_train_starts <= 0:
+            raise ValueError("Training data is shorter than block_size for offline distillation.")
+        self.teacher_logits_train = self._load_offline_logits_file(
+            train_path,
+            expected_tokens=expected_train_starts,
+            vocab_size=vocab_size,
+            split="train",
+        )
+
+        val_path = getattr(self.args, "distillation_teacher_logits_val", None)
+        if val_path:
+            expected_val_starts = len(val_data) - self.args.block_size
+            if expected_val_starts <= 0:
+                raise ValueError("Validation data is shorter than block_size for offline distillation.")
+            self.teacher_logits_val = self._load_offline_logits_file(
+                val_path,
+                expected_tokens=expected_val_starts,
+                vocab_size=vocab_size,
+                split="val",
+            )
+
+        self.use_offline_distillation = True
+        if self.master_process:
+            print("Loaded offline teacher logits for distillation.")
+
+    def _load_offline_logits_file(self, path, *, expected_tokens, vocab_size, split):
+        expanded = os.path.expanduser(path)
+        if not os.path.exists(expanded):
+            candidate = os.path.join(self.args.out_dir, path)
+            if os.path.exists(candidate):
+                expanded = candidate
+
+        if not os.path.exists(expanded):
+            raise ValueError(f"Offline distillation logits file not found for {split}: {path}")
+
+        logits = np.load(expanded, mmap_mode="r")
+        if logits.ndim != 3:
+            raise ValueError(
+                f"Offline distillation logits for {split} must be 3D (starts x block_size x vocab). "
+                f"Got shape {logits.shape}."
+            )
+        if logits.shape[0] != expected_tokens:
+            raise ValueError(
+                f"Offline distillation logits for {split} must have {expected_tokens} rows "
+                f"(one per start index). Got {logits.shape[0]}."
+            )
+        if logits.shape[1] != self.args.block_size:
+            raise ValueError(
+                f"Offline distillation logits for {split} must have block size {self.args.block_size}. "
+                f"Got {logits.shape[1]}."
+            )
+        if logits.shape[2] != vocab_size:
+            raise ValueError(
+                f"Offline distillation logits for {split} must have vocab size {vocab_size}. "
+                f"Got {logits.shape[2]}."
+            )
+        return logits
+
+    def _get_offline_teacher_logits(self, split):
+        logits_source = self.teacher_logits_train if split == "train" else self.teacher_logits_val
+        if logits_source is None:
+            raise ValueError(f"Offline distillation logits not available for split '{split}'.")
+        if self.last_batch_ix is None:
+            raise RuntimeError("No batch indices recorded for offline distillation.")
+
+        ix = self.last_batch_ix.cpu().numpy()
+        logits_np = logits_source[ix]
+        logits = torch.from_numpy(logits_np)
+        if self.device_type == 'cuda':
+            logits = logits.pin_memory().to(self.device, non_blocking=True)
+        else:
+            logits = logits.to(self.device)
+        return logits
 
 
     def create_optimizer(self):
@@ -954,6 +1065,9 @@ class Trainer:
             # Default to random sampling if unknown method
             ix = torch.randint(available, (self.args.batch_size,))
 
+        self.last_batch_ix = ix
+        self.last_batch_dataset = dataset
+
 
         # Get training and targets
         x = torch.stack([torch.from_numpy((data[i:i+self.args.block_size]).astype(np.int64)) for i in ix])
@@ -1405,6 +1519,12 @@ class Trainer:
             self.writer.add_scalar(f"{target_dataset}/std_val_iters", losses['val_std'].item(), self.iter_num)
             self.writer.add_scalar(f"{target_dataset}/std_val_tokens", losses['val_std'].item(), tokens_trained)
 
+            self.writer.add_scalar(
+                f"{target_dataset}/student_val_loss",
+                losses['val'].item(),
+                self.iter_num,
+            )
+
             if not math.isnan(self.latest_distillation_loss):
                 self.writer.add_scalar(
                     f"{target_dataset}/distillation_loss",
@@ -1520,6 +1640,13 @@ class Trainer:
                 self.writer.add_scalar(
                     f"{target_dataset}/distillation_loss",
                     self.latest_distillation_loss,
+                    self.iter_num,
+                )
+
+            if not math.isnan(self.latest_student_loss):
+                self.writer.add_scalar(
+                    f"{target_dataset}/student_train_loss",
+                    self.latest_student_loss,
                     self.iter_num,
                 )
 
@@ -1834,6 +1961,10 @@ class Trainer:
         else:
             better_than_chance = self.model_args['vocab_size'] / math.exp(lossf)
             log_message+= f", loss {lossf:.4f}"
+            if not math.isnan(self.latest_student_loss):
+                log_message+= f", student_loss {self.latest_student_loss:.4f}"
+            if not math.isnan(self.latest_distillation_loss):
+                log_message+= f", distill_loss {self.latest_distillation_loss:.4f}"
             if self.args.log_btc_train:
                 log_message+=f", btc_train {better_than_chance:.2e}"
             if self.args.log_btc_per_param:
@@ -2006,27 +2137,30 @@ class Trainer:
                         self.optimizer.set_entropy(float(ent))
 
                     distill_component = None
-                    if (
-                        self.teacher_model is not None
-                        and self.distillation_loss_fn is not None
-                        and self.args.training_mode != 'multicontext'
-                    ):
-                        with torch.no_grad():
-                            teacher_logits, _ = self.teacher_model(
-                                self.X,
-                                targets=self.Y,
+                    self.latest_student_loss = float(loss.detach().float().item())
+                    if self.distillation_loss_fn is not None and self.args.training_mode != 'multicontext':
+                        teacher_logits = None
+                        if self.teacher_model is not None:
+                            with torch.no_grad():
+                                teacher_logits, _ = self.teacher_model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=None,
+                                )
+                        elif self.use_offline_distillation:
+                            teacher_logits = self._get_offline_teacher_logits("train")
+
+                        if teacher_logits is not None:
+                            distill_component = self.distillation_loss_fn(
+                                logits,
+                                teacher_logits,
+                                self.Y,
                                 iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=None,
                             )
-                        distill_component = self.distillation_loss_fn(
-                            logits,
-                            teacher_logits,
-                            self.Y,
-                            iter_num=self.iter_num,
-                        )
-                        distill_component = distill_component.to(loss.dtype)
-                        loss = loss + self.distillation_weight * distill_component
+                            distill_component = distill_component.to(loss.dtype)
+                            loss = loss + self.distillation_weight * distill_component
 
                     self.latest_distillation_loss = (
                         float(distill_component.detach().float().item())
