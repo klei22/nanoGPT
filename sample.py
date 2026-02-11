@@ -72,9 +72,10 @@ def parse_args():
 
     # Output Confidence
     parser.add_argument('--colorize_mode', type=str, default='minmax',
-                        choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'all'],
+                        choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'byte_fallback', 'all'],
                         help="Mode to colorize text: 'minmax' (default), 'softmax', 'softmax_top_k' for softmax over top-k values,"
-                             " 'rank', 'dot_product', or 'topk' to display a prediction table. "
+                             " 'rank', 'dot_product', 'topk' to display a prediction table, or "
+                             " 'byte_fallback' to highlight byte-fallback tokens. "
                              "Requires --colorize_output (enabled by default).")
     parser.add_argument('--colorize_topk', type=int, default=10,
                         help="Number of top predictions to display when colorize_mode='topk'")
@@ -178,7 +179,13 @@ def append_to_sample_file(sample_file, output_line, start_token, k_tag, iter_num
 
         file.write(header + output_line + '\n\n')
 
-def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
+def colorize_text(
+    tokens,
+    data_for_color,
+    decode,
+    colorize_mode='minmax',
+    byte_fallback_checker: Optional[Callable[[int], bool]] = None,
+):
 
     """
     Colorizes each token according to one of two modes:
@@ -187,8 +194,32 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
       - 'softmax': data_for_color is a 2D list/array (T, vocab_size) containing
                    the *full* distribution at each step. We extract the chosen
                    token's probability for each step, then min-max normalize.
+      - 'byte_fallback': highlight tokens that used byte fallback in orange.
     """
     text = Text()
+
+    if colorize_mode == "byte_fallback":
+        if byte_fallback_checker is None:
+            text.append(decode(tokens))
+            return text
+
+        byte_buffer: list[int] = []
+
+        def flush_bytes() -> None:
+            if byte_buffer:
+                text.append(decode(byte_buffer), style="bold #ff8800")
+                byte_buffer.clear()
+
+        for token_id in tokens:
+            if byte_fallback_checker(token_id):
+                byte_buffer.append(token_id)
+                continue
+
+            flush_bytes()
+            text.append(decode([token_id]))
+
+        flush_bytes()
+        return text
 
     norm_values = None
 
@@ -476,6 +507,7 @@ def sample_with_existing_model(
     # ── visual / logging flags ────────────────────────────────────────────
     colorize_output: bool = False,
     colorize_mode: str = "minmax",         # "rank", "topk" & "all" supported
+    byte_fallback_checker: Optional[Callable[[int], bool]] = None,
     token_boundary: Optional[str] = None,
     show_heatmaps: bool = False,
     chart_type: str = "heatmap",
@@ -499,7 +531,7 @@ def sample_with_existing_model(
         • None  – no truncation.
         • list  – run once per k in the list (duplicates filtered).
     colorize_mode :
-        "minmax" | "softmax" | "softmax_top_k" | "dot_product" | "rank" | "topk" | "all"
+        "minmax" | "softmax" | "softmax_top_k" | "dot_product" | "rank" | "topk" | "byte_fallback" | "all"
     writer : torch.utils.tensorboard.SummaryWriter | None
         When provided, dataset metrics for each top-k sample will be logged to TensorBoard.
     """
@@ -521,7 +553,7 @@ def sample_with_existing_model(
     console = Console()
     model.eval()
 
-    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank", "topk"]
+    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank", "topk", "byte_fallback"]
     modes_to_apply = valid_modes if colorize_mode == "all" else [colorize_mode]
 
 
@@ -733,12 +765,21 @@ def sample_with_existing_model(
                     elif cm == "dot_product":
                         data_for_color = dot_product_values
 
-                    if data_for_color is not None:
+                    if cm == "byte_fallback":
+                        coloured = colorize_text(
+                            tokens_for_color,
+                            None,
+                            decode,
+                            colorize_mode=cm,
+                            byte_fallback_checker=byte_fallback_checker,
+                        )
+                    elif data_for_color is not None:
                         coloured = colorize_text(              # type: ignore
                             tokens_for_color,
                             data_for_color,
                             decode,
                             colorize_mode=cm,
+                            byte_fallback_checker=byte_fallback_checker,
                         )
                     elif cm == "rank":
                         coloured = _colorize_rank(
@@ -1219,6 +1260,48 @@ def get_tokenizer_functions(meta):
     decode = lambda l: ''.join([itos[i] for i in l])
     return encode, decode
 
+
+def get_byte_fallback_checker(
+    meta: Optional[dict],
+    *,
+    enc: Optional[tiktoken.Encoding] = None,
+) -> Optional[Callable[[int], bool]]:
+    if enc is None and meta is not None and meta.get("tokenizer") == "tiktoken":
+        enc = tiktoken.get_encoding(meta["tiktoken_encoding"])
+
+    if enc is not None:
+        def _is_tiktoken_fallback(token_id: int) -> bool:
+            try:
+                token_bytes = enc.decode_single_token_bytes(token_id)
+            except KeyError:
+                return False
+            try:
+                token_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                return True
+            return False
+
+        return _is_tiktoken_fallback
+
+    if meta is None:
+        return None
+
+    tokenizer = meta.get("tokenizer")
+    if tokenizer in {
+        "char_bpe",
+        "json_byte_fallback",
+        "python_json_byte_fallback",
+        "custom_char_with_byte_fallback",
+    }:
+        itos = meta.get("itos", {})
+
+        def _is_byte_fallback(token_id: int) -> bool:
+            return isinstance(itos.get(token_id), (bytes, bytearray))
+
+        return _is_byte_fallback
+
+    return None
+
 def main():
     args = parse_args()
 
@@ -1315,12 +1398,15 @@ def main():
                 load_meta = True
                 break
 
+    byte_fallback_checker = None
+
     # For using gpt2 pretrained models
     if args.init_from.startswith('gpt2'):
         # use tiktoken for gpt2
         enc = tiktoken.get_encoding("gpt2")
         encode = lambda s: enc.encode(s, allowed_special={""})
         decode = lambda l: enc.decode(l)
+        byte_fallback_checker = get_byte_fallback_checker(None, enc=enc)
 
     meta = None
     if load_meta:
@@ -1328,6 +1414,7 @@ def main():
         with open(meta_path, 'rb') as f:
             meta = pickle.load(f)
             encode, decode = get_tokenizer_functions(meta)
+            byte_fallback_checker = get_byte_fallback_checker(meta)
 
     if args.start.startswith('FILE:'):
         with open(args.start[5:], 'r', encoding='utf-8') as f:
@@ -1564,6 +1651,7 @@ def main():
                 num_samples=args.num_samples,
                 colorize_output=args.colorize_output,
                 colorize_mode=args.colorize_mode,
+                byte_fallback_checker=byte_fallback_checker,
                 token_boundary=args.token_boundary,
                 show_heatmaps=args.show_heatmaps,
                 chart_type=args.chart_type,
