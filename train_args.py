@@ -846,6 +846,7 @@ def parse_args():
                           "infinite",
                           "mla",
                           "co4",
+                          "tau",
                           ]
 
     model_group.add_argument(
@@ -862,6 +863,33 @@ def parse_args():
         default="causal",
         choices=attention_variants,
         help="Which attention variant to use for the Transformer blocks."
+    )
+
+    model_group.add_argument(
+        "--attn_score_variant",
+        type=str,
+        default="dot",
+        choices=["dot", "tau"],
+        help="Attention score kernel variant for causal attention."
+    )
+    model_group.add_argument("--tau_laplacian_path", type=str, default=None)
+    model_group.add_argument(
+        "--tau_laplacian_init",
+        type=str,
+        default="identity",
+        choices=["identity", "zeros", "random"],
+    )
+    model_group.add_argument("--tau_laplacian_trainable", action=argparse.BooleanOptionalAction, default=False)
+    model_group.add_argument("--tau_laplacian_random_std", type=float, default=0.02)
+    model_group.add_argument("--tau_temperature", type=float, default=1.0)
+    model_group.add_argument("--tau_eps", type=float, default=1e-6)
+    model_group.add_argument("--tau_use_bounding", action=argparse.BooleanOptionalAction, default=True)
+    model_group.add_argument("--tau_bounding_tau", type=float, default=1.0)
+    model_group.add_argument(
+        "--tau_distance_variant",
+        type=str,
+        default="abs",
+        choices=["abs", "squared"],
     )
 
     ## MLA Variations
