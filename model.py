@@ -596,6 +596,62 @@ class GPT(nn.Module):
                 loss = None
 
             return logits, loss
+
+    def forward_n_step(
+        self,
+        idx,
+        targets,
+        num_steps,
+        iter_num=None,
+        dataset_idx=None,
+        loss_fn=None,
+        loss_reduction="average",
+    ):
+        if num_steps < 1:
+            raise ValueError("num_steps must be >= 1")
+        if targets is None:
+            raise ValueError("targets are required for n-step training")
+        if loss_reduction not in {"average", "linear"}:
+            raise ValueError(f"Unsupported loss_reduction: {loss_reduction}")
+
+        b, t = idx.size()
+        required_len = t + num_steps - 1
+        if targets.size(1) < required_len:
+            raise ValueError(
+                f"targets length {targets.size(1)} is too short for {num_steps} steps and block size {t}"
+            )
+
+        total_loss = None
+        first_logits = None
+        current_idx = idx
+
+        for step in range(num_steps):
+            target_slice = targets[:, step:step + t]
+            logits, loss = self(
+                current_idx,
+                targets=target_slice,
+                iter_num=iter_num,
+                dataset_idx=dataset_idx,
+                loss_fn=loss_fn,
+            )
+            if first_logits is None:
+                first_logits = logits
+            if total_loss is None:
+                total_loss = torch.zeros((), device=loss.device, dtype=loss.dtype)
+            if loss_reduction == "linear":
+                weight = loss.new_tensor(step)
+                total_loss = total_loss + loss * weight
+            else:
+                total_loss = total_loss + loss
+
+            if step < num_steps - 1:
+                next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+                current_idx = torch.cat((current_idx[:, 1:], next_token), dim=1)
+
+        if loss_reduction == "average":
+            total_loss = total_loss / num_steps
+
+        return first_logits, total_loss
     # ------------------------------------------------------------------
     #  LATENT-CHAINING
     # ------------------------------------------------------------------
