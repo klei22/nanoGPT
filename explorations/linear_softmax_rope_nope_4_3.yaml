@@ -1,0 +1,57 @@
+# explorations/linear_softmax_rope_nope_4_3.yaml
+# 7-layer comparisons with 4:3 mixes across attention variants, RoPE/no-PE,
+# and window-size patterns.
+---
+
+named_static_groups:
+  - named_group: "linear_softmax_4_3"
+    attention_variant_layerlist:
+      - ["causal", "linear", "linear", "causal", "linear", "linear", "causal"]
+
+  - named_group: "all_softmax"
+    attention_variant_layerlist:
+      - ["causal", "causal", "causal", "causal", "causal", "causal", "causal"]
+
+  - named_group: "rope_nope_window_4_3"
+    use_rotary_embeddings_layerlist:
+      - [false, true, true, false, true, true, false]
+    window_size_layerlist:
+      - [256, 64, 64, 256, 64, 64, 256]
+
+  - named_group: "rope_nope_window_relu2max_nope"
+    use_rotary_embeddings_layerlist:
+      - [false, true, true, false, true, true, false]
+    window_size_layerlist:
+      - [256, 64, 64, 256, 64, 64, 256]
+    softmax_variant_attn_layerlist:
+      - ["relu2max", "softmax", "softmax", "relu2max", "softmax", "softmax", "relu2max"]
+
+common_group:
+  dataset: ["minipile"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  never_save_checkpoint: [true]
+  max_iters: [10000]
+  eval_interval: [1000]
+  n_layer: [7]
+  n_head: [6]
+  n_embd: [384]
+  block_size: [256]
+  batch_size: [64]
+  attention_variant: ["causal"]
+  softmax_variant_attn: ["softmax"]
+  rope_variant: ["rope"]
+  use_rotary_embeddings: [true]
+  use_gradient_checkpointing: [true]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  use_peri_ln: [true]
+  use_abs_pos_embeddings: [false]
+  window_size: [256]
+
+parameter_groups:
+  - named_group_static: ["linear_softmax_4_3"]
+  - named_group_static: ["all_softmax"]
+  - named_group_static: ["rope_nope_window_4_3"]
+  - named_group_static: ["rope_nope_window_relu2max_nope"]
