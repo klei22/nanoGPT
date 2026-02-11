@@ -21,3 +21,9 @@ python3 demos/check_ckpt_for_gelu_shift.py \
 
 `adam_vs_adamw.sh` trains two tiny Shakespeare models, one with Adam and one
 with AdamW, then compares their statistics using `view_model_stats.py`.
+
+## Offline Distillation (Shakespeare Char)
+
+`offline_distillation_shakespeare_char.sh` trains a compact teacher model on the
+`shakespeare_char` dataset, precomputes offline teacher logits, and then trains
+a student using the offline distillation path.
