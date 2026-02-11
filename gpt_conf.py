@@ -173,6 +173,18 @@ class GPTConfig:
     use_qk_norm_scale: bool = False
     use_v_norm: bool = False
 
+    # Approximate normalization factors (anGPT-style scaling)
+    use_approx_qkv_norm: bool = False
+    approx_qkv_norm_factor: float | None = None
+    use_approx_attn_out_norm: bool = False
+    approx_attn_out_norm_factor: float | None = None
+    use_approx_mlp_up_norm: bool = False
+    approx_mlp_up_norm_factor: float | None = None
+    use_approx_mlp_act_norm: bool = False
+    approx_mlp_act_norm_factor: float | None = None
+    use_approx_mlp_down_norm: bool = False
+    approx_mlp_down_norm_factor: float | None = None
+
     ## SSM - Attention Varient (same as Hymba)
     ssm_mamba_expand: int = 2
     ssm_conv_kernel_size: int = 3
