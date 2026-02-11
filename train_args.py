@@ -486,7 +486,12 @@ def parse_args():
     training_group.add_argument("--lamb_debias", action=argparse.BooleanOptionalAction, default=False)
 
     # Shampoo
-    training_group.add_argument("--shampoo_momentum", type=float, default=0.0)
+    training_group.add_argument(
+        "--shampoo_momentum",
+        type=float,
+        default=None,
+        help="Momentum for Shampoo/SOAP preconditioners (defaults to β₂ when omitted).",
+    )
     training_group.add_argument("--shampoo_eps", type=float, default=1e-4)
     training_group.add_argument("--shampoo_update_freq", type=int, default=1)
 
