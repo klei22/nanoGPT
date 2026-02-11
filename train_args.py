@@ -256,6 +256,16 @@ def parse_args():
         choices=['single', 'multidataset', 'multicontext'],
         help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously."
     )
+    training_group.add_argument(
+        '--sequence_prediction_steps',
+        default=1,
+        type=int,
+        help=(
+            "Number of sequential prediction rounds per batch. "
+            "When >1, the model predicts the next token, appends the top-1 token to the input, "
+            "and repeats for the specified number of rounds, summing the losses across rounds."
+        ),
+    )
 
     # Data args
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)
