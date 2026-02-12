@@ -91,6 +91,92 @@ class RotaryEmbedding(nn.Module):
 
         return x_combined
 
+
+class FourierPositionEmbedding(RotaryEmbedding):
+    """Fourier Position Embedding (FoPE).
+
+    Extends RoPE by mixing multiple frequency components in each head using a
+    Fourier series and by removing inadequately trained low-frequency terms.
+    """
+
+    def __init__(self, config=None, size=None):
+        super().__init__(config, size)
+        self.config = config
+        self.head_dim = size
+        self.num_heads = None
+        self.input_dim = None
+        self.output_dim = None
+        self.sin_coef = None
+        self.cos_coef = None
+        # Allow tweaking of the coefficient initialisation gain
+        self.fourier_gain = getattr(config, "rope_fourier_init_norm_gain", 1.0)
+
+    def _generate_inv_freq(self, device):
+        inv_freq = super()._generate_inv_freq(device)
+        floor = 2 * math.pi / self.config.block_size
+        mask = inv_freq >= floor
+        return inv_freq[mask]
+
+    def rotate_half(self, x):
+        x1 = x[..., : x.size(-1) // 2]
+        x2 = x[..., x.size(-1) // 2 :]
+        return torch.cat((-x2, x1), dim=-1)
+
+    def apply_rotary_pos_embed(self, pos_sin, pos_cos, t):
+        fourier_sin = torch.einsum(
+            "bhtD,hDd->bhtd",
+            pos_sin,
+            self.sin_coef / self.sin_coef.sum(dim=-2, keepdim=True),
+        )
+        fourier_cos = torch.einsum(
+            "bhtD,hDd->bhtd",
+            pos_cos,
+            self.cos_coef / self.cos_coef.sum(dim=-2, keepdim=True),
+        )
+        half_dim = t.size(-1) // 2
+        fourier_sin = F.pad(
+            fourier_sin, (0, half_dim - fourier_sin.size(-1)), value=1
+        )
+        fourier_cos = F.pad(
+            fourier_cos, (0, half_dim - fourier_cos.size(-1)), value=1
+        )
+        fourier_sin = torch.cat((fourier_sin, fourier_sin), dim=-1)
+        fourier_cos = torch.cat((fourier_cos, fourier_cos), dim=-1)
+        return (t * fourier_cos) - (self.rotate_half(t) * fourier_sin)
+
+    def forward(self, x):
+        if self.first_pass:
+            self.inv_freq = self._generate_inv_freq(x.device)
+            self.input_dim = self.inv_freq.size(-1)
+            self.output_dim = min(self.input_dim, self.head_dim // 4)
+            self.num_heads = x.shape[1]
+            self.sin_coef = nn.Parameter(
+                torch.randn(self.num_heads, self.input_dim, self.output_dim, device=x.device),
+                requires_grad=False,
+            )
+            self.cos_coef = nn.Parameter(
+                torch.randn(self.num_heads, self.input_dim, self.output_dim, device=x.device),
+                requires_grad=False,
+            )
+            nn.init.xavier_normal_(self.sin_coef, gain=self.fourier_gain)
+            nn.init.xavier_normal_(self.cos_coef, gain=self.fourier_gain)
+            eye = torch.eye(self.input_dim, device=x.device)
+            self.sin_coef.data += eye[:, : self.output_dim]
+            self.cos_coef.data += eye[:, : self.output_dim]
+            self.first_pass = False
+
+        seq_len = x.shape[-2]
+        pos_indices = torch.arange(
+            self.start_index, self.start_index + seq_len, device=x.device
+        ).type_as(self.inv_freq)
+        angles = torch.einsum("i,d->id", pos_indices, self.inv_freq)
+        pos_sin = angles.sin().unsqueeze(0).unsqueeze(0)
+        pos_cos = angles.cos().unsqueeze(0).unsqueeze(0)
+        b, h, t, _ = x.size()
+        pos_sin = pos_sin.expand(b, h, t, -1)
+        pos_cos = pos_cos.expand(b, h, t, -1)
+        return self.apply_rotary_pos_embed(pos_sin, pos_cos, x).to(x.dtype)
+
 class SymmetricalOverlapAngularPositions(nn.Module):
     """ SOAP is a fresh and 'clean' implementation of Rotary Embeddings.
 
