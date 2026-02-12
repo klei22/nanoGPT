@@ -821,11 +821,25 @@ class GPT(nn.Module):
         for key in sd_keys_hf:
             # START FIX: Rename keys to match nanoGPT's convention
             my_key = key
+
+            # When using separate embeddings per dataset, map the GPT-2 embedding
+            # and lm_head weights to the first dataset's tables.
+            if config.multidataset_wte:
+                if key == 'transformer.wte.weight':
+                    my_key = 'transformer.wte_0.weight'
+                elif key == 'lm_head.weight':
+                    my_key = 'transformer.lm_head_0.weight'
+
             if 'ln_1' in my_key:
                 my_key = my_key.replace('ln_1', 'ln1')
             if 'ln_2' in my_key:
                 my_key = my_key.replace('ln_2', 'ln2')
             # END FIX
+
+            if my_key not in sd:
+                # skip parameters that do not exist in the target model (e.g.,
+                # extra lm_heads for additional datasets)
+                continue
 
             if any(key.endswith(w) for w in transposed):
                 # special treatment for the Conv1D weights we need to transpose
@@ -863,9 +877,58 @@ class GPT(nn.Module):
 
                 # Ensure the key exists in your model before trying to copy
                 if my_key in sd:
-                    assert sd_hf[key].shape == sd[my_key].shape, f"Shape mismatch for key {my_key}: HF is {sd_hf[key].shape}, yours is {sd[my_key].shape}"
+                    if sd_hf[key].shape != sd[my_key].shape:
+                        # When using multidataset token embeddings, the first
+                        # dataset's vocabulary size may differ from GPT-2's
+                        # vocabulary. In that case, copy the overlapping
+                        # portion of the embedding or head and leave the rest
+                        # as already-initialized random weights.
+                        if config.multidataset_wte and key in ("transformer.wte.weight", "lm_head.weight"):
+                            with torch.no_grad():
+                                rows_to_copy = min(sd_hf[key].shape[0], sd[my_key].shape[0])
+                                sd[my_key][:rows_to_copy].copy_(sd_hf[key][:rows_to_copy])
+                            continue
+                        else:
+                            raise AssertionError(
+                                f"Shape mismatch for key {my_key}: HF is {sd_hf[key].shape}, yours is {sd[my_key].shape}"
+                            )
                     with torch.no_grad():
                         sd[my_key].copy_(sd_hf[key])
+        # Reinitialize any additional embedding tables and heads for
+        # datasets beyond the first when using multidataset token
+        # embeddings. These modules are not loaded from the GPT-2
+        # checkpoint and should use the model's standard initialization.
+        if config.multidataset_wte and len(getattr(config, 'vocab_sizes', [])) > 1:
+            for i in range(1, len(config.vocab_sizes)):
+                model._init_weights(model.transformer[f'wte_{i}'])
+                if not model.wte_weight_tying:
+                    model._init_weights(model.transformer[f'lm_head_{i}'])
+
+        # Initialize learned steering vectors if they are enabled. These
+        # parameters are not present in the GPT-2 checkpoint and therefore
+        # need standard initialization after loading the pretrained weights.
+        if config.use_lsv and hasattr(model, 'lsv_matrix'):
+            # initialize any submodules (e.g., Linear layers inside variants)
+            model.lsv_matrix.apply(model._init_weights)
+            # initialize direct parameter tensors
+            if hasattr(model.lsv_matrix, 'lsv_matrix'):
+                torch.nn.init.normal_(
+                    model.lsv_matrix.lsv_matrix,
+                    mean=config.embedding_mean_init,
+                    std=config.embedding_std_init,
+                )
+            if hasattr(model.lsv_matrix, 'linear_comb_matrix'):
+                torch.nn.init.normal_(
+                    model.lsv_matrix.linear_comb_matrix,
+                    mean=config.linear_mean_init,
+                    std=config.linear_std_init,
+                )
+            if hasattr(model.lsv_matrix, 'queries'):
+                torch.nn.init.normal_(
+                    model.lsv_matrix.queries,
+                    mean=config.embedding_mean_init,
+                    std=config.embedding_std_init,
+                )
 
         return model
 
