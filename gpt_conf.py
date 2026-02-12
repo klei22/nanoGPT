@@ -478,6 +478,10 @@ class GPTConfig:
 
     ## Activation Quantizations
     activations_quant_method: str = "affine_quant"
+    activation_qat: bool = False
+    activation_qat_clip_init: float = 4.0
+    activation_kurtosis_reg: float = 0.0
+    activation_kurtosis_eps: float = 1e-6
     quantize_attn_act: bool = False
     quantize_attn_act_bits: int = 8
     quantize_attn_act_input: bool = False

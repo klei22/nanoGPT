@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 def set_dtype(bits):
     if bits > 16:
@@ -125,7 +126,22 @@ def dequantize(zero_point, scale, tensor, causal_mask=False):
     dequantized = (tensor - zero_point) * scale
     return dequantized
 
+def _qat_clip_value(parameter):
+    return F.softplus(parameter) + 1e-6
+
+
 def fake_quantize_act(obj, activation, tensor, num_bits, quant_method, iter_num, causal_mask=False):
+    clip_min = None
+    clip_max = None
+    if getattr(obj, "use_activation_qat", False):
+        clip_min = getattr(obj, f"{activation}_clip_min", None)
+        clip_max = getattr(obj, f"{activation}_clip_max", None)
+
+    if clip_min is not None and clip_max is not None:
+        min_val = -_qat_clip_value(clip_min)
+        max_val = _qat_clip_value(clip_max)
+        tensor = tensor.clamp(min=min_val, max=max_val)
+
     zero_point, scale, act = quantize_dictionary[quant_method](tensor, num_bits, causal_mask=causal_mask)
     setattr(obj, activation, act)
     setattr(obj, f"{activation}_scale", scale)
