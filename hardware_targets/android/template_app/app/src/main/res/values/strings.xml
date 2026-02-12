@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">NanoGPT ExecuTorch</string>
+    <string name="status_instructions">Send adb broadcast intent with extras "%1$s", "%2$s", and "%3$s" to trigger generation.</string>
+</resources>
