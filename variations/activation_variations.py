@@ -10,6 +10,14 @@ class SquaredReLU(nn.Module):
     def forward(self, x):
         return torch.pow(torch.relu(x), 2)
 
+class ReLUPower(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.power = getattr(config, "relu_power", 2.0)
+
+    def forward(self, x):
+        return torch.pow(torch.relu(x), self.power)
+
 class SquaredGELU(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -349,9 +357,9 @@ activation_dictionary = {
     "softplus": Softplus_Config,
     "softsign": Softsign_Config,
     "softshrink": Softshrink_Config,
+    "relu_power": ReLUPower,
     "squared_relu": SquaredReLU,
     "squared_gelu": SquaredGELU,
     "tanh": Tanh_Config,
     "identity": Identity_Config,
 }
-

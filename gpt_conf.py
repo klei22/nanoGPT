@@ -188,6 +188,7 @@ class GPTConfig:
     activation_end: str = "relu"
     activation_transition_start_iter: int = 0
     activation_transition_end_iter: int = None
+    relu_power: float = 2.0
 
     # MLP Options
     use_parallel_mlp: bool = False
@@ -330,6 +331,7 @@ class GPTConfig:
     ## Embedding Intialization Options
     embedding_mean_init: float= 0.0
     embedding_std_init: float= 0.02
+    embedding_gaussian_noise_std: float = 0.0
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
     fire_log_bias: float = 1.0

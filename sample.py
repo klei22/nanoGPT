@@ -6,6 +6,7 @@ import math
 import os
 import pickle
 import time
+from inspect import signature
 from contextlib import nullcontext
 from datetime import datetime
 
@@ -55,7 +56,8 @@ def parse_args():
     parser.add_argument('--sym_rot_num_angles', type=int, default=None, help="Number of angles for symmetrical rotary embedding")
     parser.add_argument('--rope_length', type=int, default=None, help="Number of embeddings to rotate (must be an even number <= total embedding size)")
     parser.add_argument('--token_boundary', type=str, default=None, help="optional separator between emitted tokens")
-    parser.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction, help="print info about model before infernece")
+    parser.add_argument('--print_model_info', default=True, action=argparse.BooleanOptionalAction, help="print info about model before inference")
+    parser.add_argument('--weights_only', default=False, action=argparse.BooleanOptionalAction, help="disable to allow full pickle loading for legacy checkpoints")
 
     parser.add_argument(
         '--cosine_penalty',
@@ -118,6 +120,18 @@ def parse_args():
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
+    parser.add_argument(
+        "--eval_output_dir",
+        type=str,
+        default=None,
+        help="Optional directory to also write eval_loss.txt when running --eval_only.",
+    )
+    parser.add_argument(
+        "--embedding_gaussian_noise_std",
+        type=float,
+        default=None,
+        help="Override embedding gaussian noise scale at inference time (None uses checkpoint value).",
+    )
 
     parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size to use for evaluation")
@@ -1226,7 +1240,10 @@ def main():
 
     if args.init_from == 'resume':
         ckpt_path = os.path.join(args.out_dir, 'ckpt.pt')
-        checkpoint = torch.load(ckpt_path, map_location=args.device)
+        load_kwargs = {"map_location": args.device}
+        if "weights_only" in signature(torch.load).parameters:
+            load_kwargs["weights_only"] = args.weights_only
+        checkpoint = torch.load(ckpt_path, **load_kwargs)
         checkpoint_config = checkpoint.get('config', {})
         checkpoint['model_args']['dropout'] = 0.0
         if args.save_avg_vector:
@@ -1267,6 +1284,9 @@ def main():
         for k, v in variation_dict.items():
             setattr(gptconf, k, v)
         model = GPT.from_pretrained(gptconf, model_type=args.init_from)
+
+    if args.embedding_gaussian_noise_std is not None:
+        model.config.embedding_gaussian_noise_std = args.embedding_gaussian_noise_std
 
     if args.init_from == 'resume' and args.multicontext is None:
         args.multicontext = bool(getattr(model.config, "multicontext", False))
@@ -1387,11 +1407,15 @@ def main():
         summary.setdefault("timestamp", timestamp)
         summary.setdefault("out_dir", args.out_dir)
         summary.setdefault("init_from", args.init_from)
+        summary.setdefault("embedding_gaussian_noise_std", model.config.embedding_gaussian_noise_std)
 
+        extra_dirs = [out_dir]
+        if args.eval_output_dir:
+            extra_dirs.append(args.eval_output_dir)
         write_eval_summary(
             args.out_dir,
             summary,
-            extra_dirs=[out_dir],
+            extra_dirs=extra_dirs,
         )
         return
 
@@ -1552,4 +1576,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

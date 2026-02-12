@@ -782,6 +782,7 @@ def parse_args():
             "pfla_le",
             "prelu",
             "relu",
+            "relu_power",
             "relu6",
             "rrelu",
             "selu",
@@ -809,6 +810,9 @@ def parse_args():
 
     # ACTIVATION VARIATIONS
     model_group.add_argument( "--activation_variant", type=str, default="gelu", choices=activation_variations)
+
+    ## ReLUPower
+    model_group.add_argument("--relu_power", type=float, default=2.0)
 
     ## Shifted Gelu
     model_group.add_argument("--shifted_gelu_learnable_shift",  type=bool, default=True, action=argparse.BooleanOptionalAction)
@@ -1127,6 +1131,12 @@ def parse_args():
     ## Positional Embedding Weight Initialization Options
     model_group.add_argument( "--embedding_mean_init", type=float, default=0.0)
     model_group.add_argument( "--embedding_std_init", type=float, default=0.02)
+    model_group.add_argument(
+        "--embedding_gaussian_noise_std",
+        type=float,
+        default=0.0,
+        help="Scale for L2-normalized Gaussian noise added to token embeddings after lookup.",
+    )
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
     model_group.add_argument( "--fire_log_bias", type=float, default=1.0, help="bias in the function psi(x) = log(cx + bias)")

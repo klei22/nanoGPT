@@ -78,14 +78,22 @@ def collect_entries(
 
 
 def write_json(entries: List[dict], path: Path) -> None:
-    path.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(entries, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
 
 
 def write_concat(entries: List[dict], path: Path) -> None:
     chunks: List[str] = []
     for entry in entries:
         chunks.extend([entry["output"], entry["param_nesting"], entry["general"]])
-    path.write_text("\n".join(chunks).rstrip() + "\n", encoding="utf-8")
+
+    # IMPORTANT:
+    # Do NOT use .rstrip() here because param_nesting uses literal spaces as meaningful characters.
+    # Only trim trailing NEWLINES to avoid accidental truncation.
+    text = "\n".join(chunks)
+    text = text.rstrip("\n") + "\n"
+    path.write_text(text, encoding="utf-8")
 
 
 def write_mc_inputs(entries: List[dict], base_dir: Path) -> None:
@@ -109,9 +117,29 @@ def write_mc_inputs(entries: List[dict], base_dir: Path) -> None:
         pna_chunks.append(entry["param_nesting"])
         ga_chunks.append(entry["general"])
 
-    out_path.write_text("out:\n" + "\n\n".join(out_chunks).rstrip() + "\n\n", encoding="utf-8")
-    pna_path.write_text("pna:\n" + "\n\n".join(pna_chunks).rstrip() + "\n\n", encoding="utf-8")
-    ga_path.write_text("gen:\n" + "\n\n".join(ga_chunks).rstrip() + "\n\n", encoding="utf-8")
+    def emit(label: str, chunks: List[str]) -> str:
+        body = "\n\n".join(chunks)
+        # IMPORTANT:
+        # Do NOT use .rstrip() (it strips spaces). Only strip trailing '\n' to avoid
+        # truncating meaningful trailing spaces in param_nesting.
+        body = body.rstrip("\n")
+        return f"{label}:\n{body}\n\n"
+
+    out_text = emit("out", out_chunks)
+    pna_text = emit("pna", pna_chunks)
+    ga_text = emit("gen", ga_chunks)
+
+    # Guardrail: if this fails, something (elsewhere) is modifying whitespace/lengths.
+    if not (len(out_text) == len(pna_text) == len(ga_text)):
+        raise RuntimeError(
+            "mc_* input length mismatch after concatenation. "
+            f"out={len(out_text)} pna={len(pna_text)} gen={len(ga_text)}. "
+            "This usually means whitespace was stripped somewhere."
+        )
+
+    out_path.write_text(out_text, encoding="utf-8")
+    pna_path.write_text(pna_text, encoding="utf-8")
+    ga_path.write_text(ga_text, encoding="utf-8")
 
 
 def main() -> None:
@@ -147,3 +175,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
