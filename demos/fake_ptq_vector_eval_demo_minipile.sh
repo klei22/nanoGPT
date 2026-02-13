@@ -14,6 +14,7 @@ OUT_DIR="out_fake_ptq_minipile"
 VECTOR_SWEEP_ROOT="${OUT_DIR}_vector_sweep"
 TENSOR_SWEEP_ROOT="${OUT_DIR}_tensor_sweep"
 SUMMARY_ROOT="${OUT_DIR}_quantization_summaries"
+ANGLE_SWEEP_ROOT="${OUT_DIR}_vector_angle_sweep"
 EVAL_ITERS=200
 BATCH_SIZE=64
 BLOCK_SIZE=256
@@ -21,6 +22,12 @@ BLOCK_SIZE=256
 BIT_START=8
 BIT_STOP=3
 BIT_STEP=-1
+VECTOR_TARGET_ANGLE=""
+SCALAR_FALLBACK_BITS=""
+ANGLE_SWEEP=""
+
+declare -a ANGLE_SWEEP_VALUES=()
+declare -a ANGLE_SWEEP_PAIRS=()
 
 usage() {
   cat <<'USAGE'
@@ -29,8 +36,19 @@ Usage: demos/fake_ptq_vector_eval_demo_minipile.sh [--bit-start N] [--bit-stop N
   --bit-start  Starting bit-width for the sweep (default: 16)
   --bit-stop   Final bit-width for the sweep (default: 3)
   --bit-step   Step increment for the sweep (default: -1)
+  --vector-angle DEG  Target maximum angular distortion in degrees for per-vector quantization
+  --scalar-bits N     Bit-width to use for tensors that cannot be grouped into vectors
+  --angle-sweep LIST  Comma-separated list of per-vector target angles to sweep (e.g. "12,6,3,1.5")
   --help       Show this help message and exit
 USAGE
+}
+
+slugify_angle() {
+  local angle="$1"
+  angle="${angle// /}"
+  angle="${angle//./p}"
+  angle="${angle//-/m}"
+  echo "$angle"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -45,6 +63,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bit-step)
       BIT_STEP="$2"
+      shift 2
+      ;;
+    --vector-angle)
+      VECTOR_TARGET_ANGLE="$2"
+      shift 2
+      ;;
+    --scalar-bits)
+      SCALAR_FALLBACK_BITS="$2"
+      shift 2
+      ;;
+    --angle-sweep)
+      ANGLE_SWEEP="$2"
       shift 2
       ;;
     --help)
@@ -69,6 +99,17 @@ if [ "${#BITS[@]}" -eq 0 ]; then
   exit 1
 fi
 
+if [ -n "$ANGLE_SWEEP" ]; then
+  IFS=',' read -ra RAW_ANGLES <<< "$ANGLE_SWEEP"
+  for raw_angle in "${RAW_ANGLES[@]}"; do
+    angle="$(echo "$raw_angle" | xargs)"
+    if [ -z "$angle" ]; then
+      continue
+    fi
+    ANGLE_SWEEP_VALUES+=("$angle")
+  done
+fi
+
 echo "Sweeping weight bit-widths: ${BITS[*]}"
 
 mkdir -p "$EVAL_DATASET_DIR"
@@ -83,7 +124,7 @@ else
 fi
 popd > /dev/null
 
-mkdir -p "$VECTOR_SWEEP_ROOT" "$TENSOR_SWEEP_ROOT" "$SUMMARY_ROOT"
+mkdir -p "$VECTOR_SWEEP_ROOT" "$TENSOR_SWEEP_ROOT" "$SUMMARY_ROOT" "$ANGLE_SWEEP_ROOT"
 
 echo "=== Step 2: Train a reference model on minipile (if needed) ==="
 if [ ! -f "$OUT_DIR/ckpt.pt" ]; then
@@ -137,10 +178,17 @@ for bit in "${BITS[@]}"; do
     echo "=== Step ${step}: Quantize to ${bit}-bit weights (${granularity}) ==="
     if [ ! -f "$QUANT_OUT_DIR/ckpt.pt" ]; then
       if [ "$granularity" = "vector" ]; then
-        python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
-          --out_dir "$QUANT_OUT_DIR" \
-          --num_bits "$bit" \
-          --granularity vector
+        cmd=(python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR"
+          --out_dir "$QUANT_OUT_DIR"
+          --num_bits "$bit"
+          --granularity vector)
+        if [ -n "$VECTOR_TARGET_ANGLE" ]; then
+          cmd+=(--vector-target-angle "$VECTOR_TARGET_ANGLE")
+        fi
+        if [ -n "$SCALAR_FALLBACK_BITS" ]; then
+          cmd+=(--scalar-fallback-bits "$SCALAR_FALLBACK_BITS")
+        fi
+        "${cmd[@]}"
       else
         python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
           --out_dir "$QUANT_OUT_DIR" \
@@ -174,6 +222,43 @@ for bit in "${BITS[@]}"; do
     step=$((step + 1))
   done
 done
+
+if [ "${#ANGLE_SWEEP_VALUES[@]}" -gt 0 ]; then
+  ANGLE_SCALAR_BITS="${SCALAR_FALLBACK_BITS:-8}"
+  if [ -z "$ANGLE_SCALAR_BITS" ]; then
+    ANGLE_SCALAR_BITS=8
+  fi
+  ANGLE_MAX_BITS="$(printf '%s\n' "${BITS[@]}" | sort -nr | head -n1)"
+  echo "=== Running per-vector angle sweep for targets: ${ANGLE_SWEEP_VALUES[*]} degrees ==="
+  for angle in "${ANGLE_SWEEP_VALUES[@]}"; do
+    slug="$(slugify_angle "$angle")"
+    ANGLE_SWEEP_PAIRS+=("${angle}::${slug}")
+    ANGLE_DIR="${ANGLE_SWEEP_ROOT}/angle_${slug}"
+    mkdir -p "$ANGLE_DIR"
+
+    echo "=== Step ${step}: Quantize with per-vector angle ${angle} degrees ==="
+    if [ ! -f "$ANGLE_DIR/ckpt.pt" ]; then
+      python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
+        --out_dir "$ANGLE_DIR" \
+        --num_bits "$ANGLE_MAX_BITS" \
+        --granularity vector \
+        --vector-target-angle "$angle" \
+        --scalar-fallback-bits "$ANGLE_SCALAR_BITS"
+    else
+      echo "Found existing checkpoint for angle ${angle} degrees at $ANGLE_DIR/ckpt.pt; skipping quantization."
+    fi
+
+    step=$((step + 1))
+
+    echo "=== Step ${step}: Evaluate checkpoint for angle ${angle} degrees ==="
+    python3 sample.py \
+      --out_dir "$ANGLE_DIR" \
+      --eval_only \
+      --eval_dataset minipile
+
+    step=$((step + 1))
+  done
+fi
 
 python3 - "$OUT_DIR" "$VECTOR_SWEEP_ROOT" "$TENSOR_SWEEP_ROOT" "$SUMMARY_ROOT" "${BITS[@]}" <<'PY'
 import csv
@@ -354,5 +439,147 @@ fig.savefig(plot_path, dpi=200)
 print(f"Wrote summary CSV to {csv_path}")
 print(f"Wrote comparison plot to {plot_path}")
 PY
+
+if [ "${#ANGLE_SWEEP_PAIRS[@]}" -gt 0 ]; then
+python3 - "$OUT_DIR" "$ANGLE_SWEEP_ROOT" "$SUMMARY_ROOT" "${ANGLE_SWEEP_PAIRS[@]}" <<'PY'
+import csv
+import json
+import os
+import sys
+
+out_dir = os.path.abspath(sys.argv[1])
+angle_root = os.path.abspath(sys.argv[2])
+summary_root = os.path.abspath(sys.argv[3])
+entries_raw = sys.argv[4:]
+
+if not entries_raw:
+    raise SystemExit("No angle sweep entries provided")
+
+baseline_path = os.path.join(out_dir, "eval_loss.txt")
+if not os.path.exists(baseline_path):
+    raise SystemExit(f"Missing baseline evaluation summary at {baseline_path}")
+with open(baseline_path, encoding="utf-8") as fh:
+    baseline_data = json.load(fh)
+baseline_loss = baseline_data.get("val")
+if baseline_loss is None:
+    raise SystemExit(f"No 'val' key found in {baseline_path}")
+
+angle_entries = []
+for entry in entries_raw:
+    try:
+        angle_text, slug = entry.split("::", 1)
+    except ValueError as exc:
+        raise SystemExit(f"Malformed angle sweep entry '{entry}': {exc}") from exc
+    try:
+        angle_value = float(angle_text)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid angle '{angle_text}': {exc}") from exc
+    angle_dir = os.path.join(angle_root, f"angle_{slug}")
+    loss_path = os.path.join(angle_dir, "eval_loss.txt")
+    if not os.path.exists(loss_path):
+        raise SystemExit(f"Missing evaluation summary at {loss_path}")
+    with open(loss_path, encoding="utf-8") as fh:
+        eval_data = json.load(fh)
+    loss = eval_data.get("val")
+    if loss is None:
+        raise SystemExit(f"No 'val' key found in {loss_path}")
+
+    stats_path = os.path.join(angle_dir, "vector_quantization_stats.json")
+    if not os.path.exists(stats_path):
+        raise SystemExit(f"Missing vector quantization stats at {stats_path}")
+    with open(stats_path, encoding="utf-8") as fh:
+        stats = json.load(fh)
+    aggregate = stats.get("aggregate") or {}
+    mean_bits = float(aggregate.get("mean_bits_per_vector", 0.0))
+    std_bits = float(aggregate.get("std_bits_per_vector", 0.0))
+
+    angle_entries.append(
+        {
+            "angle": angle_value,
+            "label": angle_text,
+            "mean_bits": mean_bits,
+            "std_bits": std_bits,
+            "val_loss": float(loss),
+        }
+    )
+
+if not angle_entries:
+    raise SystemExit("No angle sweep entries available")
+
+try:
+    import matplotlib.pyplot as plt
+except Exception as exc:  # pragma: no cover - plotting dependency issues
+    raise SystemExit(f"Failed to import matplotlib for plotting: {exc}") from exc
+
+plt.style.use("seaborn-v0_8")
+
+angles = [entry["angle"] for entry in angle_entries]
+means = [entry["mean_bits"] for entry in angle_entries]
+stds = [entry["std_bits"] for entry in angle_entries]
+losses = [entry["val_loss"] for entry in angle_entries]
+
+fig, ax_bits = plt.subplots(figsize=(8, 5))
+bits_plot = ax_bits.errorbar(
+    angles,
+    means,
+    yerr=stds,
+    fmt="o-",
+    color="tab:purple",
+    capsize=5,
+    label="avg bits per vector",
+)
+ax_bits.set_xlabel("Target angle (degrees)")
+ax_bits.set_ylabel("Average bits per vector", color="tab:purple")
+ax_bits.tick_params(axis="y", labelcolor="tab:purple")
+ax_bits.set_title("Per-vector precision and validation loss vs. target angle")
+ax_bits.grid(True, which="both", linestyle=":", linewidth=0.5)
+
+ax_loss = ax_bits.twinx()
+loss_plot = ax_loss.plot(
+    angles,
+    losses,
+    color="tab:red",
+    marker="s",
+    label="validation loss",
+)[0]
+ax_loss.set_ylabel("Validation loss", color="tab:red")
+ax_loss.tick_params(axis="y", labelcolor="tab:red")
+baseline_line = ax_loss.axhline(
+    baseline_loss, color="tab:green", linestyle="--", label="fp32 baseline"
+)
+
+handles = [bits_plot, loss_plot, baseline_line]
+labels = ["Average bits per vector", "Validation loss", "fp32 baseline"]
+ax_bits.legend(handles, labels, loc="best")
+
+fig.tight_layout()
+
+csv_path = os.path.join(summary_root, "vector_angle_sweep_metrics.csv")
+with open(csv_path, "w", newline="", encoding="utf-8") as csv_out:
+    fieldnames = [
+        "target_angle_deg",
+        "mean_bits_per_vector",
+        "std_bits_per_vector",
+        "val_loss",
+    ]
+    writer = csv.DictWriter(csv_out, fieldnames=fieldnames)
+    writer.writeheader()
+    for entry in angle_entries:
+        writer.writerow(
+            {
+                "target_angle_deg": f"{entry['angle']:.4f}",
+                "mean_bits_per_vector": f"{entry['mean_bits']:.6f}",
+                "std_bits_per_vector": f"{entry['std_bits']:.6f}",
+                "val_loss": f"{entry['val_loss']:.8f}",
+            }
+        )
+
+plot_path = os.path.join(summary_root, "vector_angle_sweep_metrics.png")
+fig.savefig(plot_path, dpi=200)
+
+print(f"Wrote angle sweep CSV to {csv_path}")
+print(f"Wrote angle sweep plot to {plot_path}")
+PY
+fi
 
 echo "Quantization sweeps complete. Evaluation summaries live in $SUMMARY_ROOT."
