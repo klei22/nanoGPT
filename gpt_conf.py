@@ -518,6 +518,8 @@ class GPTConfig:
     ## Linear Quantizations
     quantize_linear_method: str = "affine_quant"
     quantize_linear_bits: int = 8
+    quantize_linear_grad_exponent_bits: int | None = None
+    quantize_linear_grad_mantissa_bits: int | None = None
     quantize_linear_attn_q_method: str = None
     quantize_linear_attn_q_bits: int = None
     quantize_linear_attn_k_method: str = None

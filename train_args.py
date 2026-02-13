@@ -1096,6 +1096,18 @@ def parse_args():
     ### Default methods and precisions
     model_group.add_argument("--quantize_linear_method", type=str, default="affine_quant", choices=quant_methods, help="function used for linear quantization")
     model_group.add_argument("--quantize_linear_bits", type=int, default=8, help="number of bits for linear quantization")
+    model_group.add_argument(
+        "--quantize_linear_grad_exponent_bits",
+        type=int,
+        default=None,
+        help="number of exponent bits to fake quantize gradients during backward passes",
+    )
+    model_group.add_argument(
+        "--quantize_linear_grad_mantissa_bits",
+        type=int,
+        default=None,
+        help="number of mantissa bits to fake quantize gradients during backward passes",
+    )
 
     #### Overrides for granular Methods and Precisions
     model_group.add_argument("--quantize_linear_attn_q_method", type=str, default=None, choices=quant_methods, help="function used for c_attn_q quantization")
