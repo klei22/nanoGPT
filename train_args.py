@@ -1118,6 +1118,24 @@ def parse_args():
 
     ## Quantized Linear Warmup Iterations -- how many to first use regular linear, before switching to quantized
     model_group.add_argument("--quantization_warmup_iters", type=int, default=100)
+    model_group.add_argument(
+        "--grad_fake_quant",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="fake quantize gradients in the backward pass using the configured floating point format",
+    )
+    model_group.add_argument(
+        "--grad_fake_quant_exp_bits",
+        type=int,
+        default=None,
+        help="number of exponent bits to keep when fake quantizing gradients",
+    )
+    model_group.add_argument(
+        "--grad_fake_quant_mant_bits",
+        type=int,
+        default=None,
+        help="number of mantissa bits to keep when fake quantizing gradients (sign bit preserved)",
+    )
 
     # POSITIONAL EMBEDDING VARIATIONS
     model_group.add_argument('--use_rotary_embeddings', default=False, action=argparse.BooleanOptionalAction)

@@ -29,6 +29,22 @@ class QuantizedLinear(nn.Linear):
         self.full_quant_iteration = config.full_quant_iteration
         self.eval_interval = config.eval_interval
 
+        grad_fake_quant_flag = getattr(config, "grad_fake_quant", False)
+        self.grad_fake_quant_exp_bits = getattr(config, "grad_fake_quant_exp_bits", None)
+        self.grad_fake_quant_mant_bits = getattr(config, "grad_fake_quant_mant_bits", None)
+        self.grad_fake_quant_enabled = grad_fake_quant_flag or (
+            self.grad_fake_quant_exp_bits is not None and self.grad_fake_quant_mant_bits is not None
+        )
+        if self.grad_fake_quant_enabled:
+            if self.grad_fake_quant_exp_bits is None or self.grad_fake_quant_mant_bits is None:
+                raise ValueError(
+                    "Gradient fake quantization requires both grad_fake_quant_exp_bits and grad_fake_quant_mant_bits"
+                )
+            if self.grad_fake_quant_exp_bits < 1:
+                raise ValueError("grad_fake_quant_exp_bits must be >= 1")
+            if self.grad_fake_quant_mant_bits < 0:
+                raise ValueError("grad_fake_quant_mant_bits must be >= 0")
+
         if self.weight_bits < 1:
             raise ValueError(f"weight_bits={self.weight_bits} must be higher than 0 ")
 
@@ -53,7 +69,21 @@ class QuantizedLinear(nn.Linear):
         assert self.training, "Should be called only during training"
 
         # Applies the fake quantization to the weights
-        self._fake_quantized_weight = _fake_quantize(self.weight, self.training, self.quant_scheduler, self.start_quant_level, self.full_quant_iteration, self.eval_interval, self._step.item(), self.weight_bits, self.quant_method)
+        grad_exp_bits = self.grad_fake_quant_exp_bits if self.grad_fake_quant_enabled else None
+        grad_mant_bits = self.grad_fake_quant_mant_bits if self.grad_fake_quant_enabled else None
+        self._fake_quantized_weight = _fake_quantize(
+            self.weight,
+            self.training,
+            self.quant_scheduler,
+            self.start_quant_level,
+            self.full_quant_iteration,
+            self.eval_interval,
+            self._step.item(),
+            self.weight_bits,
+            self.quant_method,
+            grad_exp_bits,
+            grad_mant_bits,
+        )
         # Uses the quantized weights to compute the output using F.linear
         out = F.linear(input, self._fake_quantized_weight, self.bias)
 
