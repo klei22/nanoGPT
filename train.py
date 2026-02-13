@@ -51,6 +51,7 @@ from sample import (
     sample_with_existing_model,
     get_tokenizer_functions,
 )
+from benchmarks.inference_benchmarks import BenchmarkConfig, InferenceBenchmarkRunner
 
 from rich.progress import (
         Progress,
@@ -158,6 +159,18 @@ class Trainer:
             sample_dir = os.path.dirname(self.args.sample_file)
             if sample_dir and not os.path.exists(sample_dir):
                 os.makedirs(sample_dir, exist_ok=True)
+
+        # Optional benchmark configuration for inference-time scoring
+        self.benchmark_config = None
+        if getattr(self.args, "benchmark_config", None):
+            benchmark_path = os.path.expanduser(self.args.benchmark_config)
+            if os.path.exists(benchmark_path):
+                try:
+                    self.benchmark_config = BenchmarkConfig.from_file(benchmark_path)
+                except Exception as e:
+                    print(f"Error loading benchmark config {benchmark_path}: {e}")
+            else:
+                print(f"Benchmark config not found at {benchmark_path}")
 
         # calculation on end time via eval cycle
         self.eval_cycle_window = deque(maxlen=self.args.eval_cycle_window)
@@ -637,6 +650,10 @@ class Trainer:
         if self.args.dataset_benchmarks and self.args.max_sample_tokens:
             self.run_dataset_benchmarks()
 
+        # Run inference-time benchmarks if provided
+        if self.benchmark_config is not None:
+            self.run_inference_benchmarks()
+
         self.model.train()
         self.console.rule("[bold green]End Samples[/bold green]")
         self.console.print("\n"*8)
@@ -698,6 +715,53 @@ class Trainer:
                     self.writer.add_scalar(f"dataset_benchmarks/{mk}", mv, self.iter_num)
         except Exception as e:
             print(f"Error running dataset benchmarks: {e}")
+
+    def run_inference_benchmarks(self):
+        """Generate benchmark samples at multiple top-k values and report metrics."""
+        if self.benchmark_config is None or not hasattr(self, "encode"):
+            return
+
+        config = BenchmarkConfig(
+            tasks=self.benchmark_config.tasks,
+            max_new_tokens=self.args.benchmark_max_new_tokens
+            or self.benchmark_config.max_new_tokens
+            or (self.args.max_sample_tokens or 16),
+            temperature=self.args.benchmark_temperature
+            if self.args.benchmark_temperature is not None
+            else self.benchmark_config.temperature,
+            top_k=self.args.benchmark_top_k or self.benchmark_config.top_k or self.args.top_k,
+            scorers=self.benchmark_config.scorers,
+        )
+
+        runner = InferenceBenchmarkRunner(
+            model=self.model,
+            encode=self.encode,
+            decode=self.decode,
+            device=self.device,
+            default_max_new_tokens=self.args.benchmark_max_new_tokens
+            or self.args.max_sample_tokens
+            or config.max_new_tokens,
+            default_temperature=self.args.benchmark_temperature
+            if self.args.benchmark_temperature is not None
+            else self.args.temperature,
+            top_k_values=self.args.benchmark_top_k or self.args.top_k,
+        )
+
+        try:
+            results = runner.run(config)
+            self.console.rule("[bold green]Benchmark results[/bold green]")
+            for k_label, metric_values in results.items():
+                metric_line = ", ".join(f"{m}: {v:.3f}" for m, v in metric_values.items())
+                self.console.print(f"[cyan]{k_label}[/cyan] -> {metric_line}")
+                if self.args.tensorboard_log and self.writer is not None:
+                    for metric_name, metric_value in metric_values.items():
+                        self.writer.add_scalar(
+                            f"benchmarks/{k_label}/{metric_name}",
+                            metric_value,
+                            self.iter_num,
+                        )
+        except Exception as e:
+            print(f"Error running inference benchmarks: {e}")
 
     def load_data(self):
 
