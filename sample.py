@@ -116,6 +116,11 @@ def parse_args():
     parser.add_argument('--multicontext_start', type=str, nargs='+', default=None,
                         help="List of start strings, one for each context, if using --multicontext. "
                         "Must match the number/order of --multicontext_datasets.")
+    parser.add_argument(
+        '--profile_multicontext_latency',
+        action=argparse.BooleanOptionalAction,
+        help="Record per-token latency breakdowns when using multicontext sampling",
+    )
 
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
@@ -1489,14 +1494,26 @@ def main():
                         model.set_lsv_mode(1)
 
                 token_state = {name: tensor.clone() for name, tensor in initial_tokens.items()}
+                token_dict = {name: None for name in dataset_names}
+                prep_time = forward_time = sample_time = 0.0
 
                 for _ in range(args.max_new_tokens):
-                    idx_cond_dict = {}
+                    if args.profile_multicontext_latency:
+                        start_ts = time.perf_counter()
+
                     for name in dataset_names:
                         tokens = token_state[name]
-                        idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
+                        token_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
 
-                    logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
+                    if args.profile_multicontext_latency:
+                        prep_time += time.perf_counter() - start_ts
+                        start_ts = time.perf_counter()
+
+                    logits_list, _ = model(None, token_dict=token_dict, target_dict=None)
+
+                    if args.profile_multicontext_latency:
+                        forward_time += time.perf_counter() - start_ts
+                        start_ts = time.perf_counter()
 
                     for i, name in enumerate(dataset_names):
                         if model.config.numerical_multicontext:
@@ -1536,6 +1553,16 @@ def main():
                             idx_next = torch.multinomial(probs, num_samples=1)
 
                         token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
+
+                    if args.profile_multicontext_latency:
+                        sample_time += time.perf_counter() - start_ts
+
+                if args.profile_multicontext_latency and args.max_new_tokens > 0:
+                    steps = float(args.max_new_tokens)
+                    print(
+                        f"[multicontext latency] sample {sample_idx}: prep={prep_time * 1e3 / steps:.2f} ms, "
+                        f"forward={forward_time * 1e3 / steps:.2f} ms, sampling={sample_time * 1e3 / steps:.2f} ms"
+                    )
 
                 output_dict: Dict[str, str] = {}
                 for name in dataset_names:
