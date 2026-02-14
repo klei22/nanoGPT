@@ -84,6 +84,8 @@ from model import GPT, GPTConfig
 import tiktoken
 
 from train_args import parse_args
+from utils.ngpt_utils import normalize_module_weights
+from utils.jl_utils import jl_transform_model
 
 class Trainer:
 
@@ -207,6 +209,28 @@ class Trainer:
 
         if self.args.create_statistics:
             self.stats = initialize_statistics(self.args.n_layer, self.args.n_head)
+
+    def apply_jl_transform(self):
+        """Apply a Johnson–Lindenstrauss transform to model weights."""
+        out_dim = self.args.jl_out_embd
+        self.raw_model = jl_transform_model(
+            self.raw_model, out_dim,
+            jl_type=self.args.jl_type,
+            seed=self.args.jl_seed,
+            cproj_vertical=self.args.jl_cproj_vertical,
+        )
+        self.raw_model.to(self.device)
+        if out_dim is not None:
+            self.model_args["n_embd"] = out_dim
+        self.model = self.raw_model
+        if getattr(self.args, "compile", False):
+            self.model = torch.compile(self.model)
+        if self.ddp:
+            self.model = DDP(self.model, device_ids=[self.ddp_local_rank])
+        self.optimizer = self.create_optimizer()
+        self.scaler = torch.amp.GradScaler(self.device_type, enabled=(self.args.dtype == 'float16'))
+        self.scheduler = self.create_scheduler()
+        self.raw_model = self.model.module if self.ddp else self.model
 
     def setup(self):
         # Setup DDP
@@ -2081,6 +2105,11 @@ class Trainer:
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                if self.args.use_ngpt:
+                    # After each parameter update, project all weight matrices and
+                    # embeddings back onto the unit hypersphere as required by
+                    # the normalized Transformer recipe.
+                    normalize_module_weights(self.model, self.model.config.n_embd)
                 if self.scheduler:
                     if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                         self.scheduler.step(losses["val"])
@@ -2111,6 +2140,9 @@ class Trainer:
 
                 self.iter_num += 1
                 local_iter_num += 1
+
+                if self.args.jl_every and self.iter_num % self.args.jl_every == 0:
+                    self.apply_jl_transform()
 
                 if self.iter_num % self.args.log_interval == 0 and self.master_process:
                     lossf = loss.item() * self.args.gradient_accumulation_steps
