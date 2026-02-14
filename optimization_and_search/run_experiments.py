@@ -37,6 +37,12 @@ METRIC_KEYS = [
     "rankme",
     "areq",
 ]
+ZEUS_METRIC_KEYS = [
+    "zeus_time_s",
+    "zeus_total_energy_j",
+    "zeus_gpu_energy_j",
+    "zeus_wall_duration_s",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +87,10 @@ def parse_args() -> argparse.Namespace:
             "names. By default named groups are abbreviated using their group names "
             "to keep run identifiers shorter."
         ),
+    )
+    parser.add_argument(
+        '--include_zeus_metrics', action='store_true',
+        help="Add Zeus energy summary metrics to exploration logs when available.",
     )
     return parser.parse_args()
 
@@ -537,12 +547,12 @@ def format_run_name(
     return f"{base_name}-{'-'.join(parts)}" if parts else base_name
 
 
-def read_metrics(out_dir: str) -> dict:
+def read_metrics(out_dir: str, include_zeus: bool = False) -> dict:
     """
     Read best_val_loss_and_iter.txt and parse metrics.
 
     Returns:
-        Dict with keys from METRIC_KEYS.
+        Dict with keys from METRIC_KEYS and optional Zeus metrics.
     """
     path = Path(out_dir) / METRICS_FILENAME
     if not path.exists():
@@ -572,7 +582,27 @@ def read_metrics(out_dir: str) -> dict:
         float,
     ]
 
-    return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
+    metrics = {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
+
+    if include_zeus:
+        defaults = {k: float("nan") for k in ZEUS_METRIC_KEYS}
+        zeus_path = Path(out_dir) / "zeus" / "zeus_summary.json"
+        if zeus_path.exists():
+            try:
+                summary = json.loads(zeus_path.read_text())
+                defaults.update(
+                    {
+                        "zeus_time_s": float(summary.get("time_s", float("nan"))),
+                        "zeus_total_energy_j": float(summary.get("total_energy_j", float("nan"))),
+                        "zeus_gpu_energy_j": float(summary.get("gpu_energy_j", float("nan"))),
+                        "zeus_wall_duration_s": float(summary.get("wall_duration_s", float("nan"))),
+                    }
+                )
+            except Exception:
+                pass
+        metrics.update(defaults)
+
+    return metrics
 
 
 def completed_runs(log_file: Path) -> set[str]:
@@ -681,9 +711,11 @@ def run_experiment(
 
     # Read metrics (use existing or nan on failure)
     try:
-        metrics = read_metrics(str(combo['out_dir']))
+        metrics = read_metrics(str(combo['out_dir']), include_zeus=args.include_zeus_metrics)
     except Exception:
         metrics = {k: float("nan") for k in METRIC_KEYS}
+        if args.include_zeus_metrics:
+            metrics.update({k: float("nan") for k in ZEUS_METRIC_KEYS})
 
     append_log(log_file, run_name, combo, metrics)
 
