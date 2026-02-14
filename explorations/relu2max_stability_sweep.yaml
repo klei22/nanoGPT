@@ -1,4 +1,4 @@
-# default.yaml using named group mechanisms from sample.yaml
+# relu2max_stability_sweep.yaml using named group mechanisms from sample.yaml
 ---
 
 named_static_groups:
