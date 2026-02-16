@@ -209,6 +209,7 @@ python3 compare_meta_vocab_tui.py /path/to/first/meta.pkl /path/to/second/meta.p
 ### Large-file batch tokenization (partition + batch_prepare)
 
 For very large text files, split first and run `utils/batch_prepare.py` on each partition.
+Use `--max_parallel` to control how many partition tokenization subprocesses run concurrently while final shard concatenation still follows sorted file order.
 
 1. Build (or pick) a Char-BPE vocabulary once:
 
@@ -227,13 +228,14 @@ python3 utils/batch_prepare.py \
   --input_dir partitioned_file \
   --prepare_script prepare.py \
   --tokenizer char_bpe \
-  --char_bpe_vocab_path /path/to/meta.pkl
+  --char_bpe_vocab_path /path/to/meta.pkl \
+  --max_parallel 4
 ```
 
-The helper script also supports this by passing a 3rd argument:
+The helper script also supports this (`3rd` arg = method-specific config path, `4th` arg = max parallelism):
 
 ```bash
-bash utils/large_file_prepare.sh large_input.txt char_bpe /path/to/meta.pkl
+bash utils/large_file_prepare.sh large_input.txt char_bpe /path/to/meta.pkl 4
 ```
 
 For `json_byte_fallback`, provide a JSON token file to each partition run:
@@ -243,13 +245,14 @@ python3 utils/batch_prepare.py \
   --input_dir partitioned_file \
   --prepare_script prepare.py \
   --tokenizer json_byte_fallback \
-  --json_tokens_file /path/to/tokens.json
+  --json_tokens_file /path/to/tokens.json \
+  --max_parallel 4
 ```
 
-Helper script form (3rd arg is method-specific config path):
+Helper script form (`3rd` arg is method-specific config path, `4th` arg is max parallelism):
 
 ```bash
-bash utils/large_file_prepare.sh large_input.txt json_byte_fallback /path/to/tokens.json
+bash utils/large_file_prepare.sh large_input.txt json_byte_fallback /path/to/tokens.json 4
 ```
 
 ### (Optional) Pre-processing of input.txt

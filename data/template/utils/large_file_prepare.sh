@@ -3,6 +3,7 @@
 input_file=${1:-input.txt}
 tokenization=${2:-tiktoken}
 tokenizer_config_path=${3:-}
+max_parallel=${4:-1}
 
 python3 ./utils/partition_file.py --input_file "${input_file}"
 
@@ -10,6 +11,7 @@ batch_prepare_args=(
   --input_dir partitioned_file
   --prepare_script prepare.py
   --tokenizer "$tokenization"
+  --max_parallel "$max_parallel"
 )
 
 if [[ "$tokenization" == "char_bpe" && -n "$tokenizer_config_path" ]]; then
