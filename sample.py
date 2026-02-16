@@ -1131,6 +1131,21 @@ def get_tokenizer_functions(meta):
 
         return encode_fn, decode_fn
 
+    if meta['tokenizer'] == "sinewave_fp16_bits":
+        def encode_fn(s: str):
+            s = s.strip()
+            if not s:
+                return []
+            vals = np.array([float(v) for v in s.split(',')], dtype=np.float16)
+            return vals.view(np.uint16).astype(np.int64).tolist()
+
+        def decode_fn(values):
+            bits = torch.tensor(values, dtype=torch.int64)
+            decoded = GPT._fp16bits_to_fp32(bits).cpu().tolist()
+            return ','.join(f"{float(v):.6f}" for v in decoded)
+
+        return encode_fn, decode_fn
+
     if meta['tokenizer'] == 'tiktoken':
         enc = tiktoken.get_encoding(meta['tiktoken_encoding'])
         encode = lambda s: enc.encode(s, allowed_special={""})
@@ -1504,22 +1519,28 @@ def main():
                             preds = preds.squeeze(-1)
                             if preds.ndim == 0:
                                 preds = preds.unsqueeze(0)
-                            rounded = preds.round()
-                            min_val = 0.0
-                            max_val = None
-                            meta_info = dataset_meta.get(name, {})
-                            tokenizer_name = meta_info.get('tokenizer') if isinstance(meta_info, dict) else None
-                            if tokenizer_name == 'sinewave':
-                                max_val = 255.0
-                            elif isinstance(meta_info, dict) and 'vocab_size' in meta_info:
-                                max_val = float(meta_info['vocab_size'] - 1)
 
-                            if max_val is not None:
-                                rounded = torch.clamp(rounded, min=min_val, max=max_val)
+                            if model.config.numerical_input_encoding == 'fp16_bits':
+                                fp16_vals = preds.to(torch.float16)
+                                bit_tokens = fp16_vals.view(torch.uint16).to(torch.int64)
+                                idx_next = bit_tokens.unsqueeze(-1)
                             else:
-                                rounded = torch.clamp(rounded, min=min_val)
+                                rounded = preds.round()
+                                min_val = 0.0
+                                max_val = None
+                                meta_info = dataset_meta.get(name, {})
+                                tokenizer_name = meta_info.get('tokenizer') if isinstance(meta_info, dict) else None
+                                if tokenizer_name == 'sinewave':
+                                    max_val = 255.0
+                                elif isinstance(meta_info, dict) and 'vocab_size' in meta_info:
+                                    max_val = float(meta_info['vocab_size'] - 1)
 
-                            idx_next = rounded.to(torch.long).unsqueeze(-1)
+                                if max_val is not None:
+                                    rounded = torch.clamp(rounded, min=min_val, max=max_val)
+                                else:
+                                    rounded = torch.clamp(rounded, min=min_val)
+
+                                idx_next = rounded.to(torch.long).unsqueeze(-1)
                         else:
                             cur_logits = logits_list[i][:, -1, :] / args.temperature
                             if args.top_k is not None:
