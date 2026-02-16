@@ -977,6 +977,7 @@ class Trainer:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
+                trimmed_val_losses = []
                 ln_f_cosines = []
                 rankme_vectors = []
                 for split in ['train', 'val']:
@@ -1002,6 +1003,13 @@ class Trainer:
                             top1_prob, top1_idx = probs.max(dim=-1)
                             top1_probs.append(top1_prob)
                             top1_corrects.append((top1_idx == Y).float())
+                            log_probs = F.log_softmax(logits, dim=-1)
+                            token_loss = -log_probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                            loss_increase = token_loss[:, 1:] > token_loss[:, :-1]
+                            non_top1 = top1_idx != Y
+                            trimmed_mask = loss_increase & non_top1[:, 1:]
+                            if trimmed_mask.any():
+                                trimmed_val_losses.append(token_loss[:, 1:][trimmed_mask].float())
                             target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
                             ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
                             target_ranks.append(ranks.float())
@@ -1043,6 +1051,11 @@ class Trainer:
                         'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
                         'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
                         'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
+                        'trimmed_val_loss': (
+                            torch.cat(trimmed_val_losses).mean()
+                            if trimmed_val_losses
+                            else torch.tensor(float('nan'))
+                        ),
                         'rankme': rankme,
                         'areq': areq,
                         }
@@ -1059,6 +1072,7 @@ class Trainer:
             out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
             out['ln_f_cosine'] = out['datasets'][self.args.dataset]['ln_f_cosine']
             out['ln_f_cosine_95'] = out['datasets'][self.args.dataset]['ln_f_cosine_95']
+            out['trimmed_val_loss'] = out['datasets'][self.args.dataset]['trimmed_val_loss']
             out['rankme'] = out['datasets'][self.args.dataset]['rankme']
             out['areq'] = out['datasets'][self.args.dataset]['areq']
         elif self.args.training_mode == "multicontext":
@@ -1111,6 +1125,7 @@ class Trainer:
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
+                trimmed_val_losses = []
                 ln_f_cosines = []
                 rankme_vectors = []
                 for k in range(self.args.eval_iters):
@@ -1134,6 +1149,13 @@ class Trainer:
                         top1_prob, top1_idx = probs.max(dim=-1)
                         top1_probs.append(top1_prob)
                         top1_corrects.append((top1_idx == Y).float())
+                        log_probs = F.log_softmax(logits, dim=-1)
+                        token_loss = -log_probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                        loss_increase = token_loss[:, 1:] > token_loss[:, :-1]
+                        non_top1 = top1_idx != Y
+                        trimmed_mask = loss_increase & non_top1[:, 1:]
+                        if trimmed_mask.any():
+                            trimmed_val_losses.append(token_loss[:, 1:][trimmed_mask].float())
                         target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
                         ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
                         target_ranks.append(ranks.float())
@@ -1168,6 +1190,11 @@ class Trainer:
                     out['left_prob_95'] = torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan'))
                     out['ln_f_cosine'] = torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan'))
                     out['ln_f_cosine_95'] = torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan'))
+                    out['trimmed_val_loss'] = (
+                        torch.cat(trimmed_val_losses).mean()
+                        if trimmed_val_losses
+                        else torch.tensor(float('nan'))
+                    )
                     rankme = torch.tensor(float('nan'))
                     areq = torch.tensor(float('nan'))
                     if rankme_vectors:
@@ -1420,6 +1447,12 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/avg_target_prob", losses['target_prob'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/target_rank_95", losses['target_rank_95'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/left_prob_95", losses['left_prob_95'], self.iter_num)
+                if 'trimmed_val_loss' in losses:
+                    self.writer.add_scalar(
+                        f"{target_dataset}/trimmed_val_loss",
+                        losses['trimmed_val_loss'],
+                        self.iter_num,
+                    )
             if 'ln_f_cosine' in losses:
                 self.writer.add_scalar(f"{target_dataset}/avg_ln_f_cosine", losses['ln_f_cosine'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/ln_f_cosine_95", losses['ln_f_cosine_95'], self.iter_num)
