@@ -236,6 +236,22 @@ The helper script also supports this by passing a 3rd argument:
 bash utils/large_file_prepare.sh large_input.txt char_bpe /path/to/meta.pkl
 ```
 
+For `json_byte_fallback`, provide a JSON token file to each partition run:
+
+```bash
+python3 utils/batch_prepare.py \
+  --input_dir partitioned_file \
+  --prepare_script prepare.py \
+  --tokenizer json_byte_fallback \
+  --json_tokens_file /path/to/tokens.json
+```
+
+Helper script form (3rd arg is method-specific config path):
+
+```bash
+bash utils/large_file_prepare.sh large_input.txt json_byte_fallback /path/to/tokens.json
+```
+
 ### (Optional) Pre-processing of input.txt
 
 There are a number of methods to preprocess data before tokenization.

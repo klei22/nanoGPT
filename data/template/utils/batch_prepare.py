@@ -13,6 +13,7 @@ def batch_prepare(
     spm_model_file,
     spm_vocab_file,
     char_bpe_vocab_path,
+    json_tokens_file,
     train_ratio=0.9,
 ):
     files = sorted([os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith('.txt')])
@@ -104,6 +105,52 @@ def batch_prepare(
         combine_bins(files[:num_train], train_output, desc="Combining training files")
         combine_bins(files[num_train:], val_output, desc="Combining validation files")
         print(f"Created {train_output} and {val_output}")
+    elif tokenizer == "json_byte_fallback":
+        if not json_tokens_file:
+            raise ValueError(
+                "--json_tokens_file is required when --tokenizer json_byte_fallback. "
+                "Provide a path to a JSON array of tokens."
+            )
+
+        # Train files
+        for file in tqdm(files[:num_train], desc="Processing training files"):
+            subprocess.run([
+                'python3',
+                prepare_script,
+                '--method',
+                tokenizer,
+                '--json_tokens_file',
+                json_tokens_file,
+                '--train_input',
+                file,
+                '--train_output',
+                file.replace('.txt', '.bin'),
+                '-p',
+                '1.0',
+            ])
+
+        # Validation files
+        for file in tqdm(files[num_train:], desc="Processing validation files"):
+            subprocess.run([
+                'python3',
+                prepare_script,
+                '--method',
+                tokenizer,
+                '--json_tokens_file',
+                json_tokens_file,
+                '--train_input',
+                file,
+                '--train_output',
+                file.replace('.txt', '.bin'),
+                '-p',
+                '1.0',
+            ])
+
+        # Combine bins
+        combine_bins(files[:num_train], train_output, desc="Combining training files")
+        combine_bins(files[num_train:], val_output, desc="Combining validation files")
+        print(f"Created {train_output} and {val_output}")
+
     else:
         print(f"tokenizer {tokenizer} not currently supported")
         return
@@ -133,6 +180,12 @@ if __name__ == "__main__":
         default=None,
         help="Path to an existing char_bpe meta.pkl used to reuse a prebuilt vocab.",
     )
+    parser.add_argument(
+        "--json_tokens_file",
+        type=str,
+        default=None,
+        help="Path to a JSON token list used by json_byte_fallback tokenization.",
+    )
 
     args = parser.parse_args()
     batch_prepare(
@@ -144,5 +197,6 @@ if __name__ == "__main__":
         args.spm_model,
         args.spm_vocab,
         args.char_bpe_vocab_path,
+        args.json_tokens_file,
         train_ratio=args.train_ratio,
     )
