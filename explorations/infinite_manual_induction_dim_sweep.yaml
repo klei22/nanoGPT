@@ -30,40 +30,75 @@ named_static_groups:
       activation_variant: ["squared_relu"]
 
   # Infinite Attention + manual induction heads
-  - named_group: "infinite_manual_induction"
+  - named_group: "infinite"
     attention_variant: ["infinite"]
     use_concat_heads: [true]
-    # 1 induction head per layer (3 total over 3 layers)
-    n_layer: [3]
-    n_induction_head: [1]
+    n_qk_head_dim: [200]
+    n_v_head_dim: [200]
+    n_layer: [6]
 
-  # Sweep induction-head dimensions
-  - named_group: "ind_dim_32"
-    n_ind_head_dim: [32]
 
-  - named_group: "ind_dim_64"
-    n_ind_head_dim: [64]
 
-  - named_group: "ind_dim_128"
-    n_ind_head_dim: [128]
 
-  - named_group: "ind_dim_256"
-    n_ind_head_dim: [256]
+
+# Higher Level Groupings
+named_variation_groups:
+  - named_group: "th6_head_ratios"
+    parameter_groups:
+      - n_induction_head: [1]
+        n_head: [5]
+      - n_induction_head: [2]
+        n_head: [4]
+      - n_induction_head: [3]
+        n_head: [3]
+      - n_induction_head: [4]
+        n_head: [2]
+      - n_induction_head: [5]
+        n_head: [1]
+      - n_induction_head: [6]
+        n_head: [0]
+  - named_group: "th3_head_ratios"
+    parameter_groups:
+      - n_induction_head: [1]
+        n_head: [2]
+      - n_induction_head: [2]
+        n_head: [1]
+      - n_induction_head: [3]
+        n_head: [0]
+  - named_group: "ind_dim_sizes"
+    parameter_groups:
+      - n_ind_head_dim: [32]
+      - n_ind_head_dim: [64]
+      - n_ind_head_dim: [128]
+      - n_ind_head_dim: [256]
+      - n_ind_head_dim: [384]
 
 common_group:
   dataset: ["minipile"]
   eval_interval: [1000]
   max_iters: [10000]
   never_save_checkpoint: [true]
+  compile: [true]
 
 parameter_groups:
-  - compile: [true]
-    named_group_static:
+  # Induction Head Variations
+  - named_group_static:
       - "qk_norm"
       - "peri_ln"
       - "rotary"
       - "rmsnorm_wte"
       - "squared_relu"
-      - "infinite_manual_induction"
+      - "infinite"
+    named_group_variations:
+      - "ind_dim_sizes"
     named_group_alternates:
-      ["ind_dim_32", "ind_dim_64", "ind_dim_128", "ind_dim_256"]
+      ["th6_head_ratios", "th3_head_ratios"]
+  # Baseline without induction heads
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "squared_relu"
+      - "infinite"
+    n_head: [3,6]
