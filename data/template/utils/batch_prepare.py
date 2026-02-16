@@ -1,9 +1,20 @@
+import argparse
 import os
 import subprocess
-import argparse
+
 from tqdm import tqdm
 
-def batch_prepare(input_dir, train_output, val_output, prepare_script, tokenizer, spm_model_file, spm_vocab_file, train_ratio=0.9):
+def batch_prepare(
+    input_dir,
+    train_output,
+    val_output,
+    prepare_script,
+    tokenizer,
+    spm_model_file,
+    spm_vocab_file,
+    char_bpe_vocab_path,
+    train_ratio=0.9,
+):
     files = sorted([os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith('.txt')])
     files = sorted(files, key=lambda x: int(os.path.splitext(os.path.basename(x))[0].split('_')[-1]))
     print(files)
@@ -38,11 +49,56 @@ def batch_prepare(input_dir, train_output, val_output, prepare_script, tokenizer
     elif tokenizer == "char":
         # Train files
         for file in tqdm(files[:num_train], desc="Processing training files"):
-            subprocess.run(['python3', prepare_script, '--method', tokenizer, '--reuse_char', '--train_input', file, '--train_output', file.replace('.txt', '.bin'), '-p 1.0'])
+            subprocess.run(['python3', prepare_script, '--method', tokenizer, '--reuse_chars', '--train_input', file, '--train_output', file.replace('.txt', '.bin'), '-p 1.0'])
 
         # Validation files
         for file in tqdm(files[num_train:], desc="Processing validation files"):
-            subprocess.run(['python3', prepare_script, '--method', tokenizer, '--reuse_char', '--train_input', file, '--train_output', file.replace('.txt', '.bin'), '-p 1.0'])
+            subprocess.run(['python3', prepare_script, '--method', tokenizer, '--reuse_chars', '--train_input', file, '--train_output', file.replace('.txt', '.bin'), '-p 1.0'])
+
+        # Combine bins
+        combine_bins(files[:num_train], train_output, desc="Combining training files")
+        combine_bins(files[num_train:], val_output, desc="Combining validation files")
+        print(f"Created {train_output} and {val_output}")
+    elif tokenizer == "char_bpe":
+        if not char_bpe_vocab_path:
+            raise ValueError(
+                "--char_bpe_vocab_path is required when --tokenizer char_bpe. "
+                "Provide the path to a previously generated char_bpe meta.pkl file."
+            )
+
+        # Train files
+        for file in tqdm(files[:num_train], desc="Processing training files"):
+            subprocess.run([
+                'python3',
+                prepare_script,
+                '--method',
+                tokenizer,
+                '--char_bpe_vocab_path',
+                char_bpe_vocab_path,
+                '--train_input',
+                file,
+                '--train_output',
+                file.replace('.txt', '.bin'),
+                '-p',
+                '1.0',
+            ])
+
+        # Validation files
+        for file in tqdm(files[num_train:], desc="Processing validation files"):
+            subprocess.run([
+                'python3',
+                prepare_script,
+                '--method',
+                tokenizer,
+                '--char_bpe_vocab_path',
+                char_bpe_vocab_path,
+                '--train_input',
+                file,
+                '--train_output',
+                file.replace('.txt', '.bin'),
+                '-p',
+                '1.0',
+            ])
 
         # Combine bins
         combine_bins(files[:num_train], train_output, desc="Combining training files")
@@ -71,7 +127,22 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer", type=str, required=True, help="Tokenizer method.")
     parser.add_argument("--spm_model", type=str, default="trained_spm_model.model", help="SPM model file.")
     parser.add_argument("--spm_vocab", type=str, default="trained_spm_model.vocab", help="SPM vocab file.")
+    parser.add_argument(
+        "--char_bpe_vocab_path",
+        type=str,
+        default=None,
+        help="Path to an existing char_bpe meta.pkl used to reuse a prebuilt vocab.",
+    )
 
     args = parser.parse_args()
-    batch_prepare(args.input_dir, args.train_output, args.val_output, args.prepare_script, args.tokenizer, args.spm_model, args.spm_vocab, train_ratio=args.train_ratio)
-
+    batch_prepare(
+        args.input_dir,
+        args.train_output,
+        args.val_output,
+        args.prepare_script,
+        args.tokenizer,
+        args.spm_model,
+        args.spm_vocab,
+        args.char_bpe_vocab_path,
+        train_ratio=args.train_ratio,
+    )

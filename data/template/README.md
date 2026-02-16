@@ -16,6 +16,7 @@ Whisper-style mel spectrogram CSV export is also supported for audio inputs.
 - **SentencePiece Tokenization**
 - **TikToken Tokenization**
 - **Character-Level Tokenization**
+- **Char-BPE Tokenization with Byte Fallback**
 - **Whisper-style Mel Spectrogram CSV Export**
 
 ## Usage
@@ -87,6 +88,21 @@ This command will tokenize the text in from the input file at the character leve
 
 ```bash
 python3 prepare.py -t input.txt --method char
+```
+
+
+##### Char-BPE Tokenization
+
+Train a Char-BPE vocabulary directly from an input file:
+
+```bash
+python3 prepare.py -t input.txt --method char_bpe --vocab_size 4096
+```
+
+Reuse a previously generated `char_bpe` vocabulary (`meta.pkl`) instead of retraining:
+
+```bash
+python3 prepare.py -t input.txt --method char_bpe --char_bpe_vocab_path /path/to/char_bpe_meta.pkl
 ```
 
 ##### Custom
@@ -188,6 +204,36 @@ sort both lists by byte length or tracked frequency (requires `-T` when running
 
 ```bash
 python3 compare_meta_vocab_tui.py /path/to/first/meta.pkl /path/to/second/meta.pkl
+```
+
+### Large-file batch tokenization (partition + batch_prepare)
+
+For very large text files, split first and run `utils/batch_prepare.py` on each partition.
+
+1. Build (or pick) a Char-BPE vocabulary once:
+
+```bash
+python3 prepare.py -t input.txt --method char_bpe --vocab_size 4096 \
+  --train_output warmup_train.bin --val_output warmup_val.bin
+```
+
+This creates `meta.pkl` with the learned Char-BPE vocabulary.
+
+2. Partition and batch-prepare using that prebuilt vocab:
+
+```bash
+python3 utils/partition_file.py --input_file large_input.txt
+python3 utils/batch_prepare.py \
+  --input_dir partitioned_file \
+  --prepare_script prepare.py \
+  --tokenizer char_bpe \
+  --char_bpe_vocab_path /path/to/meta.pkl
+```
+
+The helper script also supports this by passing a 3rd argument:
+
+```bash
+bash utils/large_file_prepare.sh large_input.txt char_bpe /path/to/meta.pkl
 ```
 
 ### (Optional) Pre-processing of input.txt
