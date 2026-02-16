@@ -64,6 +64,8 @@ class GPT(nn.Module):
                 raise ValueError("numerical_multicontext does not support factored embeddings")
             if not config.vocab_sizes:
                 raise ValueError("numerical_multicontext requires vocab_sizes to be provided")
+            if config.numerical_input_token_format not in {"raw", "fp16_bits"}:
+                raise ValueError("numerical_input_token_format must be 'raw' or 'fp16_bits'")
 
             self.numerical_embeddings = nn.ModuleDict()
             self.numerical_output_mlps = nn.ModuleDict()
@@ -379,7 +381,10 @@ class GPT(nn.Module):
                 if self.uses_numerical_multicontext:
                     module = self.numerical_embeddings[str(i)]
                     param = next(module.parameters())
-                    numeric_tokens = tokens.to(param.dtype).unsqueeze(-1)
+                    if self.config.numerical_input_token_format == "fp16_bits":
+                        numeric_tokens = self._fp16bits_to_fp32(tokens).to(param.dtype).unsqueeze(-1)
+                    else:
+                        numeric_tokens = tokens.to(param.dtype).unsqueeze(-1)
                     token_repr = module(numeric_tokens)
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
@@ -445,7 +450,10 @@ class GPT(nn.Module):
                 if target_list is not None:
                     losses = []
                     for i, preds in enumerate(logits):
-                        targets = target_list[i].to(preds.dtype)
+                        if self.config.numerical_input_token_format == "fp16_bits":
+                            targets = self._fp16bits_to_fp32(target_list[i]).to(preds.dtype)
+                        else:
+                            targets = target_list[i].to(preds.dtype)
                         mask = target_list[i] != -1
                         if mask.any():
                             loss_i = F.huber_loss(
@@ -781,6 +789,13 @@ class GPT(nn.Module):
             )
 
         return out
+
+    @staticmethod
+    def _fp32_to_fp16bits(values: torch.Tensor) -> torch.Tensor:
+        """Convert float32 tensors into IEEE-754 half-precision bit patterns."""
+
+        values_f16 = values.to(torch.float16).contiguous()
+        return values_f16.view(torch.int16).to(torch.int32) & 0xFFFF
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
