@@ -1,0 +1,206 @@
+digraph G {
+  rankdir=LR;
+  splines=true;
+  nodesep=0.35;
+  ranksep=0.6;
+  fontname="Helvetica";
+
+  node [shape=plaintext, fontname="Helvetica", fontsize=10];
+  edge [penwidth=2];
+
+  // ================= Writers =================
+  WE [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+      <TR>
+        <TD BGCOLOR="#eaffea" COLSPAN="2">
+          <B>Writer: W_E</B> &nbsp; (vocab_size × d_model)
+        </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">axes: x = d_model, y = vocab_size </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">
+          <B>"vocab_size" row vectors</B> in &#8477;<SUP>d_model</SUP>
+        </TD>
+      </TR>
+    </TABLE>
+  >];
+
+  Wdown [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+      <TR>
+        <TD BGCOLOR="#eaffea" COLSPAN="2">
+          <B>Writer: W_down</B> &nbsp; (d_ff × d_model)
+        </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">axes: x = d_model, y = d_ff</TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">
+          <B>"d_ff" row vectors</B> in &#8477;<SUP>d_model</SUP>
+        </TD>
+      </TR>
+    </TABLE>
+  >];
+
+  WO [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+      <TR>
+        <TD BGCOLOR="#eaffea" COLSPAN="2">
+          <B>Writer: W_O<sup>(h)</sup></B> &nbsp; (d_head × d_model)
+        </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">per-head output projection</TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">
+          <B>"d_head" row vectors</B> in &#8477;<SUP>d_model</SUP>
+        </TD>
+      </TR>
+    </TABLE>
+  >];
+
+  // ================= Residual =================
+  RES [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="8">
+      <TR>
+        <TD BGCOLOR="#fff7e6">
+          <B>Residual stream</B>
+        </TD>
+      </TR>
+      <TR>
+        <TD>1 × d_model</TD>
+      </TR>
+      <TR>
+        <TD>Carries Cumulative Information</TD>
+      </TR>
+    </TABLE>
+  >];
+
+  // ================= Pre-LN / RMSNorm box (new) =================
+  NORM [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="8">
+      <TR>
+        <TD BGCOLOR="#f1ecff">
+          <B>LN / RMSNorm</B>
+        </TD>
+      </TR>
+      <TR>
+        <TD>x_norm = Norm(x)</TD>
+      </TR>
+      <TR>
+        <TD>Compress Near Hypersphere</TD>
+      </TR>
+    </TABLE>
+  >];
+
+  // ================= Readers =================
+  WQ [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+      <TR>
+        <TD BGCOLOR="#eaf2ff" COLSPAN="2">
+          <B>Reader: W_Q<sup>(h)</sup></B> &nbsp; (d_model × d_head)
+        </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">axes: x = d_head, y = d_model</TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">
+          <B>d_head column vectors</B> in &#8477;<SUP>d_model</SUP>
+        </TD>
+      </TR>
+    </TABLE>
+  >];
+
+  WK [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+      <TR>
+        <TD BGCOLOR="#eaf2ff" COLSPAN="2">
+          <B>Reader: W_K<sup>(h)</sup></B> &nbsp; (d_model × d_head)
+        </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">axes: x = d_head, y = d_model</TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">
+          <B>"d_head" column vectors</B> in &#8477;<SUP>d_model</SUP>
+        </TD>
+      </TR>
+    </TABLE>
+  >];
+
+  WV [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+      <TR>
+        <TD BGCOLOR="#eaf2ff" COLSPAN="2">
+          <B>Reader: W_V<sup>(h)</sup></B> &nbsp; (d_model × d_head)
+        </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">axes: x = d_head, y = d_model</TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">
+          <B>"d_head" column vectors</B> in &#8477;<SUP>d_model</SUP>
+        </TD>
+      </TR>
+    </TABLE>
+  >];
+
+  Wup [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+      <TR>
+        <TD BGCOLOR="#eaf2ff" COLSPAN="2">
+          <B>Reader: W_up</B> &nbsp; (d_model × d_ff)
+        </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">axes: x = d_ff, y = d_model</TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">
+          <B>"d_ff" column vectors</B> in &#8477;<SUP>d_model</SUP>
+        </TD>
+      </TR>
+    </TABLE>
+  >];
+
+  LMH [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6">
+      <TR>
+        <TD BGCOLOR="#eaf2ff" COLSPAN="2">
+          <B>Reader: LM Head</B> &nbsp; (d_model × "vocab_size")
+        </TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">axes: x = "vocab_size", y = d_model</TD>
+      </TR>
+      <TR>
+        <TD COLSPAN="2">
+          <B>"vocab_size" column vectors</B> in &#8477;<SUP>d_model</SUP>
+        </TD>
+      </TR>
+    </TABLE>
+  >];
+
+  // ================= Edges =================
+  // Writers write to residual
+  WE    -> RES;
+  Wdown -> RES;
+  WO    -> RES;
+
+  // Pre-LN: residual -> Norm -> readers
+  RES -> NORM;
+
+  NORM -> WQ;
+  NORM -> WK;
+  NORM -> WV;
+  NORM -> Wup;
+  NORM -> LMH;
+}
+

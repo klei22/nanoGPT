@@ -24,7 +24,8 @@ Interactive keybindings:
   q # # - multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels.
   z # # - Δ-bar chart (trim baseline) – e.g. ‘z 3 2’
   r–y   - barcharts with labels merged (r=1, y=3)
-  c     - toggle colour-map on first column (green → red)
+  c     - cycle colour-map for current column (high→low, low→high, off)
+  C # # - correlation + scatter for columns (1-based indexes, e.g. C 1 2)
   w     - toggle column width to fit largest visible cell
   u     - unsort / remove current column from the sort stack
   U     - clear *all* sorting
@@ -88,7 +89,8 @@ HOTKEYS_TEXT = (
     "q # #: multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels\n"
     "z # #: Δ-bar chart (trim baseline) – e.g. ‘z 3 2’\n"
     "r–y: barcharts with labels merged (r=1, y=3)\n"
-    "c: toggle colour-map on first column (green → red)\n"
+    "c: cycle colour-map for current column (high→low, low→high, off)\n"
+    "C # #: correlation + scatter (1-based indexes, e.g. C 1 2)\n"
     "w: toggle column width to fit largest visible cell\n"
     "u: unsort / remove current column from the sort stack\n"
     "U: clear *all* sorting\n"
@@ -151,12 +153,15 @@ class MonitorApp(App):
         self.original_entries: List[Dict] = []  # Unfiltered data
         self.current_entries: List[Dict] = []  # View data with filters
         self.row_filters: List[tuple] = []     # (col, op, val) triples
-        self.colour_columns: set[int] = set()   # columns currently colourised
+        self.colour_columns: dict[int, str] = {}   # col index -> colour mode
         self.auto_fit_columns: set[str] = set()
         self._bar_mode: bool = False           # are we collecting digits?
         self._bar_digits: List[int] = []       # collected numeric keys
         self._trim_mode: bool = False          # 'z' zoom-bar mode
-        self._trim_digit: List[int] = []       # holds the single digit
+        self._trim_digits: List[int] = []      # holds the single digit
+        self._corr_mode: bool = False          # 'C' correlation mode
+        self._corr_digits: List[int] = []      # collected numeric entries
+        self._corr_buffer: str = ""            # digit buffer for multi-digit cols
         self.csv_dir: str = csv_dir
 
     def compose(self) -> ComposeResult:
@@ -205,7 +210,13 @@ class MonitorApp(App):
             self.hidden_cols = set(cfg.get("hidden_cols", []))
             self.columns = [c for c in self.all_columns if c not in self.hidden_cols]
             self.sort_stack = [tuple(p) for p in cfg.get("sort_stack", [])]
-            self.colour_columns = set(cfg.get("colour_columns", []))
+            raw_modes = cfg.get("colour_columns", {})
+            if isinstance(raw_modes, list):
+                self.colour_columns = {idx: "low_high" for idx in raw_modes}
+            else:
+                self.colour_columns = {
+                    int(idx): str(mode) for idx, mode in raw_modes.items()
+                }
             self.auto_fit_columns = set(cfg.get("auto_fit_columns", []))
             # Restore saved row filters
             self.row_filters = cfg.get("row_filters", [])
@@ -297,6 +308,41 @@ class MonitorApp(App):
         ):
             return entry.get(col_name)
         return entry.get("config", {}).get(col_name)
+
+    def _resolve_column_index(self, index: int) -> str:
+        if index < 1 or index > len(self.columns):
+            raise ValueError(f"Column index {index} out of range")
+        return self.columns[index - 1]
+
+    @staticmethod
+    def _is_real_num(value) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    def _pearson_corr(self, x_vals: List[float], y_vals: List[float]) -> float:
+        if len(x_vals) < 2:
+            raise ValueError("Need at least two numeric rows to compute correlation")
+        mean_x = sum(x_vals) / len(x_vals)
+        mean_y = sum(y_vals) / len(y_vals)
+        cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_vals, y_vals))
+        var_x = sum((x - mean_x) ** 2 for x in x_vals)
+        var_y = sum((y - mean_y) ** 2 for y in y_vals)
+        if var_x == 0 or var_y == 0:
+            raise ValueError("Zero variance in one of the columns")
+        return cov / math.sqrt(var_x * var_y)
+
+    def _correlation_pairs(self, x_col: str, y_col: str) -> tuple[list[float], list[float], list[Dict]]:
+        x_vals: List[float] = []
+        y_vals: List[float] = []
+        rows: List[Dict] = []
+        for entry in self.current_entries:
+            xv = self.get_cell(entry, x_col)
+            yv = self.get_cell(entry, y_col)
+            if not (self._is_real_num(xv) and self._is_real_num(yv)):
+                continue
+            x_vals.append(float(xv))
+            y_vals.append(float(yv))
+            rows.append(entry)
+        return x_vals, y_vals, rows
 
     # ──────────────────────── async worker for “E” export ────────────────────────
     @work(exclusive=True)                      # ← runs in a background worker
@@ -417,9 +463,12 @@ class MonitorApp(App):
         colour_by_col: dict[int, list[str | None]] = {}
         if self.colour_columns and self.current_entries:
             # helper to rank values by our sort order (lowest→0)
-            for col_idx in self.colour_columns:
+            for col_idx, mode in self.colour_columns.items():
+                if col_idx >= len(self.columns):
+                    continue
                 col_name = self.columns[col_idx]
                 vals = [self.get_cell(e, col_name) for e in self.current_entries]
+                reverse = mode == "high_low"
 
                 # strip out bools from 'numeric' test (bool isa int)
                 def _is_real_num(v):
@@ -442,6 +491,8 @@ class MonitorApp(App):
                                 cmap.append(ORANGE)
                             elif _is_real_num(v):
                                 t = max(0.0, min(1.0, v))
+                                if reverse:
+                                    t = 1 - t
                                 r = int(255 * (1 - t))
                                 g = int(255 * t)
                                 cmap.append(f"#{r:02x}{g:02x}00")
@@ -461,6 +512,8 @@ class MonitorApp(App):
                             cmap.append(ORANGE)          # special orange
                         elif _is_real_num(v):
                             t = (v - lo) / rng
+                            if reverse:
+                                t = 1 - t
                             cmap.append(f"#{int(255*t):02x}{int(255*(1-t)):02x}00")
                         elif isinstance(v, bool):        # shouldn’t appear here
                             cmap.append("#00ff00" if v else "#ff0000")
@@ -472,6 +525,8 @@ class MonitorApp(App):
                 else:  # categorical
                     # categorical:  fixed colours for special values
                     uniques = sorted(set(vals), key=self._sort_key)
+                    if reverse:
+                        uniques = list(reversed(uniques))
                     if len(uniques) == 1:
                         palette = {uniques[0]: "#00ff00"}
                     else:
@@ -555,6 +610,39 @@ class MonitorApp(App):
             return
         r, c = coord.row, coord.column
         key = event.key
+        if self._corr_mode:
+            if key.isdigit():
+                self._corr_buffer += key
+            elif key in (",", "space"):
+                if self._corr_buffer:
+                    self._corr_digits.append(int(self._corr_buffer))
+                    self._corr_buffer = ""
+            elif key == "enter":
+                if self._corr_buffer:
+                    self._corr_digits.append(int(self._corr_buffer))
+                    self._corr_buffer = ""
+                if len(self._corr_digits) != 2:
+                    self._corr_mode, self._corr_digits = False, []
+                    self._msg("Correlation mode needs two column numbers")
+                    return
+                try:
+                    x_col = self._resolve_column_index(self._corr_digits[0])
+                    y_col = self._resolve_column_index(self._corr_digits[1])
+                    x_vals, y_vals, rows = self._correlation_pairs(x_col, y_col)
+                    corr = self._pearson_corr(x_vals, y_vals)
+                    plot_view.plot_rows(rows, x=x_col, y=y_col, fit_line=True)
+                    self._msg(f"corr({y_col} vs {x_col}) = {corr:.4f}", timeout=5)
+                except Exception as exc:
+                    self._msg(f"Correlation error: {exc}", timeout=5)
+                finally:
+                    self._corr_mode, self._corr_digits = False, []
+                    self._corr_buffer = ""
+                return
+            else:
+                self._corr_mode, self._corr_digits = False, []
+                self._corr_buffer = ""
+                self._msg("Correlation mode cancelled")
+            return
         if self._bar_mode:
             if key.isdigit() and key != "0":
                 self._bar_digits.append(int(key))
@@ -637,6 +725,11 @@ class MonitorApp(App):
             self._trim_mode, self._trim_digits = True, []
             self._msg("Δ-bar mode: type <#metrics><#labels>")
             return
+        elif key == "C":
+            self._corr_mode, self._corr_digits = True, []
+            self._corr_buffer = ""
+            self._msg("Correlation mode: type col1 space col2 then Enter (e.g. 1 2)")
+            return
         # ── Export CSV ──────────────────────────────────────────
         elif key == "e":
             fname = f"{self.csv_dir}/{self.log_file.stem}_export_{int(time.time())}.csv"
@@ -651,7 +744,7 @@ class MonitorApp(App):
                 "all_columns": self.all_columns,
                 "hidden_cols": list(self.hidden_cols),
                 "sort_stack":  [[i, asc] for i, asc in self.sort_stack],
-                "colour_columns": list(self.colour_columns),
+                "colour_columns": self.colour_columns,
                 "auto_fit_columns": list(self.auto_fit_columns),
                 "row_filters": getattr(self, "row_filters", []),
             }
@@ -785,14 +878,18 @@ class MonitorApp(App):
             except Exception as exc:
                 self._msg(f"Graph error: {exc}", timeout=4)
         elif key == "c":
-            # toggle colour for the *current* column
+            # cycle colour modes for the *current* column
             cur = self.table.cursor_coordinate.column
-            if cur in self.colour_columns:
-                self.colour_columns.remove(cur)
-                self._msg(f"Colour OFF for {self.columns[cur]}")
+            mode = self.colour_columns.get(cur)
+            if mode is None:
+                self.colour_columns[cur] = "high_low"
+                self._msg(f"Colour high→low for {self.columns[cur]}")
+            elif mode == "high_low":
+                self.colour_columns[cur] = "low_high"
+                self._msg(f"Colour low→high for {self.columns[cur]}")
             else:
-                self.colour_columns.add(cur)
-                self._msg(f"Colour ON for {self.columns[cur]}")
+                self.colour_columns.pop(cur, None)
+                self._msg(f"Colour OFF for {self.columns[cur]}")
             self.refresh_table()
         elif key == "w":
             col = self.columns[c]

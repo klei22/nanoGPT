@@ -219,6 +219,21 @@ If using tensorboard for logging, we have provided a convenience script:
 source ./logging/start_tensorboard.sh
 ```
 
+### View CSV Logs (Tensorboard-style)
+
+To plot the bulk CSV logs in a live-updating, tensorboard-like view (train/val on
+the same chart with filenames as labels), run:
+
+```bash
+python3 logging/view_csv_logs.py --csv-dir csv_logs --pattern "**/bulk_*.csv"
+```
+
+By default the viewer renders an ASCII chart in the terminal, refreshes every 5
+seconds, and can be switched to a tokens X-axis with `--x-axis tokens`. Use
+`--layout horizontal` to place the legend beside the graph, or set the chart
+height with `--height`. Use `--max-x` to control the X-axis scale (default 3000
+iters/tokens). For a matplotlib window, add `--mode matplotlib`.
+
 You can view live validation loss updates on url: [http://localhost:6006](http://localhost:6006)
 
 Note: Only one tensorboard process can grab port 6006 at time, if you want to
