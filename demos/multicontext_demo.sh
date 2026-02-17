@@ -63,6 +63,10 @@ pushd data/shakespeare_char_newlines_mod/
 bash get_dataset.sh
 popd
 
+ # Role split in this demo:
+ # - used for both input + loss: shakespeare_char, shakespeare_char_lowercase
+ # - used only for input context: shakespeare_char_case_map, shakespeare_char_in_word_position, shakespeare_char_since_newline
+ # - used only for loss targets: shakespeare_char_cvp, shakespeare_char_part_of_speech, shakespeare_char_newlines_mod
  python3 train.py \
    --training_mode multicontext \
    --multicontext \
@@ -74,6 +78,18 @@ popd
        shakespeare_char_in_word_position \
        shakespeare_char_part_of_speech \
        shakespeare_char_since_newline \
+       shakespeare_char_newlines_mod \
+   --multicontext_input_datasets_layerlist \
+       shakespeare_char \
+       shakespeare_char_case_map \
+       shakespeare_char_lowercase \
+       shakespeare_char_in_word_position \
+       shakespeare_char_since_newline \
+   --multicontext_output_targets_layerlist \
+       shakespeare_char \
+       shakespeare_char_lowercase \
+       shakespeare_char_cvp \
+       shakespeare_char_part_of_speech \
        shakespeare_char_newlines_mod \
     --max_iters 2000 \
     --dropout 0.2 \
@@ -98,16 +114,24 @@ python3 sample.py \
     shakespeare_char_part_of_speech \
     shakespeare_char_since_newline \
     shakespeare_char_newlines_mod \
+  --multicontext_input_datasets_layerlist \
+    shakespeare_char \
+    shakespeare_char_case_map \
+    shakespeare_char_lowercase \
+    shakespeare_char_in_word_position \
+    shakespeare_char_since_newline \
+  --multicontext_output_targets_layerlist \
+    shakespeare_char \
+    shakespeare_char_lowercase \
+    shakespeare_char_cvp \
+    shakespeare_char_part_of_speech \
+    shakespeare_char_newlines_mod \
   --multicontext_start \
     "But " \
     "ULL_" \
     "but " \
-    "323_" \
     "123_" \
-    "fff " \
     "1234" \
-    "1111" \
   --max_new_tokens 512 \
   --top_k 1 \
   --num_samples 3
-

@@ -33,6 +33,39 @@ from variations.model_variations import model_variation_dictionary
 
 from benchmarks import run_all
 
+
+def clean_dataset_path(dataset_name: str) -> str:
+    if dataset_name.startswith('./data/'):
+        return dataset_name[len('./data/'):]
+    if dataset_name.startswith('data/'):
+        return dataset_name[len('data/'):]
+    return dataset_name
+
+
+def resolve_multicontext_dataset_layerlist(raw_layerlist, all_datasets, arg_name):
+    if raw_layerlist is None:
+        return list(all_datasets)
+
+    resolved = []
+    seen = set()
+    for item in raw_layerlist:
+        parts = [p.strip() for p in str(item).split(',') if p.strip()]
+        for part in parts:
+            dataset_name = part
+            if dataset_name not in all_datasets:
+                raise ValueError(
+                    f"{arg_name} value '{part}' is not present in --multicontext_datasets."
+                )
+
+            if dataset_name not in seen:
+                seen.add(dataset_name)
+                resolved.append(dataset_name)
+
+    if len(resolved) == 0:
+        raise ValueError(f"{arg_name} resolved to an empty dataset list.")
+
+    return resolved
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
     parser.add_argument("--device", type=str, default="cuda", help="Device to run inference (e.g., 'cpu', 'cuda', 'cuda:0', 'cuda:1')")
@@ -113,9 +146,28 @@ def parse_args():
     # Multicontext Related
     parser.add_argument('--multicontext', action=argparse.BooleanOptionalAction, help="multicontext mode inference")
     parser.add_argument('--multicontext_datasets',  type=str, nargs='+', default=None, help="list of dataset names")
+    parser.add_argument(
+        '--multicontext_input_datasets_layerlist',
+        nargs='+',
+        default=None,
+        help=(
+            "Optional subset of --multicontext_datasets used as input contexts. "
+            "Accepts dataset names."
+        ),
+    )
+    parser.add_argument(
+        '--multicontext_output_targets_layerlist',
+        nargs='+',
+        default=None,
+        help=(
+            "Optional subset of --multicontext_datasets used for output-target/loss heads. "
+            "Accepts dataset names."
+        ),
+    )
     parser.add_argument('--multicontext_start', type=str, nargs='+', default=None,
-                        help="List of start strings, one for each context, if using --multicontext. "
-                        "Must match the number/order of --multicontext_datasets.")
+                        help="List of start strings for multicontext input datasets. "
+                        "When --multicontext_input_datasets_layerlist is used, the number/order should match that list. "
+                        "If omitted, uses --start for each input dataset.")
 
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
@@ -136,7 +188,20 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size to use for evaluation")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.multicontext_datasets is not None:
+        args.multicontext_datasets = [clean_dataset_path(ds) for ds in args.multicontext_datasets]
+    if args.multicontext_input_datasets_layerlist is not None:
+        args.multicontext_input_datasets_layerlist = [
+            clean_dataset_path(ds) for ds in args.multicontext_input_datasets_layerlist
+        ]
+    if args.multicontext_output_targets_layerlist is not None:
+        args.multicontext_output_targets_layerlist = [
+            clean_dataset_path(ds) for ds in args.multicontext_output_targets_layerlist
+        ]
+
+    return args
 
 
 
@@ -1300,6 +1365,16 @@ def main():
         if datasets_from_ckpt:
             args.multicontext_datasets = list(datasets_from_ckpt)
 
+    if args.init_from == 'resume' and args.multicontext:
+        if args.multicontext_input_datasets_layerlist is None:
+            input_from_model = getattr(model.config, 'multicontext_input_datasets_layerlist', None)
+            if input_from_model:
+                args.multicontext_input_datasets_layerlist = list(input_from_model)
+        if args.multicontext_output_targets_layerlist is None:
+            output_from_model = getattr(model.config, 'multicontext_output_targets_layerlist', None)
+            if output_from_model:
+                args.multicontext_output_targets_layerlist = list(output_from_model)
+
     # Load meta information if available
     load_meta = False
     meta_path = None
@@ -1332,9 +1407,6 @@ def main():
     if args.start.startswith('FILE:'):
         with open(args.start[5:], 'r', encoding='utf-8') as f:
             args.start = f.read()
-
-    if args.multicontext and args.multicontext_start is None and args.multicontext_datasets:
-        args.multicontext_start = [args.start] * len(args.multicontext_datasets)
 
     start_ids = encode(args.start)
     if len(start_ids) == 0:
@@ -1436,21 +1508,63 @@ def main():
     elif args.multicontext:
         if not args.multicontext_datasets:
             raise ValueError("Must specify --multicontext_datasets when using --multicontext")
-        if args.multicontext_start is None:
-            raise ValueError("Must specify --multicontext_start when using --multicontext")
-        if len(args.multicontext_datasets) != len(args.multicontext_start):
-            raise ValueError(
-                "Number of --multicontext_datasets must match number of --multicontext_start strings."
-            )
 
         dataset_names = list(args.multicontext_datasets)
-        start_strings = list(args.multicontext_start)
+        dataset_to_index = {dataset: i for i, dataset in enumerate(dataset_names)}
+
+        mc_input_datasets = resolve_multicontext_dataset_layerlist(
+            args.multicontext_input_datasets_layerlist,
+            dataset_names,
+            '--multicontext_input_datasets_layerlist',
+        )
+        mc_output_datasets = resolve_multicontext_dataset_layerlist(
+            args.multicontext_output_targets_layerlist,
+            dataset_names,
+            '--multicontext_output_targets_layerlist',
+        )
+
+        print(f"Using multicontext input datasets: {mc_input_datasets}")
+        if args.multicontext_output_targets_layerlist is not None:
+            print(f"Configured multicontext output-target datasets: {mc_output_datasets}")
+
+        if args.multicontext_output_targets_layerlist is not None:
+            print(
+                "[yellow]Warning:[/yellow] --multicontext_output_targets_layerlist only affects "
+                "training/eval losses; sampling autoregressively updates contexts from "
+                "--multicontext_input_datasets_layerlist."
+            )
+
+        if args.multicontext_start is None:
+            start_strings = [args.start] * len(mc_input_datasets)
+        elif len(args.multicontext_start) == len(mc_input_datasets):
+            start_strings = list(args.multicontext_start)
+        elif len(args.multicontext_start) == len(dataset_names):
+            dataset_start_map = {
+                dataset_name: start_str
+                for dataset_name, start_str in zip(dataset_names, args.multicontext_start)
+            }
+            start_strings = [dataset_start_map[name] for name in mc_input_datasets]
+            print(
+                "[yellow]Warning:[/yellow] --multicontext_start matched all --multicontext_datasets; "
+                "using only entries corresponding to --multicontext_input_datasets_layerlist."
+            )
+        else:
+            raise ValueError(
+                "Number of --multicontext_start strings must match the number of input datasets "
+                "(resolved from --multicontext_input_datasets_layerlist)."
+            )
 
         dataset_meta: Dict[str, Dict[str, object]] = {}
         decode_lookup: Dict[str, Callable[[Sequence[int]], str]] = {}
         initial_tokens: Dict[str, torch.Tensor] = {}
 
-        for dataset_name, start_str in zip(dataset_names, start_strings):
+        start_by_dataset = {
+            dataset_name: start_str
+            for dataset_name, start_str in zip(mc_input_datasets, start_strings)
+        }
+
+        for dataset_name in mc_input_datasets:
+            start_str = start_by_dataset[dataset_name]
             meta_path = os.path.join("data", dataset_name, "meta.pkl")
             if not os.path.exists(meta_path):
                 raise FileNotFoundError(f"meta.pkl not found at {meta_path}")
@@ -1492,13 +1606,14 @@ def main():
 
                 for _ in range(args.max_new_tokens):
                     idx_cond_dict = {}
-                    for name in dataset_names:
+                    for name in mc_input_datasets:
                         tokens = token_state[name]
-                        idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
+                        idx_cond = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
+                        idx_cond_dict[dataset_to_index[name]] = idx_cond
 
                     logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
 
-                    for i, name in enumerate(dataset_names):
+                    for i, name in enumerate(mc_input_datasets):
                         if model.config.numerical_multicontext:
                             preds = logits_list[i][:, -1]
                             preds = preds.squeeze(-1)
@@ -1538,7 +1653,7 @@ def main():
                         token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
 
                 output_dict: Dict[str, str] = {}
-                for name in dataset_names:
+                for name in mc_input_datasets:
                     decode_fn = decode_lookup[name]
                     output_dict[name] = decode_fn(token_state[name][0].tolist())
 

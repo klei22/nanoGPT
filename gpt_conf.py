@@ -38,6 +38,8 @@ class GPTConfig:
 
     # For multicontext training
     multicontext: bool = False
+    multicontext_input_datasets_layerlist: List[str] = field(default_factory=list)
+    multicontext_output_targets_layerlist: List[str] = field(default_factory=list)
     # Use separate embeddings/LM heads per dataset in multidataset mode
     multidataset_wte: bool = False
     vocab_sizes: List[int] = field(default_factory=lambda: []) # Used in place of vocab

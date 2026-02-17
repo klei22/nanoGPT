@@ -87,6 +87,32 @@ from train_args import parse_args
 
 class Trainer:
 
+    @staticmethod
+    def _resolve_multicontext_dataset_layerlist(raw_layerlist, all_datasets, arg_name):
+        if raw_layerlist is None:
+            return list(all_datasets)
+
+        resolved = []
+        seen = set()
+        for item in raw_layerlist:
+            parts = [p.strip() for p in str(item).split(',') if p.strip()]
+            for part in parts:
+                dataset_name = part
+                if dataset_name not in all_datasets:
+                    raise ValueError(
+                        f"{arg_name} value '{part}' is not present in --multicontext_datasets."
+                    )
+
+                if dataset_name not in seen:
+                    seen.add(dataset_name)
+                    resolved.append(dataset_name)
+
+        if len(resolved) == 0:
+            raise ValueError(f"{arg_name} resolved to an empty dataset list.")
+
+        return resolved
+
+
     def __init__(self, args, model_group, training_group, logging_group):
         self.args = args
         self.model_group = model_group
@@ -181,6 +207,22 @@ class Trainer:
 
         if self.args.training_mode == 'multicontext':
             self.vocab_sizes = {}
+            if self.args.multicontext_datasets is None:
+                raise ValueError("When training_mode is 'multicontext', --multicontext_datasets is required.")
+
+            self.mc_input_datasets = self._resolve_multicontext_dataset_layerlist(
+                self.args.multicontext_input_datasets_layerlist,
+                self.args.multicontext_datasets,
+                '--multicontext_input_datasets_layerlist',
+            )
+            self.mc_loss_datasets = self._resolve_multicontext_dataset_layerlist(
+                self.args.multicontext_output_targets_layerlist,
+                self.args.multicontext_datasets,
+                '--multicontext_output_targets_layerlist',
+            )
+            self.mc_dataset_to_index = {
+                dataset: i for i, dataset in enumerate(self.args.multicontext_datasets)
+            }
         # init optimizer and scheduler
         self.optimizer = None
         self.scheduler = None
@@ -966,6 +1008,17 @@ class Trainer:
             x, y = x.to(self.device), y.to(self.device)
         return x, y, dataset
 
+    def prepare_multicontext_batch(self, x_dict, y_dict):
+        token_dict = {
+            self.mc_dataset_to_index[dataset]: x_dict[dataset]
+            for dataset in self.mc_input_datasets
+        }
+        target_dict = {
+            self.mc_dataset_to_index[dataset]: y_dict[dataset]
+            for dataset in self.mc_loss_datasets
+        }
+        return token_dict, target_dict
+
     @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
@@ -1071,39 +1124,43 @@ class Trainer:
                 std_devs = {}
                 mean_avg = 0.0
                 loss_std = 0.0
-                dataset_list = None
-                for i, dataset in enumerate(self.args.multicontext_datasets):
+                for i, dataset in enumerate(self.mc_loss_datasets):
                     losses[f"{i}"] = torch.zeros(self.args.eval_iters)
                     means[f"{i}"] = 0.0
 
                 for k in range(self.args.eval_iters):
-                    x_dict, y_dict, dataset_list = self.get_batch(split)
+                    x_dict, y_dict, _ = self.get_batch(split)
+                    token_dict, target_dict = self.prepare_multicontext_batch(x_dict, y_dict)
 
                     with self.ctx:
-                        logits, loss_list = self.model(
+                        _, loss_list = self.model(
                             None,
-                            token_dict=x_dict,
-                            target_dict=y_dict,
+                            token_dict=token_dict,
+                            target_dict=target_dict,
                             iter_num=self.iter_num,
                             loss_fn=self.loss_fn,
                         )
-                    for i in range(len(self.args.multicontext_datasets)):
+                    for i in range(len(self.mc_loss_datasets)):
                         losses[f"{i}"][k] = loss_list[i]
 
-                for i, dataset in enumerate(self.args.multicontext_datasets):
+                for i, dataset in enumerate(self.mc_loss_datasets):
                     means[f"{i}"] = losses[f"{i}"].mean()
                     std_devs[f"{i}"]  = losses[f"{i}"].std()
 
                     mean_avg += means[f"{i}"]
                     loss_std += std_devs[f"{i}"]
 
-                for i, dataset in enumerate(self.args.multicontext_datasets):
+                for dataset in self.args.multicontext_datasets:
+                    out['datasets'][dataset][split] = torch.tensor(float('nan'))
+                    out['datasets'][dataset][f"{split}_std"] = torch.tensor(float('nan'))
+
+                for i, dataset in enumerate(self.mc_loss_datasets):
                     out['datasets'][dataset][split] = means[f"{i}"]
                     out['datasets'][dataset][f"{split}_std"] = std_devs[f"{i}"]
 
                 # general train and val losses, as well as std dev
-                out[split] = mean_avg / len(self.args.multicontext_datasets)
-                out[split + "_std"] = loss_std / len(self.args.multicontext_datasets)
+                out[split] = mean_avg / len(self.mc_loss_datasets)
+                out[split + "_std"] = loss_std / len(self.mc_loss_datasets)
             out['rankme'] = torch.tensor(float('nan'))
             out['areq'] = torch.tensor(float('nan'))
         else:
@@ -1823,7 +1880,7 @@ class Trainer:
         log_message+= f", {dt*1000:.2f} ms"
         log_message+= f", {self.model.num_param}"
         if self.args.multicontext_datasets:
-            for i, mc_dataset in enumerate(self.args.multicontext_datasets):
+            for i, mc_dataset in enumerate(self.mc_loss_datasets):
                 self.mc_btc_train[mc_dataset] = self.vocab_sizes[mc_dataset] / math.exp(training_losses[i].item())
                 log_message+= f", {self.underscore_abbr(mc_dataset)}"
                 if self.args.log_btc_train:
@@ -1868,7 +1925,7 @@ class Trainer:
         if self.args.dataset_list:
             self.log_metrics_non_validation(lossf, running_mfu, self.epochs_trained_dict[prior_dataset], self.tokens_trained_dict[prior_dataset], prior_dataset, better_than_chance)
         if self.args.multicontext_datasets:
-            for i, mc_dataset in enumerate(self.args.multicontext_datasets):
+            for i, mc_dataset in enumerate(self.mc_loss_datasets):
                 self.log_metrics_non_validation(training_losses[i].item(), running_mfu, current_epoch, self.tokens_trained, mc_dataset, self.mc_btc_train[mc_dataset])
         else:
             self.log_metrics_non_validation(lossf, running_mfu, current_epoch, self.tokens_trained, prior_dataset, better_than_chance)
@@ -1976,11 +2033,11 @@ class Trainer:
 
                     with self.ctx:
                         if self.args.training_mode == 'multicontext':
-                            total_loss = 0
+                            token_dict, target_dict = self.prepare_multicontext_batch(self.X_dict, self.Y_dict)
                             logits, training_losses = self.model(
                                 None,
-                                token_dict=self.X_dict,
-                                target_dict=self.Y_dict,
+                                token_dict=token_dict,
+                                target_dict=target_dict,
                                 iter_num=self.iter_num,
                                 loss_fn=self.loss_fn,
                             )

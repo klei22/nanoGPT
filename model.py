@@ -363,19 +363,24 @@ class GPT(nn.Module):
 
     def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
         if token_dict is not None:
-            token_list = list(token_dict.values())
+            token_items = list(token_dict.items())
+            token_list = [v for _, v in token_items]
+            token_indices = [int(k) for k, _ in token_items]
             # If target_dict is None (typical for inference), set target_list = None
             if target_dict is not None:
-                target_list = list(target_dict.values())
+                target_items = list(target_dict.items())
+                target_list = [v for _, v in target_items]
+                target_indices = [int(k) for k, _ in target_items]
             else:
                 target_list = None
+                target_indices = []
             device = token_list[0].device
             b, t = token_list[0].size()
 
             x = None
 
             # Add all of the input tokens
-            for i, tokens in enumerate(token_list):
+            for i, tokens in zip(token_indices, token_list):
                 if self.uses_numerical_multicontext:
                     module = self.numerical_embeddings[str(i)]
                     param = next(module.parameters())
@@ -439,12 +444,17 @@ class GPT(nn.Module):
                 x = F.linear(x, self.transformer.scale_down.weight.t())
 
             # 5. Compute separate logits
+            logits_by_index = {}
+            required_indices = list(dict.fromkeys(token_indices + target_indices))
             if self.uses_numerical_multicontext:
-                logits = [self.numerical_output_mlps[str(i)](x) for i in range(len(token_list))]
+                for output_idx in required_indices:
+                    logits_by_index[output_idx] = self.numerical_output_mlps[str(output_idx)](x)
+                logits = [logits_by_index[i] for i in token_indices]
 
                 if target_list is not None:
                     losses = []
-                    for i, preds in enumerate(logits):
+                    for i, dataset_output_idx in enumerate(target_indices):
+                        preds = logits_by_index[dataset_output_idx]
                         targets = target_list[i].to(preds.dtype)
                         mask = target_list[i] != -1
                         if mask.any():
@@ -461,7 +471,9 @@ class GPT(nn.Module):
                     logits = [pred[:, [-1], :] for pred in logits]
                     losses = None
             else:
-                logits = [self.transformer[f'lm_head_{i}'](x) for i in range(len(token_list))]
+                for output_idx in required_indices:
+                    logits_by_index[output_idx] = self.transformer[f'lm_head_{output_idx}'](x)
+                logits = [logits_by_index[i] for i in token_indices]
 
                 # Soft‑cap **each** logits tensor (training & inference)
                 if self.config.final_logit_softcapping is not None:
@@ -470,21 +482,27 @@ class GPT(nn.Module):
                         self.config.final_logit_softcapping
                         for logit_var in logits
                     ]
+                    logits_by_index = {
+                        idx_i: torch.tanh(logit_var / self.config.final_logit_softcapping) *
+                        self.config.final_logit_softcapping
+                        for idx_i, logit_var in logits_by_index.items()
+                    }
 
                 # 6. Compute losses if targets are provided
                 # If we only want the last token, adapt the slices as you prefer
                 if target_list is not None:
                     # If we do want to compute losses for each context
                     losses = []
-                    for i in range(len(token_list)):
+                    for i, dataset_output_idx in enumerate(target_indices):
+                        current_logits = logits_by_index[dataset_output_idx]
                         if loss_fn is None:
                             loss_i = F.cross_entropy(
-                                logits[i].view(-1, logits[i].size(-1)),
+                                current_logits.view(-1, current_logits.size(-1)),
                                 target_list[i].view(-1),
                                 ignore_index=-1
                             )
                         else:
-                            loss_i = loss_fn(logits[i], target_list[i], iter_num=iter_num)
+                            loss_i = loss_fn(current_logits, target_list[i], iter_num=iter_num)
                         losses.append(loss_i)
 
                 else:

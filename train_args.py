@@ -285,6 +285,28 @@ def parse_args():
                                     help='Use separate token embeddings and lm heads per dataset when training_mode is multidataset')
     training_group.add_argument('--multicontext_datasets', default=None, nargs='+', type=str,
                                     help="List of datasets to train on in multi-context mode (e.g., --multicontext_datasets shakespeare wikitext103 openwebtext)")
+    model_group.add_argument(
+        '--multicontext_input_datasets_layerlist',
+        nargs='+',
+        action=LayerListAction,
+        default=None,
+        help=(
+            "Optional subset of --multicontext_datasets used as input contexts. "
+            "Accepts dataset names. "
+            "Default: all multicontext datasets are used as inputs."
+        ),
+    )
+    model_group.add_argument(
+        '--multicontext_output_targets_layerlist',
+        nargs='+',
+        action=LayerListAction,
+        default=None,
+        help=(
+            "Optional subset of --multicontext_datasets used for loss targets. "
+            "Accepts dataset names. "
+            "Default: all multicontext datasets are used as loss targets."
+        ),
+    )
     model_group.add_argument('--vocab_sizes', default=None, nargs='+', type=int,
                                     help="List of vocabulary sizes for each dataset in --multicontext_datasets")
 
@@ -1442,6 +1464,10 @@ def parse_args():
         print(args.multicontext_datasets)
         args.multicontext_datasets = [clean_dataset_path(ds) for ds in args.multicontext_datasets]
         print(args.multicontext_datasets)
+    if args.multicontext_input_datasets_layerlist:
+        args.multicontext_input_datasets_layerlist = [clean_dataset_path(ds) for ds in args.multicontext_input_datasets_layerlist]
+    if args.multicontext_output_targets_layerlist:
+        args.multicontext_output_targets_layerlist = [clean_dataset_path(ds) for ds in args.multicontext_output_targets_layerlist]
 
     return args, model_group, training_group, logging_group
 
