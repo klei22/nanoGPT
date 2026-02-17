@@ -1,10 +1,10 @@
 #!/bin/bash
 
 input_file=${1:-input.txt}
-tokenization=${2:-tiktoken}
-tokenizer_config_path=${3:-}
-max_parallel=${4:-1}
-chunk_size_mb=${5:-50}
+max_parallel=${2:-1}
+chunk_size_mb=${3:-50}
+tokenization=${4:-tiktoken}
+tokenizer_config_path=${5:-}
 
 python3 ./utils/partition_file.py --input_file "${input_file}" --chunk_size_mb "${chunk_size_mb}"
 
