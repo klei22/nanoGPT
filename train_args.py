@@ -1350,6 +1350,32 @@ def parse_args():
     logging_group.add_argument('--tensorboard_run_name', type=str, default=None)
     logging_group.add_argument('--tensorboard_graph', default=True, action=argparse.BooleanOptionalAction)
 
+    # Zeus energy profiling
+    logging_group.add_argument('--zeus_profile', default=False, action=argparse.BooleanOptionalAction,
+                               help='Enable Zeus energy profiling during training')
+    logging_group.add_argument('--zeus_profile_every', default=1, type=int,
+                               help='Profile every Nth iteration with Zeus')
+    logging_group.add_argument('--zeus_warmup_iters', default=0, type=int,
+                               help='Number of warmup iterations to skip before profiling')
+    logging_group.add_argument('--zeus_gpu_index', default=None, type=int,
+                               help='Framework-visible GPU index to monitor (after CUDA_VISIBLE_DEVICES)')
+    logging_group.add_argument('--zeus_power_trace', default=True, action=argparse.BooleanOptionalAction,
+                               help='Record continuous power traces')
+    logging_group.add_argument('--zeus_power_update_period', default=0.2, type=float,
+                               help='Polling period for Zeus power monitor')
+    logging_group.add_argument('--zeus_power_max_samples_per_gpu', default=200000, type=int,
+                               help='Maximum power samples stored per GPU')
+    logging_group.add_argument('--zeus_power_domains', nargs='+', default=None,
+                               help='Optional explicit list of power domains to monitor')
+    logging_group.add_argument('--zeus_temperature_trace', default=True, action=argparse.BooleanOptionalAction,
+                               help='Record continuous temperature traces')
+    logging_group.add_argument('--zeus_temperature_update_period', default=1.0, type=float,
+                               help='Polling period for Zeus temperature monitor')
+    logging_group.add_argument('--zeus_temperature_max_samples_per_gpu', default=20000, type=int,
+                               help='Maximum temperature samples stored per GPU')
+    logging_group.add_argument('--zeus_tensorboard_log', default=False, action=argparse.BooleanOptionalAction,
+                               help='Also log Zeus per-window metrics to TensorBoard when enabled')
+
     # Metric logging toggles
     logging_group.add_argument('--log_btc_train', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance training metrics')
     logging_group.add_argument('--log_btc_per_param', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance-per-parameter metrics')
