@@ -243,6 +243,30 @@ class TestTokenizers(unittest.TestCase):
             vocab_entries = json.load(f)
         self.assertEqual(len(vocab_entries), tokenizer.vocab_size)
 
+    def test_char_bpe_tokenizer_reuse_vocab(self):
+        meta_path = "char_bpe_meta.pkl"
+        args = Namespace(vocab_size=300, track_token_counts=False, meta_output_path=meta_path)
+        tokenizer = CharBPETokenizerWithByteFallback(args, self.sample_text, None)
+        _ = tokenizer.tokenize(self.sample_text)
+
+        reuse_meta_path = "char_bpe_reuse_meta.pkl"
+        reuse_args = Namespace(
+            char_bpe_vocab_path=meta_path,
+            track_token_counts=False,
+            meta_output_path=reuse_meta_path,
+        )
+        reuse_tokenizer = CharBPETokenizerWithByteFallback(reuse_args, "New dataset text", None)
+        reuse_ids = reuse_tokenizer.tokenize("New dataset text")
+        detokenized = reuse_tokenizer.detokenize(reuse_ids)
+
+        self.assertEqual("New dataset text", detokenized)
+        self.assertEqual(reuse_tokenizer.vocab_size, tokenizer.vocab_size)
+
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+        if os.path.exists(reuse_meta_path):
+            os.remove(reuse_meta_path)
+
     def test_custom_char_tokenizer_with_byte_fallback(self):
         args = Namespace(custom_chars_file="custom_chars.txt")
         # Create a custom characters file for testing
