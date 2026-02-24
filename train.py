@@ -969,6 +969,7 @@ class Trainer:
     @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
+        compute_rankme = self.args.log_rankme or self.args.log_areq
 
         self.model.eval()
         # If multi-dataset sampling is enabled, we calculate loss per dataset
@@ -978,7 +979,7 @@ class Trainer:
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
-                rankme_vectors = []
+                rankme_vectors = [] if compute_rankme else None
                 for split in ['train', 'val']:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
@@ -1020,13 +1021,13 @@ class Trainer:
                                 ln_f_out[0].float(), target_vecs.float(), dim=-1
                             )
                             ln_f_cosines.append(cos)
-                            if self.args.log_rankme or self.args.log_areq:
+                            if compute_rankme:
                                 rankme_vectors.append(
                                     ln_f_out[0][:, -1, :].float().detach().cpu()
                                 )
                 rankme = torch.tensor(float('nan'))
                 areq = torch.tensor(float('nan'))
-                if rankme_vectors:
+                if compute_rankme and rankme_vectors:
                     features = torch.cat(rankme_vectors, dim=0)
                     rankme, areq = self._compute_rankme_areq(features)
                 out['datasets'][dataset] = {
@@ -1043,9 +1044,10 @@ class Trainer:
                         'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
                         'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
                         'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
-                        'rankme': rankme,
-                        'areq': areq,
                         }
+                if compute_rankme:
+                    out['datasets'][dataset]['rankme'] = rankme
+                    out['datasets'][dataset]['areq'] = areq
             out['val'] = out['datasets'][self.args.dataset]['val']
             out['val_std'] = out['datasets'][self.args.dataset]['val_std']
             out['train'] = out['datasets'][self.args.dataset]['train']
@@ -1059,8 +1061,9 @@ class Trainer:
             out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
             out['ln_f_cosine'] = out['datasets'][self.args.dataset]['ln_f_cosine']
             out['ln_f_cosine_95'] = out['datasets'][self.args.dataset]['ln_f_cosine_95']
-            out['rankme'] = out['datasets'][self.args.dataset]['rankme']
-            out['areq'] = out['datasets'][self.args.dataset]['areq']
+            if compute_rankme:
+                out['rankme'] = out['datasets'][self.args.dataset]['rankme']
+                out['areq'] = out['datasets'][self.args.dataset]['areq']
         elif self.args.training_mode == "multicontext":
             for i, dataset in enumerate(self.args.multicontext_datasets):
                 out['datasets'][dataset] = {}
@@ -1104,15 +1107,16 @@ class Trainer:
                 # general train and val losses, as well as std dev
                 out[split] = mean_avg / len(self.args.multicontext_datasets)
                 out[split + "_std"] = loss_std / len(self.args.multicontext_datasets)
-            out['rankme'] = torch.tensor(float('nan'))
-            out['areq'] = torch.tensor(float('nan'))
+            if compute_rankme:
+                out['rankme'] = torch.tensor(float('nan'))
+                out['areq'] = torch.tensor(float('nan'))
         else:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
-                rankme_vectors = []
+                rankme_vectors = [] if compute_rankme else None
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
                     ln_f_out: list[torch.Tensor] = []
@@ -1152,7 +1156,7 @@ class Trainer:
                             ln_f_out[0].float(), target_vecs.float(), dim=-1
                         )
                         ln_f_cosines.append(cos)
-                        if self.args.log_rankme or self.args.log_areq:
+                        if compute_rankme:
                             rankme_vectors.append(
                                 ln_f_out[0][:, -1, :].float().detach().cpu()
                             )
@@ -1168,13 +1172,14 @@ class Trainer:
                     out['left_prob_95'] = torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan'))
                     out['ln_f_cosine'] = torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan'))
                     out['ln_f_cosine_95'] = torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan'))
-                    rankme = torch.tensor(float('nan'))
-                    areq = torch.tensor(float('nan'))
-                    if rankme_vectors:
-                        features = torch.cat(rankme_vectors, dim=0)
-                        rankme, areq = self._compute_rankme_areq(features)
-                    out['rankme'] = rankme
-                    out['areq'] = areq
+                    if compute_rankme:
+                        rankme = torch.tensor(float('nan'))
+                        areq = torch.tensor(float('nan'))
+                        if rankme_vectors:
+                            features = torch.cat(rankme_vectors, dim=0)
+                            rankme, areq = self._compute_rankme_areq(features)
+                        out['rankme'] = rankme
+                        out['areq'] = areq
 
         # compute statistics from a single validation batch
         if self.compute_model_stats:
@@ -1343,6 +1348,7 @@ class Trainer:
             )
 
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance):
+        compute_rankme = self.args.log_rankme or self.args.log_areq
 
         if self.iter_num == 0 and self.args.tensorboard_log and self.args.export_model_graph == True  and self.args.compile == False:
             self.export_model_graph()
@@ -1423,7 +1429,7 @@ class Trainer:
             if 'ln_f_cosine' in losses:
                 self.writer.add_scalar(f"{target_dataset}/avg_ln_f_cosine", losses['ln_f_cosine'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/ln_f_cosine_95", losses['ln_f_cosine_95'], self.iter_num)
-            if 'rankme' in losses:
+            if compute_rankme and 'rankme' in losses:
                 self.writer.add_scalar(
                     f"{target_dataset}/rankme",
                     self._to_scalar(losses['rankme']),
@@ -1444,8 +1450,12 @@ class Trainer:
 
         if self.args.csv_log:
             # concise training metrics
-            rankme_value = self._to_scalar(losses.get('rankme', float('nan')))
-            areq_value = self._to_scalar(losses.get('areq', float('nan')))
+            if compute_rankme:
+                rankme_value = self._to_scalar(losses.get('rankme', float('nan')))
+                areq_value = self._to_scalar(losses.get('areq', float('nan')))
+            else:
+                rankme_value = float('nan')
+                areq_value = float('nan')
             self.write_to_csv(
                 target_dataset,
                 losses['train'].item(),

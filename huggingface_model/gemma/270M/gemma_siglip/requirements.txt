@@ -1,0 +1,12 @@
+# --- Core Deep Learning & Modeling ---
+torch>=2.0.0
+transformers>=4.38.0
+accelerate>=0.26.0
+
+# --- Data & Image Processing ---
+datasets
+Pillow>=10.0.0
+
+# --- Utilities & UI ---
+huggingface_hub
+climage
