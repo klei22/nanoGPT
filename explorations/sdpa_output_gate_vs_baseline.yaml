@@ -32,8 +32,7 @@ common_group:
   compile: [true]
 
 parameter_groups:
-  - run_label: ["baseline"]
-    sdpa_output_gate: [false]
+  - sdpa_output_gate: [false]
     named_group_static:
       - "qk_norm"
       - "peri_ln"
@@ -41,8 +40,7 @@ parameter_groups:
       - "rmsnorm_wte"
       - "squared_relu"
 
-  - run_label: ["sdpa_output_gate_elementwise"]
-    sdpa_output_gate: [true]
+  - sdpa_output_gate: [true]
     sdpa_output_gate_headwise: [false]
     named_group_static:
       - "qk_norm"
@@ -51,8 +49,7 @@ parameter_groups:
       - "rmsnorm_wte"
       - "squared_relu"
 
-  - run_label: ["sdpa_output_gate_headwise"]
-    sdpa_output_gate: [true]
+  - sdpa_output_gate: [true]
     sdpa_output_gate_headwise: [true]
     named_group_static:
       - "qk_norm"
