@@ -401,7 +401,7 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
                 "char_tokens_sorted",
                 sorted(self.char_tokens, key=lambda t: len(t), reverse=True),
             )
-            self._build_vocab()
+            self._build_vocab(preserve_sorted_tokens=True)
             return
 
         if getattr(args, "vocab_size", None) is None:
@@ -490,7 +490,7 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
                 i += 1
         return merged
 
-    def _build_vocab(self):
+    def _build_vocab(self, preserve_sorted_tokens=False):
         self.stoi = {}
         self.itos = {}
 
@@ -506,7 +506,16 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
             self.itos[token_id] = token
 
         self.vocab_size = len(self.itos)
-        self.sorted_char_tokens = sorted(self.char_tokens, key=lambda t: len(t), reverse=True)
+        if preserve_sorted_tokens:
+            known_tokens = set(self.char_tokens)
+            # Keep the persisted order exactly when reusing a vocabulary so
+            # tokenization decisions remain byte-for-byte reproducible.
+            preserved = [token for token in self.sorted_char_tokens if token in known_tokens]
+            preserved_set = set(preserved)
+            missing = [token for token in self.char_tokens if token not in preserved_set]
+            self.sorted_char_tokens = preserved + missing
+        else:
+            self.sorted_char_tokens = sorted(self.char_tokens, key=lambda t: len(t), reverse=True)
 
     def tokenize(self, data):
         if not data:
