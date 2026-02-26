@@ -1017,6 +1017,38 @@ class JsonBPETokenizerWithByteFallback(Tokenizer):
 
         return ''.join(out_pieces)
 
+    def finalize_meta(self, meta):
+        super().finalize_meta(meta)
+        self._write_vocab_jsons(meta)
+
+    def _write_vocab_jsons(self, meta):
+        vocab_json = []
+        for idx in range(self.vocab_size):
+            token = self.itos[idx]
+            vocab_json.append(self._format_token_for_json(token))
+
+        with open("json_bpe_vocab.json", "w", encoding="utf-8") as f:
+            json.dump(vocab_json, f, ensure_ascii=False, indent=2)
+
+        if self.token_counts is not None:
+            counts_json = []
+            counts = meta.get("token_counts", {})
+            for idx in range(self.vocab_size):
+                token = self.itos[idx]
+                counts_json.append({
+                    "id": idx,
+                    "token": self._format_token_for_json(token),
+                    "count": counts.get(idx, 0)
+                })
+            with open("json_bpe_token_counts.json", "w", encoding="utf-8") as f:
+                json.dump(counts_json, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _format_token_for_json(token):
+        if isinstance(token, bytes):
+            return f"<byte:{token[0]}>"
+        return token
+
 
 def _load_python_token_processor():
     """Load the PythonTokenProcessor helper without requiring a package install."""
