@@ -30,6 +30,7 @@ from torch.nn import functional as F
 from model import GPT, GPTConfig
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
+from sample_variations import apply_probability_filters
 
 from benchmarks import run_all
 
@@ -44,6 +45,10 @@ def parse_args():
     parser.add_argument("--max_new_tokens", type=int, default=500, help="Number of tokens to generate in each sample")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for predictions (1.0 = no change, < 1.0 = less random, > 1.0 = more random)")
     parser.add_argument("--top_k", type=int, nargs='+', default=[1, 200], help="Retain only the top_k most likely tokens")
+    parser.add_argument("--top_p", type=float, default=None, help="Nucleus sampling threshold in (0, 1].")
+    parser.add_argument("--min_p", type=float, default=None, help="Minimum probability relative to the max-prob token.")
+    parser.add_argument("--top_a", type=float, default=None, help="Top-A threshold (uses p_max^2 * top_a).")
+    parser.add_argument("--epsilon_cutoff", type=float, default=None, help="Fixed minimum token probability threshold.")
     parser.add_argument("--seed", type=int, default=1337, help="Seed for pseudorandom number generator")
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Torch data type for inference")
     parser.add_argument('--compile', action=argparse.BooleanOptionalAction, help="Compile the model (requires PyTorch 2.0)")
@@ -615,39 +620,17 @@ def sample_with_existing_model(
                     full_row = logits[0].clone()               # pre-mask
 
 
-                    # Apply the selected truncation logic
-                    if args.softmax_threshold is not None:
-                        # Calculate probabilities and find the threshold
-                        probs = F.softmax(logits, dim=-1)
-                        max_prob = torch.max(probs)
-                        prob_threshold = max_prob * args.softmax_threshold
-                        # Set probabilities of tokens below the threshold to 0
-                        probs[probs < prob_threshold] = 0
-
-
+                    probs = apply_probability_filters(
+                        logits,
+                        top_k=current_k,
+                        top_p=args.top_p,
+                        min_p=args.min_p,
+                        top_a=args.top_a,
+                        epsilon_cutoff=args.epsilon_cutoff,
+                        softmax_threshold=args.softmax_threshold,
+                    )
                     topk_row = logits[0].clone()               # post-mask
-
-                    if args.softmax_threshold is not None:
-                        # Calculate probabilities and find the threshold
-                        probs = F.softmax(logits, dim=-1)
-                        max_prob = torch.max(probs)
-                        prob_threshold = max_prob * args.softmax_threshold
-                        # Set probabilities of tokens below the threshold to 0
-                        probs[probs < prob_threshold] = 0
-                        # Sample from the modified, unnormalized distribution of probabilities
-                        idx_next = torch.multinomial(probs, num_samples=1)
-                        # For colorization, we can still use the unmasked logits
-                        topk_row = logits[0].clone()
-                    elif current_k is not None:
-                        v, _ = torch.topk(logits, min(current_k, logits.size(-1)))
-                        logits[logits < v[:, [-1]]] = -float("inf")
-                        topk_row = logits[0].clone()               # post-mask
-                        probs = F.softmax(logits, dim=-1) # Re-softmax after masking
-                        idx_next = torch.multinomial(probs, num_samples=1)
-                    else: # No truncation / default case
-                        topk_row = logits[0].clone()
-                        probs = F.softmax(logits, dim=-1)
-                        idx_next = torch.multinomial(probs, num_samples=1)
+                    idx_next = torch.multinomial(probs, num_samples=1)
 
                     x = torch.cat((x, idx_next), dim=1)
 
@@ -1522,17 +1505,20 @@ def main():
                             idx_next = rounded.to(torch.long).unsqueeze(-1)
                         else:
                             cur_logits = logits_list[i][:, -1, :] / args.temperature
-                            if args.top_k is not None:
-                                top_k_val = (
-                                    args.top_k[0]
-                                    if isinstance(args.top_k, (list, tuple))
-                                    else args.top_k
-                                )
-                                k = min(top_k_val, cur_logits.size(-1))
-                                v, _ = torch.topk(cur_logits, k)
-                                cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
-
-                            probs = F.softmax(cur_logits, dim=-1)
+                            top_k_val = (
+                                args.top_k[0]
+                                if isinstance(args.top_k, (list, tuple)) and len(args.top_k) > 0
+                                else args.top_k
+                            )
+                            probs = apply_probability_filters(
+                                cur_logits,
+                                top_k=top_k_val,
+                                top_p=args.top_p,
+                                min_p=args.min_p,
+                                top_a=args.top_a,
+                                epsilon_cutoff=args.epsilon_cutoff,
+                                softmax_threshold=args.softmax_threshold,
+                            )
                             idx_next = torch.multinomial(probs, num_samples=1)
 
                         token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
