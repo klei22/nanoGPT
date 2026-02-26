@@ -15,6 +15,7 @@ from tokenizers import (
     CharBPETokenizerWithByteFallback,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
+    JsonBPETokenizerWithByteFallback,
 )
 from argparse import Namespace
 from rich.console import Console
@@ -337,6 +338,35 @@ class TestTokenizers(unittest.TestCase):
             os.remove(json_tokens_file)
 
         console.print("JsonByteTokenizerWithByteFallback test passed.")
+
+
+    def test_json_bpe_tokenizer_with_byte_fallback(self):
+        json_tokens_file = "test_json_bpe_tokens.json"
+        # Include chars plus merge targets we allow BPE to build.
+        test_tokens = ["H", "e", "l", "o", " ", "w", "r", "d", "!", "He", "Hell", "Hello", "wo", "world"]
+        with open(json_tokens_file, 'w', encoding='utf-8') as f:
+            json.dump(test_tokens, f)
+
+        args = Namespace(json_tokens_file=json_tokens_file, track_token_counts=True)
+        train_text = "Hello world Hello world"
+        tokenizer = JsonBPETokenizerWithByteFallback(args, train_text, None)
+
+        test_string = "Hello world! 🙂"
+        ids = tokenizer.tokenize(test_string)
+        detokenized = tokenizer.detokenize(ids)
+
+        self.assertEqual(test_string, detokenized)
+        self.assertEqual(tokenizer.stoi["Hello"], next(i for i in ids if i >= 256 and tokenizer.itos[i] == "Hello"))
+        self.assertTrue(any(token_id < 256 for token_id in ids), "Expected byte fallback for emoji")
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        self.assertEqual(meta["tokenizer"], "json_bpe_byte_fallback")
+        self.assertIn("Hello", meta["active_tokens"])
+        self.assertTrue(set(meta["active_tokens"]).issubset(set(test_tokens)))
+
+        if os.path.exists(json_tokens_file):
+            os.remove(json_tokens_file)
 
     # --------------------------------------------------------------------------
     # Tests for Token Counts (with histogram printing)

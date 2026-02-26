@@ -819,6 +819,205 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
         return ''.join(out_pieces)
 
 
+class JsonBPETokenizerWithByteFallback(Tokenizer):
+    """
+    JSON-constrained BPE tokenizer with byte fallback.
+
+    - IDs 0..255 are raw byte fallback tokens.
+    - Initial text tokens are single-character entries from the JSON array.
+    - Additional BPE merge tokens are learned from corpus frequency, but ONLY if
+      the merged token already exists in the JSON array.
+
+    This keeps the final non-byte vocabulary strictly constrained to the JSON file.
+    """
+
+    def __init__(self, args, train_data, val_data=None):
+        super().__init__(args)
+        if args.json_tokens_file is None:
+            raise ValueError("JSON tokens file must be provided for this tokenizer.")
+
+        with open(args.json_tokens_file, "r", encoding="utf-8") as f:
+            json_tokens = json.load(f)
+            if not isinstance(json_tokens, list):
+                raise ValueError("JSON file must contain an array of tokens")
+
+        # Preserve order while deduplicating.
+        self.allowed_tokens = list(dict.fromkeys(json_tokens))
+        self.allowed_token_set = set(self.allowed_tokens)
+
+        self.base_char_tokens = [tok for tok in self.allowed_tokens if len(tok) == 1]
+        if not self.base_char_tokens:
+            raise ValueError(
+                "JSON constrained BPE requires single-character tokens in the JSON array."
+            )
+
+        self.active_tokens = list(self.base_char_tokens)
+
+        corpus_text = (train_data or "") + (val_data or "")
+        if corpus_text:
+            self._train_merges(corpus_text)
+
+        self._build_vocab()
+
+    @staticmethod
+    def _apply_merge(tokens, pair, new_token):
+        merged = []
+        i = 0
+        max_index = len(tokens) - 1
+        while i <= max_index:
+            if i < max_index and tokens[i] == pair[0] and tokens[i + 1] == pair[1]:
+                merged.append(new_token)
+                i += 2
+            else:
+                merged.append(tokens[i])
+                i += 1
+        return merged
+
+    def _corpus_to_symbols(self, text):
+        symbols = []
+        for ch in text:
+            if ch in self.base_char_tokens:
+                symbols.append(ch)
+            else:
+                # Keep a placeholder that can never merge into JSON tokens.
+                symbols.append(None)
+        return symbols
+
+    def _train_merges(self, text):
+        symbols = self._corpus_to_symbols(text)
+        if len(symbols) < 2:
+            return
+
+        while True:
+            pair_counts = Counter()
+            prev = None
+            for token in symbols:
+                if token is None:
+                    prev = None
+                    continue
+                if prev is not None:
+                    pair_counts[(prev, token)] += 1
+                prev = token
+
+            if not pair_counts:
+                break
+
+            best_new_token = None
+            best_pair = None
+            best_count = 0
+            for pair, count in pair_counts.most_common():
+                candidate = ''.join(pair)
+                if candidate in self.allowed_token_set and candidate not in self.active_tokens:
+                    best_new_token = candidate
+                    best_pair = pair
+                    best_count = count
+                    break
+
+            if best_new_token is None or best_count < 2:
+                break
+
+            self.active_tokens.append(best_new_token)
+            symbols = self._apply_merge(symbols, best_pair, best_new_token)
+
+    def _build_vocab(self):
+        self.stoi = {}
+        self.itos = {}
+
+        for b in range(256):
+            key = bytes([b])
+            self.stoi[key] = b
+            self.itos[b] = key
+
+        offset = 256
+        for idx, token in enumerate(self.active_tokens):
+            token_id = offset + idx
+            self.stoi[token] = token_id
+            self.itos[token_id] = token
+
+        self.sorted_active_tokens = sorted(self.active_tokens, key=lambda t: len(t), reverse=True)
+        self.vocab_size = len(self.itos)
+
+    def tokenize(self, data):
+        if not data:
+            meta = {
+                "vocab_size": self.vocab_size,
+                "tokenizer": "json_bpe_byte_fallback",
+                "stoi": self.stoi,
+                "itos": self.itos,
+                "allowed_tokens": self.allowed_tokens,
+                "active_tokens": self.active_tokens,
+                "byte_fallback": True,
+            }
+            self.finalize_meta(meta)
+            return []
+
+        ids = []
+        i = 0
+        n = len(data)
+        pbar = tqdm(total=n, desc="Tokenizing JSON-constrained BPE")
+
+        while i < n:
+            matched = False
+            for token in self.sorted_active_tokens:
+                if data.startswith(token, i):
+                    token_id = self.stoi[token]
+                    ids.append(token_id)
+                    self.record_token(token_id)
+                    i += len(token)
+                    pbar.update(len(token))
+                    matched = True
+                    break
+
+            if matched:
+                continue
+
+            ch_bytes = data[i].encode("utf-8")
+            for b in ch_bytes:
+                token_id = self.stoi[bytes([b])]
+                ids.append(token_id)
+                self.record_token(token_id)
+                pbar.update(1)
+            i += 1
+
+        pbar.close()
+
+        meta = {
+            "vocab_size": self.vocab_size,
+            "tokenizer": "json_bpe_byte_fallback",
+            "stoi": self.stoi,
+            "itos": self.itos,
+            "allowed_tokens": self.allowed_tokens,
+            "active_tokens": self.active_tokens,
+            "byte_fallback": True,
+        }
+        self.finalize_meta(meta)
+        return ids
+
+    def detokenize(self, ids):
+        out_pieces = []
+        byte_buffer = []
+
+        for token_id in ids:
+            token = self.itos.get(token_id)
+            if token is None:
+                continue
+
+            if isinstance(token, bytes):
+                byte_buffer.append(token)
+            else:
+                if byte_buffer:
+                    combined = b''.join(byte_buffer)
+                    out_pieces.append(combined.decode('utf-8', errors='replace'))
+                    byte_buffer = []
+                out_pieces.append(token)
+
+        if byte_buffer:
+            combined = b''.join(byte_buffer)
+            out_pieces.append(combined.decode('utf-8', errors='replace'))
+
+        return ''.join(out_pieces)
+
+
 def _load_python_token_processor():
     """Load the PythonTokenProcessor helper without requiring a package install."""
     tokenizer_path = Path(__file__).parent / "programming_tokenizers" / "python_tokenizer.py"
