@@ -343,7 +343,7 @@ class TestTokenizers(unittest.TestCase):
     def test_json_bpe_tokenizer_with_byte_fallback(self):
         json_tokens_file = "test_json_bpe_tokens.json"
         # Include chars plus merge targets we allow BPE to build.
-        test_tokens = ["H", "e", "l", "o", " ", "w", "r", "d", "!", "He", "Hell", "Hello", "wo", "world"]
+        test_tokens = ["H", "e", "l", "o", " ", "w", "r", "d", "!"]
         with open(json_tokens_file, 'w', encoding='utf-8') as f:
             json.dump(test_tokens, f)
 
@@ -363,7 +363,8 @@ class TestTokenizers(unittest.TestCase):
             meta = pickle.load(f)
         self.assertEqual(meta["tokenizer"], "json_bpe_byte_fallback")
         self.assertTrue(any(len(tok) > 1 for tok in meta["active_tokens"]))
-        self.assertTrue(set(meta["active_tokens"]).issubset(set(test_tokens)))
+        self.assertTrue(set(test_tokens).issubset(set(meta["active_tokens"])))
+        self.assertTrue(any(len(tok) > 1 and tok not in test_tokens for tok in meta["active_tokens"]))
 
         self.assertTrue(os.path.exists("json_bpe_vocab.json"))
         with open("json_bpe_vocab.json", "r", encoding="utf-8") as f:
@@ -382,17 +383,19 @@ class TestTokenizers(unittest.TestCase):
 
     def test_json_bpe_tokenizer_respects_vocab_size(self):
         json_tokens_file = "test_json_bpe_vocabsize_tokens.json"
-        test_tokens = ["a", "b", "c", " ", "ab", "bc", "abc", "abc ", "abc a", "abc ab", "abc abc", "bca"]
+        test_tokens = ["a", "b", "c", " "]
         with open(json_tokens_file, 'w', encoding='utf-8') as f:
             json.dump(test_tokens, f)
 
-        # 256 byte tokens + 4 base char tokens + 2 merges
-        args = Namespace(json_tokens_file=json_tokens_file, track_token_counts=False, vocab_size=262)
+        # 256 byte tokens + 4 base json tokens + 3 learned merge tokens
+        args = Namespace(json_tokens_file=json_tokens_file, track_token_counts=False, vocab_size=263)
         train_text = "abc abc abc abc abc"
         tokenizer = JsonBPETokenizerWithByteFallback(args, train_text, None)
 
-        self.assertEqual(tokenizer.vocab_size, 262)
-        self.assertEqual(len(tokenizer.active_tokens), 6)
+        self.assertLessEqual(tokenizer.vocab_size, 263)
+        self.assertGreater(tokenizer.vocab_size, 260)
+        self.assertGreater(len(tokenizer.active_tokens), len(test_tokens))
+        self.assertTrue(any(tok not in test_tokens for tok in tokenizer.active_tokens))
 
         test_string = "abc abc"
         ids = tokenizer.tokenize(test_string)

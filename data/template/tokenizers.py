@@ -825,10 +825,11 @@ class JsonBPETokenizerWithByteFallback(Tokenizer):
 
     - IDs 0..255 are raw byte fallback tokens.
     - Initial text tokens are single-character entries from the JSON array.
-    - Additional BPE merge tokens are learned from corpus frequency, but ONLY if
-      the merged token already exists in the JSON array.
+    - Additional BPE merge tokens are learned from corpus frequency by combining
+      JSON-listed tokens (pair elements must both come from the JSON array).
 
-    This keeps the final non-byte vocabulary strictly constrained to the JSON file.
+    This avoids external byte-combination merges while still permitting new composed
+    merge tokens beyond the original JSON entries.
     """
 
     def __init__(self, args, train_data, val_data=None):
@@ -845,22 +846,20 @@ class JsonBPETokenizerWithByteFallback(Tokenizer):
         self.allowed_tokens = list(dict.fromkeys(json_tokens))
         self.allowed_token_set = set(self.allowed_tokens)
 
-        self.base_char_tokens = [tok for tok in self.allowed_tokens if len(tok) == 1]
-        if not self.base_char_tokens:
-            raise ValueError(
-                "JSON constrained BPE requires single-character tokens in the JSON array."
-            )
+        if not self.allowed_tokens:
+            raise ValueError("JSON constrained BPE requires at least one token in the JSON array.")
 
-        self.active_tokens = list(self.base_char_tokens)
+        self.base_char_tokens = [tok for tok in self.allowed_tokens if len(tok) == 1]
+        self.base_corpus_tokens = list(self.allowed_tokens)
+        self.active_tokens = list(self.base_corpus_tokens)
 
         requested_vocab_size = getattr(args, "vocab_size", None)
         if requested_vocab_size is not None and requested_vocab_size <= 256:
             raise ValueError("vocab_size must be greater than 256 to allow JSON-BPE tokens.")
-        max_vocab_size = 256 + len(self.allowed_tokens)
         if requested_vocab_size is None:
-            self.desired_vocab_size = max_vocab_size
+            self.desired_vocab_size = None
         else:
-            self.desired_vocab_size = min(requested_vocab_size, max_vocab_size)
+            self.desired_vocab_size = requested_vocab_size
 
         corpus_text = (train_data or "") + (val_data or "")
         if corpus_text:
@@ -884,12 +883,20 @@ class JsonBPETokenizerWithByteFallback(Tokenizer):
 
     def _corpus_to_symbols(self, text):
         symbols = []
-        for ch in text:
-            if ch in self.base_char_tokens:
-                symbols.append(ch)
-            else:
-                # Keep a placeholder that can never merge into JSON tokens.
+        i = 0
+        sorted_base = sorted(self.base_corpus_tokens, key=lambda t: len(t), reverse=True)
+        while i < len(text):
+            matched = False
+            for tok in sorted_base:
+                if text.startswith(tok, i):
+                    symbols.append(tok)
+                    i += len(tok)
+                    matched = True
+                    break
+            if not matched:
+                # Keep a placeholder that can never merge into JSON-token-only candidates.
                 symbols.append(None)
+                i += 1
         return symbols
 
     def _train_merges(self, text):
@@ -897,7 +904,7 @@ class JsonBPETokenizerWithByteFallback(Tokenizer):
         if len(symbols) < 2:
             return
 
-        while 256 + len(self.active_tokens) < self.desired_vocab_size:
+        while self.desired_vocab_size is None or 256 + len(self.active_tokens) < self.desired_vocab_size:
             pair_counts = Counter()
             prev = None
             for token in symbols:
@@ -915,7 +922,11 @@ class JsonBPETokenizerWithByteFallback(Tokenizer):
             best_pair = None
             for pair, _count in pair_counts.most_common():
                 candidate = ''.join(pair)
-                if candidate in self.allowed_token_set and candidate not in self.active_tokens:
+                if (
+                    pair[0] in self.allowed_token_set
+                    and pair[1] in self.allowed_token_set
+                    and candidate not in self.active_tokens
+                ):
                     best_new_token = candidate
                     best_pair = pair
                     break

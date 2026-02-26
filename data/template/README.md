@@ -108,7 +108,7 @@ python3 prepare.py -t input.txt --method custom_char_byte_fallback --custom_char
 python3 prepare.py -t input.txt --method json_bpe_byte_fallback --json_tokens_file tokens.json --vocab_size 1200
 ```
 
-`--vocab_size` sets the target total vocab size (including 256 byte tokens). Merges are added until this target is reached or no additional JSON-allowed merges can be formed from the corpus.
+`--vocab_size` sets the target total vocab size (including 256 byte tokens). Merges are added until this target is reached or no additional merge pairs exist where both sides are tokens from the JSON list. Newly-created merged tokens do **not** need to already exist in the JSON array.
 
 After tokenization this writes inspection artifacts similar to `char_bpe`:
 - `json_bpe_vocab.json` (token list by ID, including `<byte:N>` entries)
