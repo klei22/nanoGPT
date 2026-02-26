@@ -24,6 +24,7 @@ class GPTConfig:
     numerical_embedding_variant: str = "mlp"
     numerical_output_variant: str = "mlp"
     numerical_mapping_weight_tying: bool = True
+    numerical_input_token_format: str = "raw"
 
     # Layerlists
     n_head_layerlist: List[int] = field(default_factory=list)
