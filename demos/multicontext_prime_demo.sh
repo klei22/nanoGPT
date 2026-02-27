@@ -1,7 +1,7 @@
 #!/bin/bash
 # multicontext_prime_demo.sh
 
-pushd data/shakespeare_char_prime/char_mod11/
+pushd data/shakespeare_char_prime
 bash get_dataset.sh
 popd
 
