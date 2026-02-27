@@ -1201,7 +1201,7 @@ def get_tokenizer_functions(meta):
 
         return encode, decode
 
-    if meta['tokenizer'] in {'sinewave', 'sinewave_fp16_bits'}:
+    if meta['tokenizer'] in {'sinewave', 'sinewave_fp16_bits', 'csv_fp16_bits'}:
         def encode(text):
             text = text.strip()
             if not text:
