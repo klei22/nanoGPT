@@ -341,7 +341,24 @@ def transform_newlines_mod(
     return "".join(out)
 
 
-def transform_file(filename, method, max_positions, newline_modulus):
+def transform_letter_modulo(
+    text: str,
+    modulus: int,
+) -> str:
+    """
+    Replace each character with a lowercase letter determined by
+    ``ord(char) % modulus``.
+    """
+    if modulus < 1 or modulus > len(string.ascii_lowercase):
+        raise ValueError("modulus must be between 1 and 26 for `letter_modulo`")
+
+    letters = string.ascii_lowercase[:modulus]
+    emit_tokenlist(list(letters))
+
+    return "".join(letters[ord(ch) % modulus] for ch in text)
+
+
+def transform_file(filename, method, max_positions, newline_modulus, letter_modulus):
     """
     Transforms a file in-place using the selected method.
     """
@@ -370,6 +387,12 @@ def transform_file(filename, method, max_positions, newline_modulus):
                 transformed_content = transform_newlines_mod(
                     file_content, modulus=newline_modulus
                 )
+            elif method == 'letter_modulo':
+                if letter_modulus is None:
+                    raise ValueError("--letter-modulus is required for `letter_modulo`")
+                transformed_content = transform_letter_modulo(
+                    file_content, modulus=letter_modulus
+                )
             else:
                 raise ValueError(f"Unknown method: {method}")
 
@@ -394,7 +417,8 @@ if __name__ == "__main__":
             "part_of_speech",
             "in_word_position",
             "since_newline",
-            "newlines_mod"
+            "newlines_mod",
+            "letter_modulo",
         ],
         default="cvp",
         help="Which transformation method to use."
@@ -412,5 +436,17 @@ if __name__ == "__main__":
         default=256,
         help="Modulo value for `newlines_mod` (default: 256).",
     )
+    parser.add_argument(
+        "--letter-modulus",
+        type=int,
+        default=None,
+        help="Required when --method letter_modulo: map characters via ord(char) %% N.",
+    )
     args = parser.parse_args()
-    transform_file(args.input_file, args.method, args.max_positions, args.newline_modulus)
+    transform_file(
+        args.input_file,
+        args.method,
+        args.max_positions,
+        args.newline_modulus,
+        args.letter_modulus,
+    )
