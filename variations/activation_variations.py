@@ -247,6 +247,47 @@ class LearnedSplineActivation(nn.Module):
         return result
 
 
+class LearnedLagrangeActivation(nn.Module):
+    """Learned polynomial activation via Lagrange interpolation on fixed nodes."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.num_nodes = config.lagrange_act_num_nodes
+        self.left_bound = config.lagrange_act_left_bound
+        self.right_bound = config.lagrange_act_right_bound
+
+        x_vals = torch.linspace(self.left_bound, self.right_bound, self.num_nodes)
+        self.register_buffer("x_vals", x_vals)
+
+        init_mode = getattr(config, "lagrange_act_init", "gelu")
+        if init_mode == "relu":
+            y_init = torch.relu(x_vals)
+        elif init_mode == "identity":
+            y_init = x_vals
+        else:
+            y_init = nn.GELU()(x_vals)
+
+        self.y_vals = nn.Parameter(y_init)
+
+        denom = []
+        for i in range(self.num_nodes):
+            diffs = x_vals[i] - torch.cat((x_vals[:i], x_vals[i + 1 :]))
+            denom.append(torch.prod(diffs))
+        self.register_buffer("denominators", torch.stack(denom))
+
+    def forward(self, x):
+        result = torch.zeros_like(x)
+        for i in range(self.num_nodes):
+            numer = torch.ones_like(x)
+            for j in range(self.num_nodes):
+                if i == j:
+                    continue
+                numer = numer * (x - self.x_vals[j])
+            basis = numer / self.denominators[i]
+            result = result + self.y_vals[i] * basis
+        return result
+
+
 class ActivationWrapper(nn.Module):
     """Base wrapper class for PyTorch activation functions"""
     def __init__(self, activation_class, config=None):
@@ -347,6 +388,7 @@ activation_dictionary = {
     "pfla": PiecewiseFullyLearnableActivation,
     "pfla_le": PiecewiseFullyLearnableActivationLearnedEnds,
     "learned_spline": LearnedSplineActivation,
+    "learned_lagrange": LearnedLagrangeActivation,
     "prelu": PReLU_Config,
     "relu": ReLU_Config,
     "relu6": ReLU6_Config,

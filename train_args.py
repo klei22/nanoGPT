@@ -776,6 +776,7 @@ def parse_args():
             "glu",
             "leaky_relu",
             "learned_spline",
+            "learned_lagrange",
             "mish",
             "piecewise",
             "pfla",
@@ -834,6 +835,17 @@ def parse_args():
 
     ## LearnedSplineActivation - lsa
     model_group.add_argument("--lsa_num_knots", type=int, default=30)
+
+    ## LearnedLagrangeActivation
+    model_group.add_argument("--lagrange_act_num_nodes", type=int, default=8)
+    model_group.add_argument("--lagrange_act_left_bound", type=float, default=-3.0)
+    model_group.add_argument("--lagrange_act_right_bound", type=float, default=3.0)
+    model_group.add_argument(
+        "--lagrange_act_init",
+        type=str,
+        default="gelu",
+        choices=["gelu", "relu", "identity"],
+    )
 
 
     # Attention Variations
