@@ -1767,11 +1767,18 @@ class Trainer:
                 peak_mb = self.peak_gpu_usage / (1024 ** 2)
                 with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
                     chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
+                    n_embd = self.model_args.get('n_embd')
+                    num_vectors = (
+                        self.model.num_param / n_embd
+                        if n_embd not in (None, 0)
+                        else float('nan')
+                    )
                     metrics = [
                             f"{self.best_val_loss.item()}",
                             f"{self.iter_num}",
                             f"{self.best_tokens}",
                             f"{self.model.num_param}",
+                            f"{num_vectors:.6f}",
                             f"{chance_ratio:.3e}",
                             f"{chance_ratio/self.model.num_param:.3e}",
                             f"{peak_mb:.1f}",
