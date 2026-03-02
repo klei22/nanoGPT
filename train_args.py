@@ -805,6 +805,7 @@ def parse_args():
             "relu_power",
             "relu6",
             "rrelu",
+            "disco",
             "selu",
             "sigmoid",
             "silu",
@@ -1183,6 +1184,7 @@ def parse_args():
         "sigsoftmax",
         "softmax",
         "softplus",
+        "softplus2max",
         "squareplus",
         "softshrink",
         "gelumax",
@@ -1264,7 +1266,7 @@ def parse_args():
     model_group.add_argument('--softermax_use_xmax', default=True, action=argparse.BooleanOptionalAction)
 
     ### SoftPlus Options
-    model_group.add_argument('--softplus_divisor', type=float,default=100.0)
+    model_group.add_argument('--softplus_divisor', type=float,default=256.0)
     ### SquarePlus Options
     model_group.add_argument('--squareplus_divisor', type=float,default=100.0)
     ### SoftShrink Options
