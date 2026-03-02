@@ -18,6 +18,12 @@ class ReLUPower(nn.Module):
     def forward(self, x):
         return torch.pow(torch.relu(x), self.power)
 
+class Disco(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+    def forward(self, x):
+        return x * torch.abs(x)
 class SquaredGELU(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -349,6 +355,7 @@ activation_dictionary = {
     "learned_spline": LearnedSplineActivation,
     "prelu": PReLU_Config,
     "relu": ReLU_Config,
+    "disco": Disco,
     "relu6": ReLU6_Config,
     "rrelu": RReLU_Config,
     "selu": SELU_Config,
