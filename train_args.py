@@ -633,6 +633,10 @@ def parse_args():
     model_group.add_argument("--mlp_expansion_factor", type=int, default=4, help="If MLP like variant is used, set the expansion factor for the linear transformations, default is 4.")
     model_group.add_argument("--mlp_size", type=int, default=None, help="If not None, is used instead of mlp_expansion_factor")
     model_group.add_argument('--mlp_cproj_scale', default=1.0, type=float, help="Divide MLP down projection outputs by this value")
+    model_group.add_argument('--mlp_cproj_scale_learning', default=False, action=argparse.BooleanOptionalAction,
+                             help="Learn mlp_cproj_scale as a parameter (initialized from mlp_cproj_scale).")
+    model_group.add_argument('--mlp_cproj_scale_init_learning_scale', default=1.0, type=float,
+                             help="Constant factor multiplied with learned mlp_cproj_scale parameter.")
     model_group.add_argument('--mlp_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction, help="L2 normalize MLP activation vectors before down projection")
 
     ## KAN Options
@@ -908,6 +912,10 @@ def parse_args():
     model_group.add_argument('--n_cproj', default=None, type=int)
     model_group.add_argument('--attn_cproj_scale', default=1.0, type=float,
                              help="Scale attention outputs before c_proj (Infinite Attention)")
+    model_group.add_argument('--attn_cproj_scale_learning', default=False, action=argparse.BooleanOptionalAction,
+                             help="Learn attn_cproj_scale as a parameter (initialized from attn_cproj_scale).")
+    model_group.add_argument('--attn_cproj_scale_init_learning_scale', default=1.0, type=float,
+                             help="Constant factor multiplied with learned attn_cproj_scale parameter.")
     model_group.add_argument('--attn_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction,
                              help="L2 normalize attention outputs before c_proj (Infinite Attention)")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")

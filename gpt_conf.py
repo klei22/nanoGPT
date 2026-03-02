@@ -166,6 +166,8 @@ class GPTConfig:
     # Attention Options
     attention_variant: str = "causal"
     attn_cproj_scale: float = 1.0
+    attn_cproj_scale_learning: bool = False
+    attn_cproj_scale_init_learning_scale: float = 1.0
     attn_post_act_l2_norm: bool = False
 
     # QK Norm Options
@@ -196,6 +198,8 @@ class GPTConfig:
     mlp_expansion_factor: int = 4
     mlp_size: int = None
     mlp_cproj_scale: float = 1.0
+    mlp_cproj_scale_learning: bool = False
+    mlp_cproj_scale_init_learning_scale: float = 1.0
     mlp_post_act_l2_norm: bool = False
 
     ## KAN Option
