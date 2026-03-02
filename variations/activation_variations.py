@@ -23,13 +23,7 @@ class Disco(nn.Module):
         super().__init__()
 
     def forward(self, x):
-
-        result = torch.relu(x) ** 2
-        result -= torch.relu(-x) ** 2
-
-        return result
-
-
+        return x * torch.abs(x)
 class SquaredGELU(nn.Module):
     def __init__(self, config):
         super().__init__()
