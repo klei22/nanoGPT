@@ -70,8 +70,8 @@ def patched_argv(argv: List[str]):
         sys.argv = old
 
 
-def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float]:
-    """Return (best_val_loss, num_params, best_iter, peak_gpu_mb, iter_latency_ms)."""
+def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float, float, float]:
+    """Return (best_val_loss, num_params, best_iter, torch_alloc_mb, torch_resv_mb, process_gpu_mb, iter_latency_ms)."""
     from train import Trainer
     from train_args import parse_args as parse_train_args
 
@@ -83,15 +83,17 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, flo
     loss = float(tr.best_val_loss)
     nparam = float(tr.raw_model.num_param)
     best_iter = int(getattr(tr, "iter_num_best_val_loss", 0))
-    peak_gpu_mb = float(getattr(tr, "peak_gpu_usage", 0.0) / (1024 ** 2))
+    torch_alloc_mb = float(getattr(tr, "peak_torch_allocated", getattr(tr, "peak_gpu_usage", 0.0)) / (1024 ** 2))
+    torch_resv_mb = float(getattr(tr, "peak_torch_reserved", 0.0) / (1024 ** 2))
+    process_gpu_mb = float(getattr(tr, "peak_process_gpu_usage", 0.0) / (1024 ** 2))
     iter_latency_ms = float(getattr(tr, "iter_latency_avg", 0.0))
     del tr
     torch.cuda.empty_cache()
     gc.collect()
-    return loss, nparam, best_iter, peak_gpu_mb, iter_latency_ms
+    return loss, nparam, best_iter, torch_alloc_mb, torch_resv_mb, process_gpu_mb, iter_latency_ms
 
 
-def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float]:
+def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, float, float, float]:
     script_dir = Path(__file__).parent
     cmd = [sys.executable, str(script_dir / "train.py")] + dict_to_cli(cfg)
     env = {k: v for k, v in os.environ.items() if k not in {"RANK", "WORLD_SIZE"}}
@@ -101,15 +103,24 @@ def run_trial_subproc(cfg: Dict[str, Any]) -> Tuple[float, float, int, float, fl
         raise RuntimeError("train.py failed")
 
     out_dir = Path(cfg.get("out_dir", "out"))
-    line = (out_dir / "best_val_loss_and_iter.txt").read_text().strip().split(",")
+    line = [value.strip() for value in (out_dir / "best_val_loss_and_iter.txt").read_text().strip().split(",")]
     loss = float(line[0])
     best_iter = int(line[1])
-    nparam = float(line[2])
-    peak_gpu_mb = float(line[5])
-    iter_latency_ms = float(line[6])
+    nparam = float(line[3])
+    if len(line) >= 10:
+        torch_alloc_mb = float(line[6])
+        torch_resv_mb = float(line[7])
+        process_gpu_mb = float(line[8])
+        iter_latency_ms = float(line[9])
+    else:
+        # Backward compatibility with older metric layouts.
+        torch_alloc_mb = float(line[5]) if len(line) > 5 else 0.0
+        torch_resv_mb = 0.0
+        process_gpu_mb = 0.0
+        iter_latency_ms = float(line[6]) if len(line) > 6 else 0.0
     torch.cuda.empty_cache()
     gc.collect()
-    return loss, nparam, best_iter, peak_gpu_mb, iter_latency_ms
+    return loss, nparam, best_iter, torch_alloc_mb, torch_resv_mb, process_gpu_mb, iter_latency_ms
 
 
 def load_log(path: Path) -> Dict[str, Any]:
@@ -167,11 +178,12 @@ def main():
     )
     ap.add_argument(
         "--efficiency_target",
-        choices=["params", "vram", "iter"],
+        choices=["params", "vram", "iter", "torch_allocated", "torch_reserved", "process_gpu"],
         default="params",
         help=(
             "Metric to normalize score gain: 'params' (default) for parameter count, "
-            "'vram' for peak GPU memory in MB, or 'iter' for average iteration latency in ms."
+            "'vram' (legacy alias for torch_allocated), 'torch_allocated', 'torch_reserved', "
+            "'process_gpu', or 'iter' for average iteration latency in ms."
         ),
     )
 
@@ -247,7 +259,9 @@ def main():
         base_loss = last["baseline_metrics"]["loss"]
         base_score = last["baseline_metrics"]["score"]
         base_params = last["baseline_metrics"]["params"]
-        base_gpu = last["baseline_metrics"].get("peak_gpu_mb", 0.0)
+        base_torch_alloc = last["baseline_metrics"].get("peak_torch_allocated_mb", last["baseline_metrics"].get("peak_gpu_mb", 0.0))
+        base_torch_reserved = last["baseline_metrics"].get("peak_torch_reserved_mb", 0.0)
+        base_process_gpu = last["baseline_metrics"].get("peak_process_gpu_mb", 0.0)
         base_iter_ms = last["baseline_metrics"].get("iter_latency_avg", 0.0)
         cur_iter = last["iter"] + 1
         # Apply overrides to the resumed configuration for the current session
@@ -261,7 +275,15 @@ def main():
         print("[BASELINE] measuring initial config …")
         # run_fn receives a deepcopy of the (potentially overridden) baseline_cfg
 
-        base_loss, base_params, base_best_iter, base_gpu, base_iter_ms = run_fn(deepcopy(baseline_cfg))
+        (
+            base_loss,
+            base_params,
+            base_best_iter,
+            base_torch_alloc,
+            base_torch_reserved,
+            base_process_gpu,
+            base_iter_ms,
+        ) = run_fn(deepcopy(baseline_cfg))
         base_score = 1 / math.exp(base_loss)
         log["iterations"].append(
             {
@@ -270,7 +292,9 @@ def main():
                     "loss": base_loss,
                     "score": base_score,
                     "params": base_params,
-                    "peak_gpu_mb": base_gpu,
+                    "peak_torch_allocated_mb": base_torch_alloc,
+                    "peak_torch_reserved_mb": base_torch_reserved,
+                    "peak_process_gpu_mb": base_process_gpu,
                     "iter_latency_avg": base_iter_ms,
                     "best_iter": base_best_iter,
                 },
@@ -319,7 +343,7 @@ def main():
 
                     print(f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}")
                     try:
-                        loss, nparam, best_it, peak_mb, iter_ms = run_fn(cfg_run)
+                        loss, nparam, best_it, torch_alloc_mb, torch_resv_mb, process_gpu_mb, iter_ms = run_fn(cfg_run)
                     except Exception as exc:
                         print("   ⚠", exc)
                         return                                      # discard this candidate
@@ -330,24 +354,34 @@ def main():
                                       "loss": loss,
                                       "score": score,
                                       "best_iter": best_it,
-                                      "peak_gpu_mb": peak_mb,
+                                      "peak_torch_allocated_mb": torch_alloc_mb,
+                                      "peak_torch_reserved_mb": torch_resv_mb,
+                                      "peak_process_gpu_mb": process_gpu_mb,
                                       "iter_latency_ms": iter_ms})
                     scores.append(score)
 
                 # ── aggregate across seeds ───────────────────────────────────
                 avg_score  = sum(scores) / len(scores)
-                avg_peak   = sum(s["peak_gpu_mb"] for s in seed_runs) / len(seed_runs)
+                avg_torch_alloc = sum(s["peak_torch_allocated_mb"] for s in seed_runs) / len(seed_runs)
+                avg_torch_reserved = sum(s["peak_torch_reserved_mb"] for s in seed_runs) / len(seed_runs)
+                avg_process_gpu = sum(s["peak_process_gpu_mb"] for s in seed_runs) / len(seed_runs)
                 avg_iter   = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
                 avg_loss   = -math.log(avg_score)
                 d_score    = avg_score - base_score
                 d_param    = nparam     - base_params
-                d_vram     = avg_peak   - base_gpu
+                d_torch_alloc = avg_torch_alloc - base_torch_alloc
+                d_torch_reserved = avg_torch_reserved - base_torch_reserved
+                d_process_gpu = avg_process_gpu - base_process_gpu
                 d_iter     = avg_iter   - base_iter_ms
 
                 if args.efficiency_target == "params":
                     d_cost = d_param
-                elif args.efficiency_target == "vram":
-                    d_cost = d_vram
+                elif args.efficiency_target in ("vram", "torch_allocated"):
+                    d_cost = d_torch_alloc
+                elif args.efficiency_target == "torch_reserved":
+                    d_cost = d_torch_reserved
+                elif args.efficiency_target == "process_gpu":
+                    d_cost = d_process_gpu
                 elif args.efficiency_target == "iter":
                     d_cost = d_iter
                 else:
@@ -363,11 +397,15 @@ def main():
                     "best_val_loss": avg_loss,
                     "best_iter":     max(s["best_iter"] for s in seed_runs),
                     "num_params":    nparam,
-                    "peak_gpu_mb":   avg_peak,
+                    "peak_torch_allocated_mb": avg_torch_alloc,
+                    "peak_torch_reserved_mb": avg_torch_reserved,
+                    "peak_process_gpu_mb": avg_process_gpu,
                     "iter_latency_avg": avg_iter,
                     "delta_score":   d_score,
                     "delta_params":  d_param,
-                    "delta_vram":    d_vram,
+                    "delta_torch_allocated_mb": d_torch_alloc,
+                    "delta_torch_reserved_mb": d_torch_reserved,
+                    "delta_process_gpu_mb": d_process_gpu,
                     "delta_iter_latency": d_iter,
                     "efficiency":    eff,
                     "seeds":         seed_runs,
@@ -470,7 +508,9 @@ def main():
                                 "loss": base_loss, # Keep current baseline metrics
                                 "score": base_score,
                                 "params": base_params,
-                                "peak_gpu_mb": base_gpu,
+                                "peak_torch_allocated_mb": base_torch_alloc,
+                                "peak_torch_reserved_mb": base_torch_reserved,
+                                "peak_process_gpu_mb": base_process_gpu,
                                 "iter_latency_avg": base_iter_ms,
                                 "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
                             },
@@ -536,7 +576,9 @@ def main():
         base_loss = chosen["avg_loss"]
         base_score = chosen["avg_score"]
         base_params = chosen["num_params"]
-        base_gpu = chosen.get("peak_gpu_mb", base_gpu)
+        base_torch_alloc = chosen.get("peak_torch_allocated_mb", base_torch_alloc)
+        base_torch_reserved = chosen.get("peak_torch_reserved_mb", base_torch_reserved)
+        base_process_gpu = chosen.get("peak_process_gpu_mb", base_process_gpu)
         base_iter_ms = chosen.get("iter_latency_avg", base_iter_ms)
 
         # log block
@@ -547,7 +589,9 @@ def main():
                     "loss": base_loss,
                     "score": base_score,
                     "params": base_params,
-                    "peak_gpu_mb": base_gpu,
+                    "peak_torch_allocated_mb": base_torch_alloc,
+                    "peak_torch_reserved_mb": base_torch_reserved,
+                    "peak_process_gpu_mb": base_process_gpu,
                     "iter_latency_avg": base_iter_ms,
                     "best_iter": chosen["best_iter"],
                 },

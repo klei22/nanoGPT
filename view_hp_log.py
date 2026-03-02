@@ -71,6 +71,10 @@ def metrics_panel(
     # This round statistics
     g.add_row("Score", fnum(current_iter_baseline_metrics.get("score", "-"), "{:.4e}")) # Baseline score
     g.add_row("Params", fnum(current_iter_baseline_metrics.get("num_params", current_iter_baseline_metrics.get("params", "-")), "{:.3e}"))
+    g.add_row("Torch alloc MB", fnum(current_iter_baseline_metrics.get("peak_torch_allocated_mb", current_iter_baseline_metrics.get("peak_gpu_mb", "-")), "{:.1f}"))
+    g.add_row("Torch reserved MB", fnum(current_iter_baseline_metrics.get("peak_torch_reserved_mb", "-"), "{:.1f}"))
+    g.add_row("Process GPU MB", fnum(current_iter_baseline_metrics.get("peak_process_gpu_mb", "-"), "{:.1f}"))
+    g.add_row("Iter latency ms", fnum(current_iter_baseline_metrics.get("iter_latency_avg", "-"), "{:.2f}"))
 
     return Panel(g, title="Iteration stats", border_style="green")
 
@@ -199,7 +203,10 @@ class SweepViewer(App):
             return ["iter"], [["-1"]]
         # guard against iterations where “chosen” is missing/None
         changed = sorted({it["chosen"]["param"] for it in self.iters if it.get("chosen")})
-        hdrs = ["iter", *changed, "best_loss", "best_iter", "params", "Δparams", "eff."]
+        hdrs = [
+            "iter", *changed, "best_loss", "best_iter", "params", "alloc_mb", "resv_mb",
+            "proc_mb", "Δparams", "Δalloc", "Δresv", "Δproc", "Δiter", "eff."
+        ]
 
         # helper ────────────────────────────────────────────────────────────
         def _lookup(cfg: Dict[str, Any], key: str) -> Any:
@@ -229,6 +236,13 @@ class SweepViewer(App):
                 fnum(self.base_metrics.get("loss", "-"), "{:.4f}"),
                 str(self.base_metrics.get("best_iter", "-")),
                 fnum(self.base_metrics.get("params", "-"), "{:,}"),
+                fnum(self.base_metrics.get("peak_torch_allocated_mb", self.base_metrics.get("peak_gpu_mb", "-")), "{:.1f}"),
+                fnum(self.base_metrics.get("peak_torch_reserved_mb", "-"), "{:.1f}"),
+                fnum(self.base_metrics.get("peak_process_gpu_mb", "-"), "{:.1f}"),
+                "-",
+                "-",
+                "-",
+                "-",
                 "-",
                 "-",
             ]
@@ -252,11 +266,18 @@ class SweepViewer(App):
                     f"{ch['best_val_loss']:.4f}",
                     str(ch.get("best_iter", "-")),
                     f"{int(ch['num_params']):,}",
+                    f"{ch.get('peak_torch_allocated_mb', ch.get('peak_gpu_mb', float('nan'))):.1f}",
+                    f"{ch.get('peak_torch_reserved_mb', float('nan')):.1f}",
+                    f"{ch.get('peak_process_gpu_mb', float('nan')):.1f}",
                     f"{int(ch['delta_params']):,}",
+                    f"{ch.get('delta_torch_allocated_mb', float('nan')):.1f}",
+                    f"{ch.get('delta_torch_reserved_mb', float('nan')):.1f}",
+                    f"{ch.get('delta_process_gpu_mb', float('nan')):.1f}",
+                    f"{ch.get('delta_iter_latency', float('nan')):.2f}",
                     f"{ch['efficiency']:.2e}",
                 ]
             else:
-                vals += ["-", "-", "-", "-", "-"]
+                vals += ["-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"]
             rows.append([str(i), *vals])
         return hdrs, rows
 
@@ -326,7 +347,8 @@ class SweepViewer(App):
         self.sub_title = f"Iteration {blk['iter']}  (↑/↓ nav, q quit)"
         table.clear(columns=True)
         table.add_columns(
-            "param", "value", "best_loss", "best_iter", "Δscore", "Δparams", "eff."
+            "param", "value", "best_loss", "best_iter", "alloc_mb", "resv_mb", "proc_mb",
+            "Δscore", "Δparams", "Δalloc", "Δresv", "Δproc", "Δiter", "eff."
         )
         # “chosen” may be absent (e.g., no best candidate selected this round)
         chosen = blk.get("chosen") or {}
@@ -342,8 +364,15 @@ class SweepViewer(App):
                 Text(str(c["value"]), style=st),
                 f"{c['best_val_loss']:.4f}",
                 str(c.get("best_iter", "-")),
+                f"{c.get('peak_torch_allocated_mb', c.get('peak_gpu_mb', float('nan'))):.1f}",
+                f"{c.get('peak_torch_reserved_mb', float('nan')):.1f}",
+                f"{c.get('peak_process_gpu_mb', float('nan')):.1f}",
                 f"{c['delta_score']:.2e}",
                 f"{c['delta_params']:.2e}",
+                f"{c.get('delta_torch_allocated_mb', float('nan')):.1f}",
+                f"{c.get('delta_torch_reserved_mb', float('nan')):.1f}",
+                f"{c.get('delta_process_gpu_mb', float('nan')):.1f}",
+                f"{c.get('delta_iter_latency', float('nan')):.2f}",
                 f"{c['efficiency']:.2e}",
             )
 
