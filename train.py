@@ -26,8 +26,8 @@ from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 from train_variations.loss_variants import build_loss_function
 from train_variations.distillation_loss_variants import build_distillation_loss
 
-from utils.gpu_monitoring import get_gpu_memory_info
-from torch.cuda import reset_peak_memory_stats, max_memory_allocated
+from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
+from torch.cuda import reset_peak_memory_stats, max_memory_allocated, max_memory_reserved
 
 from utils.model_info import (
     print_summary,
@@ -100,6 +100,9 @@ class Trainer:
         self.tokens_trained = 0
         self.best_tokens = 0
         self.peak_gpu_usage = 0.0
+        self.peak_torch_allocated = 0.0
+        self.peak_torch_reserved = 0.0
+        self.peak_process_gpu_usage = 0.0
         self.total_training_time_ms: float = 0.0   # total run-time from start of training
         self.time_remaining_ms: float= 0.0
         self.total_time_est_ms: float= 0.0
@@ -1573,7 +1576,11 @@ class Trainer:
             args.append(self.lr)
             args.append(self.args.batch_size)
             args.append(self.tokens_trained)
-            if hasattr(self, "peak_gpu_usage"):
+            if hasattr(self, "peak_torch_allocated"):
+                args.append(self.peak_torch_allocated / (1024 ** 2))
+                args.append(self.peak_torch_reserved / (1024 ** 2))
+                args.append(self.peak_process_gpu_usage / (1024 ** 2))
+            elif hasattr(self, "peak_gpu_usage"):
                 args.append(self.peak_gpu_usage / (1024 ** 2))
             if self.args.gns_type is not None:
                 args.append(self.gns)
@@ -1691,10 +1698,21 @@ class Trainer:
             self.gns = self.gns_ema.get_gns()
 
         if self.device_type == 'cuda':
-            self.peak_gpu_usage = max(
-                    self.peak_gpu_usage,
-                    max_memory_allocated(self.device)
-                    )
+            current_device_idx = torch.cuda.current_device()
+            self.peak_torch_allocated = max(
+                self.peak_torch_allocated,
+                max_memory_allocated(self.device),
+            )
+            self.peak_torch_reserved = max(
+                self.peak_torch_reserved,
+                max_memory_reserved(self.device),
+            )
+            self.peak_process_gpu_usage = max(
+                self.peak_process_gpu_usage,
+                get_process_gpu_memory_bytes(current_device_idx),
+            )
+            # Backward-compatible field used by older tools.
+            self.peak_gpu_usage = self.peak_torch_allocated
 
         self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
         if self.args.dataset_list is not None:
@@ -1764,7 +1782,9 @@ class Trainer:
                 self.best_val_loss = losses['val']
                 self.best_iter = self.iter_num
                 self.best_tokens = self.tokens_trained
-                peak_mb = self.peak_gpu_usage / (1024 ** 2)
+                peak_torch_allocated_mb = self.peak_torch_allocated / (1024 ** 2)
+                peak_torch_reserved_mb = self.peak_torch_reserved / (1024 ** 2)
+                peak_process_gpu_mb = self.peak_process_gpu_usage / (1024 ** 2)
                 with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
                     chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
                     metrics = [
@@ -1774,7 +1794,9 @@ class Trainer:
                             f"{self.model.num_param}",
                             f"{chance_ratio:.3e}",
                             f"{chance_ratio/self.model.num_param:.3e}",
-                            f"{peak_mb:.1f}",
+                            f"{peak_torch_allocated_mb:.1f}",
+                            f"{peak_torch_reserved_mb:.1f}",
+                            f"{peak_process_gpu_mb:.1f}",
                             f"{self.iter_latency_avg:.1f}",
                             f"{self.latest_top1_prob:.6f}",
                             f"{self.latest_top1_correct:.6f}",
@@ -1946,7 +1968,7 @@ class Trainer:
                     best_iter=f"{self.best_iter}",
                     best_tokens=f"{self.best_tokens}",
                     iter_latency=f"{self.iter_latency_avg:.1f}",
-                    peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                    peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
                     t1p=f"{self.latest_top1_prob:.6f}",
                     t1c=f"{self.latest_top1_correct:.6f}",
                     tr=f"{self.latest_target_rank:.2f}",
@@ -2150,7 +2172,7 @@ class Trainer:
                         best_iter=f"{self.best_iter}",
                         best_tokens=f"{self.best_tokens}",
                         iter_latency=f"{self.iter_latency_avg:.1f}",
-                        peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                        peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
                         t1p=f"{self.latest_top1_prob:.6f}",
                         t1c=f"{self.latest_top1_correct:.6f}",
                         tr=f"{self.latest_target_rank:.2f}",
