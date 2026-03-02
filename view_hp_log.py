@@ -52,6 +52,8 @@ def fnum(val: Any, spec: str) -> str:
 def metrics_panel(
         current_iter_baseline_metrics: Dict[str, Any],
         prev_iter_baseline_loss: Any = "-",       # Baseline loss from prev iter
+        prev_iter_baseline_rankme: Any = "-",
+        prev_iter_baseline_areq: Any = "-",
         current_avg_candidate_loss: Any = "-",    # Avg Cand Loss for current iter
         prior_avg_candidate_loss: Any = "-",      # Avg Cand Loss for prior iter
         delta_avg_candidate_loss: Any = "-",      # Difference in Avg Cand Loss
@@ -67,6 +69,16 @@ def metrics_panel(
     g.add_row("Avg Cand Loss", fnum(current_avg_candidate_loss, "{:.4f}"))
     g.add_row("Prior Avg Loss", fnum(prior_avg_candidate_loss, "{:.4f}"))
     g.add_row("Δ Avg Loss", fnum(delta_avg_candidate_loss, "{:.4f}"))
+    cur_rankme = current_iter_baseline_metrics.get("rankme", "-")
+    cur_areq = current_iter_baseline_metrics.get("areq", "-")
+    d_rankme = (cur_rankme - prev_iter_baseline_rankme) if isinstance(cur_rankme, (int, float)) and isinstance(prev_iter_baseline_rankme, (int, float)) else "-"
+    d_areq = (cur_areq - prev_iter_baseline_areq) if isinstance(cur_areq, (int, float)) and isinstance(prev_iter_baseline_areq, (int, float)) else "-"
+    g.add_row("Prior RankMe", fnum(prev_iter_baseline_rankme, "{:.4f}"))
+    g.add_row("RankMe", fnum(cur_rankme, "{:.4f}"))
+    g.add_row("Δ RankMe", fnum(d_rankme, "{:+.4f}"))
+    g.add_row("Prior AReQ", fnum(prev_iter_baseline_areq, "{:.4f}"))
+    g.add_row("AReQ", fnum(cur_areq, "{:.4f}"))
+    g.add_row("Δ AReQ", fnum(d_areq, "{:+.4f}"))
 
     # This round statistics
     g.add_row("Score", fnum(current_iter_baseline_metrics.get("score", "-"), "{:.4e}")) # Baseline score
@@ -199,7 +211,19 @@ class SweepViewer(App):
             return ["iter"], [["-1"]]
         # guard against iterations where “chosen” is missing/None
         changed = sorted({it["chosen"]["param"] for it in self.iters if it.get("chosen")})
-        hdrs = ["iter", *changed, "best_loss", "best_iter", "params", "Δparams", "eff."]
+        hdrs = [
+            "iter",
+            *changed,
+            "best_loss",
+            "best_iter",
+            "rankme",
+            "Δrankme",
+            "areq",
+            "Δareq",
+            "params",
+            "Δparams",
+            "eff.",
+        ]
 
         # helper ────────────────────────────────────────────────────────────
         def _lookup(cfg: Dict[str, Any], key: str) -> Any:
@@ -228,6 +252,10 @@ class SweepViewer(App):
                 *base_vals,
                 fnum(self.base_metrics.get("loss", "-"), "{:.4f}"),
                 str(self.base_metrics.get("best_iter", "-")),
+                fnum(self.base_metrics.get("rankme", "-"), "{:.4f}"),
+                "-",
+                fnum(self.base_metrics.get("areq", "-"), "{:.4f}"),
+                "-",
                 fnum(self.base_metrics.get("params", "-"), "{:,}"),
                 "-",
                 "-",
@@ -251,12 +279,16 @@ class SweepViewer(App):
                 vals += [
                     f"{ch['best_val_loss']:.4f}",
                     str(ch.get("best_iter", "-")),
+                    fnum(ch.get("avg_rankme", "-"), "{:.4f}"),
+                    fnum(ch.get("delta_rankme", "-"), "{:+.4f}"),
+                    fnum(ch.get("avg_areq", "-"), "{:.4f}"),
+                    fnum(ch.get("delta_areq", "-"), "{:+.4f}"),
                     f"{int(ch['num_params']):,}",
                     f"{int(ch['delta_params']):,}",
                     f"{ch['efficiency']:.2e}",
                 ]
             else:
-                vals += ["-", "-", "-", "-", "-"]
+                vals += ["-", "-", "-", "-", "-", "-", "-", "-", "-"]
             rows.append([str(i), *vals])
         return hdrs, rows
 
@@ -289,13 +321,19 @@ class SweepViewer(App):
         current_baseline_metrics = blk["baseline_metrics"]
 
         prior_loss_val = "-"
+        prior_rankme_val = "-"
+        prior_areq_val = "-"
         if self.idx == 0: # Current iteration is the first one (e.g., iter 0)
             if self.base_metrics: # Use metrics from iter -1 or initial baseline
                 prior_loss_val = self.base_metrics.get("loss", self.base_metrics.get("best_val_loss", "-"))
+                prior_rankme_val = self.base_metrics.get("rankme", "-")
+                prior_areq_val = self.base_metrics.get("areq", "-")
         elif self.idx > 0: # Current iteration is not the first one
             # Use baseline_metrics from the previous iteration in the list
             prev_iter_baseline_metrics = self.iters[self.idx - 1]["baseline_metrics"]
             prior_loss_val = prev_iter_baseline_metrics.get("loss", prev_iter_baseline_metrics.get("best_val_loss", "-"))
+            prior_rankme_val = prev_iter_baseline_metrics.get("rankme", "-")
+            prior_areq_val = prev_iter_baseline_metrics.get("areq", "-")
 
 
         # Calculate Avg Cand Loss for current and prior iterations
@@ -322,11 +360,13 @@ class SweepViewer(App):
             current_avg_candidate_loss=current_avg_loss_display,
             prior_avg_candidate_loss=prior_avg_loss_display,
             delta_avg_candidate_loss=delta_avg_loss_display,
+            prev_iter_baseline_rankme=prior_rankme_val,
+            prev_iter_baseline_areq=prior_areq_val,
         ))
         self.sub_title = f"Iteration {blk['iter']}  (↑/↓ nav, q quit)"
         table.clear(columns=True)
         table.add_columns(
-            "param", "value", "best_loss", "best_iter", "Δscore", "Δparams", "eff."
+            "param", "value", "best_loss", "best_iter", "rankme", "Δrankme", "areq", "Δareq", "Δscore", "Δparams", "eff."
         )
         # “chosen” may be absent (e.g., no best candidate selected this round)
         chosen = blk.get("chosen") or {}
@@ -342,6 +382,10 @@ class SweepViewer(App):
                 Text(str(c["value"]), style=st),
                 f"{c['best_val_loss']:.4f}",
                 str(c.get("best_iter", "-")),
+                fnum(c.get("avg_rankme", "-"), "{:.4f}"),
+                fnum(c.get("delta_rankme", "-"), "{:+.4f}"),
+                fnum(c.get("avg_areq", "-"), "{:.4f}"),
+                fnum(c.get("delta_areq", "-"), "{:+.4f}"),
                 f"{c['delta_score']:.2e}",
                 f"{c['delta_params']:.2e}",
                 f"{c['efficiency']:.2e}",
