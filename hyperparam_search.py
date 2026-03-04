@@ -141,44 +141,13 @@ def _parse_best_metrics_file(metrics_path: Path) -> TrialMetrics:
     loss = float(line[0])
     best_iter = int(line[1])
     nparam = float(line[3])
-
-    # Layouts supported here:
-    # 1) Current train.py layout:
-    #    6 alloc, 7 reserved, 8 process, 9 iter_latency, 19 rankme, 20 areq
-    # 2) Older memory-aware layout:
-    #    6 alloc, 7 reserved, 8 process, 9 iter_latency
-    # 3) Older legacy layout:
-    #    6 peak_gpu, 7 iter_latency, 17 rankme, 18 areq
-    # 4) Very old layout:
-    #    5 peak_gpu, 6 iter_latency
-    if len(line) >= 21:
-        torch_alloc_mb = float(line[6])
-        torch_resv_mb = float(line[7])
-        process_gpu_mb = float(line[8])
-        iter_latency_ms = float(line[9])
-        rankme = float(line[19])
-        areq = float(line[20])
-    elif len(line) >= 19:
-        torch_alloc_mb = float(line[6])
-        torch_resv_mb = 0.0
-        process_gpu_mb = 0.0
-        iter_latency_ms = float(line[7])
-        rankme = float(line[17])
-        areq = float(line[18])
-    elif len(line) >= 10:
-        torch_alloc_mb = float(line[6])
-        torch_resv_mb = float(line[7])
-        process_gpu_mb = float(line[8])
-        iter_latency_ms = float(line[9])
-        rankme = float("nan")
-        areq = float("nan")
-    else:
-        torch_alloc_mb = float(line[5]) if len(line) > 5 else 0.0
-        torch_resv_mb = 0.0
-        process_gpu_mb = 0.0
-        iter_latency_ms = float(line[6]) if len(line) > 6 else 0.0
-        rankme = float("nan")
-        areq = float("nan")
+    # Layout
+    torch_alloc_mb = float(line[6])
+    torch_resv_mb = float(line[7])
+    process_gpu_mb = float(line[8])
+    iter_latency_ms = float(line[9])
+    rankme = float(line[19])
+    areq = float(line[20])
 
     return (
         loss,

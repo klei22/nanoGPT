@@ -379,8 +379,11 @@ class GPT(nn.Module):
                 if self.uses_numerical_multicontext:
                     module = self.numerical_embeddings[str(i)]
                     param = next(module.parameters())
-                    numeric_tokens = tokens.to(param.dtype).unsqueeze(-1)
-                    token_repr = module(numeric_tokens)
+                    if self.config.numerical_multicontext_input_format == "fp16_bits":
+                        numeric_tokens = self._fp16bits_to_fp32(tokens).to(param.dtype)
+                    else:
+                        numeric_tokens = tokens.to(param.dtype)
+                    token_repr = module(numeric_tokens.unsqueeze(-1))
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
 
@@ -445,7 +448,11 @@ class GPT(nn.Module):
                 if target_list is not None:
                     losses = []
                     for i, preds in enumerate(logits):
-                        targets = target_list[i].to(preds.dtype)
+                        if self.config.numerical_multicontext_input_format == "fp16_bits":
+                            decoded_targets = self._fp16bits_to_fp32(target_list[i])
+                            targets = decoded_targets.to(preds.dtype)
+                        else:
+                            targets = target_list[i].to(preds.dtype)
                         mask = target_list[i] != -1
                         if mask.any():
                             loss_i = F.huber_loss(
@@ -756,29 +763,28 @@ class GPT(nn.Module):
         mantissa = b & 0x3FF
 
         sign_f = torch.where(sign == 0, 1.0, -1.0).to(torch.float32)
+        exponent_i = exponent.to(torch.int32)
+        mantissa_f = mantissa.to(torch.float32)
 
-        subnormal = (exponent == 0) & (mantissa != 0)
-        normal = (exponent > 0) & (exponent < 0x1F)
-        special = exponent == 0x1F
+        # Subnormal: sign * 2^-14 * (mantissa / 2^10)
+        subnormal_mag = torch.ldexp(mantissa_f / 1024.0, torch.full_like(exponent_i, -14))
+
+        # Normal: sign * 2^(exp-15) * (1 + mantissa / 2^10)
+        normal_mag = torch.ldexp(1.0 + (mantissa_f / 1024.0), exponent_i - 15)
+
+        is_zero = (exponent_i == 0) & (mantissa == 0)
+        is_subnormal = (exponent_i == 0) & (mantissa != 0)
+        is_normal = (exponent_i > 0) & (exponent_i < 0x1F)
+        is_special = exponent_i == 0x1F
+        is_inf = is_special & (mantissa == 0)
+        is_nan = is_special & (mantissa != 0)
 
         out = torch.zeros_like(sign_f, dtype=torch.float32)
-
-        if subnormal.any():
-            man = mantissa[subnormal].to(torch.float32)
-            out[subnormal] = sign_f[subnormal] * torch.pow(2.0, -14) * (man / 1024.0)
-
-        if normal.any():
-            man = mantissa[normal].to(torch.float32)
-            exp = exponent[normal].to(torch.float32)
-            out[normal] = sign_f[normal] * torch.pow(2.0, exp - 15.0) * (1.0 + man / 1024.0)
-
-        if special.any():
-            man = mantissa[special]
-            out[special] = torch.where(
-                man == 0,
-                sign_f[special] * torch.tensor(float("inf"), device=bits.device),
-                torch.tensor(float("nan"), device=bits.device),
-            )
+        out = torch.where(is_subnormal, sign_f * subnormal_mag, out)
+        out = torch.where(is_normal, sign_f * normal_mag, out)
+        out = torch.where(is_inf, sign_f * float("inf"), out)
+        out = torch.where(is_nan, float("nan"), out)
+        out = torch.where(is_zero, torch.zeros_like(out), out)
 
         return out
 

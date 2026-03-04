@@ -77,6 +77,16 @@ def metrics_panel(
     g.add_row("Avg Cand Loss", fnum(current_avg_candidate_loss, "{:.4f}"))
     g.add_row("Prior Avg Loss", fnum(prior_avg_candidate_loss, "{:.4f}"))
     g.add_row("Δ Avg Loss", fnum(delta_avg_candidate_loss, "{:.4f}"))
+    cur_rankme = current_iter_baseline_metrics.get("rankme", "-")
+    cur_areq = current_iter_baseline_metrics.get("areq", "-")
+    d_rankme = (cur_rankme - prev_iter_baseline_rankme) if isinstance(cur_rankme, (int, float)) and isinstance(prev_iter_baseline_rankme, (int, float)) else "-"
+    d_areq = (cur_areq - prev_iter_baseline_areq) if isinstance(cur_areq, (int, float)) and isinstance(prev_iter_baseline_areq, (int, float)) else "-"
+    g.add_row("Prior RankMe", fnum(prev_iter_baseline_rankme, "{:.4f}"))
+    g.add_row("RankMe", fnum(cur_rankme, "{:.4f}"))
+    g.add_row("Δ RankMe", fnum(d_rankme, "{:+.4f}"))
+    g.add_row("Prior AReQ", fnum(prev_iter_baseline_areq, "{:.4f}"))
+    g.add_row("AReQ", fnum(cur_areq, "{:.4f}"))
+    g.add_row("Δ AReQ", fnum(d_areq, "{:+.4f}"))
 
     cur_rankme = current_iter_baseline_metrics.get("rankme", "-")
     cur_areq = current_iter_baseline_metrics.get("areq", "-")

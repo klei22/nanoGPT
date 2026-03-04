@@ -18,6 +18,7 @@ python train.py \
     sinewave/s13 \
     sinewave/s14 \
   --numerical_multicontext \
+  --numerical_multicontext_input_format scalar \
   --numerical_mlp_hidden_dim 64 \
   --n_layer 10 \
   --n_head 6 \

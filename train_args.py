@@ -279,6 +279,26 @@ def parse_args():
                                     help="Variant for numerical multicontext output mapping (e.g., mlp, linear)")
     model_group.add_argument('--numerical_mapping_weight_tying', default=True, action=argparse.BooleanOptionalAction,
                                     help="Tie numerical embedding/output mapping weights when supported")
+    model_group.add_argument(
+        '--numerical_multicontext_input_format',
+        default='scalar',
+        choices=['scalar', 'fp16_bits'],
+        help=(
+            "How to interpret raw uint16 values for numerical multicontext inputs/targets. "
+            "'scalar' uses the integer value directly, 'fp16_bits' decodes IEEE-754 half bits to float32."
+        ),
+    )
+    model_group.add_argument(
+        '--norm_channel_variant',
+        type=str,
+        default=None,
+        choices=['krmsnorm', 'prmsnorm', 'rmsnorm', 'layernorm', 'hyperspherenorm', 'dact', 'identity'],
+        help="Optional post-mapping normalization applied to numerical embedding channels.",
+    )
+    model_group.add_argument('--norm_channel_radius', type=float, default=None)
+    model_group.add_argument('--norm_channel_scale', type=float, default=None)
+    model_group.add_argument('--norm_channel_gain', type=bool, default=None, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--norm_channel_radius_learning', type=bool, default=None, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--multicontext', default=False, action=argparse.BooleanOptionalAction,
                                     help="Enable multi-context training on multiple simultaneous datasets")
     model_group.add_argument('--multidataset_wte', default=False, action=argparse.BooleanOptionalAction,
@@ -785,6 +805,7 @@ def parse_args():
             "relu_power",
             "relu6",
             "rrelu",
+            "disco",
             "selu",
             "sigmoid",
             "silu",
@@ -1163,6 +1184,7 @@ def parse_args():
         "sigsoftmax",
         "softmax",
         "softplus",
+        "softplus2max",
         "squareplus",
         "softshrink",
         "gelumax",
@@ -1244,7 +1266,7 @@ def parse_args():
     model_group.add_argument('--softermax_use_xmax', default=True, action=argparse.BooleanOptionalAction)
 
     ### SoftPlus Options
-    model_group.add_argument('--softplus_divisor', type=float,default=100.0)
+    model_group.add_argument('--softplus_divisor', type=float,default=256.0)
     ### SquarePlus Options
     model_group.add_argument('--squareplus_divisor', type=float,default=100.0)
     ### SoftShrink Options
