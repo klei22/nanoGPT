@@ -352,11 +352,36 @@ class GPT(nn.Module):
         np.savez(file_path, scale_up=scale_up_matrix, scale_down=scale_down_matrix)
         print(f"Scale matrices saved to {file_path}")
 
-    def add_embedding_gaussian_noise(self, embeddings):
-        if self.config.embedding_gaussian_noise_std and self.config.embedding_gaussian_noise_std > 0:
+    def get_embedding_gaussian_noise_std(self, iter_num=None):
+        if not self.config.embedding_gaussian_noise_in_eval and not self.training:
+            return 0.0
+
+        base_std = float(self.config.embedding_gaussian_noise_std or 0.0)
+        start_std = self.config.embedding_gaussian_noise_start_std
+        end_std = self.config.embedding_gaussian_noise_end_std
+        start_std = base_std if start_std is None else float(start_std)
+        end_std = base_std if end_std is None else float(end_std)
+
+        end_iter = self.config.embedding_gaussian_noise_end_iter
+        if end_iter is None or iter_num is None:
+            return max(0.0, end_std)
+
+        start_iter = int(self.config.embedding_gaussian_noise_start_iter or 0)
+        end_iter = int(end_iter)
+        if end_iter <= start_iter:
+            return max(0.0, end_std)
+
+        progress = (float(iter_num) - start_iter) / float(end_iter - start_iter)
+        progress = min(max(progress, 0.0), 1.0)
+        current_std = start_std + progress * (end_std - start_std)
+        return max(0.0, current_std)
+
+    def add_embedding_gaussian_noise(self, embeddings, iter_num=None):
+        noise_std = self.get_embedding_gaussian_noise_std(iter_num=iter_num)
+        if noise_std > 0:
             noise = torch.randn_like(embeddings)
             noise = noise / (noise.norm(dim=-1, keepdim=True) + 1e-6)
-            noise = noise * self.config.embedding_gaussian_noise_std
+            noise = noise * noise_std
             embeddings = embeddings / (embeddings.norm(dim=-1, keepdim=True) + 1e-6)
             return embeddings + noise
         return embeddings
@@ -384,7 +409,7 @@ class GPT(nn.Module):
                 else:
                     token_repr = self.transformer[f'wte_{i}'](tokens)
 
-                token_repr = self.add_embedding_gaussian_noise(token_repr)
+                token_repr = self.add_embedding_gaussian_noise(token_repr, iter_num=iter_num)
                 x = token_repr if x is None else x + token_repr
 
             if self.config.norm_variant_wte is not None:
@@ -506,7 +531,7 @@ class GPT(nn.Module):
                 tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
             x = None
 
-            tok_emb = self.add_embedding_gaussian_noise(tok_emb)
+            tok_emb = self.add_embedding_gaussian_noise(tok_emb, iter_num=iter_num)
             if self.n_embd_wte:
                 tok_emb = self.transformer.scale_up(tok_emb)
 
@@ -613,7 +638,7 @@ class GPT(nn.Module):
         else:
             tok_emb = self.transformer.wte(idx)
 
-        tok_emb = self.add_embedding_gaussian_noise(tok_emb)
+        tok_emb = self.add_embedding_gaussian_noise(tok_emb, iter_num=None)
 
         if self.n_embd_wte:
             tok_emb = self.transformer.scale_up(tok_emb)
