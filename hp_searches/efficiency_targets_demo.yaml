@@ -34,8 +34,8 @@ attention_variant: "infinite"
 
 # Training Settings
 eta_variant: "iteration"
-max_iters: 2500
-eval_interval: 2500
+max_iters: 500
+eval_interval: 500
 compile: True
 batch_size: 32
 
