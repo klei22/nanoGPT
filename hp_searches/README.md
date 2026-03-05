@@ -80,6 +80,10 @@ noise.
   - `efficiency_target` chooses the cost metric for efficiency: `params`
   (default), `vram` for peak GPU memory, or `iter` for average iteration
   latency.
+  - `optimize_target` chooses the improvement objective: `score` (default),
+  `rankme`, or `areq`.
+  - `optimize_mode` controls direction of optimization for the selected
+  target: `max` (default) or `min`.
 
 
 1. Run bash script from main directory
@@ -91,6 +95,10 @@ bash ./hp_searches/lobo_attnhead_search.sh
 To quickly exercise the three efficiency metrics, see
 `hp_searches/test_efficiency_targets.sh` which runs a tiny search using
 the accompanying `efficiency_targets_demo.yaml` baseline.
+
+To demo target optimization with both maximize and minimize modes, run:
+- `hp_searches/rankme_target_demo.sh`
+- `hp_searches/areq_target_demo.sh`
 
 1. View with `view_hp_log.py`
 
@@ -177,8 +185,8 @@ specific task targets, that make this an interesting framework to develop.
 
 ### Supported Metrics and Planned Extensions
 
-Currently the only supported metric is validation loss or rather 1/exp(val_loss)
-which is equal to the probability that the next token is correct.
+Current optimization targets are score (`1/exp(val_loss)`), RankMe, and
+AReQ. Each target can be optimized in either maximize or minimize mode.
 
 Later we hope to also include summarization tasks, translation tasks, etc. so
 and see what model shapes result from each of these.
