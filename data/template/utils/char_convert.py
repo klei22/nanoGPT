@@ -341,7 +341,27 @@ def transform_newlines_mod(
     return "".join(out)
 
 
-def transform_file(filename, method, max_positions, newline_modulus):
+def transform_modulo_letters(text: str, modulo_n: int) -> str:
+    """
+    Replace each character with a letter chosen by absolute character index
+    modulo *modulo_n*.
+
+    Example with modulo_n=4: abcdabcd...
+    """
+    if modulo_n < 1:
+        raise ValueError("modulo_n must be >= 1")
+    if modulo_n > 52:
+        raise ValueError("modulo_n must be <= 52 (a-zA-Z)")
+
+    alphabet = string.ascii_lowercase + string.ascii_uppercase
+    symbols = alphabet[:modulo_n]
+    emit_tokenlist(list(symbols))
+
+    out = [symbols[idx % modulo_n] for idx, _ in enumerate(text)]
+    return "".join(out)
+
+
+def transform_file(filename, method, max_positions, newline_modulus, modulo_n):
     """
     Transforms a file in-place using the selected method.
     """
@@ -370,6 +390,10 @@ def transform_file(filename, method, max_positions, newline_modulus):
                 transformed_content = transform_newlines_mod(
                     file_content, modulus=newline_modulus
                 )
+            elif method == 'modulo_letters':
+                transformed_content = transform_modulo_letters(
+                    file_content, modulo_n=modulo_n
+                )
             else:
                 raise ValueError(f"Unknown method: {method}")
 
@@ -394,7 +418,8 @@ if __name__ == "__main__":
             "part_of_speech",
             "in_word_position",
             "since_newline",
-            "newlines_mod"
+            "newlines_mod",
+            "modulo_letters",
         ],
         default="cvp",
         help="Which transformation method to use."
@@ -412,5 +437,20 @@ if __name__ == "__main__":
         default=256,
         help="Modulo value for `newlines_mod` (default: 256).",
     )
+    parser.add_argument(
+        "--modulo-n",
+        type=int,
+        default=None,
+        help="Number of letters to cycle for `modulo_letters` (required with that method).",
+    )
     args = parser.parse_args()
-    transform_file(args.input_file, args.method, args.max_positions, args.newline_modulus)
+    if args.method == "modulo_letters" and args.modulo_n is None:
+        parser.error("--modulo-n is required when --method modulo_letters")
+
+    transform_file(
+        args.input_file,
+        args.method,
+        args.max_positions,
+        args.newline_modulus,
+        args.modulo_n,
+    )

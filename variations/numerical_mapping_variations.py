@@ -1,10 +1,13 @@
 # variations/numerical_mapping_variations.py
 
+import copy
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
 from variations.activation_variations import activation_dictionary
+from variations.norm_variations import norm_dictionary
 
 
 def _get_numerical_mlp_hidden_dims(config):
@@ -29,13 +32,33 @@ def _build_numerical_mlp(config, input_dim, output_dim):
     return nn.Sequential(*layers)
 
 
+def _build_channel_norm(config):
+    variant = getattr(config, "norm_channel_variant", None)
+    if variant is None:
+        return None
+
+    if variant not in norm_dictionary:
+        raise ValueError(f"Unsupported norm_channel_variant: {variant}")
+
+    norm_config = copy.deepcopy(config)
+    for attr in ("radius", "scale", "gain", "radius_learning"):
+        value = getattr(config, f"norm_channel_{attr}", None)
+        if value is not None:
+            setattr(norm_config, f"hsnorm_{attr}", value)
+    return norm_dictionary[variant](norm_config)
+
+
 class NumericalMLPEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.net = _build_numerical_mlp(config, 1, config.n_embd)
+        self.channel_norm = _build_channel_norm(config)
 
     def forward(self, x):
-        return self.net(x)
+        out = self.net(x)
+        if self.channel_norm is not None:
+            out = self.channel_norm(out)
+        return out
 
 
 class NumericalMLPOutput(nn.Module):
@@ -51,9 +74,13 @@ class NumericalLinearEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.proj = nn.Linear(1, config.n_embd)
+        self.channel_norm = _build_channel_norm(config)
 
     def forward(self, x):
-        return self.proj(x)
+        out = self.proj(x)
+        if self.channel_norm is not None:
+            out = self.channel_norm(out)
+        return out
 
 
 class NumericalCayleyEmbedding(nn.Module):
@@ -62,6 +89,7 @@ class NumericalCayleyEmbedding(nn.Module):
         self.n_embd = config.n_embd
         self.skew_param = nn.Parameter(torch.empty(self.n_embd, self.n_embd))
         self.vector = nn.Parameter(torch.empty(1, self.n_embd))
+        self.channel_norm = _build_channel_norm(config)
         nn.init.normal_(self.skew_param, mean=0.0, std=0.02)
         nn.init.normal_(self.vector, mean=0.0, std=0.02)
 
@@ -72,7 +100,10 @@ class NumericalCayleyEmbedding(nn.Module):
         eye = eye.view(1, 1, self.n_embd, self.n_embd)
         q = torch.linalg.solve(eye - scaled, eye + scaled)
         vector = self.vector.to(device=x.device, dtype=x.dtype)
-        return torch.matmul(vector, q).squeeze(-2)
+        out = torch.matmul(vector, q).squeeze(-2)
+        if self.channel_norm is not None:
+            out = self.channel_norm(out)
+        return out
 
 
 class NumericalLinearOutput(nn.Module):
@@ -102,11 +133,15 @@ class NumericalScaledVectorEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.vector = nn.Parameter(torch.empty(1, config.n_embd))
+        self.channel_norm = _build_channel_norm(config)
         nn.init.normal_(self.vector, mean=0.0, std=0.02)
 
     def forward(self, x):
         vector = self.vector.to(device=x.device, dtype=x.dtype)
-        return x * vector
+        out = x * vector
+        if self.channel_norm is not None:
+            out = self.channel_norm(out)
+        return out
 
 
 numerical_embedding_dictionary = {

@@ -1201,6 +1201,21 @@ def get_tokenizer_functions(meta):
 
         return encode, decode
 
+    if meta['tokenizer'] in {'sinewave', 'sinewave_fp16_bits', 'csv_fp16_bits'}:
+        def encode(text):
+            text = text.strip()
+            if not text:
+                return []
+            values = []
+            for piece in text.replace(',', ' ').split():
+                values.append(int(piece))
+            return values
+
+        def decode(token_ids):
+            return ','.join(map(str, token_ids))
+
+        return encode, decode
+
     if meta['tokenizer'] == 'python_json_byte_fallback':
         stoi, itos = meta['stoi'], meta['itos']
         processor = load_python_token_processor(meta.get('custom_tokens', []))
