@@ -427,6 +427,46 @@ def save_raw_logits_chart(raw_logit_values, out_dir, k_tag, sample_idx):
     plt.savefig(out_path)
     plt.close()
 
+
+def plot_topk_logit_histogram(
+    logits: torch.Tensor,
+    decode: Callable[[Sequence[int]], str],
+    top_k: int,
+    title: str,
+    out_path: str,
+) -> List[Dict[str, Union[int, float, str]]]:
+    """Plot a top-k bar chart over a 1D logits tensor and save it to disk."""
+    if logits.dim() != 1:
+        raise ValueError(f"Expected a 1D logits tensor, got shape {tuple(logits.shape)}")
+
+    k = min(int(top_k), logits.numel())
+    top_values, top_indices = torch.topk(logits, k=k)
+
+    token_labels: List[str] = []
+    top_items: List[Dict[str, Union[int, float, str]]] = []
+    for rank, (tok_idx, logit_val) in enumerate(zip(top_indices.tolist(), top_values.tolist()), start=1):
+        token_text = _escape_ws(decode([tok_idx]))
+        token_labels.append(token_text)
+        top_items.append({
+            "rank": rank,
+            "token_id": tok_idx,
+            "token": token_text,
+            "logit": float(logit_val),
+        })
+
+    plt.figure(figsize=(16, 9))
+    colors = sns.color_palette('viridis', n_colors=k)
+    plt.bar(token_labels, top_values.cpu().numpy(), color=colors)
+    plt.xlabel("Token")
+    plt.ylabel("Logit")
+    plt.title(title)
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+
+    return top_items
+
 def _colorize_rank(
     token_ids: List[int],
     ranks: List[int],
