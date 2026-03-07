@@ -43,25 +43,25 @@ COMMON_ARGS=(
   --device "${DEVICE}"
 )
 
-echo "[1/5] Training model embd256"
+echo "[1/6] Training model embd256"
 python3 train.py \
   --out_dir "${OUT_256}" \
   --n_embd 256 \
   "${COMMON_ARGS[@]}"
 
-echo "[2/5] Training model embd384"
+echo "[2/6] Training model embd384"
 python3 train.py \
   --out_dir "${OUT_384}" \
   --n_embd 384 \
   "${COMMON_ARGS[@]}"
 
-echo "[3/5] Training model embd512"
+echo "[3/6] Training model embd512"
 python3 train.py \
   --out_dir "${OUT_512}" \
   --n_embd 512 \
   "${COMMON_ARGS[@]}"
 
-echo "[4/5] Running first-association histogram + KL analysis"
+echo "[4/6] Running first-association histogram + KL analysis"
 python3 analysis/compare_first_association.py \
   --model_out_dir "${OUT_256}" "${OUT_384}" "${OUT_512}" \
   --model_label embd256 embd384 embd512 \
@@ -72,13 +72,23 @@ python3 analysis/compare_first_association.py \
   --batch_size 256 \
   --device "${DEVICE}"
 
-echo "[5/5] Building interactive Plotly top-k comparison page"
+echo "[5/6] Building interactive Plotly top-k comparison page"
 python3 analysis/plot_first_association_pairs.py \
   --probs_yaml "${COMPARE_DIR}/probs_embd256.yaml" "${COMPARE_DIR}/probs_embd384.yaml" "${COMPARE_DIR}/probs_embd512.yaml" \
   --label embd256 embd384 embd512 \
   --output_html "${COMPARE_DIR}/topk_next_token_pairs.html" \
   --output_json "${COMPARE_DIR}/topk_next_token_pairs.json" \
   --top_k 20
+
+
+echo "[6/6] Building PyVis gravity network graph"
+python3 analysis/first_association_pyvis_graph.py \
+  --probs_yaml "${COMPARE_DIR}/probs_embd384.yaml" \
+  --output_html "${COMPARE_DIR}/first_association_graph_embd384.html" \
+  --top_k 20 \
+  --min_strength 0.0 \
+  --initial_start_tokens none \
+  --node_radio_scope start
 
 echo "Done. Artifacts are in: ${COMPARE_DIR}"
 echo " - topk_logit_hist_by_model.png"
@@ -92,3 +102,4 @@ echo " - probs_embd384.yaml"
 echo " - probs_embd512.yaml"
 echo " - topk_next_token_pairs.html"
 echo " - topk_next_token_pairs.json"
+echo " - first_association_graph_embd384.html"
