@@ -218,6 +218,15 @@ def _inject_controls(
     <button id="add-node-btn" type="button">Add checked nodes</button>
     <button id="remove-node-btn" type="button">Remove checked nodes</button>
     <button id="straighten-edges-btn" type="button">Straighten shown edges</button>
+    <div style="margin-top:6px;">
+      <select id="organize-layout-select">
+        <option value="circle">Organize: circle</option>
+        <option value="grid">Organize: grid</option>
+        <option value="line">Organize: line</option>
+        <option value="radial">Organize: radial by degree</option>
+      </select>
+      <button id="organize-layout-btn" type="button">Apply organize</button>
+    </div>
     <div id="node-selector" style="max-height:320px; overflow:auto; border:1px solid #ddd; padding:6px; margin-top:6px;">{''.join(selector_html)}</div>
   </div>
   <div>
@@ -277,6 +286,54 @@ def _inject_controls(
       li.textContent = n ? `${{id}}: ${{n.label}}` : String(id);
       ul.appendChild(li);
     }});
+  }}
+
+  function organizeShownNodes(layoutMode) {{
+    const shownNodes = [];
+    nodes.forEach((n) => {{
+      if (!n.hidden) shownNodes.push(n.id);
+    }});
+    if (!shownNodes.length) return;
+
+    if (layoutMode === 'circle' || layoutMode === 'radial') {{
+      let ordered = shownNodes.slice();
+      if (layoutMode === 'radial') {{
+        const degree = new Map();
+        shownNodes.forEach((id) => degree.set(id, 0));
+        edges.forEach((e) => {{
+          if (e.hidden) return;
+          if (degree.has(e.from)) degree.set(e.from, degree.get(e.from) + 1);
+          if (degree.has(e.to)) degree.set(e.to, degree.get(e.to) + 1);
+        }});
+        ordered.sort((a, b) => (degree.get(b) - degree.get(a)) || (a - b));
+      }} else {{
+        ordered.sort((a, b) => a - b);
+      }}
+      const radius = Math.max(160, 28 * ordered.length / (2 * Math.PI));
+      ordered.forEach((id, idx) => {{
+        const theta = (2 * Math.PI * idx) / ordered.length;
+        nodes.update({{ id, x: radius * Math.cos(theta), y: radius * Math.sin(theta), fixed: {{x: true, y: true}} }});
+      }});
+    }} else if (layoutMode === 'grid') {{
+      const ordered = shownNodes.slice().sort((a, b) => a - b);
+      const cols = Math.ceil(Math.sqrt(ordered.length));
+      const step = 90;
+      ordered.forEach((id, idx) => {{
+        const r = Math.floor(idx / cols);
+        const c = idx % cols;
+        nodes.update({{ id, x: c * step, y: r * step, fixed: {{x: true, y: true}} }});
+      }});
+    }} else if (layoutMode === 'line') {{
+      const ordered = shownNodes.slice().sort((a, b) => a - b);
+      const step = 70;
+      ordered.forEach((id, idx) => {{
+        nodes.update({{ id, x: idx * step, y: 0, fixed: {{x: true, y: true}} }});
+      }});
+    }}
+
+    if (typeof network !== 'undefined' && network.fit) {{
+      network.fit();
+    }}
   }}
 
   function updateVisibility() {{
@@ -348,6 +405,11 @@ def _inject_controls(
       if (e.hidden) return;
       edges.update({{ id: e.id, smooth: false }});
     }});
+  }});
+
+  document.getElementById('organize-layout-btn').addEventListener('click', () => {{
+    const mode = document.getElementById('organize-layout-select').value;
+    organizeShownNodes(mode);
   }});
 
   const thresholdSlider = document.getElementById('edge-threshold-slider');
