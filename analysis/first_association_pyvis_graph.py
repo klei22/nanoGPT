@@ -202,6 +202,14 @@ def _inject_controls(
   </div>
   <div style="margin-bottom:8px;">
     <strong>Manual node selection (checkbox):</strong><br/>
+    <div style="margin-bottom:6px;">
+      <button id="select-all-btn" type="button">Select all</button>
+      <button id="clear-all-btn" type="button">Clear all</button>
+    </div>
+    <div style="margin-bottom:6px;">
+      <input id="regex-input" type="text" placeholder="regex for checkbox labels (e.g. ^12:|king)" style="width:220px;" />
+      <button id="regex-select-btn" type="button">Select regex matches</button>
+    </div>
     <button id="add-node-btn" type="button">Add checked nodes</button>
     <button id="remove-node-btn" type="button">Remove checked nodes</button>
     <div id="node-selector" style="max-height:320px; overflow:auto; border:1px solid #ddd; padding:6px; margin-top:6px;">{''.join(selector_html)}</div>
@@ -222,6 +230,16 @@ def _inject_controls(
       selected.push(parseInt(el.value, 10));
     }});
     return selected;
+  }}
+
+  function allNodeCheckboxes() {{
+    return Array.from(document.querySelectorAll('input[name="node_select"]'));
+  }}
+
+  function checkboxLabelText(cb) {{
+    const parent = cb.parentElement;
+    if (!parent) return cb.value;
+    return (parent.textContent || '').trim();
   }}
 
   function startMode() {{
@@ -262,6 +280,33 @@ def _inject_controls(
 
     refreshShownList(shown);
   }}
+
+  document.getElementById('select-all-btn').addEventListener('click', () => {{
+    allNodeCheckboxes().forEach((cb) => {{
+      cb.checked = true;
+    }});
+  }});
+
+  document.getElementById('clear-all-btn').addEventListener('click', () => {{
+    allNodeCheckboxes().forEach((cb) => {{
+      cb.checked = false;
+    }});
+  }});
+
+  document.getElementById('regex-select-btn').addEventListener('click', () => {{
+    const pattern = document.getElementById('regex-input').value;
+    if (!pattern) return;
+    let rx;
+    try {{
+      rx = new RegExp(pattern);
+    }} catch (err) {{
+      alert(`Invalid regex: ${err}`);
+      return;
+    }}
+    allNodeCheckboxes().forEach((cb) => {{
+      cb.checked = rx.test(checkboxLabelText(cb));
+    }});
+  }});
 
   document.getElementById('add-node-btn').addEventListener('click', () => {{
     const toks = selectedCheckboxTokens();
