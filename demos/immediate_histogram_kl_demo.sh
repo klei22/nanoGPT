@@ -88,7 +88,7 @@ python3 analysis/first_association_pyvis_graph.py \
   --top_k 20 \
   --min_strength 0.0 \
   --initial_start_tokens none \
-  --node_radio_scope start
+  --node_selector_scope start
 
 echo "Done. Artifacts are in: ${COMPARE_DIR}"
 echo " - topk_logit_hist_by_model.png"

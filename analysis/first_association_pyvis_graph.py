@@ -28,12 +28,12 @@ def parse_args() -> argparse.Namespace:
         help="Initial inclusion of start-token nodes in the visible graph",
     )
     p.add_argument(
-        "--node_radio_scope",
+        "--node_selector_scope",
         choices=["start", "all"],
         default="start",
-        help="Which tokens appear in manual node radio list",
+        help="Which tokens appear in manual node checkbox list",
     )
-    p.add_argument("--node_radio_limit", type=int, default=256, help="Max number of radio entries rendered")
+    p.add_argument("--node_selector_limit", type=int, default=256, help="Max number of checkbox entries rendered")
     p.add_argument("--height", type=str, default="900px")
     p.add_argument("--width", type=str, default="100%")
     return p.parse_args()
@@ -88,12 +88,10 @@ def _inject_controls(
     radios: Sequence[Tuple[int, str]],
     initial_mode: str,
 ) -> str:
-    radios_html = [
-        '<label><input type="radio" name="node_select" value="__NONE__" checked> none</label><br/>'
-    ]
+    selector_html: List[str] = []
     for token_id, display in radios:
-        radios_html.append(
-            f'<label><input type="radio" name="node_select" value="{token_id}"> {display}</label><br/>'
+        selector_html.append(
+            f'<label><input type="checkbox" name="node_select" value="{token_id}"> {display}</label><br/>'
         )
 
     controls = f"""
@@ -105,10 +103,10 @@ def _inject_controls(
     <label><input type="radio" name="start_mode" value="all" {'checked' if initial_mode=='all' else ''}> all</label>
   </div>
   <div style="margin-bottom:8px;">
-    <strong>Manual node selection (radio):</strong><br/>
-    <button id="add-node-btn" type="button">Add selected node</button>
-    <button id="remove-node-btn" type="button">Remove selected node</button>
-    <div id="node-radios" style="max-height:320px; overflow:auto; border:1px solid #ddd; padding:6px; margin-top:6px;">{''.join(radios_html)}</div>
+    <strong>Manual node selection (checkbox):</strong><br/>
+    <button id="add-node-btn" type="button">Add checked nodes</button>
+    <button id="remove-node-btn" type="button">Remove checked nodes</button>
+    <div id="node-selector" style="max-height:320px; overflow:auto; border:1px solid #ddd; padding:6px; margin-top:6px;">{''.join(selector_html)}</div>
   </div>
   <div>
     <strong>Shown nodes</strong>
@@ -120,10 +118,12 @@ def _inject_controls(
   const startTokens = new Set({json.dumps([int(x) for x in start_tokens])});
   const manualNodes = new Set();
 
-  function selectedRadioToken() {{
-    const el = document.querySelector('input[name="node_select"]:checked');
-    if (!el || el.value === '__NONE__') return null;
-    return parseInt(el.value, 10);
+  function selectedCheckboxTokens() {{
+    const selected = [];
+    document.querySelectorAll('input[name="node_select"]:checked').forEach((el) => {{
+      selected.push(parseInt(el.value, 10));
+    }});
+    return selected;
   }}
 
   function startMode() {{
@@ -166,16 +166,16 @@ def _inject_controls(
   }}
 
   document.getElementById('add-node-btn').addEventListener('click', () => {{
-    const tok = selectedRadioToken();
-    if (tok === null) return;
-    manualNodes.add(tok);
+    const toks = selectedCheckboxTokens();
+    if (!toks.length) return;
+    toks.forEach((tok) => manualNodes.add(tok));
     updateVisibility();
   }});
 
   document.getElementById('remove-node-btn').addEventListener('click', () => {{
-    const tok = selectedRadioToken();
-    if (tok === null) return;
-    manualNodes.delete(tok);
+    const toks = selectedCheckboxTokens();
+    if (!toks.length) return;
+    toks.forEach((tok) => manualNodes.delete(tok));
     updateVisibility();
   }});
 
@@ -242,10 +242,10 @@ def main() -> None:
 
     html_text = args.output_html.read_text(encoding="utf-8")
 
-    if args.node_radio_scope == "start":
-        radio_ids = sorted(set(start_tokens))[: args.node_radio_limit]
+    if args.node_selector_scope == "start":
+        radio_ids = sorted(set(start_tokens))[: args.node_selector_limit]
     else:
-        radio_ids = sorted(all_nodes)[: args.node_radio_limit]
+        radio_ids = sorted(all_nodes)[: args.node_selector_limit]
 
     radios = [(tid, _label(tid, vocab_labels)) for tid in radio_ids]
     html_text = _inject_controls(html_text, start_tokens, radios, args.initial_start_tokens)
