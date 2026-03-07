@@ -1380,6 +1380,24 @@ def parse_args():
     logging_group.add_argument('--log_all_metrics', default=False, action=argparse.BooleanOptionalAction, help='Enable logging of all metrics including gns')
     logging_group.add_argument('--log_rankme', default=True, action=argparse.BooleanOptionalAction, help='Log RankMe representation metric during validation')
     logging_group.add_argument('--log_areq', default=True, action=argparse.BooleanOptionalAction, help='Log aReQ representation metric during validation')
+    logging_group.add_argument('--log_rankme_per_iteration', default=False, action=argparse.BooleanOptionalAction, help='Log RankMe on each training iteration (not just validation)')
+    logging_group.add_argument('--log_areq_per_iteration', default=False, action=argparse.BooleanOptionalAction, help='Log aReQ on each training iteration (not just validation)')
+
+    training_group.add_argument(
+        '--rankme_regularization_weight',
+        default=0.0,
+        type=float,
+        help='Scales RankMe regularization term based on (n_embd - rankme). Set to 0 to disable.',
+    )
+    training_group.add_argument(
+        '--rankme_regularization_mode',
+        default='off',
+        choices=['off', 'increase', 'decrease'],
+        help=(
+            "Controls RankMe regularization direction: 'increase' minimizes (n_embd-rankme), "
+            "'decrease' minimizes (rankme-n_embd), and 'off' disables it."
+        ),
+    )
 
     # Turn activation/weight statistics off to save CPU RAM and wall time.
     training_group.add_argument(

@@ -123,6 +123,9 @@ class Trainer:
         self.latest_ln_f_cosine_95 = float('nan')
         self.latest_rankme = float('nan')
         self.latest_areq = float('nan')
+        self.latest_train_rankme = float('nan')
+        self.latest_train_areq = float('nan')
+        self.latest_rankme_regularization_term = float('nan')
 
         # store overall statistics for weights and activations
         self.latest_overall_weight_stats = {
@@ -987,9 +990,17 @@ class Trainer:
                     for k in range(self.args.eval_iters):
                         X, Y, test_dataset = self.get_batch(split, target_dataset=dataset)
                         ln_f_out: list[torch.Tensor] = []
-                        handle = self.model.transformer.ln_f.register_forward_hook(
-                            lambda _m, _i, o: ln_f_out.append(o.detach())
-                        )
+                        clear_rankme = getattr(self.loss_fn, "clear_rankme_features", None)
+                        if callable(clear_rankme):
+                            clear_rankme()
+
+                        def _capture_ln_f_eval(_m, _i, o):
+                            ln_f_out.append(o.detach())
+                            setter = getattr(self.loss_fn, "set_rankme_features", None)
+                            if callable(setter):
+                                setter(o[:, -1, :].detach())
+
+                        handle = self.model.transformer.ln_f.register_forward_hook(_capture_ln_f_eval)
                         with self.ctx:
                             idx = self.args.dataset_list.index(dataset)
                             logits, loss = self.model(
@@ -1123,9 +1134,17 @@ class Trainer:
                 for k in range(self.args.eval_iters):
                     X, Y, _ = self.get_batch(split)
                     ln_f_out: list[torch.Tensor] = []
-                    handle = self.model.transformer.ln_f.register_forward_hook(
-                        lambda _m, _i, o: ln_f_out.append(o.detach())
-                    )
+                    clear_rankme = getattr(self.loss_fn, "clear_rankme_features", None)
+                    if callable(clear_rankme):
+                        clear_rankme()
+
+                    def _capture_ln_f_eval(_m, _i, o):
+                        ln_f_out.append(o.detach())
+                        setter = getattr(self.loss_fn, "set_rankme_features", None)
+                        if callable(setter):
+                            setter(o[:, -1, :].detach())
+
+                    handle = self.model.transformer.ln_f.register_forward_hook(_capture_ln_f_eval)
                     with self.ctx:
                         logits, loss = self.model(
                             X,
@@ -1316,6 +1335,15 @@ class Trainer:
             return None
         return stats
 
+    def _loss_rankme_statistics(self):
+        stats_getter = getattr(self.loss_fn, "rankme_statistics", None)
+        if not callable(stats_getter):
+            return None
+        stats = stats_getter()
+        if not stats:
+            return None
+        return stats
+
     def _log_bit_metrics(self, target_dataset: str, tokens_trained: float) -> None:
         if not self.args.tensorboard_log or self.writer is None:
             return
@@ -1480,6 +1508,8 @@ class Trainer:
             )
 
     def log_metrics_non_validation(self, loss_training, running_mfu, epoch, tokens_trained, target_dataset, train_better_than_chance):
+        compute_rankme_per_iteration = self.args.log_rankme_per_iteration or self.args.log_areq_per_iteration
+
         if self.args.tensorboard_log:
             self.writer.add_scalars(
                     f"{target_dataset}/loss_iters",
@@ -1548,6 +1578,27 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
 
+            if compute_rankme_per_iteration:
+                if self.args.log_rankme_per_iteration:
+                    self.writer.add_scalar(
+                        f"{target_dataset}/train_rankme",
+                        self.latest_train_rankme,
+                        self.iter_num,
+                    )
+                if self.args.log_areq_per_iteration:
+                    self.writer.add_scalar(
+                        f"{target_dataset}/train_areq",
+                        self.latest_train_areq,
+                        self.iter_num,
+                    )
+
+            if not math.isnan(self.latest_rankme_regularization_term):
+                self.writer.add_scalar(
+                    f"{target_dataset}/rankme_regularization_term",
+                    self.latest_rankme_regularization_term,
+                    self.iter_num,
+                )
+
             self._log_bit_metrics(target_dataset, tokens_trained)
 
     def write_to_csv(self, *args, prefix=""):
@@ -1613,8 +1664,10 @@ class Trainer:
 
     @staticmethod
     def _compute_rankme_areq(features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        device = features.device
         if features.numel() == 0:
-            return torch.tensor(float('nan')), torch.tensor(float('nan'))
+            nan = torch.tensor(float('nan'), device=device)
+            return nan, nan
         features = features.float()
         if features.ndim != 2:
             features = features.view(features.shape[0], -1)
@@ -1624,23 +1677,24 @@ class Trainer:
         eigvals = torch.sort(eigvals, descending=True).values
         total = eigvals.sum()
         if total <= 0:
-            return torch.tensor(float('nan')), torch.tensor(float('nan'))
+            nan = torch.tensor(float('nan'), device=eigvals.device, dtype=eigvals.dtype)
+            return nan, nan
         probs = eigvals / total
         entropy = -(probs * torch.log(probs + 1e-12)).sum()
         rankme = torch.exp(entropy)
 
         positive = eigvals > 0
         if positive.sum() < 2:
-            return rankme, torch.tensor(float('nan'))
+            return rankme, torch.tensor(float('nan'), device=eigvals.device, dtype=eigvals.dtype)
         eigvals = eigvals[positive]
-        idx = torch.arange(1, eigvals.numel() + 1, dtype=eigvals.dtype)
+        idx = torch.arange(1, eigvals.numel() + 1, dtype=eigvals.dtype, device=eigvals.device)
         log_i = torch.log(idx)
         log_e = torch.log(eigvals)
         log_i = log_i - log_i.mean()
         log_e = log_e - log_e.mean()
         denom = (log_i ** 2).sum()
         if denom == 0:
-            areq = torch.tensor(float('nan'))
+            areq = torch.tensor(float('nan'), device=eigvals.device, dtype=eigvals.dtype)
         else:
             areq = -(log_i * log_e).sum() / denom
         return rankme, areq
@@ -1888,6 +1942,12 @@ class Trainer:
             log_message+= f", grad_norm {self.grad_norm:2f}"
         if self.args.log_grad_std:
             log_message+= f", grad_std {self.grad_std:.2f}"
+        if self.args.log_rankme_per_iteration:
+            log_message+= f", rankme_iter {self.latest_train_rankme:.4f}"
+        if self.args.log_areq_per_iteration:
+            log_message+= f", areq_iter {self.latest_train_areq:.4f}"
+        if not math.isnan(self.latest_rankme_regularization_term):
+            log_message+= f", rankme_reg {self.latest_rankme_regularization_term:.4e}"
 
         self.console.print(log_message)
 
@@ -2006,6 +2066,36 @@ class Trainer:
                     if self.ddp:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
 
+                    self.latest_train_rankme = float('nan')
+                    self.latest_train_areq = float('nan')
+                    self.latest_rankme_regularization_term = float('nan')
+                    idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
+                    compute_rankme_per_iteration = self.args.log_rankme_per_iteration or self.args.log_areq_per_iteration
+                    loss_requires_rankme = False
+                    rankme_requirement = getattr(self.loss_fn, "requires_rankme_features", None)
+                    if callable(rankme_requirement):
+                        loss_requires_rankme = rankme_requirement()
+
+                    capture_ln_f_for_train = (
+                        self.args.training_mode != 'multicontext'
+                        and (compute_rankme_per_iteration or loss_requires_rankme)
+                    )
+
+                    clear_rankme = getattr(self.loss_fn, "clear_rankme_features", None)
+                    if callable(clear_rankme):
+                        clear_rankme()
+
+                    ln_f_out = []
+                    ln_f_handle = None
+                    if capture_ln_f_for_train:
+                        def _capture_ln_f(_m, _i, o):
+                            ln_f_out.append(o)
+                            setter = getattr(self.loss_fn, "set_rankme_features", None)
+                            if callable(setter):
+                                setter(o[:, -1, :])
+
+                        ln_f_handle = self.model.transformer.ln_f.register_forward_hook(_capture_ln_f)
+
                     with self.ctx:
                         if self.args.training_mode == 'multicontext':
                             total_loss = 0
@@ -2021,7 +2111,6 @@ class Trainer:
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
                         else:
-                            idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
                             logits, loss = self.model(
                                 self.X,
                                 targets=self.Y,
@@ -2029,6 +2118,24 @@ class Trainer:
                                 dataset_idx=idx_ds if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
+
+                    if ln_f_handle is not None:
+                        ln_f_handle.remove()
+
+                    if capture_ln_f_for_train and ln_f_out:
+                        train_features = ln_f_out[0][:, -1, :]
+                        rankme_train, areq_for_train = self._compute_rankme_areq(train_features)
+                        self.latest_train_rankme = self._to_scalar(rankme_train.detach())
+                        self.latest_train_areq = self._to_scalar(areq_for_train.detach())
+
+                    rankme_stats = self._loss_rankme_statistics()
+                    if rankme_stats:
+                        if rankme_stats.get("rankme") is not None:
+                            self.latest_train_rankme = float(rankme_stats["rankme"])
+                        if rankme_stats.get("areq") is not None:
+                            self.latest_train_areq = float(rankme_stats["areq"])
+                        if rankme_stats.get("rankme_regularization_term") is not None:
+                            self.latest_rankme_regularization_term = float(rankme_stats["rankme_regularization_term"])
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                         with torch.no_grad():
