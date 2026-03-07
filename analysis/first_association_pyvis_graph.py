@@ -217,6 +217,7 @@ def _inject_controls(
     </div>
     <button id="add-node-btn" type="button">Add checked nodes</button>
     <button id="remove-node-btn" type="button">Remove checked nodes</button>
+    <button id="straighten-edges-btn" type="button">Straighten shown edges</button>
     <div id="node-selector" style="max-height:320px; overflow:auto; border:1px solid #ddd; padding:6px; margin-top:6px;">{''.join(selector_html)}</div>
   </div>
   <div>
@@ -340,6 +341,13 @@ def _inject_controls(
     if (!toks.length) return;
     toks.forEach((tok) => manualNodes.delete(tok));
     updateVisibility();
+  }});
+
+  document.getElementById('straighten-edges-btn').addEventListener('click', () => {{
+    edges.forEach((e) => {{
+      if (e.hidden) return;
+      edges.update({{ id: e.id, smooth: false }});
+    }});
   }});
 
   const thresholdSlider = document.getElementById('edge-threshold-slider');
