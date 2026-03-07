@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Demo: train two shakespeare_char models (n_embd 384 vs 320), then compare
-# immediate next-token histograms by sweeping every possible input token.
+# Demo: train three shakespeare_char models (n_embd 256/384/512), then compare
+# first-association next-token behavior over all start tokens.
 
 OUT_BASE="${OUT_BASE:-out/immediate_hist_kl_demo}"
-OUT_A="${OUT_BASE}/model_a_embd384"
-OUT_B="${OUT_BASE}/model_b_embd320"
+OUT_256="${OUT_BASE}/model_embd256"
+OUT_384="${OUT_BASE}/model_embd384"
+OUT_512="${OUT_BASE}/model_embd512"
 COMPARE_DIR="${OUT_BASE}/comparison"
 
 MAX_ITERS="${MAX_ITERS:-2000}"
@@ -42,43 +43,52 @@ COMMON_ARGS=(
   --device "${DEVICE}"
 )
 
-echo "[1/3] Training model A (n_embd=384)"
+echo "[1/5] Training model embd256"
 python3 train.py \
-  --out_dir "${OUT_A}" \
+  --out_dir "${OUT_256}" \
+  --n_embd 256 \
+  "${COMMON_ARGS[@]}"
+
+echo "[2/5] Training model embd384"
+python3 train.py \
+  --out_dir "${OUT_384}" \
   --n_embd 384 \
   "${COMMON_ARGS[@]}"
 
-echo "[2/3] Training model B (n_embd=320)"
+echo "[3/5] Training model embd512"
 python3 train.py \
-  --out_dir "${OUT_B}" \
-  --n_embd 320 \
+  --out_dir "${OUT_512}" \
+  --n_embd 512 \
   "${COMMON_ARGS[@]}"
 
-echo "[3/3] Running first-association histogram + KL analysis"
+echo "[4/5] Running first-association histogram + KL analysis"
 python3 analysis/compare_first_association.py \
-  --model_a_out_dir "${OUT_A}" \
-  --model_b_out_dir "${OUT_B}" \
+  --model_out_dir "${OUT_256}" "${OUT_384}" "${OUT_512}" \
+  --model_label embd256 embd384 embd512 \
+  --reference_label embd384 \
   --input_tokens_yaml all \
   --output_dir "${COMPARE_DIR}" \
   --top_k 20 \
   --batch_size 256 \
   --device "${DEVICE}"
 
-
-echo "[4/4] Building interactive Plotly top-k comparison page"
+echo "[5/5] Building interactive Plotly top-k comparison page"
 python3 analysis/plot_first_association_pairs.py \
-  --model_a_probs_yaml "${COMPARE_DIR}/model_a_probs.yaml" \
-  --model_b_probs_yaml "${COMPARE_DIR}/model_b_probs.yaml" \
+  --probs_yaml "${COMPARE_DIR}/probs_embd256.yaml" "${COMPARE_DIR}/probs_embd384.yaml" "${COMPARE_DIR}/probs_embd512.yaml" \
+  --label embd256 embd384 embd512 \
   --output_html "${COMPARE_DIR}/topk_next_token_pairs.html" \
   --output_json "${COMPARE_DIR}/topk_next_token_pairs.json" \
   --top_k 20
 
 echo "Done. Artifacts are in: ${COMPARE_DIR}"
-echo " - topk_logit_hist_side_by_side.png"
+echo " - topk_logit_hist_by_model.png"
 echo " - per_token_kl_barh.png"
-echo " - per_token_kl.npy"
+echo " - per_token_kl_embd384_vs_embd256.npy"
+echo " - per_token_kl_embd384_vs_embd512.npy"
 echo " - summary.json"
-echo " - model_a_probs.yaml"
-echo " - model_b_probs.yaml"
+echo " - probs_manifest.json"
+echo " - probs_embd256.yaml"
+echo " - probs_embd384.yaml"
+echo " - probs_embd512.yaml"
 echo " - topk_next_token_pairs.html"
 echo " - topk_next_token_pairs.json"

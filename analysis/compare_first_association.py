@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Compare immediate next-token distributions for two checkpoints.
+"""Compare immediate next-token distributions for multiple checkpoints.
 
-This script focuses on "first association" style analysis where each start token is
-fed alone (single-token context), then logits/probabilities are compared between two
-models for the same start-token set.
+This script runs first-association analysis (single-token context) over a set of
+start tokens and compares model outputs with user-provided labels.
 """
 
 import argparse
 import json
 import os
 import pickle
+import re
+import sys
 from inspect import signature
+from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 import matplotlib.pyplot as plt
@@ -19,13 +21,14 @@ import torch
 import torch.nn.functional as F
 import yaml
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from model import GPT, GPTConfig
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Compare immediate logit/probability outputs for two checkpoints")
-    p.add_argument("--model_a_out_dir", required=True, type=str, help="Checkpoint directory for model A (contains ckpt.pt)")
-    p.add_argument("--model_b_out_dir", required=True, type=str, help="Checkpoint directory for model B (contains ckpt.pt)")
+    p = argparse.ArgumentParser(description="Compare immediate logit/probability outputs for multiple checkpoints")
+    p.add_argument("--model_out_dir", nargs='+', required=True, help="Checkpoint directories (each contains ckpt.pt)")
+    p.add_argument("--model_label", nargs='+', required=True, help="Display labels for models (e.g., embd256 embd384 embd512)")
     p.add_argument(
         "--input_tokens_yaml",
         default="all",
@@ -33,17 +36,22 @@ def parse_args() -> argparse.Namespace:
         help="YAML file describing start tokens to sweep, or 'all' to use full vocab.",
     )
     p.add_argument("--output_dir", required=True, type=str, help="Where plots and summary artifacts are written")
-    p.add_argument("--top_k", type=int, default=20, help="Top-k logits to use for side-by-side histogram plots")
+    p.add_argument("--top_k", type=int, default=20, help="Top-k logits to use for histogram plots")
     p.add_argument("--batch_size", type=int, default=256, help="Batch size for token sweeps")
     p.add_argument("--device", type=str, default="cuda", help="Device for inference")
     p.add_argument("--weights_only", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--reference_label", type=str, default=None, help="Reference label used for KL bar chart; defaults to first label")
     p.add_argument(
         "--save_logits_yaml",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Save per-token probability outputs for reuse.",
+        help="Save per-model probability outputs for reuse.",
     )
     return p.parse_args()
+
+
+def _slugify(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "_", text).strip("_") or "model"
 
 
 def _load_model(out_dir: str, device: str, weights_only: bool) -> tuple[torch.nn.Module, Dict[str, Any]]:
@@ -94,7 +102,6 @@ def _extract_token_ids_from_yaml(path: str, vocab_size: int) -> List[int]:
                 token_ids = data[key]
                 break
         else:
-            # fallback: if mapping by token id -> metadata, use keys
             token_ids = [int(k) for k in data.keys()]
     else:
         raise ValueError("Unsupported YAML format for input tokens")
@@ -128,53 +135,6 @@ def _token_label(meta: Dict[str, Any], token_id: int) -> str:
     return f"{token_id}:{text}"
 
 
-def _sweep_logits(model: torch.nn.Module, token_ids: Sequence[int], device: str, batch_size: int) -> torch.Tensor:
-    rows: List[torch.Tensor] = []
-    with torch.no_grad():
-        for i in range(0, len(token_ids), batch_size):
-            chunk = token_ids[i : i + batch_size]
-            x = torch.tensor(chunk, dtype=torch.long, device=device).unsqueeze(1)
-            logits, _ = model(x, dataset_idx=0)
-            rows.append(logits[:, -1, :].to(torch.float32).cpu())
-    return torch.cat(rows, dim=0)
-
-
-def _save_topk_side_by_side(logits_a: torch.Tensor, logits_b: torch.Tensor, top_k: int, out_path: str) -> None:
-    k = min(top_k, logits_a.size(-1), logits_b.size(-1))
-    a_vals = torch.topk(logits_a, k=k, dim=-1).values.reshape(-1).numpy()
-    b_vals = torch.topk(logits_b, k=k, dim=-1).values.reshape(-1).numpy()
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-    axes[0].hist(a_vals, bins=100, color="#1f77b4", alpha=0.85)
-    axes[0].set_title(f"Model A top-{k} logits")
-    axes[0].set_xlabel("Logit")
-    axes[0].set_ylabel("Count")
-
-    axes[1].hist(b_vals, bins=100, color="#ff7f0e", alpha=0.85)
-    axes[1].set_title(f"Model B top-{k} logits")
-    axes[1].set_xlabel("Logit")
-
-    plt.tight_layout()
-    plt.savefig(out_path)
-    plt.close(fig)
-
-
-def _save_kl_barh(kl_values: np.ndarray, labels: Sequence[str], out_path: str) -> None:
-    height = max(6.0, len(labels) * 0.16)
-    fig, ax = plt.subplots(figsize=(14, height))
-    y = np.arange(len(labels))
-    ax.barh(y, kl_values, color="#2ca02c", alpha=0.85)
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=7)
-    ax.invert_yaxis()
-    ax.set_xlabel("KL divergence KL(model_a || model_b)")
-    ax.set_ylabel("Start token")
-    ax.set_title("Per-start-token alignment (total KL over full vocabulary)")
-    plt.tight_layout()
-    plt.savefig(out_path)
-    plt.close(fig)
-
-
 def _extract_vocab_labels(meta: Dict[str, Any], vocab_size: int) -> Dict[int, str]:
     itos = meta.get("itos")
     labels: Dict[int, str] = {}
@@ -189,77 +149,195 @@ def _extract_vocab_labels(meta: Dict[str, Any], vocab_size: int) -> Dict[int, st
     return labels
 
 
-def _save_probs_yaml(path: str, token_ids: Sequence[int], probs: torch.Tensor, vocab_labels: Dict[int, str]) -> None:
+def _sweep_logits(model: torch.nn.Module, token_ids: Sequence[int], device: str, batch_size: int) -> torch.Tensor:
+    rows: List[torch.Tensor] = []
+    with torch.no_grad():
+        for i in range(0, len(token_ids), batch_size):
+            chunk = token_ids[i : i + batch_size]
+            x = torch.tensor(chunk, dtype=torch.long, device=device).unsqueeze(1)
+            logits, _ = model(x, dataset_idx=0)
+            rows.append(logits[:, -1, :].to(torch.float32).cpu())
+    return torch.cat(rows, dim=0)
+
+
+def _save_topk_hist_by_model(logits_by_label: Dict[str, torch.Tensor], top_k: int, out_path: str) -> None:
+    labels = list(logits_by_label.keys())
+    cols = min(3, len(labels))
+    rows = int(np.ceil(len(labels) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4 * rows), squeeze=False)
+    for i, label in enumerate(labels):
+        ax = axes[i // cols][i % cols]
+        logits = logits_by_label[label]
+        k = min(top_k, logits.size(-1))
+        values = torch.topk(logits, k=k, dim=-1).values.reshape(-1).numpy()
+        ax.hist(values, bins=100, alpha=0.85)
+        ax.set_title(f"{label} top-{k} logits")
+        ax.set_xlabel("Logit")
+        ax.set_ylabel("Count")
+
+    for j in range(len(labels), rows * cols):
+        axes[j // cols][j % cols].axis("off")
+
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close(fig)
+
+
+def _save_kl_barh(
+    kl_by_label: Dict[str, np.ndarray],
+    labels: Sequence[str],
+    out_path: str,
+    reference_label: str,
+) -> None:
+    models = list(kl_by_label.keys())
+    n_models = len(models)
+    y = np.arange(len(labels), dtype=np.float64)
+    bar_h = 0.8 / max(n_models, 1)
+
+    height = max(6.0, len(labels) * 0.16)
+    fig, ax = plt.subplots(figsize=(15, height))
+
+    for m_idx, model_label in enumerate(models):
+        offset = (m_idx - (n_models - 1) / 2.0) * bar_h
+        ax.barh(y + offset, kl_by_label[model_label], height=bar_h * 0.95, alpha=0.85, label=model_label)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=7)
+    ax.invert_yaxis()
+    ax.set_xlabel(f"KL divergence KL({reference_label} || model)")
+    ax.set_ylabel("Start token")
+    ax.set_title("Per-start-token alignment (total KL over full vocabulary)")
+    ax.legend(loc="upper right")
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close(fig)
+
+
+def _save_probs_yaml(
+    path: Path,
+    label: str,
+    token_ids: Sequence[int],
+    probs: torch.Tensor,
+    vocab_labels: Dict[int, str],
+) -> None:
     payload = {
+        "label": label,
         "start_tokens": [int(t) for t in token_ids],
         "vocab_labels": {int(k): v for k, v in vocab_labels.items()},
         "probabilities": probs.tolist(),
     }
-    with open(path, "w", encoding="utf-8") as f:
+    with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(payload, f, sort_keys=False)
 
 
 def main() -> None:
     args = parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
+    if len(args.model_out_dir) != len(args.model_label):
+        raise ValueError("--model_out_dir and --model_label must have the same number of entries")
+    if len(set(args.model_label)) != len(args.model_label):
+        raise ValueError("--model_label values must be unique")
+    if len(args.model_out_dir) < 2:
+        raise ValueError("Provide at least two models")
 
-    model_a, ckpt_a = _load_model(args.model_a_out_dir, args.device, args.weights_only)
-    model_b, ckpt_b = _load_model(args.model_b_out_dir, args.device, args.weights_only)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    meta_a = _load_meta(args.model_a_out_dir, ckpt_a)
-    meta_b = _load_meta(args.model_b_out_dir, ckpt_b)
+    model_labels = list(args.model_label)
+    reference_label = args.reference_label or model_labels[0]
+    if reference_label not in model_labels:
+        raise ValueError(f"reference_label '{reference_label}' not found in model_label list")
 
-    vocab_a = int(meta_a.get("vocab_size", model_a.config.vocab_size))
-    vocab_b = int(meta_b.get("vocab_size", model_b.config.vocab_size))
-    if vocab_a != vocab_b:
-        raise ValueError(f"Mismatched vocab sizes: model_a={vocab_a}, model_b={vocab_b}")
+    models: Dict[str, torch.nn.Module] = {}
+    metas: Dict[str, Dict[str, Any]] = {}
+    vocabs: Dict[str, int] = {}
 
-    token_ids = _resolve_start_tokens(args.input_tokens_yaml, vocab_a)
+    for label, out_dir in zip(model_labels, args.model_out_dir):
+        model, checkpoint = _load_model(out_dir, args.device, args.weights_only)
+        meta = _load_meta(out_dir, checkpoint)
+        vocab = int(meta.get("vocab_size", model.config.vocab_size))
+        models[label] = model
+        metas[label] = meta
+        vocabs[label] = vocab
 
-    logits_a = _sweep_logits(model_a, token_ids, args.device, args.batch_size)
-    logits_b = _sweep_logits(model_b, token_ids, args.device, args.batch_size)
+    vocab_sizes = set(vocabs.values())
+    if len(vocab_sizes) != 1:
+        raise ValueError(f"All models must share vocab size, got: {vocabs}")
+    vocab_size = next(iter(vocab_sizes))
 
-    probs_a = F.softmax(logits_a, dim=-1)
-    probs_b = F.softmax(logits_b, dim=-1)
+    token_ids = _resolve_start_tokens(args.input_tokens_yaml, vocab_size)
+    token_labels = [_token_label(metas[reference_label], t) for t in token_ids]
 
-    kl_values = F.kl_div(torch.log(probs_a + 1e-12), probs_b, reduction="none").sum(dim=-1).numpy()
-    labels = [_token_label(meta_a, t) for t in token_ids]
+    logits_by_label: Dict[str, torch.Tensor] = {}
+    probs_by_label: Dict[str, torch.Tensor] = {}
 
-    hist_path = os.path.join(args.output_dir, "topk_logit_hist_side_by_side.png")
-    _save_topk_side_by_side(logits_a, logits_b, args.top_k, hist_path)
+    for label in model_labels:
+        logits = _sweep_logits(models[label], token_ids, args.device, args.batch_size)
+        probs = F.softmax(logits, dim=-1)
+        logits_by_label[label] = logits
+        probs_by_label[label] = probs
 
-    barh_path = os.path.join(args.output_dir, "per_token_kl_barh.png")
-    _save_kl_barh(kl_values, labels, barh_path)
+    _save_topk_hist_by_model(
+        logits_by_label,
+        args.top_k,
+        str(output_dir / "topk_logit_hist_by_model.png"),
+    )
 
-    ranking = sorted(zip(token_ids, labels, kl_values.tolist()), key=lambda x: x[2], reverse=True)
+    ref_probs = probs_by_label[reference_label]
+    kl_by_label: Dict[str, np.ndarray] = {}
+    for label in model_labels:
+        if label == reference_label:
+            continue
+        cur_probs = probs_by_label[label]
+        kl_vec = F.kl_div(torch.log(ref_probs + 1e-12), cur_probs, reduction="none").sum(dim=-1).numpy()
+        kl_by_label[label] = kl_vec
+        np.save(output_dir / f"per_token_kl_{_slugify(reference_label)}_vs_{_slugify(label)}.npy", kl_vec)
+
+    _save_kl_barh(
+        kl_by_label,
+        token_labels,
+        str(output_dir / "per_token_kl_barh.png"),
+        reference_label,
+    )
+
+    pairwise_stats: Dict[str, Dict[str, float]] = {}
+    for label, kl_vec in kl_by_label.items():
+        pairwise_stats[f"{reference_label}_vs_{label}"] = {
+            "kl_mean": float(np.mean(kl_vec)),
+            "kl_std": float(np.std(kl_vec)),
+            "kl_min": float(np.min(kl_vec)),
+            "kl_max": float(np.max(kl_vec)),
+        }
+
     summary = {
-        "model_a_out_dir": args.model_a_out_dir,
-        "model_b_out_dir": args.model_b_out_dir,
+        "model_labels": model_labels,
+        "model_out_dirs": {label: out_dir for label, out_dir in zip(model_labels, args.model_out_dir)},
+        "reference_label": reference_label,
         "num_start_tokens": len(token_ids),
-        "top_k_for_hist": int(min(args.top_k, vocab_a)),
-        "vocab_size": vocab_a,
-        "kl_mean": float(np.mean(kl_values)),
-        "kl_std": float(np.std(kl_values)),
-        "kl_min": float(np.min(kl_values)),
-        "kl_max": float(np.max(kl_values)),
-        "top_10_highest_kl_tokens": [
-            {"token_id": int(t), "label": lbl, "kl": float(kl)}
-            for t, lbl, kl in ranking[:10]
-        ],
+        "top_k_for_hist": int(min(args.top_k, vocab_size)),
+        "vocab_size": vocab_size,
+        "pairwise_reference_kl_stats": pairwise_stats,
     }
 
-    with open(os.path.join(args.output_dir, "summary.json"), "w", encoding="utf-8") as f:
+    with (output_dir / "summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
-    np.save(os.path.join(args.output_dir, "per_token_kl.npy"), kl_values)
-
     if args.save_logits_yaml:
-        vocab_labels_a = _extract_vocab_labels(meta_a, vocab_a)
-        vocab_labels_b = _extract_vocab_labels(meta_b, vocab_b)
-        _save_probs_yaml(os.path.join(args.output_dir, "model_a_probs.yaml"), token_ids, probs_a, vocab_labels_a)
-        _save_probs_yaml(os.path.join(args.output_dir, "model_b_probs.yaml"), token_ids, probs_b, vocab_labels_b)
+        manifest: Dict[str, str] = {}
+        for label in model_labels:
+            yaml_name = f"probs_{_slugify(label)}.yaml"
+            manifest[label] = yaml_name
+            _save_probs_yaml(
+                output_dir / yaml_name,
+                label,
+                token_ids,
+                probs_by_label[label],
+                _extract_vocab_labels(metas[label], vocab_size),
+            )
 
-    print(f"Wrote analysis artifacts to {args.output_dir}")
+        with (output_dir / "probs_manifest.json").open("w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+
+    print(f"Wrote analysis artifacts to {output_dir}")
 
 
 if __name__ == "__main__":

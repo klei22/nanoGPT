@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Build an interactive Plotly page for first-association top-k comparisons.
 
-Input files are the YAML probability dumps produced by compare_first_association.py.
-For each start token, this script renders side-by-side horizontal bar charts for model A
-and model B over the union of each model's top-k predicted next tokens.
+Input files are per-model YAML probability dumps produced by
+analysis/compare_first_association.py.
 """
 
 import argparse
@@ -18,8 +17,8 @@ import yaml
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Interactive top-k next-token comparison from model probability YAMLs")
-    p.add_argument("--model_a_probs_yaml", required=True, type=Path)
-    p.add_argument("--model_b_probs_yaml", required=True, type=Path)
+    p.add_argument("--probs_yaml", nargs='+', required=True, help="Paths to model probability YAML files")
+    p.add_argument("--label", nargs='+', required=True, help="Labels corresponding to probs_yaml inputs")
     p.add_argument("--output_html", required=True, type=Path, help="Output interactive Plotly HTML")
     p.add_argument("--top_k", type=int, default=20, help="Top-k token candidates per model to compare")
     p.add_argument("--output_json", type=Path, default=None, help="Optional summary JSON output")
@@ -57,97 +56,112 @@ def _to_vocab_label_map(data: Dict[str, Any]) -> Dict[int, str]:
 
 
 def _validate_inputs(
-    a: Dict[str, Any], b: Dict[str, Any]
-) -> Tuple[List[int], np.ndarray, np.ndarray, Dict[int, str], Dict[int, str]]:
-    start_a = [int(x) for x in a["start_tokens"]]
-    start_b = [int(x) for x in b["start_tokens"]]
-    if start_a != start_b:
-        raise ValueError("start_tokens do not match between model A and model B YAML files")
+    loaded: List[Dict[str, Any]],
+) -> Tuple[List[int], List[np.ndarray], List[Dict[int, str]]]:
+    start_ref = [int(x) for x in loaded[0]["start_tokens"]]
+    probs_list: List[np.ndarray] = []
+    vocab_maps: List[Dict[int, str]] = []
+    shape_ref: Tuple[int, ...] | None = None
 
-    probs_a = np.asarray(a["probabilities"], dtype=np.float64)
-    probs_b = np.asarray(b["probabilities"], dtype=np.float64)
-    if probs_a.shape != probs_b.shape:
-        raise ValueError(f"Probability tensor shapes differ: {probs_a.shape} vs {probs_b.shape}")
-    if probs_a.ndim != 2:
-        raise ValueError(f"Expected probabilities with shape [num_start_tokens, vocab_size], got {probs_a.shape}")
+    for data in loaded:
+        start = [int(x) for x in data["start_tokens"]]
+        if start != start_ref:
+            raise ValueError("start_tokens do not match across provided YAML files")
 
-    return start_a, probs_a, probs_b, _to_vocab_label_map(a), _to_vocab_label_map(b)
+        probs = np.asarray(data["probabilities"], dtype=np.float64)
+        if probs.ndim != 2:
+            raise ValueError(f"Expected probabilities [num_start_tokens, vocab_size], got {probs.shape}")
+
+        if shape_ref is None:
+            shape_ref = probs.shape
+        elif probs.shape != shape_ref:
+            raise ValueError(f"Probability tensor shapes differ: expected {shape_ref}, got {probs.shape}")
+
+        probs_list.append(probs)
+        vocab_maps.append(_to_vocab_label_map(data))
+
+    return start_ref, probs_list, vocab_maps
 
 
-def _topk_union_indices(pa: np.ndarray, pb: np.ndarray, k: int) -> List[int]:
-    k = max(1, min(k, pa.shape[0], pb.shape[0]))
-    top_a = np.argpartition(pa, -k)[-k:]
-    top_b = np.argpartition(pb, -k)[-k:]
-    union = np.unique(np.concatenate([top_a, top_b]))
-    # sort union by max probability across models, descending
-    scores = np.maximum(pa[union], pb[union])
-    order = np.argsort(-scores)
+def _topk_union_indices(prob_rows: Sequence[np.ndarray], k: int) -> List[int]:
+    vocab_size = int(prob_rows[0].shape[0])
+    k = max(1, min(k, vocab_size))
+    parts = []
+    for row in prob_rows:
+        parts.append(np.argpartition(row, -k)[-k:])
+    union = np.unique(np.concatenate(parts))
+    max_scores = np.max(np.stack([row[union] for row in prob_rows], axis=0), axis=0)
+    order = np.argsort(-max_scores)
     return union[order].tolist()
 
 
 def build_figure(
     start_tokens: Sequence[int],
-    probs_a: np.ndarray,
-    probs_b: np.ndarray,
-    vocab_a: Dict[int, str],
-    vocab_b: Dict[int, str],
+    probs_list: Sequence[np.ndarray],
+    vocab_maps: Sequence[Dict[int, str]],
+    labels: Sequence[str],
     top_k: int,
 ) -> go.Figure:
     fig = go.Figure()
-    n = len(start_tokens)
+    n_tokens = len(start_tokens)
+    n_models = len(labels)
 
     steps = []
     for i, start_token in enumerate(start_tokens):
-        pa = probs_a[i]
-        pb = probs_b[i]
-        candidate_ids = _topk_union_indices(pa, pb, top_k)
+        per_model_rows = [p[i] for p in probs_list]
+        candidate_ids = _topk_union_indices(per_model_rows, top_k)
 
-        # use model A label when available, fallback to B
-        y_labels = [
-            _decode_label(vocab_a if cid in vocab_a else vocab_b, cid)
-            for cid in candidate_ids
-        ]
-        x_a = [float(pa[cid]) for cid in candidate_ids]
-        x_b = [float(pb[cid]) for cid in candidate_ids]
+        y_labels = []
+        for cid in candidate_ids:
+            decoded = None
+            for vocab in vocab_maps:
+                if int(cid) in vocab:
+                    decoded = _decode_label(vocab, int(cid))
+                    break
+            y_labels.append(decoded if decoded is not None else str(int(cid)))
 
-        visible = [False] * (2 * n)
-        visible[2 * i] = True
-        visible[2 * i + 1] = True
+        visible = [False] * (n_tokens * n_models)
+        for m_idx in range(n_models):
+            visible[i * n_models + m_idx] = True
 
-        fig.add_trace(
-            go.Bar(
-                x=x_a,
-                y=y_labels,
-                orientation="h",
-                name="Model A",
-                marker_color="#1f77b4",
-                visible=(i == 0),
+        for m_idx, label in enumerate(labels):
+            x_vals = [float(per_model_rows[m_idx][cid]) for cid in candidate_ids]
+            fig.add_trace(
+                go.Bar(
+                    x=x_vals,
+                    y=y_labels,
+                    orientation="h",
+                    name=label,
+                    visible=(i == 0),
+                )
             )
-        )
-        fig.add_trace(
-            go.Bar(
-                x=x_b,
-                y=y_labels,
-                orientation="h",
-                name="Model B",
-                marker_color="#ff7f0e",
-                visible=(i == 0),
-            )
-        )
 
-        start_title = _decode_label(vocab_a if int(start_token) in vocab_a else vocab_b, int(start_token))
+        title_label = None
+        for vocab in vocab_maps:
+            if int(start_token) in vocab:
+                title_label = _decode_label(vocab, int(start_token))
+                break
+        if title_label is None:
+            title_label = str(int(start_token))
+
         steps.append(
             {
                 "method": "update",
                 "args": [
                     {"visible": visible},
-                    {"title": f"Start token: {start_title}"},
+                    {"title": f"Start token: {title_label}"},
                 ],
                 "label": str(i),
             }
         )
 
-    first_title = _decode_label(vocab_a if int(start_tokens[0]) in vocab_a else vocab_b, int(start_tokens[0])) if n else ""
+    first_title = str(int(start_tokens[0])) if start_tokens else ""
+    if start_tokens:
+        for vocab in vocab_maps:
+            if int(start_tokens[0]) in vocab:
+                first_title = _decode_label(vocab, int(start_tokens[0]))
+                break
+
     fig.update_layout(
         title=f"Start token: {first_title}",
         barmode="group",
@@ -170,11 +184,17 @@ def build_figure(
 
 def main() -> None:
     args = parse_args()
-    a = _load_prob_yaml(args.model_a_probs_yaml)
-    b = _load_prob_yaml(args.model_b_probs_yaml)
+    if len(args.probs_yaml) != len(args.label):
+        raise ValueError("--probs_yaml and --label must have the same number of entries")
+    if len(set(args.label)) != len(args.label):
+        raise ValueError("--label entries must be unique")
+    if len(args.probs_yaml) < 2:
+        raise ValueError("Provide at least two probability YAML files")
 
-    start_tokens, probs_a, probs_b, vocab_a, vocab_b = _validate_inputs(a, b)
-    fig = build_figure(start_tokens, probs_a, probs_b, vocab_a, vocab_b, args.top_k)
+    loaded = [_load_prob_yaml(Path(p)) for p in args.probs_yaml]
+    start_tokens, probs_list, vocab_maps = _validate_inputs(loaded)
+
+    fig = build_figure(start_tokens, probs_list, vocab_maps, args.label, args.top_k)
 
     args.output_html.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(args.output_html), include_plotlyjs="cdn", full_html=True)
@@ -182,8 +202,10 @@ def main() -> None:
     if args.output_json is not None:
         summary = {
             "num_start_tokens": len(start_tokens),
-            "vocab_size": int(probs_a.shape[1]),
+            "vocab_size": int(probs_list[0].shape[1]),
             "top_k": int(args.top_k),
+            "labels": list(args.label),
+            "inputs": list(args.probs_yaml),
             "output_html": str(args.output_html),
         }
         with args.output_json.open("w", encoding="utf-8") as f:
