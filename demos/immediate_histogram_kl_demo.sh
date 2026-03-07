@@ -85,7 +85,10 @@ echo "[6/6] Building static PyVis network graph"
 python3 analysis/first_association_pyvis_graph.py \
   --probs_yaml "${COMPARE_DIR}/probs_embd384.yaml" \
   --output_html "${COMPARE_DIR}/first_association_graph_embd384.html" \
-  --top_k 20 \
+  --backend auto \
+  --top_k 12 \
+  --edge_percentile_keep 85 \
+  --max_edges 4000 \
   --min_strength 0.0 \
   --initial_start_tokens none \
   --node_selector_scope start

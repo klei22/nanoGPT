@@ -3,12 +3,18 @@
 
 Nodes are tokens. Directed edges represent next-token associations from each
 start-token row. Edge thickness is proportional to association strength.
+
+Compute-reduction features:
+- static (no physics) graph rendering
+- optional start-token subsampling
+- optional global edge pruning by percentile / max-edges
+- optional torch CUDA top-k extraction backend
 """
 
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import yaml
@@ -21,6 +27,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output_html", required=True, type=Path, help="Output interactive HTML graph")
     p.add_argument("--top_k", type=int, default=20, help="Top-k outgoing edges per start token")
     p.add_argument("--min_strength", type=float, default=0.0, help="Minimum probability strength to keep an edge")
+    p.add_argument(
+        "--backend",
+        choices=["auto", "numpy", "torch_cuda"],
+        default="auto",
+        help="Top-k extraction backend. 'torch_cuda' uses GPU if torch+CUDA are available.",
+    )
+    p.add_argument("--max_start_tokens", type=int, default=None, help="Optional cap on number of start-token rows processed")
+    p.add_argument("--start_token_stride", type=int, default=1, help="Subsample start-token rows by stride before edge extraction")
+    p.add_argument("--max_edges", type=int, default=12000, help="Cap final number of edges (largest strengths kept)")
+    p.add_argument("--edge_percentile_keep", type=float, default=None, help="Keep only edges >= this global strength percentile (0-100)")
     p.add_argument(
         "--initial_start_tokens",
         choices=["none", "all"],
@@ -67,29 +83,111 @@ def _label(token_id: int, vocab: Dict[int, str]) -> str:
     return f"{int(token_id)}:{esc}"
 
 
-def _build_edges(start_tokens: Sequence[int], probs: np.ndarray, top_k: int, min_strength: float) -> List[Tuple[int, int, float]]:
-    edges: List[Tuple[int, int, float]] = []
+def _subsample_start_rows(
+    start_tokens: Sequence[int],
+    probs: np.ndarray,
+    stride: int,
+    max_start_tokens: Optional[int],
+) -> Tuple[List[int], np.ndarray]:
+    if stride < 1:
+        raise ValueError("--start_token_stride must be >= 1")
+    idx = np.arange(len(start_tokens))[::stride]
+    if max_start_tokens is not None and max_start_tokens > 0:
+        idx = idx[:max_start_tokens]
+    st = [int(start_tokens[i]) for i in idx.tolist()]
+    return st, probs[idx, :]
+
+
+def _build_edges_numpy(start_tokens: Sequence[int], probs: np.ndarray, top_k: int, min_strength: float) -> List[Tuple[int, int, float]]:
     vocab_size = probs.shape[1]
     k = max(1, min(top_k, vocab_size))
-    for row_idx, source in enumerate(start_tokens):
-        row = probs[row_idx]
-        top_idx = np.argpartition(row, -k)[-k:]
-        top_idx = top_idx[np.argsort(-row[top_idx])]
-        for tgt in top_idx:
-            strength = float(row[tgt])
+
+    top_idx = np.argpartition(probs, -k, axis=1)[:, -k:]
+    top_vals = np.take_along_axis(probs, top_idx, axis=1)
+    order = np.argsort(-top_vals, axis=1)
+    sorted_idx = np.take_along_axis(top_idx, order, axis=1)
+    sorted_vals = np.take_along_axis(top_vals, order, axis=1)
+
+    edges: List[Tuple[int, int, float]] = []
+    for row_i, src in enumerate(start_tokens):
+        for col_i, tgt in enumerate(sorted_idx[row_i]):
+            strength = float(sorted_vals[row_i, col_i])
             if strength >= min_strength:
-                edges.append((int(source), int(tgt), strength))
+                edges.append((int(src), int(tgt), strength))
     return edges
+
+
+def _build_edges_torch_cuda(start_tokens: Sequence[int], probs: np.ndarray, top_k: int, min_strength: float) -> List[Tuple[int, int, float]]:
+    try:
+        import torch
+    except Exception:
+        print("torch not available; falling back to numpy backend")
+        return _build_edges_numpy(start_tokens, probs, top_k, min_strength)
+
+    if not torch.cuda.is_available():
+        print("CUDA not available; falling back to numpy backend")
+        return _build_edges_numpy(start_tokens, probs, top_k, min_strength)
+
+    t = torch.as_tensor(probs, dtype=torch.float32, device="cuda")
+    k = max(1, min(top_k, t.size(1)))
+    vals, idx = torch.topk(t, k=k, dim=1, largest=True, sorted=True)
+    vals_np = vals.cpu().numpy()
+    idx_np = idx.cpu().numpy()
+
+    edges: List[Tuple[int, int, float]] = []
+    for row_i, src in enumerate(start_tokens):
+        for col_i, tgt in enumerate(idx_np[row_i]):
+            strength = float(vals_np[row_i, col_i])
+            if strength >= min_strength:
+                edges.append((int(src), int(tgt), strength))
+    return edges
+
+
+def _build_edges(
+    start_tokens: Sequence[int],
+    probs: np.ndarray,
+    top_k: int,
+    min_strength: float,
+    backend: str,
+) -> List[Tuple[int, int, float]]:
+    selected = backend
+    if backend == "auto":
+        selected = "torch_cuda"
+    if selected == "torch_cuda":
+        return _build_edges_torch_cuda(start_tokens, probs, top_k, min_strength)
+    return _build_edges_numpy(start_tokens, probs, top_k, min_strength)
+
+
+def _prune_edges(
+    edges: List[Tuple[int, int, float]],
+    edge_percentile_keep: Optional[float],
+    max_edges: Optional[int],
+) -> List[Tuple[int, int, float]]:
+    if not edges:
+        return edges
+
+    pruned = edges
+    if edge_percentile_keep is not None:
+        if not (0.0 <= edge_percentile_keep <= 100.0):
+            raise ValueError("--edge_percentile_keep must be within [0, 100]")
+        strengths = np.array([s for _, _, s in pruned], dtype=np.float64)
+        threshold = float(np.percentile(strengths, edge_percentile_keep))
+        pruned = [e for e in pruned if e[2] >= threshold]
+
+    if max_edges is not None and max_edges > 0 and len(pruned) > max_edges:
+        pruned = sorted(pruned, key=lambda e: e[2], reverse=True)[:max_edges]
+
+    return pruned
 
 
 def _inject_controls(
     html_text: str,
     start_tokens: Sequence[int],
-    radios: Sequence[Tuple[int, str]],
+    selectors: Sequence[Tuple[int, str]],
     initial_mode: str,
 ) -> str:
     selector_html: List[str] = []
-    for token_id, display in radios:
+    for token_id, display in selectors:
         selector_html.append(
             f'<label><input type="checkbox" name="node_select" value="{token_id}"> {display}</label><br/>'
         )
@@ -195,16 +293,30 @@ def main() -> None:
     args = parse_args()
     data = _load_prob_yaml(args.probs_yaml)
 
-    start_tokens = [int(x) for x in data["start_tokens"]]
-    probs = np.asarray(data["probabilities"], dtype=np.float64)
-    if probs.ndim != 2:
-        raise ValueError(f"Expected probabilities shape [num_start_tokens, vocab_size], got {probs.shape}")
-    if probs.shape[0] != len(start_tokens):
+    start_tokens_all = [int(x) for x in data["start_tokens"]]
+    probs_all = np.asarray(data["probabilities"], dtype=np.float64)
+    if probs_all.ndim != 2:
+        raise ValueError(f"Expected probabilities shape [num_start_tokens, vocab_size], got {probs_all.shape}")
+    if probs_all.shape[0] != len(start_tokens_all):
         raise ValueError("start_tokens length does not match probabilities rows")
+
+    start_tokens, probs = _subsample_start_rows(
+        start_tokens_all,
+        probs_all,
+        stride=args.start_token_stride,
+        max_start_tokens=args.max_start_tokens,
+    )
 
     vocab_size = int(probs.shape[1])
     vocab_labels = _to_vocab_label_map(data, vocab_size)
-    edges = _build_edges(start_tokens, probs, args.top_k, args.min_strength)
+
+    edges = _build_edges(start_tokens, probs, args.top_k, args.min_strength, args.backend)
+    edges = _prune_edges(edges, args.edge_percentile_keep, args.max_edges)
+
+    print(
+        f"Graph reduction summary: start_tokens={len(start_tokens)}/{len(start_tokens_all)}, "
+        f"edges={len(edges)}"
+    )
 
     net = Network(height=args.height, width=args.width, directed=True, bgcolor="#ffffff", font_color="#222222")
     net.toggle_physics(False)
@@ -243,12 +355,12 @@ def main() -> None:
     html_text = args.output_html.read_text(encoding="utf-8")
 
     if args.node_selector_scope == "start":
-        radio_ids = sorted(set(start_tokens))[: args.node_selector_limit]
+        selector_ids = sorted(set(start_tokens))[: args.node_selector_limit]
     else:
-        radio_ids = sorted(all_nodes)[: args.node_selector_limit]
+        selector_ids = sorted(all_nodes)[: args.node_selector_limit]
 
-    radios = [(tid, _label(tid, vocab_labels)) for tid in radio_ids]
-    html_text = _inject_controls(html_text, start_tokens, radios, args.initial_start_tokens)
+    selectors = [(tid, _label(tid, vocab_labels)) for tid in selector_ids]
+    html_text = _inject_controls(html_text, start_tokens, selectors, args.initial_start_tokens)
     args.output_html.write_text(html_text, encoding="utf-8")
 
     print(f"Wrote interactive graph to {args.output_html}")
