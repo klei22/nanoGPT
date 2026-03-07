@@ -136,7 +136,145 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size to use for evaluation")
 
+    parser.add_argument(
+        '--immediate_histogram_sweep',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Sweep all input tokens and save next-token top-k logit histograms.",
+    )
+    parser.add_argument(
+        '--comparison_out_dir',
+        type=str,
+        default=None,
+        help="Optional second model out_dir for KL-divergence comparison during histogram sweep.",
+    )
+    parser.add_argument(
+        '--sweep_batch_size',
+        type=int,
+        default=256,
+        help="Batch size for immediate histogram sweeps.",
+    )
+    parser.add_argument(
+        '--sweep_top_k',
+        type=int,
+        default=20,
+        help="Top-k logits to include when building histogram images.",
+    )
+    parser.add_argument(
+        '--sweep_hist_bins',
+        type=int,
+        default=80,
+        help="Number of bins used for histogram plots in sweep mode.",
+    )
+    parser.add_argument(
+        '--sweep_output_dir',
+        type=str,
+        default=None,
+        help="Directory for immediate histogram sweep artifacts (defaults to timestamped sample out_dir).",
+    )
+
     return parser.parse_args()
+
+
+def load_checkpoint_model(
+    out_dir: str,
+    device: str,
+    weights_only: bool = False,
+) -> tuple[torch.nn.Module, dict, dict]:
+    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
+    load_kwargs = {"map_location": device}
+    if "weights_only" in signature(torch.load).parameters:
+        load_kwargs["weights_only"] = weights_only
+    checkpoint = torch.load(ckpt_path, **load_kwargs)
+    checkpoint['model_args']['dropout'] = 0.0
+
+    gptconf = GPTConfig(**checkpoint['model_args'])
+    model = GPT(gptconf)
+    state_dict = checkpoint['model']
+    unwanted_prefix = '_orig_mod.'
+    for k, v in list(state_dict.items()):
+        if k.startswith(unwanted_prefix):
+            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+    model.load_state_dict(state_dict, strict=False)
+    model.eval()
+    model.to(device)
+    return model, checkpoint, checkpoint.get('config', {})
+
+
+def compute_immediate_token_logits_sweep(
+    model: torch.nn.Module,
+    vocab_size: int,
+    device: str,
+    dataset_idx: int = 0,
+    batch_size: int = 256,
+) -> torch.Tensor:
+    rows = []
+    with torch.no_grad():
+        for start in range(0, vocab_size, batch_size):
+            stop = min(vocab_size, start + batch_size)
+            token_ids = torch.arange(start, stop, dtype=torch.long, device=device).unsqueeze(1)
+            logits, _ = model(token_ids, dataset_idx=dataset_idx)
+            rows.append(logits[:, -1, :].to(torch.float32).cpu())
+    return torch.cat(rows, dim=0)
+
+
+def save_immediate_histogram_sweep_artifacts(
+    logits_a: torch.Tensor,
+    output_dir: str,
+    top_k: int,
+    bins: int,
+    logits_b: Optional[torch.Tensor] = None,
+) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+
+    def _save_topk_hist(logits: torch.Tensor, label: str) -> None:
+        k = min(top_k, logits.size(-1))
+        topk_vals, _ = torch.topk(logits, k=k, dim=-1)
+        flat = topk_vals.reshape(-1).numpy()
+        plt.figure(figsize=(12, 7))
+        plt.hist(flat, bins=bins)
+        plt.xlabel(f"Top-{k} next-token logits")
+        plt.ylabel("Count")
+        plt.title(f"Immediate next-token logit histogram ({label})")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"{label}_topk_logit_hist.png"))
+        plt.close()
+
+    _save_topk_hist(logits_a, "model_a")
+
+    stats: dict[str, object] = {
+        "num_swept_tokens": int(logits_a.size(0)),
+        "vocab_size": int(logits_a.size(-1)),
+        "top_k": int(min(top_k, logits_a.size(-1))),
+    }
+
+    if logits_b is not None:
+        _save_topk_hist(logits_b, "model_b")
+        probs_a = F.softmax(logits_a, dim=-1)
+        probs_b = F.softmax(logits_b, dim=-1)
+        kl_values = F.kl_div(torch.log(probs_a + 1e-9), probs_b, reduction='none').sum(dim=-1)
+        kl_np = kl_values.numpy()
+        plt.figure(figsize=(12, 7))
+        plt.hist(kl_np, bins=bins)
+        plt.xlabel("KL divergence KL(model_a || model_b)")
+        plt.ylabel("Count")
+        plt.title("Distribution of per-token KL divergences")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "kl_divergence_distribution.png"))
+        plt.close()
+
+        np.save(os.path.join(output_dir, "kl_divergences.npy"), kl_np)
+        stats.update(
+            {
+                "kl_mean": float(kl_np.mean()),
+                "kl_std": float(kl_np.std()),
+                "kl_min": float(kl_np.min()),
+                "kl_max": float(kl_np.max()),
+            }
+        )
+
+    with open(os.path.join(output_dir, "immediate_histogram_stats.json"), "w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2)
 
 
 
@@ -1247,6 +1385,66 @@ def main():
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(args.out_dir, timestamp)
+
+    if args.immediate_histogram_sweep:
+        model_a, checkpoint_a, checkpoint_config_a = load_checkpoint_model(
+            args.out_dir, args.device, args.weights_only
+        )
+
+        model_b = None
+        if args.comparison_out_dir:
+            model_b, _, _ = load_checkpoint_model(
+                args.comparison_out_dir, args.device, args.weights_only
+            )
+
+        load_meta = False
+        meta = None
+        if args.init_from == 'resume':
+            meta_path_candidates = [
+                os.path.join(args.out_dir, 'meta.pkl'),
+                os.path.join('data', checkpoint_a['config']['dataset'], 'meta.pkl')
+            ]
+            for meta_path in meta_path_candidates:
+                if os.path.exists(meta_path):
+                    with open(meta_path, 'rb') as f:
+                        meta = pickle.load(f)
+                    load_meta = True
+                    break
+
+        if not load_meta:
+            raise RuntimeError('Immediate histogram sweep requires a tokenizer meta.pkl from checkpoint dataset.')
+
+        vocab_size = int(meta.get('vocab_size', model_a.config.vocab_size))
+        logits_a = compute_immediate_token_logits_sweep(
+            model_a,
+            vocab_size=vocab_size,
+            device=args.device,
+            dataset_idx=0,
+            batch_size=args.sweep_batch_size,
+        )
+
+        logits_b = None
+        if model_b is not None:
+            logits_b = compute_immediate_token_logits_sweep(
+                model_b,
+                vocab_size=vocab_size,
+                device=args.device,
+                dataset_idx=0,
+                batch_size=args.sweep_batch_size,
+            )
+
+        sweep_out_dir = args.sweep_output_dir if args.sweep_output_dir else out_dir
+        save_immediate_histogram_sweep_artifacts(
+            logits_a=logits_a,
+            logits_b=logits_b,
+            output_dir=sweep_out_dir,
+            top_k=args.sweep_top_k,
+            bins=args.sweep_hist_bins,
+        )
+
+        print(f"Saved immediate histogram sweep artifacts to: {sweep_out_dir}")
+        return
+
     os.makedirs(out_dir, exist_ok=True)
     save_args(args, out_dir)
 
@@ -1254,43 +1452,49 @@ def main():
     checkpoint_config: Dict[str, object] = {}
 
     if args.init_from == 'resume':
-        ckpt_path = os.path.join(args.out_dir, 'ckpt.pt')
-        load_kwargs = {"map_location": args.device}
-        if "weights_only" in signature(torch.load).parameters:
-            load_kwargs["weights_only"] = args.weights_only
-        checkpoint = torch.load(ckpt_path, **load_kwargs)
-        checkpoint_config = checkpoint.get('config', {})
-        checkpoint['model_args']['dropout'] = 0.0
+        model, checkpoint, checkpoint_config = load_checkpoint_model(
+            args.out_dir, args.device, args.weights_only
+        )
+
         if args.save_avg_vector:
             print(f"saving {args.save_avg_vector}")
             checkpoint['model_args']['obtain_vector_at_layer_idx'] = args.apply_to_layer_idx
             checkpoint['model_args']['obtain_vector_file'] = args.save_avg_vector
-        # If vectors are provided, load and subtract them, then apply to a designated layer during generation
+            gptconf = GPTConfig(**checkpoint['model_args'])
+            model = GPT(gptconf)
+            state_dict = checkpoint['model']
+            unwanted_prefix = '_orig_mod.'
+            for k, v in list(state_dict.items()):
+                if k.startswith(unwanted_prefix):
+                    state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+            model.load_state_dict(state_dict, strict=False)
+            model.eval()
+            model.to(args.device)
+
         if args.apply_vector_file1 and args.apply_vector_file2:
             vector1 = np.load(args.apply_vector_file1)
             vector2 = np.load(args.apply_vector_file2)
             diff_vector = vector1 - vector2
             torch.from_numpy(diff_vector).float().to(args.device)
             diff_vector_tensor = torch.from_numpy(diff_vector).float().to(args.device)
-            diff_vector_cpu = diff_vector_tensor.cpu().numpy()  # Move the tensor to CPU and convert it to a NumPy array
+            diff_vector_cpu = diff_vector_tensor.cpu().numpy()
             np.save("temp.npy", diff_vector_cpu)
-
-            # Convert to tensor and set in the model for application at the designated layer
             checkpoint['model_args']['apply_vector_file']= "temp.npy"
             checkpoint['model_args']['apply_vector_at_layer_idx']= args.apply_to_layer_idx
             checkpoint['model_args']['apply_vector_scaling_factor']= args.steering_vector_scaling_factor
-        gptconf = GPTConfig(**checkpoint['model_args'])
-        model = GPT(gptconf)
-        state_dict = checkpoint['model']
-        unwanted_prefix = '_orig_mod.'
-        for k, v in list(state_dict.items()):
-            if k.startswith(unwanted_prefix):
-                state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+            gptconf = GPTConfig(**checkpoint['model_args'])
+            model = GPT(gptconf)
+            state_dict = checkpoint['model']
+            unwanted_prefix = '_orig_mod.'
+            for k, v in list(state_dict.items()):
+                if k.startswith(unwanted_prefix):
+                    state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+            model.load_state_dict(state_dict, strict=False)
+            model.eval()
+            model.to(args.device)
 
         if args.quantization_data_file:
-            save_quantized_data(state_dict, args.quantization_data_file)
-
-        model.load_state_dict(state_dict, strict=False)
+            save_quantized_data(checkpoint['model'], args.quantization_data_file)
 
     else:
         # Need to create a completely "default" GPTConfig and overwrite using model_variations

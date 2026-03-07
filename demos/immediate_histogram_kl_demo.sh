@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Demo: train two shakespeare_char models (n_embd 384 vs 320), then compare
+# immediate next-token histograms by sweeping every possible input token.
+
+OUT_BASE="${OUT_BASE:-out/immediate_hist_kl_demo}"
+OUT_A="${OUT_BASE}/model_a_embd384"
+OUT_B="${OUT_BASE}/model_b_embd320"
+COMPARE_DIR="${OUT_BASE}/comparison"
+
+MAX_ITERS="${MAX_ITERS:-2000}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-500}"
+BLOCK_SIZE="${BLOCK_SIZE:-128}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
+DEVICE="${DEVICE:-cuda}"
+
+COMMON_ARGS=(
+  --dataset shakespeare_char
+  --tokenizer char
+  --max_iters "${MAX_ITERS}"
+  --eval_interval "${EVAL_INTERVAL}"
+  --block_size "${BLOCK_SIZE}"
+  --batch_size "${BATCH_SIZE}"
+  --n_layer 6
+  --n_head 3
+  --n_qk_head_dim 100
+  --n_v_head_dim 100
+  --use_concat_heads
+  --attention_variant infinite
+  --n_kv_group 1
+  --use_qk_norm
+  --use_qk_norm_scale
+  --use_pre_ln
+  --use_peri_ln
+  --no-use_post_ln
+  --use_rotary_embeddings
+  --no-use_abs_pos_embeddings
+  --activation_variant squared_relu
+  --softmax_variant_attn relu2max
+  --norm_variant_wte rmsnorm
+  --compile
+  --device "${DEVICE}"
+)
+
+echo "[1/3] Training model A (n_embd=384)"
+python3 train.py \
+  --out_dir "${OUT_A}" \
+  --n_embd 384 \
+  "${COMMON_ARGS[@]}"
+
+echo "[2/3] Training model B (n_embd=320)"
+python3 train.py \
+  --out_dir "${OUT_B}" \
+  --n_embd 320 \
+  "${COMMON_ARGS[@]}"
+
+echo "[3/3] Running immediate histogram sweep + KL comparison"
+python3 sample.py \
+  --out_dir "${OUT_A}" \
+  --comparison_out_dir "${OUT_B}" \
+  --immediate_histogram_sweep \
+  --sweep_output_dir "${COMPARE_DIR}" \
+  --sweep_top_k 20 \
+  --sweep_hist_bins 100 \
+  --sweep_batch_size 256 \
+  --device "${DEVICE}"
+
+echo "Done. Artifacts are in: ${COMPARE_DIR}"
+echo " - model_a_topk_logit_hist.png"
+echo " - model_b_topk_logit_hist.png"
+echo " - kl_divergence_distribution.png"
+echo " - kl_divergences.npy"
+echo " - immediate_histogram_stats.json"
