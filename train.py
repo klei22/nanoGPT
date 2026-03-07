@@ -1657,8 +1657,10 @@ class Trainer:
 
     @staticmethod
     def _compute_rankme_areq(features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        device = features.device
         if features.numel() == 0:
-            return torch.tensor(float('nan')), torch.tensor(float('nan'))
+            nan = torch.tensor(float('nan'), device=device)
+            return nan, nan
         features = features.float()
         if features.ndim != 2:
             features = features.view(features.shape[0], -1)
@@ -1668,23 +1670,24 @@ class Trainer:
         eigvals = torch.sort(eigvals, descending=True).values
         total = eigvals.sum()
         if total <= 0:
-            return torch.tensor(float('nan')), torch.tensor(float('nan'))
+            nan = torch.tensor(float('nan'), device=eigvals.device, dtype=eigvals.dtype)
+            return nan, nan
         probs = eigvals / total
         entropy = -(probs * torch.log(probs + 1e-12)).sum()
         rankme = torch.exp(entropy)
 
         positive = eigvals > 0
         if positive.sum() < 2:
-            return rankme, torch.tensor(float('nan'))
+            return rankme, torch.tensor(float('nan'), device=eigvals.device, dtype=eigvals.dtype)
         eigvals = eigvals[positive]
-        idx = torch.arange(1, eigvals.numel() + 1, dtype=eigvals.dtype)
+        idx = torch.arange(1, eigvals.numel() + 1, dtype=eigvals.dtype, device=eigvals.device)
         log_i = torch.log(idx)
         log_e = torch.log(eigvals)
         log_i = log_i - log_i.mean()
         log_e = log_e - log_e.mean()
         denom = (log_i ** 2).sum()
         if denom == 0:
-            areq = torch.tensor(float('nan'))
+            areq = torch.tensor(float('nan'), device=eigvals.device, dtype=eigvals.dtype)
         else:
             areq = -(log_i * log_e).sum() / denom
         return rankme, areq
