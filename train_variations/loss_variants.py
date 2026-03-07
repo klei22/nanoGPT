@@ -18,6 +18,7 @@ from typing import Callable, Dict, Iterable, List, Tuple
 import math
 import torch
 import torch.nn.functional as F
+from torch.amp import autocast
 
 from utils.bit_usage import compute_total_bit_usage
 
@@ -106,44 +107,48 @@ class BitBalancedCrossEntropy:
 
 
 
+@torch._dynamo.disable
 def compute_rankme_areq(features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute RankMe and aReQ from a feature matrix."""
     if features.numel() == 0:
         nan = torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
         return nan, nan
 
-    features = features.float()
-    if features.ndim != 2:
-        features = features.view(features.shape[0], -1)
-    features = features - features.mean(dim=0, keepdim=True)
-    cov = features.T @ features / max(features.shape[0], 1)
-    eigvals = torch.linalg.eigvalsh(cov)
-    eigvals = torch.sort(eigvals, descending=True).values
-    total = eigvals.sum()
-    if total <= 0:
-        nan = torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
-        return nan, nan
+    # Keep this metric path out of autocast and in float32 so eigh is valid
+    # under bf16 training (e.g., --dtype bfloat16 + --compile).
+    with torch.no_grad(), autocast(device_type=features.device.type, enabled=False):
+        features = features.detach().to(torch.float32)
+        if features.ndim != 2:
+            features = features.view(features.shape[0], -1)
+        features = features - features.mean(dim=0, keepdim=True)
+        cov = features.T @ features / max(features.shape[0], 1)
+        eigvals = torch.linalg.eigvalsh(cov)
+        eigvals = torch.sort(eigvals, descending=True).values
+        total = eigvals.sum()
+        if total <= 0:
+            nan = torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
+            return nan, nan
 
-    probs = eigvals / total
-    entropy = -(probs * torch.log(probs + 1e-12)).sum()
-    rankme = torch.exp(entropy)
+        probs = eigvals / total
+        entropy = -(probs * torch.log(probs + 1e-12)).sum()
+        rankme = torch.exp(entropy)
 
-    positive = eigvals > 0
-    if positive.sum() < 2:
-        return rankme, torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
+        positive = eigvals > 0
+        if positive.sum() < 2:
+            return rankme, torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
 
-    eigvals = eigvals[positive]
-    idx = torch.arange(1, eigvals.numel() + 1, dtype=eigvals.dtype, device=eigvals.device)
-    log_i = torch.log(idx)
-    log_e = torch.log(eigvals)
-    log_i = log_i - log_i.mean()
-    log_e = log_e - log_e.mean()
-    denom = (log_i ** 2).sum()
-    if denom == 0:
-        areq = torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
-    else:
-        areq = -(log_i * log_e).sum() / denom
-    return rankme, areq
+        eigvals = eigvals[positive]
+        idx = torch.arange(1, eigvals.numel() + 1, dtype=eigvals.dtype, device=eigvals.device)
+        log_i = torch.log(idx)
+        log_e = torch.log(eigvals)
+        log_i = log_i - log_i.mean()
+        log_e = log_e - log_e.mean()
+        denom = (log_i ** 2).sum()
+        if denom == 0:
+            areq = torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
+        else:
+            areq = -(log_i * log_e).sum() / denom
+        return rankme, areq
 
 
 class RankMeRegularizedCrossEntropy:
@@ -795,4 +800,3 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
 
     loss_name = getattr(args, "loss_fn", "cross_entropy")
     return built_losses.get(loss_name, LOSS_VARIANTS["cross_entropy"])
-
