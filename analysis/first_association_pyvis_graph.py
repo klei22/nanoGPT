@@ -300,7 +300,7 @@ def _inject_controls(
     try {{
       rx = new RegExp(pattern);
     }} catch (err) {{
-      alert(`Invalid regex: ${err}`);
+      alert(`Invalid regex: ${{err}}`);
       return;
     }}
     allNodeCheckboxes().forEach((cb) => {{
