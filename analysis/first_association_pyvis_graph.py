@@ -207,7 +207,7 @@ def main() -> None:
     edges = _build_edges(start_tokens, probs, args.top_k, args.min_strength)
 
     net = Network(height=args.height, width=args.width, directed=True, bgcolor="#ffffff", font_color="#222222")
-    net.barnes_hut(gravity=-2200, central_gravity=0.25, spring_length=180, spring_strength=0.02, damping=0.09)
+    net.toggle_physics(False)
 
     label_name = str(data.get("label", "model"))
     all_nodes = set(start_tokens)

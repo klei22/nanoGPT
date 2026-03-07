@@ -81,7 +81,7 @@ python3 analysis/plot_first_association_pairs.py \
   --top_k 20
 
 
-echo "[6/6] Building PyVis gravity network graph"
+echo "[6/6] Building static PyVis network graph"
 python3 analysis/first_association_pyvis_graph.py \
   --probs_yaml "${COMPARE_DIR}/probs_embd384.yaml" \
   --output_html "${COMPARE_DIR}/first_association_graph_embd384.html" \
