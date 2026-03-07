@@ -64,6 +64,15 @@ python3 analysis/compare_first_association.py \
   --batch_size 256 \
   --device "${DEVICE}"
 
+
+echo "[4/4] Building interactive Plotly top-k comparison page"
+python3 analysis/plot_first_association_pairs.py \
+  --model_a_probs_yaml "${COMPARE_DIR}/model_a_probs.yaml" \
+  --model_b_probs_yaml "${COMPARE_DIR}/model_b_probs.yaml" \
+  --output_html "${COMPARE_DIR}/topk_next_token_pairs.html" \
+  --output_json "${COMPARE_DIR}/topk_next_token_pairs.json" \
+  --top_k 20
+
 echo "Done. Artifacts are in: ${COMPARE_DIR}"
 echo " - topk_logit_hist_side_by_side.png"
 echo " - per_token_kl_barh.png"
@@ -71,3 +80,5 @@ echo " - per_token_kl.npy"
 echo " - summary.json"
 echo " - model_a_probs.yaml"
 echo " - model_b_probs.yaml"
+echo " - topk_next_token_pairs.html"
+echo " - topk_next_token_pairs.json"

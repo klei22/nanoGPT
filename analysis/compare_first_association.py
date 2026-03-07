@@ -11,7 +11,7 @@ import json
 import os
 import pickle
 from inspect import signature
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -175,9 +175,24 @@ def _save_kl_barh(kl_values: np.ndarray, labels: Sequence[str], out_path: str) -
     plt.close(fig)
 
 
-def _save_probs_yaml(path: str, token_ids: Sequence[int], probs: torch.Tensor) -> None:
+def _extract_vocab_labels(meta: Dict[str, Any], vocab_size: int) -> Dict[int, str]:
+    itos = meta.get("itos")
+    labels: Dict[int, str] = {}
+    if isinstance(itos, dict):
+        for i in range(vocab_size):
+            value = itos.get(i)
+            if value is not None:
+                labels[i] = str(value)
+    elif isinstance(itos, list):
+        for i, value in enumerate(itos[:vocab_size]):
+            labels[i] = str(value)
+    return labels
+
+
+def _save_probs_yaml(path: str, token_ids: Sequence[int], probs: torch.Tensor, vocab_labels: Dict[int, str]) -> None:
     payload = {
         "start_tokens": [int(t) for t in token_ids],
+        "vocab_labels": {int(k): v for k, v in vocab_labels.items()},
         "probabilities": probs.tolist(),
     }
     with open(path, "w", encoding="utf-8") as f:
@@ -239,8 +254,10 @@ def main() -> None:
     np.save(os.path.join(args.output_dir, "per_token_kl.npy"), kl_values)
 
     if args.save_logits_yaml:
-        _save_probs_yaml(os.path.join(args.output_dir, "model_a_probs.yaml"), token_ids, probs_a)
-        _save_probs_yaml(os.path.join(args.output_dir, "model_b_probs.yaml"), token_ids, probs_b)
+        vocab_labels_a = _extract_vocab_labels(meta_a, vocab_a)
+        vocab_labels_b = _extract_vocab_labels(meta_b, vocab_b)
+        _save_probs_yaml(os.path.join(args.output_dir, "model_a_probs.yaml"), token_ids, probs_a, vocab_labels_a)
+        _save_probs_yaml(os.path.join(args.output_dir, "model_b_probs.yaml"), token_ids, probs_b, vocab_labels_b)
 
     print(f"Wrote analysis artifacts to {args.output_dir}")
 
