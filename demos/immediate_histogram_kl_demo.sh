@@ -17,7 +17,6 @@ DEVICE="${DEVICE:-cuda}"
 
 COMMON_ARGS=(
   --dataset shakespeare_char
-  --tokenizer char
   --max_iters "${MAX_ITERS}"
   --eval_interval "${EVAL_INTERVAL}"
   --block_size "${BLOCK_SIZE}"
@@ -37,7 +36,7 @@ COMMON_ARGS=(
   --use_rotary_embeddings
   --no-use_abs_pos_embeddings
   --activation_variant squared_relu
-  --softmax_variant_attn relu2max
+  --softmax_variant_attn softmax
   --norm_variant_wte rmsnorm
   --compile
   --device "${DEVICE}"
@@ -55,20 +54,20 @@ python3 train.py \
   --n_embd 320 \
   "${COMMON_ARGS[@]}"
 
-echo "[3/3] Running immediate histogram sweep + KL comparison"
-python3 sample.py \
-  --out_dir "${OUT_A}" \
-  --comparison_out_dir "${OUT_B}" \
-  --immediate_histogram_sweep \
-  --sweep_output_dir "${COMPARE_DIR}" \
-  --sweep_top_k 20 \
-  --sweep_hist_bins 100 \
-  --sweep_batch_size 256 \
+echo "[3/3] Running first-association histogram + KL analysis"
+python3 analysis/compare_first_association.py \
+  --model_a_out_dir "${OUT_A}" \
+  --model_b_out_dir "${OUT_B}" \
+  --input_tokens_yaml all \
+  --output_dir "${COMPARE_DIR}" \
+  --top_k 20 \
+  --batch_size 256 \
   --device "${DEVICE}"
 
 echo "Done. Artifacts are in: ${COMPARE_DIR}"
-echo " - model_a_topk_logit_hist.png"
-echo " - model_b_topk_logit_hist.png"
-echo " - kl_divergence_distribution.png"
-echo " - kl_divergences.npy"
-echo " - immediate_histogram_stats.json"
+echo " - topk_logit_hist_side_by_side.png"
+echo " - per_token_kl_barh.png"
+echo " - per_token_kl.npy"
+echo " - summary.json"
+echo " - model_a_probs.yaml"
+echo " - model_b_probs.yaml"
