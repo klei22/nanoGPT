@@ -201,6 +201,11 @@ def _inject_controls(
     <label><input type="radio" name="start_mode" value="all" {'checked' if initial_mode=='all' else ''}> all</label>
   </div>
   <div style="margin-bottom:8px;">
+    <strong>Edge strength threshold:</strong><br/>
+    <input id="edge-threshold-slider" type="range" min="0" max="1" step="0.001" value="0.0" style="width:180px; vertical-align:middle;" />
+    <input id="edge-threshold-input" type="number" min="0" max="1" step="0.001" value="0.0" style="width:72px;" />
+  </div>
+  <div style="margin-bottom:8px;">
     <strong>Manual node selection (checkbox):</strong><br/>
     <div style="margin-bottom:6px;">
       <button id="select-all-btn" type="button">Select all</button>
@@ -247,6 +252,13 @@ def _inject_controls(
     return el ? el.value : 'none';
   }}
 
+  function edgeThreshold() {{
+    const input = document.getElementById('edge-threshold-input');
+    const parsed = parseFloat(input.value);
+    if (Number.isNaN(parsed)) return 0.0;
+    return Math.min(1.0, Math.max(0.0, parsed));
+  }}
+
   function computeShownNodes() {{
     const shown = new Set(manualNodes);
     if (startMode() === 'all') {{
@@ -268,17 +280,25 @@ def _inject_controls(
 
   function updateVisibility() {{
     const shown = computeShownNodes();
-
-    nodes.forEach((n) => {{
-      nodes.update({{ id: n.id, hidden: !shown.has(n.id) }});
-    }});
+    const threshold = edgeThreshold();
+    const activeNodes = new Set();
 
     edges.forEach((e) => {{
-      const visible = shown.has(e.from) && shown.has(e.to);
+      const strength = typeof e.strength === 'number' ? e.strength : 0.0;
+      const visible = shown.has(e.from) && shown.has(e.to) && strength >= threshold;
+      if (visible) {{
+        activeNodes.add(e.from);
+        activeNodes.add(e.to);
+      }}
       edges.update({{ id: e.id, hidden: !visible }});
     }});
 
-    refreshShownList(shown);
+    nodes.forEach((n) => {{
+      const visible = shown.has(n.id) && activeNodes.has(n.id);
+      nodes.update({{ id: n.id, hidden: !visible }});
+    }});
+
+    refreshShownList(activeNodes);
   }}
 
   document.getElementById('select-all-btn').addEventListener('click', () => {{
@@ -319,6 +339,23 @@ def _inject_controls(
     const toks = selectedCheckboxTokens();
     if (!toks.length) return;
     toks.forEach((tok) => manualNodes.delete(tok));
+    updateVisibility();
+  }});
+
+  const thresholdSlider = document.getElementById('edge-threshold-slider');
+  const thresholdInput = document.getElementById('edge-threshold-input');
+
+  thresholdSlider.addEventListener('input', () => {{
+    thresholdInput.value = thresholdSlider.value;
+    updateVisibility();
+  }});
+
+  thresholdInput.addEventListener('input', () => {{
+    let v = parseFloat(thresholdInput.value);
+    if (Number.isNaN(v)) v = 0.0;
+    v = Math.min(1.0, Math.max(0.0, v));
+    thresholdInput.value = v.toFixed(3);
+    thresholdSlider.value = thresholdInput.value;
     updateVisibility();
   }});
 
@@ -392,6 +429,7 @@ def main() -> None:
             width=width,
             title=f"{label_name}: {strength:.6f}",
             color={"opacity": 0.7},
+            strength=float(strength),
         )
 
     args.output_html.parent.mkdir(parents=True, exist_ok=True)
