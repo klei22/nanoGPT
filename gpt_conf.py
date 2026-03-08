@@ -340,6 +340,11 @@ class GPTConfig:
     embedding_mean_init: float= 0.0
     embedding_std_init: float= 0.02
     embedding_gaussian_noise_std: float = 0.0
+    embedding_gaussian_noise_start_iter: int = 0
+    embedding_gaussian_noise_end_iter: int | None = None
+    embedding_gaussian_noise_start_std: float | None = None
+    embedding_gaussian_noise_end_std: float | None = None
+    embedding_gaussian_noise_in_eval: bool = False
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
     fire_log_bias: float = 1.0

@@ -1158,6 +1158,36 @@ def parse_args():
         default=0.0,
         help="Scale for L2-normalized Gaussian noise added to token embeddings after lookup.",
     )
+    model_group.add_argument(
+        "--embedding_gaussian_noise_start_iter",
+        type=int,
+        default=0,
+        help="Iteration where embedding Gaussian-noise scheduling begins.",
+    )
+    model_group.add_argument(
+        "--embedding_gaussian_noise_end_iter",
+        type=int,
+        default=None,
+        help="Iteration where embedding Gaussian-noise scheduling reaches its end magnitude.",
+    )
+    model_group.add_argument(
+        "--embedding_gaussian_noise_start_std",
+        type=float,
+        default=None,
+        help="Noise magnitude at --embedding_gaussian_noise_start_iter (defaults to --embedding_gaussian_noise_std).",
+    )
+    model_group.add_argument(
+        "--embedding_gaussian_noise_end_std",
+        type=float,
+        default=None,
+        help="Noise magnitude at --embedding_gaussian_noise_end_iter (defaults to --embedding_gaussian_noise_std).",
+    )
+    model_group.add_argument(
+        "--embedding_gaussian_noise_in_eval",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Allow embedding Gaussian-noise injection during model.eval() (disabled by default).",
+    )
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
     model_group.add_argument( "--fire_log_bias", type=float, default=1.0, help="bias in the function psi(x) = log(cx + bias)")
