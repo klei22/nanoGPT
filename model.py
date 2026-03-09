@@ -34,6 +34,7 @@ from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
+from variations.absolute_position_variations import build_absolute_position_embedding
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
@@ -154,7 +155,7 @@ class GPT(nn.Module):
             if config.quantize_wpe:
                 pos_embd = QuantizedEmbedding(config.block_size, config.n_embd, config.quantize_wpe_method, config.quantize_wpe_bits)
             else:
-                pos_embd = nn.Embedding(config.block_size, config.n_embd)
+                pos_embd = build_absolute_position_embedding(config)
             self.transformer['wpe'] = pos_embd
 
         # Select softmax variant for output layer
@@ -226,7 +227,12 @@ class GPT(nn.Module):
         """
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding and self.config.use_abs_pos_embeddings:
-            n_params -= self.transformer.wpe.weight.numel()
+            wpe = self.transformer.wpe
+            if hasattr(wpe, 'weight'):
+                n_params -= wpe.weight.numel()
+            else:
+                # Multi-channel or other custom position embeddings
+                n_params -= sum(p.numel() for p in wpe.parameters())
         return n_params
 
     def update_block_size(self, new_block_size):
@@ -237,7 +243,7 @@ class GPT(nn.Module):
                 if self.config.quantize_wpe:
                     pos_embd = QuantizedEmbedding(new_block_size, self.config.n_embd, self.config.quantize_wpe_method, self.config.quantize_wpe_bits)
                 else:
-                    pos_embd = nn.Embedding(new_block_size, self.config.n_embd)
+                    pos_embd = build_absolute_position_embedding(self.config)
                 self.transformer.wpe = pos_embd
             for block in self.transformer.h:
                 if hasattr(block.attn, 'bias'):

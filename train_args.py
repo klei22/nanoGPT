@@ -1146,6 +1146,17 @@ def parse_args():
     model_group.add_argument("--rope_variant", type=str, default="rope", choices=["rope", "soap"])
     model_group.add_argument("--rope_length", type=int, default=None, help="Defaults to all embeddings (if set to None), else must be even.")
     model_group.add_argument('--use_abs_pos_embeddings', default=True, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--abs_pos_variant", type=str, default="standard",
+                             choices=["standard", "multi_channel_cyclic"],
+                             help="Absolute position embedding variant. 'standard' is the classic learned table; "
+                                  "'multi_channel_cyclic' uses multiple cycling embedding channels summed together.")
+    model_group.add_argument("--abs_pos_cycle_lengths", type=int, nargs='+', default=[],
+                             help="Cycle lengths for multi_channel_cyclic absolute position embeddings. "
+                                  "E.g. --abs_pos_cycle_lengths 3 5 7 11 creates 4 channels.")
+    model_group.add_argument('--abs_pos_random_start', default=True, action=argparse.BooleanOptionalAction,
+                             help="Randomize start index per cycling channel (default: True).")
+    model_group.add_argument("--abs_pos_random_seed", type=int, default=None,
+                             help="Optional seed for reproducible random start offsets in multi_channel_cyclic.")
     model_group.add_argument('--use_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--shared_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
 

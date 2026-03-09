@@ -329,6 +329,10 @@ class GPTConfig:
 
     # Positional Embeddings Variations
     use_abs_pos_embeddings: bool = True # Note: one can use this AND rotary embeddings
+    abs_pos_variant: str = "standard" # options: "standard", "multi_channel_cyclic"
+    abs_pos_cycle_lengths: List[int] = field(default_factory=list) # cycle lengths for multi_channel_cyclic
+    abs_pos_random_start: bool = True # randomize start index per cycling channel
+    abs_pos_random_seed: int | None = None # optional seed for reproducible random starts
     use_fire_embeddings: bool = False
     shared_fire_embeddings: bool = False
     use_rotary_embeddings: bool = False

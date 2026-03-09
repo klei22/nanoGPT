@@ -1,0 +1,37 @@
+# absolute_position_comparison.yaml
+#
+# Compare three position embedding strategies:
+#   1. Standard absolute position embeddings (default)
+#   2. RoPE (rotary position embeddings, no absolute)
+#   3. Multi-channel cyclic absolute position embeddings
+---
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  block_size: [256]
+  batch_size: [64]
+  max_iters: [2000]
+  eval_interval: [200]
+  compile: [true]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+
+parameter_groups:
+  # 1. Standard absolute position embeddings
+  - use_abs_pos_embeddings: [true]
+    abs_pos_variant: ["standard"]
+    use_rotary_embeddings: [false]
+
+  # 2. RoPE (disable absolute position embeddings)
+  - use_abs_pos_embeddings: [false]
+    use_rotary_embeddings: [true]
+
+  # 3. Multi-channel cyclic absolute position embeddings
+  - use_abs_pos_embeddings: [true]
+    abs_pos_variant: ["multi_channel_cyclic"]
+    abs_pos_cycle_lengths: [[3, 5, 7, 11, 13, 17]]
+    abs_pos_random_start: [true]
+    use_rotary_embeddings: [false]
