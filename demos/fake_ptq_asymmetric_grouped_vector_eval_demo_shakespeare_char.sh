@@ -108,19 +108,32 @@ if [ "${#GROUP_COUNTS[@]}" -eq 0 ]; then
   exit 1
 fi
 
+VALID_GROUP_COUNTS=()
+SKIPPED_GROUP_COUNTS=()
 for gc in "${GROUP_COUNTS[@]}"; do
   if [ "$gc" -le 0 ]; then
-    echo "Invalid group count: $gc (must be > 0)" >&2
-    exit 1
+    SKIPPED_GROUP_COUNTS+=("$gc")
+    continue
   fi
   if (( N_EMBD % gc != 0 )); then
-    echo "Invalid group count: $gc does not divide n_embd=$N_EMBD" >&2
-    exit 1
+    SKIPPED_GROUP_COUNTS+=("$gc")
+    continue
   fi
+  VALID_GROUP_COUNTS+=("$gc")
 done
 
+if [ "${#VALID_GROUP_COUNTS[@]}" -eq 0 ]; then
+  echo "No valid group-count values remain after filtering for n_embd=$N_EMBD divisibility." >&2
+  echo "Requested counts: ${GROUP_COUNTS[*]}" >&2
+  exit 1
+fi
+
 echo "Sweeping bits: ${BITS[*]}"
-echo "Sweeping group-counts: ${GROUP_COUNTS[*]}"
+echo "Requested group-counts: ${GROUP_COUNTS[*]}"
+echo "Using valid group-counts: ${VALID_GROUP_COUNTS[*]}"
+if [ "${#SKIPPED_GROUP_COUNTS[@]}" -gt 0 ]; then
+  echo "Skipping non-divisible/invalid group-counts for n_embd=$N_EMBD: ${SKIPPED_GROUP_COUNTS[*]}"
+fi
 echo "Model setup: n_embd=$N_EMBD"
 
 mkdir -p "data/${DATASET}" "$BASELINE_SWEEP_ROOT" "$GROUPED_SWEEP_ROOT" "$EVAL_ROOT" "$SUMMARY_ROOT"
@@ -193,7 +206,7 @@ for bit in "${BITS[@]}"; do
     --eval_output_dir "$BASELINE_EVAL_BIT_DIR"
   step=$((step + 1))
 
-  for group_count in "${GROUP_COUNTS[@]}"; do
+  for group_count in "${VALID_GROUP_COUNTS[@]}"; do
     group_size=$((N_EMBD / group_count))
     GROUPED_OUT="${GROUPED_SWEEP_ROOT}/${bit}bit/groups_${group_count}"
     mkdir -p "$GROUPED_OUT"
@@ -225,7 +238,7 @@ for bit in "${BITS[@]}"; do
   done
 done
 
-python3 - "$EVAL_ROOT" "$SUMMARY_ROOT" "$N_EMBD" --bits "${BITS[@]}" --group-counts "${GROUP_COUNTS[@]}" <<'PY'
+python3 - "$EVAL_ROOT" "$SUMMARY_ROOT" "$N_EMBD" --bits "${BITS[@]}" --group-counts "${VALID_GROUP_COUNTS[@]}" <<'PY'
 import argparse
 import csv
 import json
@@ -343,9 +356,64 @@ with open(report_path, "w", encoding="utf-8") as fh:
 print(f"Wrote detailed CSV summary to {csv_path}")
 print(f"Wrote group aggregate CSV to {agg_csv_path}")
 print(f"Wrote text report to {report_path}")
+
+try:
+    import matplotlib.pyplot as plt
+except Exception as exc:
+    print(f"matplotlib is not installed or failed to import; skipping plot generation ({exc}).")
+else:
+    plt.style.use("seaborn-v0_8")
+    fig, ax = plt.subplots(figsize=(10.5, 6.0))
+
+    baseline_by_bit = {}
+    for row in rows:
+        baseline_by_bit[row["bit"]] = row["baseline_vector_val_loss"]
+
+    sorted_bits = sorted(set(row["bit"] for row in rows), reverse=True)
+    baseline_losses = [baseline_by_bit[b] for b in sorted_bits]
+    ax.plot(
+        sorted_bits,
+        baseline_losses,
+        marker="o",
+        linewidth=2.2,
+        label="Baseline full-vector (symmetric)",
+    )
+
+    cmap = plt.cm.viridis
+    colors = cmap(
+        [idx / max(1, (len(args.group_counts) - 1)) for idx, _ in enumerate(args.group_counts)]
+    )
+    for color, group_count in zip(colors, args.group_counts):
+        group_rows = [r for r in rows if r["group_count"] == group_count]
+        group_rows = sorted(group_rows, key=lambda r: r["bit"], reverse=True)
+        ax.plot(
+            [r["bit"] for r in group_rows],
+            [r["grouped_asymmetric_vector_val_loss"] for r in group_rows],
+            marker="o",
+            linewidth=1.8,
+            color=color,
+            label=f"Grouped asymmetric (groups={group_count})",
+            alpha=0.95,
+        )
+
+    ax.axhline(fp32_val, linestyle="--", linewidth=1.4, color="black", alpha=0.7, label="FP32 baseline")
+    ax.invert_xaxis()
+    ax.set_xticks(sorted_bits)
+    ax.set_xlabel("Weight bit-width")
+    ax.set_ylabel("Validation loss")
+    ax.set_title("shakespeare_char PTQ: full-vector vs grouped asymmetric")
+    ax.grid(True, linestyle="--", alpha=0.35)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+
+    plot_path = os.path.join(summary_root, "grouped_asymmetric_vector_eval_summary.png")
+    fig.savefig(plot_path, dpi=200)
+    plt.close(fig)
+    print(f"Wrote plot summary to {plot_path}")
 PY
 
 echo "=== Done ==="
 echo "Summary CSV: ${SUMMARY_ROOT}/grouped_asymmetric_vector_eval_summary.csv"
 echo "Aggregate CSV: ${SUMMARY_ROOT}/grouped_asymmetric_vector_eval_group_aggregate.csv"
 echo "Summary report: ${SUMMARY_ROOT}/grouped_asymmetric_vector_eval_report.txt"
+echo "Summary plot: ${SUMMARY_ROOT}/grouped_asymmetric_vector_eval_summary.png (if matplotlib available)"
