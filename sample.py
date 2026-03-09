@@ -1351,16 +1351,24 @@ def main():
     if args.multicontext and args.multicontext_start is None and args.multicontext_datasets:
         args.multicontext_start = [args.start] * len(args.multicontext_datasets)
 
-    start_ids = encode(args.start)
-    if len(start_ids) == 0:
-        if meta and meta.get('tokenizer') == 'sinewave':
-            print("Start string produced no tokens for sinewave tokenizer; defaulting to '0'.")
-            start_ids = [0]
-        elif not args.multicontext:
-            raise ValueError(
-                "The provided --start text resulted in an empty context. "
-                "Please supply a non-empty prompt or comma-separated values for numerical tokenizers."
-            )
+    start_ids = None
+    if not args.eval_only:
+        if 'encode' not in locals():
+            # Fallback tokenizer for generation paths when meta/tokenizer info is unavailable.
+            enc = tiktoken.get_encoding("gpt2")
+            encode = lambda s: enc.encode(s, allowed_special={""})
+            decode = lambda l: enc.decode(l)
+
+        start_ids = encode(args.start)
+        if len(start_ids) == 0:
+            if meta and meta.get('tokenizer') == 'sinewave':
+                print("Start string produced no tokens for sinewave tokenizer; defaulting to '0'.")
+                start_ids = [0]
+            elif not args.multicontext:
+                raise ValueError(
+                    "The provided --start text resulted in an empty context. "
+                    "Please supply a non-empty prompt or comma-separated values for numerical tokenizers."
+                )
     model.eval()
     model.to(args.device)
 
