@@ -107,9 +107,10 @@ python3 analysis/checkpoint_analysis/analyze_dot_islands_ckpt.py out_shakespeare
 ## Island-Routing Augmentation + Speed Comparison
 
 Use `augment_ckpt_with_island_routing.py` after generating `islands_detailed.json`.
-It creates routing metadata that uses one representative vector per island to
-perform a first-stage dot-product route decision, then applies final
-multiplication only on the selected island rows.
+It creates routing metadata with per-island probe vectors (default: island means)
+for first-stage routing, then applies final multiplication only on the selected
+row group. It also adds a fallback probe/group for rows not covered by any
+island, so routing always has 100% coverage.
 
 Outputs in `--out_dir` (default: `<ckpt_dir>/island_routing`):
 - `island_routing.pt`: routing metadata for each eligible 2D tensor
@@ -122,17 +123,18 @@ Example:
 ```bash
 python3 analysis/checkpoint_analysis/augment_ckpt_with_island_routing.py out_shakespeare_checkpoint_demo \
   --threshold 0.35 \
-  --provider_mode top
+  --provider_mode top \
+  --probe_mode mean
 ```
 
 
 ## Validation-Loss-Constrained Island Search
 
-Use `search_island_tradeoff.py` for a **greedy per-tensor** search:
-1) initialize each tensor near **1 island**,
-2) test `+1` island for exactly one tensor at a time (all others fixed),
-3) after each full-model pass, choose the candidate with the **lowest validation-loss increase**,
-4) stop if that best candidate exceeds the loss tolerance; otherwise accept and continue.
+Use `search_island_tradeoff.py` for a **greedy per-tensor threshold-step search**:
+1) initialize each tensor near `--start_threshold` (default `0.5`),
+2) test one tensor at a time by lowering its threshold by `--threshold_step` (default `0.05`),
+3) for each round, evaluate the full pass and pick the candidate with the **lowest validation-loss increase**,
+4) stop if the best candidate exceeds the loss tolerance; otherwise accept and continue.
 
 Outputs in `--out_dir` (default: `<ckpt_dir>/island_tradeoff_search`):
 - `search_log.yaml`: round-by-round tested candidates, losses, selections, stop reason
@@ -143,11 +145,7 @@ Outputs in `--out_dir` (default: `<ckpt_dir>/island_tradeoff_search`):
 Example:
 
 ```bash
-python3 analysis/checkpoint_analysis/search_island_tradeoff.py out_shakespeare_checkpoint_demo \
-  --loss_tolerance_pct 2.0 \
-  --eval_dataset shakespeare_char \
-  --eval_iters 100 \
-  --device cpu --dtype float32
+python3 analysis/checkpoint_analysis/search_island_tradeoff.py out_shakespeare_checkpoint_demo   --start_threshold 0.5   --threshold_step 0.05   --loss_tolerance_pct 2.0   --eval_dataset shakespeare_char   --eval_iters 100   --device cpu --dtype float32
 ```
 
 TUI log viewer (template-style similar to `view_hp_log.py`):

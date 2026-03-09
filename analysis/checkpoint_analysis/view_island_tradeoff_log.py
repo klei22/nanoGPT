@@ -146,6 +146,8 @@ class IslandTradeoffViewer(App):
         top.update(Panel(panel_tbl, title="Round detail", border_style="cyan"))
 
         table.add_column("tensor")
+        table.add_column("from_thr")
+        table.add_column("to_thr")
         table.add_column("from_islands")
         table.add_column("to_islands")
         table.add_column("val_loss")
@@ -155,6 +157,8 @@ class IslandTradeoffViewer(App):
         for cand in r.get("tested", []):
             table.add_row(
                 str(cand.get("tensor", "-")),
+                str(cand.get("from_threshold", "-")),
+                str(cand.get("to_threshold", "-")),
                 str(cand.get("from_num_islands", "-")),
                 str(cand.get("to_num_islands", "-")),
                 str(cand.get("val_loss", "-")),

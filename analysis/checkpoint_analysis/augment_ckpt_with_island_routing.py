@@ -27,7 +27,13 @@ def parse_args():
         "--provider_mode",
         choices=["top", "mean"],
         default="top",
-        help="How to choose one representative per island (top provider or island mean)",
+        help="How to choose representative vectors used in replacement metadata",
+    )
+    p.add_argument(
+        "--probe_mode",
+        choices=["mean", "top"],
+        default="mean",
+        help="How to build probe vectors for routing decisions (default mean of each island)",
     )
     p.add_argument(
         "--out_dir",
@@ -52,9 +58,9 @@ def get_threshold_entry(report: Dict, target_threshold: float) -> Optional[Dict]
     return best
 
 
-def build_rep_vector(weight: torch.Tensor, island: Dict, provider_mode: str) -> torch.Tensor:
+def build_rep_vector(weight: torch.Tensor, island: Dict, mode: str) -> torch.Tensor:
     members = island["member_indices"]
-    if provider_mode == "mean":
+    if mode == "mean":
         return weight[members].mean(dim=0)
     providers = island.get("providers", [])
     if providers:
@@ -62,34 +68,49 @@ def build_rep_vector(weight: torch.Tensor, island: Dict, provider_mode: str) -> 
     return weight[members].mean(dim=0)
 
 
-def routed_matvec(x: torch.Tensor, weight: torch.Tensor, reps: torch.Tensor, islands: List[List[int]]) -> torch.Tensor:
-    # Stage 1: representative scoring (dot-product routing)
-    island_scores = x @ reps.T
-    best_island = int(torch.argmax(island_scores).item())
+def routed_matvec(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    probe_vectors: torch.Tensor,
+    island_indices: List[List[int]],
+    fallback_indices: List[int],
+) -> torch.Tensor:
+    # Stage 1: probe vectors (islands + fallback uncovered group)
+    scores = x @ probe_vectors.T
+    chosen = int(torch.argmax(scores).item())
 
-    # Stage 2: multiply only selected island rows
-    idx = torch.tensor(islands[best_island], dtype=torch.long, device=weight.device)
+    if chosen < len(island_indices):
+        idx_list = island_indices[chosen]
+    else:
+        idx_list = fallback_indices
+
+    idx = torch.tensor(idx_list, dtype=torch.long, device=weight.device)
     out = torch.zeros(weight.shape[0], dtype=x.dtype, device=weight.device)
-    out[idx] = weight[idx] @ x
+    if idx.numel() > 0:
+        out[idx] = weight[idx] @ x
     return out
 
 
-def benchmark_tensor(weight: torch.Tensor, reps: torch.Tensor, islands: List[List[int]], warmup: int, repeats: int, gen: torch.Generator) -> Dict:
+def benchmark_tensor(
+    weight: torch.Tensor,
+    probe_vectors: torch.Tensor,
+    island_indices: List[List[int]],
+    fallback_indices: List[int],
+    warmup: int,
+    repeats: int,
+    gen: torch.Generator,
+) -> Dict:
     in_dim = weight.shape[1]
     x = torch.randn(in_dim, generator=gen, dtype=weight.dtype)
 
     for _ in range(warmup):
         _ = weight @ x
-        _ = routed_matvec(x, weight, reps, islands)
+        _ = routed_matvec(x, weight, probe_vectors, island_indices, fallback_indices)
 
-    t0 = time.perf_counter()
-    _ = weight @ x
-    t1 = time.perf_counter()
+    t0 = time.perf_counter(); _ = weight @ x; t1 = time.perf_counter()
     baseline_ttft = t1 - t0
 
-    t0 = time.perf_counter()
-    _ = routed_matvec(x, weight, reps, islands)
-    t1 = time.perf_counter()
+    t0 = time.perf_counter(); _ = routed_matvec(x, weight, probe_vectors, island_indices, fallback_indices); t1 = time.perf_counter()
     routed_ttft = t1 - t0
 
     t0 = time.perf_counter()
@@ -100,7 +121,7 @@ def benchmark_tensor(weight: torch.Tensor, reps: torch.Tensor, islands: List[Lis
 
     t0 = time.perf_counter()
     for _ in range(repeats):
-        _ = routed_matvec(x, weight, reps, islands)
+        _ = routed_matvec(x, weight, probe_vectors, island_indices, fallback_indices)
     t1 = time.perf_counter()
     routed_decode_s = t1 - t0
 
@@ -157,6 +178,7 @@ def main():
         "source_island_json": island_json,
         "threshold": args.threshold,
         "provider_mode": args.provider_mode,
+        "probe_mode": args.probe_mode,
         "tensors": {},
     }
 
@@ -178,21 +200,52 @@ def main():
             continue
 
         island_member_lists = [x["member_indices"] for x in islands]
-        reps = torch.stack([build_rep_vector(w, island, args.provider_mode) for island in islands], dim=0)
+
+        replacement_reps = torch.stack([build_rep_vector(w, island, args.provider_mode) for island in islands], dim=0)
+        island_probe_vectors = torch.stack([build_rep_vector(w, island, args.probe_mode) for island in islands], dim=0)
+
+        covered = set()
+        for members in island_member_lists:
+            covered.update(int(i) for i in members)
+        all_rows = set(range(w.shape[0]))
+        uncovered = sorted(all_rows - covered)
+
+        if uncovered:
+            fallback_probe = w[uncovered].mean(dim=0)
+            fallback_indices = uncovered
+        else:
+            # fallback still exists to guarantee a valid route target
+            fallback_probe = w.mean(dim=0)
+            fallback_indices = list(range(w.shape[0]))
+
+        probe_vectors = torch.cat([island_probe_vectors, fallback_probe.unsqueeze(0)], dim=0)
 
         routing_payload["tensors"][tensor_name] = {
             "shape": list(w.shape),
             "num_islands": len(island_member_lists),
             "island_sizes": [len(x) for x in island_member_lists],
-            "representatives": reps,
+            "replacement_representatives": replacement_reps,
+            "probe_vectors": probe_vectors,
             "island_indices": island_member_lists,
+            "fallback_indices": fallback_indices,
+            "covered_rows": len(covered),
+            "uncovered_rows": len(uncovered),
         }
 
-        bench = benchmark_tensor(w.float(), reps.float(), island_member_lists, args.warmup, args.bench_repeats, gen)
+        bench = benchmark_tensor(
+            w.float(),
+            probe_vectors.float(),
+            island_member_lists,
+            fallback_indices,
+            args.warmup,
+            args.bench_repeats,
+            gen,
+        )
         speed_rows.append(
             {
                 "tensor": tensor_name,
                 "num_islands": len(island_member_lists),
+                "uncovered_rows": len(uncovered),
                 **bench,
                 "ttft_speedup": bench["ttft_baseline_ms"] / max(bench["ttft_routed_ms"], 1e-9),
                 "decode_speedup": bench["decode_routed_tok_s"] / max(bench["decode_baseline_tok_s"], 1e-9),
@@ -205,14 +258,9 @@ def main():
     csv_path = os.path.join(out_dir, "island_routing_speed.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         fields = [
-            "tensor",
-            "num_islands",
-            "ttft_baseline_ms",
-            "ttft_routed_ms",
-            "ttft_speedup",
-            "decode_baseline_tok_s",
-            "decode_routed_tok_s",
-            "decode_speedup",
+            "tensor", "num_islands", "uncovered_rows",
+            "ttft_baseline_ms", "ttft_routed_ms", "ttft_speedup",
+            "decode_baseline_tok_s", "decode_routed_tok_s", "decode_speedup",
         ]
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
