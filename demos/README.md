@@ -28,12 +28,20 @@ with AdamW, then compares their statistics using `view_model_stats.py`.
 bit-width sweep (default int8 down to int3) on `shakespeare_char` and compares:
 
 1. Original full-vector PTQ (`--granularity vector`, symmetric).
-2. Grouped asymmetric vector PTQ (`--granularity vector --quantization asymmetric`
-   with either `--vector-group-count` or `--vector-group-size`).
+2. Grouped asymmetric vector PTQ (`--granularity vector --quantization asymmetric`)
+   while sweeping group-count per vector (default 1 through 10).
 
-Example matching 300-d embeddings split into 10 groups (30 values/group):
+Example with default group-count sweep 1..10 for 300-d embeddings:
+
+```bash
+bash demos/fake_ptq_asymmetric_grouped_vector_eval_demo_shakespeare_char.sh
+```
+
+Example constraining the group-count sweep to 1..10 explicitly:
 
 ```bash
 bash demos/fake_ptq_asymmetric_grouped_vector_eval_demo_shakespeare_char.sh \
-  --vector-group-count 10
+  --group-count-start 1 \
+  --group-count-stop 10 \
+  --group-count-step 1
 ```
