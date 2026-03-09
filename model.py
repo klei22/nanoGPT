@@ -34,6 +34,7 @@ from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
+from variations.absolute_position_variations import CyclicAbsolutePositionEmbedding
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
@@ -151,10 +152,16 @@ class GPT(nn.Module):
             self.transformer['post_abs_norm'] = self.build_norm_from_variant(config, "norm_variant_abs", "norm_abs")
 
         if self.config.use_abs_pos_embeddings:
-            if config.quantize_wpe:
-                pos_embd = QuantizedEmbedding(config.block_size, config.n_embd, config.quantize_wpe_method, config.quantize_wpe_bits)
+            if config.abs_pos_embedding_variant == "default":
+                if config.quantize_wpe:
+                    pos_embd = QuantizedEmbedding(config.block_size, config.n_embd, config.quantize_wpe_method, config.quantize_wpe_bits)
+                else:
+                    pos_embd = nn.Embedding(config.block_size, config.n_embd)
+            elif config.abs_pos_embedding_variant == "cyclic":
+                periods = config.abs_pos_cyclic_periods if config.abs_pos_cyclic_periods else [config.block_size]
+                pos_embd = CyclicAbsolutePositionEmbedding(periods, config.n_embd, random_start=config.abs_pos_cyclic_random_start)
             else:
-                pos_embd = nn.Embedding(config.block_size, config.n_embd)
+                raise ValueError(f"Unknown abs_pos_embedding_variant: {config.abs_pos_embedding_variant}")
             self.transformer['wpe'] = pos_embd
 
         # Select softmax variant for output layer
@@ -225,7 +232,7 @@ class GPT(nn.Module):
         params are actually used as weights in the final layer, so we include them.
         """
         n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding and self.config.use_abs_pos_embeddings:
+        if non_embedding and self.config.use_abs_pos_embeddings and hasattr(self.transformer.wpe, 'weight'):
             n_params -= self.transformer.wpe.weight.numel()
         return n_params
 
@@ -233,7 +240,7 @@ class GPT(nn.Module):
         # Function to increase block size dynamically
         if new_block_size > self.config.block_size:
             self.config.block_size = new_block_size
-            if self.config.use_abs_pos_embeddings:
+            if self.config.use_abs_pos_embeddings and self.config.abs_pos_embedding_variant == "default":
                 if self.config.quantize_wpe:
                     pos_embd = QuantizedEmbedding(new_block_size, self.config.n_embd, self.config.quantize_wpe_method, self.config.quantize_wpe_bits)
                 else:
@@ -794,7 +801,7 @@ class GPT(nn.Module):
         # but want to use a smaller block size for some smaller, simpler model
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        if self.config.use_abs_pos_embeddings:
+        if self.config.use_abs_pos_embeddings and hasattr(self.transformer.wpe, 'weight'):
             self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
