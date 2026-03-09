@@ -102,3 +102,23 @@ python3 analysis/checkpoint_analysis/analyze_dot_islands_ckpt.py out_shakespeare
   --min_island_size 4 \
   --top_providers 6
 ```
+
+
+## Island-Routing Augmentation + Speed Comparison
+
+Use `augment_ckpt_with_island_routing.py` after generating `islands_detailed.json`.
+It creates routing metadata that uses one representative vector per island to
+perform a first-stage dot-product route decision, then applies final
+multiplication only on the selected island rows.
+
+Outputs in `--out_dir` (default: `<ckpt_dir>/island_routing`):
+- `island_routing.pt`: routing metadata for each eligible 2D tensor
+- `island_routing_speed.csv`: per-tensor TTFT/decode before-vs-after speed table
+- `island_routing_speed.json`: JSON copy of speed stats
+- `island_routing_speed.html`: Plotly visualization of the comparison
+
+Example:
+
+```bash
+python3 analysis/checkpoint_analysis/augment_ckpt_with_island_routing.py out_shakespeare_checkpoint_demo   --threshold 0.35   --provider_mode top
+```

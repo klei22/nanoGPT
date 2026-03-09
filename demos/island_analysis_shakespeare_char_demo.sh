@@ -6,6 +6,7 @@ set -euo pipefail
 SKIP_TRAINING="${1:-yes}"
 OUT_DIR="out_shakespeare_island_demo"
 ANALYSIS_DIR="${OUT_DIR}/island_analysis"
+RUN_ROUTING_AUGMENT="${RUN_ROUTING_AUGMENT:-no}"
 
 bash data/shakespeare_char/get_dataset.sh
 
@@ -41,3 +42,20 @@ echo "Done. See:"
 echo "  - ${ANALYSIS_DIR}/islands_detailed.json"
 echo "  - ${ANALYSIS_DIR}/islands_summary.csv"
 echo "  - ${ANALYSIS_DIR}/islands_dashboard.html"
+
+
+if [[ "${RUN_ROUTING_AUGMENT}" == "yes" ]]; then
+  ROUTING_DIR="${OUT_DIR}/island_routing"
+  python3 analysis/checkpoint_analysis/augment_ckpt_with_island_routing.py \
+    "${OUT_DIR}" \
+    --island_json "${ANALYSIS_DIR}/islands_detailed.json" \
+    --threshold 0.3 \
+    --provider_mode top \
+    --out_dir "${ROUTING_DIR}"
+
+  echo "Routing augmentation + speed comparison artifacts:"
+  echo "  - ${ROUTING_DIR}/island_routing.pt"
+  echo "  - ${ROUTING_DIR}/island_routing_speed.csv"
+  echo "  - ${ROUTING_DIR}/island_routing_speed.json"
+  echo "  - ${ROUTING_DIR}/island_routing_speed.html"
+fi
