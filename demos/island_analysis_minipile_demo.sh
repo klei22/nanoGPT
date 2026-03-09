@@ -7,6 +7,7 @@ SKIP_TRAINING="${1:-yes}"
 OUT_DIR="out_minipile_island_demo"
 ANALYSIS_DIR="${OUT_DIR}/island_analysis"
 RUN_ROUTING_AUGMENT="${RUN_ROUTING_AUGMENT:-no}"
+RUN_TRADEOFF_SEARCH="${RUN_TRADEOFF_SEARCH:-no}"
 
 pushd data/minipile >/dev/null
 if [[ ! -f "train.bin" ]] || [[ ! -f "val.bin" ]] || [[ ! -f "meta.pkl" ]]; then
@@ -63,4 +64,25 @@ if [[ "${RUN_ROUTING_AUGMENT}" == "yes" ]]; then
   echo "  - ${ROUTING_DIR}/island_routing_speed.csv"
   echo "  - ${ROUTING_DIR}/island_routing_speed.json"
   echo "  - ${ROUTING_DIR}/island_routing_speed.html"
+fi
+
+
+if [[ "${RUN_TRADEOFF_SEARCH}" == "yes" ]]; then
+  SEARCH_DIR="${OUT_DIR}/island_tradeoff_search"
+  python3 analysis/checkpoint_analysis/search_island_tradeoff.py \
+    "${OUT_DIR}" \
+    --island_json "${ANALYSIS_DIR}/islands_detailed.json" \
+    --thresholds 0.2,0.3,0.4,0.5 \
+    --target_islands 4,8,16 \
+    --loss_tolerance_pct 2.0 \
+    --eval_dataset minipile \
+    --eval_iters 50 \
+    --device cpu \
+    --dtype float32 \
+    --out_dir "${SEARCH_DIR}"
+
+  echo "Tradeoff search artifacts:"
+  echo "  - ${SEARCH_DIR}/search_results.json"
+  echo "  - ${SEARCH_DIR}/search_results.csv"
+  echo "  - ${SEARCH_DIR}/search_dashboard.html"
 fi

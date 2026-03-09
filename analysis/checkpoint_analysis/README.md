@@ -120,5 +120,33 @@ Outputs in `--out_dir` (default: `<ckpt_dir>/island_routing`):
 Example:
 
 ```bash
-python3 analysis/checkpoint_analysis/augment_ckpt_with_island_routing.py out_shakespeare_checkpoint_demo   --threshold 0.35   --provider_mode top
+python3 analysis/checkpoint_analysis/augment_ckpt_with_island_routing.py out_shakespeare_checkpoint_demo \
+  --threshold 0.35 \
+  --provider_mode top
+```
+
+
+## Validation-Loss-Constrained Island Search
+
+Use `search_island_tradeoff.py` to run a sweep over thresholds and/or target
+island counts, evaluate **validation loss** for each candidate checkpoint, and
+pick the best candidate that stays within a configured loss tolerance while
+maximizing decode-iteration reduction proxy.
+
+Outputs in `--out_dir` (default: `<ckpt_dir>/island_tradeoff_search`):
+- `search_results.json`: baseline, constraints, all candidates, and selected best
+- `search_results.csv`: tabular candidate summary
+- `search_dashboard.html`: Plotly visualization of loss vs decode proxy
+- per-candidate subdirs with modified checkpoints and eval artifacts
+
+Example:
+
+```bash
+python3 analysis/checkpoint_analysis/search_island_tradeoff.py out_shakespeare_checkpoint_demo \
+  --thresholds 0.2,0.3,0.4,0.5 \
+  --target_islands 4,8,16 \
+  --loss_tolerance_pct 2.0 \
+  --eval_dataset shakespeare_char \
+  --eval_iters 100 \
+  --device cpu --dtype float32
 ```
