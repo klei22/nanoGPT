@@ -81,3 +81,24 @@ python checkpoint_analysis/jl_transform_ckpt.py out \
     --out_dir out_jl --out_embd <new_dim> --jl_type sign
 ```
 
+
+## Pairwise-Dot Island Analysis
+
+Use `analyze_dot_islands_ckpt.py` to scan checkpoint tensors for groups of vectors
+("islands") that are strongly similar under pairwise cosine/dot product.
+
+The script writes three artifacts in `--out_dir` (default: `<ckpt_dir>/island_analysis`):
+- `islands_detailed.json`: per-tensor / per-threshold island membership and provider vectors
+- `islands_summary.csv`: summary stats per tensor and threshold
+- `islands_dashboard.html`: Plotly dashboard with a tensor selector to compare island metrics
+
+Example:
+
+```bash
+python3 analysis/checkpoint_analysis/analyze_dot_islands_ckpt.py out_shakespeare_checkpoint_demo \
+  --pattern "wte|attn|mlp" \
+  --metric cosine \
+  --thresholds 0.2,0.35,0.5 \
+  --min_island_size 4 \
+  --top_providers 6
+```
