@@ -4,6 +4,7 @@ set -euo pipefail
 DATASET="shakespeare_char"
 MAX_ITERS=800
 BASE_OUT="out_abs_pos_mezo"
+SUMMARY_DIR="out_abs_pos_mezo_summary"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,4 +37,39 @@ run_one "abs_default" --use_abs_pos_embeddings --abs_pos_embedding_variant defau
 run_one "rope" --no-use_abs_pos_embeddings --use_rotary_embeddings
 run_one "abs_cyclic" --use_abs_pos_embeddings --abs_pos_embedding_variant cyclic --abs_pos_cyclic_periods 31 47 97 --abs_pos_cyclic_random_start
 
-echo "Completed MeZO comparison. Check *_eval/eval_loss.txt files."
+mkdir -p "$SUMMARY_DIR"
+python3 - "$DATASET" "$SUMMARY_DIR" <<'PY'
+import json
+import os
+import sys
+
+import matplotlib.pyplot as plt
+
+
+dataset = sys.argv[1]
+summary_dir = sys.argv[2]
+variants = ["abs_default", "rope", "abs_cyclic"]
+base_out = "out_abs_pos_mezo"
+
+losses = {}
+for v in variants:
+    path = f"{base_out}_{v}_{dataset}_eval/eval_loss.txt"
+    with open(path, encoding="utf-8") as fh:
+        losses[v] = float(json.load(fh)["val"])
+
+fig, ax = plt.subplots(figsize=(7, 4.5))
+ax.bar(variants, [losses[v] for v in variants])
+ax.set_title(f"MeZO final validation loss ({dataset})")
+ax.set_ylabel("val loss")
+fig.tight_layout()
+
+out_png = os.path.join(summary_dir, f"absolute_position_mezo_{dataset}.png")
+fig.savefig(out_png, dpi=150)
+
+with open(os.path.join(summary_dir, f"absolute_position_mezo_{dataset}.json"), "w", encoding="utf-8") as fh:
+    json.dump({"dataset": dataset, "val_loss": losses, "summary_graph": out_png}, fh, indent=2)
+
+print(f"Wrote summary graph: {out_png}")
+PY
+
+echo "Completed MeZO comparison. Summary graph in ${SUMMARY_DIR}."
