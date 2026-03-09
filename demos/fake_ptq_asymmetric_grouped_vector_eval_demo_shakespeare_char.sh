@@ -2,8 +2,9 @@
 # demos/fake_ptq_asymmetric_grouped_vector_eval_demo_shakespeare_char.sh
 #
 # Compares fake PTQ validation loss on shakespeare_char between:
-#   1) Original full-vector PTQ (single quantization range per vector)
+#   1) Original full-vector PTQ (single quantization range per vector, symmetric)
 #   2) Grouped-vector asymmetric PTQ (independent range/zero-point per group)
+#   3) Grouped-vector symmetric PTQ (independent symmetric scales per group)
 #
 # Defaults:
 #   - n_embd=300
@@ -13,9 +14,10 @@
 set -euo pipefail
 
 DATASET="shakespeare_char"
-OUT_DIR="out_fake_ptq_${DATASET}_grouped_asym"
+OUT_DIR="out_fake_ptq_${DATASET}_grouped"
 BASELINE_SWEEP_ROOT="${OUT_DIR}_baseline_vector_sweep"
-GROUPED_SWEEP_ROOT="${OUT_DIR}_grouped_vector_asym_sweep"
+GROUPED_ASYM_SWEEP_ROOT="${OUT_DIR}_grouped_vector_asym_sweep"
+GROUPED_SYM_SWEEP_ROOT="${OUT_DIR}_grouped_vector_sym_sweep"
 EVAL_ROOT="${OUT_DIR}_evals"
 SUMMARY_ROOT="${OUT_DIR}_quantization_summaries"
 
@@ -136,7 +138,7 @@ if [ "${#SKIPPED_GROUP_COUNTS[@]}" -gt 0 ]; then
 fi
 echo "Model setup: n_embd=$N_EMBD"
 
-mkdir -p "data/${DATASET}" "$BASELINE_SWEEP_ROOT" "$GROUPED_SWEEP_ROOT" "$EVAL_ROOT" "$SUMMARY_ROOT"
+mkdir -p "data/${DATASET}" "$BASELINE_SWEEP_ROOT" "$GROUPED_ASYM_SWEEP_ROOT" "$GROUPED_SYM_SWEEP_ROOT" "$EVAL_ROOT" "$SUMMARY_ROOT"
 
 echo "=== Step 1: Prepare shakespeare_char dataset ==="
 pushd "data/${DATASET}" > /dev/null
@@ -208,32 +210,57 @@ for bit in "${BITS[@]}"; do
 
   for group_count in "${VALID_GROUP_COUNTS[@]}"; do
     group_size=$((N_EMBD / group_count))
-    GROUPED_OUT="${GROUPED_SWEEP_ROOT}/${bit}bit/groups_${group_count}"
-    mkdir -p "$GROUPED_OUT"
 
-    echo "=== Step ${step}: Quantize grouped asymmetric vector PTQ (${bit}-bit, groups=${group_count}, group_size=${group_size}) ==="
-    if [ ! -f "$GROUPED_OUT/ckpt.pt" ]; then
+    GROUPED_ASYM_OUT="${GROUPED_ASYM_SWEEP_ROOT}/${bit}bit/groups_${group_count}"
+    mkdir -p "$GROUPED_ASYM_OUT"
+    echo "=== Step ${step}: Quantize grouped ASYMMETRIC vector PTQ (${bit}-bit, groups=${group_count}, group_size=${group_size}) ==="
+    if [ ! -f "$GROUPED_ASYM_OUT/ckpt.pt" ]; then
       python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
-        --out_dir "$GROUPED_OUT" \
+        --out_dir "$GROUPED_ASYM_OUT" \
         --num_bits "$bit" \
         --granularity vector \
         --quantization asymmetric \
         --vector-group-count "$group_count"
     else
-      echo "Found existing grouped checkpoint at $GROUPED_OUT/ckpt.pt; skipping quantization."
+      echo "Found existing grouped asymmetric checkpoint at $GROUPED_ASYM_OUT/ckpt.pt; skipping quantization."
     fi
     step=$((step + 1))
 
-    GROUPED_EVAL_BIT_DIR="${EVAL_ROOT}/grouped_asymmetric_vector/${bit}bit/groups_${group_count}"
-    mkdir -p "$GROUPED_EVAL_BIT_DIR"
-
-    echo "=== Step ${step}: Evaluate grouped asymmetric vector PTQ (${bit}-bit, groups=${group_count}) ==="
+    GROUPED_ASYM_EVAL_DIR="${EVAL_ROOT}/grouped_asymmetric_vector/${bit}bit/groups_${group_count}"
+    mkdir -p "$GROUPED_ASYM_EVAL_DIR"
+    echo "=== Step ${step}: Evaluate grouped ASYMMETRIC vector PTQ (${bit}-bit, groups=${group_count}) ==="
     python3 sample.py \
-      --out_dir "$GROUPED_OUT" \
+      --out_dir "$GROUPED_ASYM_OUT" \
       --eval_only \
       --eval_dataset "$DATASET" \
       --eval_iters "$EVAL_ITERS" \
-      --eval_output_dir "$GROUPED_EVAL_BIT_DIR"
+      --eval_output_dir "$GROUPED_ASYM_EVAL_DIR"
+    step=$((step + 1))
+
+    GROUPED_SYM_OUT="${GROUPED_SYM_SWEEP_ROOT}/${bit}bit/groups_${group_count}"
+    mkdir -p "$GROUPED_SYM_OUT"
+    echo "=== Step ${step}: Quantize grouped SYMMETRIC vector PTQ (${bit}-bit, groups=${group_count}, group_size=${group_size}) ==="
+    if [ ! -f "$GROUPED_SYM_OUT/ckpt.pt" ]; then
+      python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
+        --out_dir "$GROUPED_SYM_OUT" \
+        --num_bits "$bit" \
+        --granularity vector \
+        --quantization symmetric \
+        --vector-group-count "$group_count"
+    else
+      echo "Found existing grouped symmetric checkpoint at $GROUPED_SYM_OUT/ckpt.pt; skipping quantization."
+    fi
+    step=$((step + 1))
+
+    GROUPED_SYM_EVAL_DIR="${EVAL_ROOT}/grouped_symmetric_vector/${bit}bit/groups_${group_count}"
+    mkdir -p "$GROUPED_SYM_EVAL_DIR"
+    echo "=== Step ${step}: Evaluate grouped SYMMETRIC vector PTQ (${bit}-bit, groups=${group_count}) ==="
+    python3 sample.py \
+      --out_dir "$GROUPED_SYM_OUT" \
+      --eval_only \
+      --eval_dataset "$DATASET" \
+      --eval_iters "$EVAL_ITERS" \
+      --eval_output_dir "$GROUPED_SYM_EVAL_DIR"
     step=$((step + 1))
   done
 done
@@ -278,19 +305,31 @@ for bit in args.bits:
 
     base_val = read_val_loss(base_eval)
     for group_count in args.group_counts:
-        grouped_eval = os.path.join(
+        asym_eval = os.path.join(
             eval_root,
             "grouped_asymmetric_vector",
             f"{bit}bit",
             f"groups_{group_count}",
             "eval_loss.txt",
         )
-        if not os.path.exists(grouped_eval):
+        sym_eval = os.path.join(
+            eval_root,
+            "grouped_symmetric_vector",
+            f"{bit}bit",
+            f"groups_{group_count}",
+            "eval_loss.txt",
+        )
+        if not os.path.exists(asym_eval):
             raise SystemExit(
-                f"Missing grouped eval for {bit}-bit groups={group_count}: {grouped_eval}"
+                f"Missing grouped asymmetric eval for {bit}-bit groups={group_count}: {asym_eval}"
+            )
+        if not os.path.exists(sym_eval):
+            raise SystemExit(
+                f"Missing grouped symmetric eval for {bit}-bit groups={group_count}: {sym_eval}"
             )
 
-        grouped_val = read_val_loss(grouped_eval)
+        asym_val = read_val_loss(asym_eval)
+        sym_val = read_val_loss(sym_eval)
         rows.append(
             {
                 "bit": bit,
@@ -298,17 +337,21 @@ for bit in args.bits:
                 "group_size": args.n_embd // group_count,
                 "fp32_val_loss": fp32_val,
                 "baseline_vector_val_loss": base_val,
-                "grouped_asymmetric_vector_val_loss": grouped_val,
+                "grouped_asymmetric_vector_val_loss": asym_val,
+                "grouped_symmetric_vector_val_loss": sym_val,
                 "baseline_delta_vs_fp32": base_val - fp32_val,
-                "grouped_delta_vs_fp32": grouped_val - fp32_val,
-                "grouped_minus_baseline": grouped_val - base_val,
+                "grouped_asymmetric_delta_vs_fp32": asym_val - fp32_val,
+                "grouped_symmetric_delta_vs_fp32": sym_val - fp32_val,
+                "grouped_asymmetric_minus_baseline": asym_val - base_val,
+                "grouped_symmetric_minus_baseline": sym_val - base_val,
+                "asymmetric_minus_symmetric": asym_val - sym_val,
             }
         )
 
 if not rows:
     raise SystemExit("No rows collected for summary")
 
-csv_path = os.path.join(summary_root, "grouped_asymmetric_vector_eval_summary.csv")
+csv_path = os.path.join(summary_root, "grouped_vector_eval_summary.csv")
 with open(csv_path, "w", newline="", encoding="utf-8") as fh:
     writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
     writer.writeheader()
@@ -321,26 +364,31 @@ for group_count in args.group_counts:
         {
             "group_count": group_count,
             "group_size": args.n_embd // group_count,
-            "best_grouped_val_loss": min(r["grouped_asymmetric_vector_val_loss"] for r in subset),
-            "best_grouped_bit": min(subset, key=lambda r: r["grouped_asymmetric_vector_val_loss"])["bit"],
-            "mean_grouped_minus_baseline": statistics.mean(r["grouped_minus_baseline"] for r in subset),
+            "best_grouped_asymmetric_val_loss": min(r["grouped_asymmetric_vector_val_loss"] for r in subset),
+            "best_grouped_asymmetric_bit": min(subset, key=lambda r: r["grouped_asymmetric_vector_val_loss"])["bit"],
+            "best_grouped_symmetric_val_loss": min(r["grouped_symmetric_vector_val_loss"] for r in subset),
+            "best_grouped_symmetric_bit": min(subset, key=lambda r: r["grouped_symmetric_vector_val_loss"])["bit"],
+            "mean_asymmetric_minus_baseline": statistics.mean(r["grouped_asymmetric_minus_baseline"] for r in subset),
+            "mean_symmetric_minus_baseline": statistics.mean(r["grouped_symmetric_minus_baseline"] for r in subset),
+            "mean_asymmetric_minus_symmetric": statistics.mean(r["asymmetric_minus_symmetric"] for r in subset),
         }
     )
 
-agg_csv_path = os.path.join(summary_root, "grouped_asymmetric_vector_eval_group_aggregate.csv")
+agg_csv_path = os.path.join(summary_root, "grouped_vector_eval_group_aggregate.csv")
 with open(agg_csv_path, "w", newline="", encoding="utf-8") as fh:
     writer = csv.DictWriter(fh, fieldnames=list(agg_rows[0].keys()))
     writer.writeheader()
     writer.writerows(agg_rows)
 
 best_base_row = min(rows, key=lambda r: r["baseline_vector_val_loss"])
-best_grouped_row = min(rows, key=lambda r: r["grouped_asymmetric_vector_val_loss"])
+best_asym_row = min(rows, key=lambda r: r["grouped_asymmetric_vector_val_loss"])
+best_sym_row = min(rows, key=lambda r: r["grouped_symmetric_vector_val_loss"])
 
-report_path = os.path.join(summary_root, "grouped_asymmetric_vector_eval_report.txt")
+report_path = os.path.join(summary_root, "grouped_vector_eval_report.txt")
 with open(report_path, "w", encoding="utf-8") as fh:
-    fh.write("Grouped asymmetric vector PTQ vs baseline full-vector PTQ\n")
+    fh.write("Grouped vector PTQ vs baseline full-vector PTQ\n")
     fh.write(f"Bits swept: {args.bits}\n")
-    fh.write(f"Group-counts swept: {args.group_counts}\n")
+    fh.write(f"Group-counts swept (valid): {args.group_counts}\n")
     fh.write(f"Embedding dimension: {args.n_embd}\n")
     fh.write(f"FP32 validation loss: {fp32_val:.6f}\n")
     fh.write(
@@ -348,9 +396,15 @@ with open(report_path, "w", encoding="utf-8") as fh:
     )
     fh.write(
         "Best grouped asymmetric vector PTQ overall: "
-        f"{best_grouped_row['bit']}-bit @ groups={best_grouped_row['group_count']} "
-        f"(group_size={best_grouped_row['group_size']}) @ "
-        f"{best_grouped_row['grouped_asymmetric_vector_val_loss']:.6f}\n"
+        f"{best_asym_row['bit']}-bit @ groups={best_asym_row['group_count']} "
+        f"(group_size={best_asym_row['group_size']}) @ "
+        f"{best_asym_row['grouped_asymmetric_vector_val_loss']:.6f}\n"
+    )
+    fh.write(
+        "Best grouped symmetric vector PTQ overall: "
+        f"{best_sym_row['bit']}-bit @ groups={best_sym_row['group_count']} "
+        f"(group_size={best_sym_row['group_size']}) @ "
+        f"{best_sym_row['grouped_symmetric_vector_val_loss']:.6f}\n"
     )
 
 print(f"Wrote detailed CSV summary to {csv_path}")
@@ -363,7 +417,7 @@ except Exception as exc:
     print(f"matplotlib is not installed or failed to import; skipping plot generation ({exc}).")
 else:
     plt.style.use("seaborn-v0_8")
-    fig, ax = plt.subplots(figsize=(10.5, 6.0))
+    fig, (ax_asym, ax_sym) = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
 
     baseline_by_bit = {}
     for row in rows:
@@ -371,49 +425,63 @@ else:
 
     sorted_bits = sorted(set(row["bit"] for row in rows), reverse=True)
     baseline_losses = [baseline_by_bit[b] for b in sorted_bits]
-    ax.plot(
-        sorted_bits,
-        baseline_losses,
-        marker="o",
-        linewidth=2.2,
-        label="Baseline full-vector (symmetric)",
-    )
-
     cmap = plt.cm.viridis
     colors = cmap(
         [idx / max(1, (len(args.group_counts) - 1)) for idx, _ in enumerate(args.group_counts)]
     )
-    for color, group_count in zip(colors, args.group_counts):
-        group_rows = [r for r in rows if r["group_count"] == group_count]
-        group_rows = sorted(group_rows, key=lambda r: r["bit"], reverse=True)
+
+    for ax, scheme_key, title in (
+        (ax_asym, "grouped_asymmetric_vector_val_loss", "Grouped asymmetric"),
+        (ax_sym, "grouped_symmetric_vector_val_loss", "Grouped symmetric"),
+    ):
         ax.plot(
-            [r["bit"] for r in group_rows],
-            [r["grouped_asymmetric_vector_val_loss"] for r in group_rows],
+            sorted_bits,
+            baseline_losses,
             marker="o",
-            linewidth=1.8,
-            color=color,
-            label=f"Grouped asymmetric (groups={group_count})",
-            alpha=0.95,
+            linewidth=2.2,
+            label="Baseline full-vector (symmetric)",
+            color="tab:blue",
         )
+        for color, group_count in zip(colors, args.group_counts):
+            group_rows = [r for r in rows if r["group_count"] == group_count]
+            group_rows = sorted(group_rows, key=lambda r: r["bit"], reverse=True)
+            ax.plot(
+                [r["bit"] for r in group_rows],
+                [r[scheme_key] for r in group_rows],
+                marker="o",
+                linewidth=1.7,
+                color=color,
+                label=f"groups={group_count}",
+                alpha=0.95,
+            )
 
-    ax.axhline(fp32_val, linestyle="--", linewidth=1.4, color="black", alpha=0.7, label="FP32 baseline")
-    ax.invert_xaxis()
-    ax.set_xticks(sorted_bits)
-    ax.set_xlabel("Weight bit-width")
-    ax.set_ylabel("Validation loss")
-    ax.set_title("shakespeare_char PTQ: full-vector vs grouped asymmetric")
-    ax.grid(True, linestyle="--", alpha=0.35)
-    ax.legend(loc="best", fontsize=8)
+        ax.axhline(
+            fp32_val,
+            linestyle="--",
+            linewidth=1.4,
+            color="black",
+            alpha=0.7,
+            label="FP32 baseline",
+        )
+        ax.invert_xaxis()
+        ax.set_xticks(sorted_bits)
+        ax.set_xlabel("Weight bit-width")
+        ax.set_title(f"shakespeare_char PTQ: {title}")
+        ax.grid(True, linestyle="--", alpha=0.35)
+
+    ax_asym.set_ylabel("Validation loss")
+    handles, labels = ax_sym.get_legend_handles_labels()
+    ax_sym.legend(handles, labels, loc="best", fontsize=8)
+
     fig.tight_layout()
-
-    plot_path = os.path.join(summary_root, "grouped_asymmetric_vector_eval_summary.png")
+    plot_path = os.path.join(summary_root, "grouped_vector_eval_summary.png")
     fig.savefig(plot_path, dpi=200)
     plt.close(fig)
     print(f"Wrote plot summary to {plot_path}")
 PY
 
 echo "=== Done ==="
-echo "Summary CSV: ${SUMMARY_ROOT}/grouped_asymmetric_vector_eval_summary.csv"
-echo "Aggregate CSV: ${SUMMARY_ROOT}/grouped_asymmetric_vector_eval_group_aggregate.csv"
-echo "Summary report: ${SUMMARY_ROOT}/grouped_asymmetric_vector_eval_report.txt"
-echo "Summary plot: ${SUMMARY_ROOT}/grouped_asymmetric_vector_eval_summary.png (if matplotlib available)"
+echo "Summary CSV: ${SUMMARY_ROOT}/grouped_vector_eval_summary.csv"
+echo "Aggregate CSV: ${SUMMARY_ROOT}/grouped_vector_eval_group_aggregate.csv"
+echo "Summary report: ${SUMMARY_ROOT}/grouped_vector_eval_report.txt"
+echo "Summary plot: ${SUMMARY_ROOT}/grouped_vector_eval_summary.png (if matplotlib available)"
