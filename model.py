@@ -240,15 +240,16 @@ class GPT(nn.Module):
         # Function to increase block size dynamically
         if new_block_size > self.config.block_size:
             self.config.block_size = new_block_size
+            model_device = next(self.parameters()).device
             if self.config.use_abs_pos_embeddings and self.config.abs_pos_embedding_variant == "default":
                 if self.config.quantize_wpe:
                     pos_embd = QuantizedEmbedding(new_block_size, self.config.n_embd, self.config.quantize_wpe_method, self.config.quantize_wpe_bits)
                 else:
                     pos_embd = nn.Embedding(new_block_size, self.config.n_embd)
-                self.transformer.wpe = pos_embd
+                self.transformer.wpe = pos_embd.to(model_device)
             for block in self.transformer.h:
                 if hasattr(block.attn, 'bias'):
-                    block.attn.bias = torch.tril(torch.ones(new_block_size, new_block_size)).view(1, 1, new_block_size, new_block_size)
+                    block.attn.bias = torch.tril(torch.ones(new_block_size, new_block_size, device=model_device)).view(1, 1, new_block_size, new_block_size)
 
     def build_norm_from_variant(self, config, variant_key: str, prefix: str):
         """Helper to deep-copy config and override hsnorm parameters if present."""
