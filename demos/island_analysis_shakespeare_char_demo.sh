@@ -67,8 +67,6 @@ if [[ "${RUN_TRADEOFF_SEARCH}" == "yes" ]]; then
   python3 analysis/checkpoint_analysis/search_island_tradeoff.py \
     "${OUT_DIR}" \
     --island_json "${ANALYSIS_DIR}/islands_detailed.json" \
-    --thresholds 0.2,0.3,0.4,0.5 \
-    --target_islands 4,8,16 \
     --loss_tolerance_pct 2.0 \
     --eval_dataset shakespeare_char \
     --eval_iters 50 \
@@ -77,7 +75,7 @@ if [[ "${RUN_TRADEOFF_SEARCH}" == "yes" ]]; then
     --out_dir "${SEARCH_DIR}"
 
   echo "Tradeoff search artifacts:"
+  echo "  - ${SEARCH_DIR}/search_log.yaml"
   echo "  - ${SEARCH_DIR}/search_results.json"
-  echo "  - ${SEARCH_DIR}/search_results.csv"
-  echo "  - ${SEARCH_DIR}/search_dashboard.html"
+  echo "(Optional) TUI viewer: python3 analysis/checkpoint_analysis/view_island_tradeoff_log.py ${SEARCH_DIR}/search_log.yaml"
 fi

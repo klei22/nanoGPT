@@ -128,25 +128,30 @@ python3 analysis/checkpoint_analysis/augment_ckpt_with_island_routing.py out_sha
 
 ## Validation-Loss-Constrained Island Search
 
-Use `search_island_tradeoff.py` to run a sweep over thresholds and/or target
-island counts, evaluate **validation loss** for each candidate checkpoint, and
-pick the best candidate that stays within a configured loss tolerance while
-maximizing decode-iteration reduction proxy.
+Use `search_island_tradeoff.py` for a **greedy per-tensor** search:
+1) initialize each tensor near **1 island**,
+2) test `+1` island for exactly one tensor at a time (all others fixed),
+3) after each full-model pass, choose the candidate with the **lowest validation-loss increase**,
+4) stop if that best candidate exceeds the loss tolerance; otherwise accept and continue.
 
 Outputs in `--out_dir` (default: `<ckpt_dir>/island_tradeoff_search`):
-- `search_results.json`: baseline, constraints, all candidates, and selected best
-- `search_results.csv`: tabular candidate summary
-- `search_dashboard.html`: Plotly visualization of loss vs decode proxy
-- per-candidate subdirs with modified checkpoints and eval artifacts
+- `search_log.yaml`: round-by-round tested candidates, losses, selections, stop reason
+- `search_results.json`: JSON mirror of the final search state
+- `selected/ckpt.pt`: checkpoint for selected configuration
+- per-candidate subdirs with eval artifacts
 
 Example:
 
 ```bash
 python3 analysis/checkpoint_analysis/search_island_tradeoff.py out_shakespeare_checkpoint_demo \
-  --thresholds 0.2,0.3,0.4,0.5 \
-  --target_islands 4,8,16 \
   --loss_tolerance_pct 2.0 \
   --eval_dataset shakespeare_char \
   --eval_iters 100 \
   --device cpu --dtype float32
+```
+
+TUI log viewer (template-style similar to `view_hp_log.py`):
+
+```bash
+python3 analysis/checkpoint_analysis/view_island_tradeoff_log.py out_shakespeare_checkpoint_demo/island_tradeoff_search/search_log.yaml
 ```

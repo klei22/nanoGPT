@@ -1,27 +1,20 @@
 import argparse
-import csv
 import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import torch
-
-
-@dataclass
-class CandidateSpec:
-    mode: str  # threshold | target_islands
-    value: float
-    tag: str
+import yaml
 
 
 def parse_args():
     p = argparse.ArgumentParser(
         description=(
-            "Search island settings that keep validation loss within a tolerance while "
-            "maximizing decode-speed reduction proxy."
+            "Greedy per-tensor island search: start near 1 island/tensor, then try +1 "
+            "island for each tensor individually, selecting the lowest val-loss increase "
+            "that remains within tolerance."
         )
     )
     p.add_argument("ckpt_dir", type=str, help="Checkpoint directory containing ckpt.pt")
@@ -30,24 +23,6 @@ def parse_args():
         type=str,
         default=None,
         help="Path to islands_detailed.json (default: <ckpt_dir>/island_analysis/islands_detailed.json)",
-    )
-    p.add_argument(
-        "--thresholds",
-        type=str,
-        default="0.2,0.3,0.4,0.5",
-        help="Comma-separated thresholds to evaluate",
-    )
-    p.add_argument(
-        "--target_islands",
-        type=str,
-        default="",
-        help="Optional comma-separated target island counts per tensor (global target per run)",
-    )
-    p.add_argument(
-        "--provider_mode",
-        choices=["top", "mean"],
-        default="top",
-        help="Representative to use for row replacement inside an island",
     )
     p.add_argument("--eval_dataset", type=str, default=None, help="Dataset name for validation loss")
     p.add_argument("--eval_iters", type=int, default=50, help="Evaluation iterations")
@@ -61,6 +36,13 @@ def parse_args():
         help="Only mutate tensors containing this substring (simple filter)",
     )
     p.add_argument(
+        "--provider_mode",
+        choices=["top", "mean"],
+        default="top",
+        help="Representative to use for row replacement inside an island",
+    )
+    p.add_argument("--max_rounds", type=int, default=999, help="Max greedy rounds")
+    p.add_argument(
         "--out_dir",
         type=str,
         default=None,
@@ -69,37 +51,10 @@ def parse_args():
     return p.parse_args()
 
 
-def parse_floats(text: str) -> List[float]:
-    return [float(x.strip()) for x in text.split(",") if x.strip()]
-
-
-def parse_ints(text: str) -> List[int]:
-    return [int(x.strip()) for x in text.split(",") if x.strip()]
-
-
 def load_ckpt(path: str):
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
     state = ckpt.get("model", ckpt)
     return ckpt, state
-
-
-def choose_threshold_entry(report: Dict, threshold: float) -> Optional[Dict]:
-    best, dist = None, 1e9
-    for entry in report.get("threshold_tries", []):
-        d = abs(float(entry["threshold"]) - threshold)
-        if d < dist:
-            best, dist = entry, d
-    return best
-
-
-def choose_target_islands_entry(report: Dict, target: int) -> Optional[Dict]:
-    best, dist = None, 10**9
-    for entry in report.get("threshold_tries", []):
-        num = int(entry.get("summary", {}).get("num_islands", 0))
-        d = abs(num - target)
-        if d < dist:
-            best, dist = entry, d
-    return best
 
 
 def island_rep(weight: torch.Tensor, island: Dict, provider_mode: str) -> torch.Tensor:
@@ -110,72 +65,6 @@ def island_rep(weight: torch.Tensor, island: Dict, provider_mode: str) -> torch.
     if providers:
         return weight[int(providers[0]["vector_index"])]
     return weight[members].mean(dim=0)
-
-
-def build_candidate_ckpt(
-    base_ckpt: Dict,
-    base_state: Dict,
-    reports_by_tensor: Dict[str, Dict],
-    spec: CandidateSpec,
-    provider_mode: str,
-    pattern: str,
-) -> Tuple[Dict, Dict]:
-    ckpt = {k: v for k, v in base_ckpt.items()}
-    state = {k: v.clone() if torch.is_tensor(v) else v for k, v in base_state.items()}
-    ckpt["model"] = state
-
-    per_tensor_meta = {}
-    total_rows = 0
-    routed_rows = 0
-
-    for tensor_name, report in reports_by_tensor.items():
-        if pattern and pattern not in tensor_name:
-            continue
-        if tensor_name not in state:
-            continue
-        w = state[tensor_name]
-        if not torch.is_tensor(w) or not torch.is_floating_point(w) or w.ndim != 2:
-            continue
-
-        if spec.mode == "threshold":
-            entry = choose_threshold_entry(report, spec.value)
-        else:
-            entry = choose_target_islands_entry(report, int(spec.value))
-        if entry is None:
-            continue
-
-        islands = entry.get("islands", [])
-        if not islands:
-            continue
-
-        total_rows += int(w.shape[0])
-        routed_rows += sum(len(island["member_indices"]) for island in islands)
-
-        new_w = w.clone()
-        for island in islands:
-            rep = island_rep(w, island, provider_mode)
-            for idx in island["member_indices"]:
-                if 0 <= int(idx) < new_w.shape[0]:
-                    new_w[int(idx)] = rep
-
-        state[tensor_name] = new_w
-        per_tensor_meta[tensor_name] = {
-            "num_islands": len(islands),
-            "covered_rows": sum(len(island["member_indices"]) for island in islands),
-            "total_rows": int(w.shape[0]),
-        }
-
-    proxy = 0.0
-    if total_rows > 0:
-        proxy = 1.0 - (sum(x["num_islands"] for x in per_tensor_meta.values()) / total_rows)
-
-    return ckpt, {
-        "spec": {"mode": spec.mode, "value": spec.value, "tag": spec.tag},
-        "tensor_meta": per_tensor_meta,
-        "total_rows": total_rows,
-        "covered_rows": routed_rows,
-        "decode_reduction_proxy": proxy,
-    }
 
 
 def run_eval(candidate_dir: str, eval_dataset: str, eval_iters: int, device: str, dtype: str) -> Dict:
@@ -206,26 +95,104 @@ def run_eval(candidate_dir: str, eval_dataset: str, eval_iters: int, device: str
         return json.load(f)
 
 
-def write_plotly(rows: List[Dict], out_html: str):
-    import plotly.graph_objects as go
+def canonical_tensor_candidates(report: Dict) -> List[Dict]:
+    """Collapse threshold tries to monotonic candidates by unique num_islands."""
+    entries = []
+    for e in report.get("threshold_tries", []):
+        num = int(e.get("summary", {}).get("num_islands", 0))
+        entries.append({
+            "num_islands": num,
+            "threshold": float(e.get("threshold", 0.0)),
+            "islands": e.get("islands", []),
+        })
+    if not entries:
+        return []
+    entries.sort(key=lambda x: (x["num_islands"], x["threshold"]))
+    out = []
+    seen = set()
+    for e in entries:
+        if e["num_islands"] in seen:
+            continue
+        seen.add(e["num_islands"])
+        out.append(e)
+    return out
 
-    x = [r["candidate"] for r in rows]
-    y_loss = [r["val_loss"] for r in rows]
-    y_proxy = [r["decode_reduction_proxy"] for r in rows]
-    feasible = [r["feasible"] for r in rows]
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=x, y=y_loss, name="Validation loss"))
-    fig.add_trace(go.Bar(x=x, y=y_proxy, name="Decode reduction proxy", yaxis="y2"))
-    fig.add_trace(go.Scatter(x=x, y=[1 if f else 0 for f in feasible], mode="markers", name="Feasible (1/0)", yaxis="y2"))
-    fig.update_layout(
-        title="Island tradeoff search",
-        xaxis_title="Candidate",
-        yaxis=dict(title="Validation loss"),
-        yaxis2=dict(title="Decode reduction proxy", overlaying="y", side="right"),
-        barmode="group",
-    )
-    fig.write_html(out_html, include_plotlyjs="cdn")
+def initial_candidate_index(cands: List[Dict]) -> int:
+    if not cands:
+        return 0
+    best_i = 0
+    best_dist = 10**9
+    for i, c in enumerate(cands):
+        dist = abs(int(c["num_islands"]) - 1)
+        if dist < best_dist:
+            best_i, best_dist = i, dist
+    return best_i
+
+
+def build_mutated_state(
+    base_state: Dict,
+    tensor_candidates: Dict[str, List[Dict]],
+    chosen_idx: Dict[str, int],
+    provider_mode: str,
+) -> Tuple[Dict, Dict]:
+    state = {k: v.clone() if torch.is_tensor(v) else v for k, v in base_state.items()}
+    meta = {"tensors": {}, "total_rows": 0, "total_islands": 0}
+
+    for tname, idx in chosen_idx.items():
+        if tname not in state:
+            continue
+        w = state[tname]
+        if not torch.is_tensor(w) or not torch.is_floating_point(w) or w.ndim != 2:
+            continue
+        cands = tensor_candidates.get(tname, [])
+        if not cands or idx >= len(cands):
+            continue
+
+        cand = cands[idx]
+        islands = cand.get("islands", [])
+        if not islands:
+            continue
+
+        new_w = w.clone()
+        for island in islands:
+            rep = island_rep(w, island, provider_mode)
+            for ridx in island.get("member_indices", []):
+                ridx = int(ridx)
+                if 0 <= ridx < new_w.shape[0]:
+                    new_w[ridx] = rep
+        state[tname] = new_w
+
+        meta["tensors"][tname] = {
+            "num_islands": int(cand["num_islands"]),
+            "threshold": float(cand["threshold"]),
+            "covered_rows": int(sum(len(i.get("member_indices", [])) for i in islands)),
+            "total_rows": int(w.shape[0]),
+        }
+        meta["total_rows"] += int(w.shape[0])
+        meta["total_islands"] += int(cand["num_islands"])
+
+    proxy = 0.0
+    if meta["total_rows"] > 0:
+        proxy = 1.0 - (meta["total_islands"] / meta["total_rows"])
+    meta["decode_reduction_proxy"] = proxy
+    return state, meta
+
+
+def write_yaml(path: str, payload: Dict):
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(payload, f, sort_keys=False)
+
+
+def to_selected_config(tensor_candidates: Dict[str, List[Dict]], chosen_idx: Dict[str, int]) -> Dict[str, Dict]:
+    out = {}
+    for tname, idx in chosen_idx.items():
+        cands = tensor_candidates.get(tname, [])
+        if not cands or idx >= len(cands):
+            continue
+        c = cands[idx]
+        out[tname] = {"idx": idx, "num_islands": int(c["num_islands"]), "threshold": float(c["threshold"])}
+    return out
 
 
 def main():
@@ -242,14 +209,22 @@ def main():
 
     with open(island_json, "r", encoding="utf-8") as f:
         island_payload = json.load(f)
-    reports_by_tensor = {r["tensor"]: r for r in island_payload.get("reports", [])}
 
-    specs = [CandidateSpec(mode="threshold", value=v, tag=f"thr_{v}") for v in parse_floats(args.thresholds)]
-    specs += [CandidateSpec(mode="target_islands", value=v, tag=f"target_{v}") for v in parse_ints(args.target_islands)]
-    if not specs:
-        raise ValueError("No candidates provided from --thresholds/--target_islands")
+    tensor_candidates: Dict[str, List[Dict]] = {}
+    for report in island_payload.get("reports", []):
+        tname = report.get("tensor")
+        if not tname:
+            continue
+        if args.pattern and args.pattern not in tname:
+            continue
+        cands = canonical_tensor_candidates(report)
+        if cands:
+            tensor_candidates[tname] = cands
 
-    # baseline evaluation
+    if not tensor_candidates:
+        raise ValueError("No tensor candidates found. Check --pattern and island analysis JSON.")
+
+    # baseline
     baseline_dir = os.path.join(out_dir, "baseline")
     os.makedirs(baseline_dir, exist_ok=True)
     shutil.copy2(ckpt_path, os.path.join(baseline_dir, "ckpt.pt"))
@@ -261,93 +236,136 @@ def main():
     base_loss = float(base_eval["val"])
     max_allowed = base_loss * (1 + args.loss_tolerance_pct / 100.0)
 
-    rows = []
-    for spec in specs:
-        candidate_dir = os.path.join(out_dir, spec.tag)
-        os.makedirs(candidate_dir, exist_ok=True)
+    # initialize around one island per tensor
+    chosen_idx = {t: initial_candidate_index(cands) for t, cands in tensor_candidates.items()}
+    rounds = []
 
-        cand_ckpt, cand_meta = build_candidate_ckpt(
-            base_ckpt=base_ckpt,
-            base_state=base_state,
-            reports_by_tensor=reports_by_tensor,
-            spec=spec,
-            provider_mode=args.provider_mode,
-            pattern=args.pattern,
-        )
+    current_loss = base_loss
+    accepted_rounds = 0
 
-        torch.save(cand_ckpt, os.path.join(candidate_dir, "ckpt.pt"))
-        if os.path.exists(meta_path):
-            shutil.copy2(meta_path, os.path.join(candidate_dir, "meta.pkl"))
+    for rnd in range(1, args.max_rounds + 1):
+        tested = []
+        best = None
 
-        eval_metrics = run_eval(candidate_dir, dataset, args.eval_iters, args.device, args.dtype)
-        val_loss = float(eval_metrics["val"])
-        feasible = val_loss <= max_allowed
+        for tname, idx in chosen_idx.items():
+            cands = tensor_candidates.get(tname, [])
+            if idx + 1 >= len(cands):
+                continue
 
-        row = {
-            "candidate": spec.tag,
-            "mode": spec.mode,
-            "value": spec.value,
-            "val_loss": val_loss,
-            "loss_delta_pct": (val_loss / base_loss - 1) * 100.0,
-            "decode_reduction_proxy": cand_meta["decode_reduction_proxy"],
-            "total_rows": cand_meta["total_rows"],
-            "covered_rows": cand_meta["covered_rows"],
-            "feasible": feasible,
+            trial_idx = dict(chosen_idx)
+            trial_idx[tname] = idx + 1
+            trial_state, trial_meta = build_mutated_state(base_state, tensor_candidates, trial_idx, args.provider_mode)
+
+            cand_tag = f"round_{rnd}_{tname.replace('.', '_')}"
+            cand_dir = os.path.join(out_dir, "candidates", cand_tag)
+            os.makedirs(cand_dir, exist_ok=True)
+            cand_ckpt = {k: v for k, v in base_ckpt.items()}
+            cand_ckpt["model"] = trial_state
+            torch.save(cand_ckpt, os.path.join(cand_dir, "ckpt.pt"))
+            if os.path.exists(meta_path):
+                shutil.copy2(meta_path, os.path.join(cand_dir, "meta.pkl"))
+
+            em = run_eval(cand_dir, dataset, args.eval_iters, args.device, args.dtype)
+            vloss = float(em["val"])
+            loss_delta_pct = (vloss / base_loss - 1.0) * 100.0
+            rec = {
+                "tensor": tname,
+                "from_idx": idx,
+                "to_idx": idx + 1,
+                "from_num_islands": int(cands[idx]["num_islands"]),
+                "to_num_islands": int(cands[idx + 1]["num_islands"]),
+                "val_loss": vloss,
+                "loss_delta_pct": loss_delta_pct,
+                "decode_reduction_proxy": trial_meta["decode_reduction_proxy"],
+                "feasible": vloss <= max_allowed,
+            }
+            tested.append(rec)
+
+            if best is None or rec["loss_delta_pct"] < best["loss_delta_pct"]:
+                best = rec
+
+        round_log = {
+            "round": rnd,
+            "tested": tested,
+            "best_candidate": best,
+            "selected": None,
+            "stop_reason": None,
+            "selected_config": to_selected_config(tensor_candidates, chosen_idx),
+            "current_val_loss": current_loss,
         }
-        rows.append(row)
 
-        with open(os.path.join(candidate_dir, "candidate_meta.json"), "w", encoding="utf-8") as f:
-            json.dump(cand_meta, f, indent=2)
+        if not tested:
+            round_log["stop_reason"] = "no_more_plus_one_candidates"
+            rounds.append(round_log)
+            break
 
-    feasible_rows = [r for r in rows if r["feasible"]]
-    best = None
-    if feasible_rows:
-        best = max(feasible_rows, key=lambda r: (r["decode_reduction_proxy"], -r["val_loss"]))
+        if best is None or best["val_loss"] > max_allowed:
+            round_log["stop_reason"] = "best_above_loss_threshold"
+            rounds.append(round_log)
+            break
 
-    summary = {
+        # accept best
+        chosen_idx[best["tensor"]] = int(best["to_idx"])
+        current_loss = float(best["val_loss"])
+        accepted_rounds += 1
+        round_log["selected"] = best
+        round_log["selected_config"] = to_selected_config(tensor_candidates, chosen_idx)
+        round_log["current_val_loss"] = current_loss
+        rounds.append(round_log)
+
+    # final selected ckpt
+    final_state, final_meta = build_mutated_state(base_state, tensor_candidates, chosen_idx, args.provider_mode)
+    selected_ckpt = {k: v for k, v in base_ckpt.items()}
+    selected_ckpt["model"] = final_state
+    selected_dir = os.path.join(out_dir, "selected")
+    os.makedirs(selected_dir, exist_ok=True)
+    torch.save(selected_ckpt, os.path.join(selected_dir, "ckpt.pt"))
+    if os.path.exists(meta_path):
+        shutil.copy2(meta_path, os.path.join(selected_dir, "meta.pkl"))
+
+    selected_eval = run_eval(selected_dir, dataset, args.eval_iters, args.device, args.dtype)
+    selected_loss = float(selected_eval["val"])
+
+    log_payload = {
         "dataset": dataset,
-        "baseline_val_loss": base_loss,
-        "max_allowed_val_loss": max_allowed,
-        "loss_tolerance_pct": args.loss_tolerance_pct,
-        "best_candidate": best,
-        "rows": rows,
+        "baseline": {
+            "val_loss": base_loss,
+            "max_allowed_val_loss": max_allowed,
+            "loss_tolerance_pct": args.loss_tolerance_pct,
+        },
+        "search": {
+            "strategy": "greedy_plus_one_island_per_tensor",
+            "provider_mode": args.provider_mode,
+            "pattern": args.pattern,
+            "accepted_rounds": accepted_rounds,
+            "max_rounds": args.max_rounds,
+        },
+        "initial_config": {
+            t: {"idx": initial_candidate_index(c), "num_islands": int(c[initial_candidate_index(c)]["num_islands"]), "threshold": float(c[initial_candidate_index(c)]["threshold"])}
+            for t, c in tensor_candidates.items()
+        },
+        "rounds": rounds,
+        "selected": {
+            "config": to_selected_config(tensor_candidates, chosen_idx),
+            "val_loss": selected_loss,
+            "loss_delta_pct": (selected_loss / base_loss - 1.0) * 100.0,
+            "decode_reduction_proxy": final_meta["decode_reduction_proxy"],
+            "tensor_meta": final_meta["tensors"],
+        },
     }
 
+    yaml_path = os.path.join(out_dir, "search_log.yaml")
+    write_yaml(yaml_path, log_payload)
+
     with open(os.path.join(out_dir, "search_results.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-
-    csv_path = os.path.join(out_dir, "search_results.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        fields = [
-            "candidate",
-            "mode",
-            "value",
-            "val_loss",
-            "loss_delta_pct",
-            "decode_reduction_proxy",
-            "total_rows",
-            "covered_rows",
-            "feasible",
-        ]
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-
-    if rows:
-        try:
-            write_plotly(rows, os.path.join(out_dir, "search_dashboard.html"))
-        except Exception as exc:
-            print(f"Skipped dashboard generation: {exc}")
+        json.dump(log_payload, f, indent=2)
 
     print(f"Baseline val loss: {base_loss:.6f}")
     print(f"Max allowed val loss: {max_allowed:.6f}")
-    if best:
-        print(f"Best candidate: {best['candidate']} (proxy={best['decode_reduction_proxy']:.4f}, val={best['val_loss']:.6f})")
-    else:
-        print("No feasible candidate met loss tolerance")
+    print(f"Selected val loss: {selected_loss:.6f}")
+    print(f"Accepted rounds: {accepted_rounds}")
+    print(f"Wrote {yaml_path}")
     print(f"Wrote {os.path.join(out_dir, 'search_results.json')}")
-    print(f"Wrote {csv_path}")
 
 
 if __name__ == "__main__":
