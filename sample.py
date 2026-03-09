@@ -28,6 +28,7 @@ from rich.text import Text
 from torch.nn import functional as F
 
 from model import GPT, GPTConfig
+from sample_variations.numerical_multicontext import decode_numerical_series, write_plotly_report
 from utils.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
 
@@ -116,6 +117,23 @@ def parse_args():
     parser.add_argument('--multicontext_start', type=str, nargs='+', default=None,
                         help="List of start strings, one for each context, if using --multicontext. "
                         "Must match the number/order of --multicontext_datasets.")
+    parser.add_argument(
+        '--numerical_multicontext_plotly',
+        action=argparse.BooleanOptionalAction,
+        help="Generate a single Plotly HTML report with one graph per multicontext channel.",
+    )
+    parser.add_argument(
+        '--numerical_multicontext_plotly_file',
+        type=str,
+        default='numerical_multicontext_samples.html',
+        help="Output HTML path for --numerical_multicontext_plotly.",
+    )
+    parser.add_argument(
+        '--numerical_multicontext_plotly_include_prompt',
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Include prompt values in Plotly traces. Disable to plot only generated continuation.",
+    )
 
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
@@ -1491,6 +1509,9 @@ def main():
             decode_lookup[dataset_name] = decode_i
 
         block_size = args.block_size if args.block_size else model.config.block_size
+        plotly_samples: List[Dict[str, List[float]]] = []
+        prompt_lengths = {name: initial_tokens[name].size(1) for name in dataset_names}
+
         with torch.no_grad(), ctx:
             for sample_idx in range(args.num_samples):
                 if args.use_lsv and hasattr(args, 'lsv_size'):
@@ -1557,6 +1578,20 @@ def main():
                     decode_fn = decode_lookup[name]
                     output_dict[name] = decode_fn(token_state[name][0].tolist())
 
+                if args.numerical_multicontext_plotly:
+                    if not model.config.numerical_multicontext:
+                        raise ValueError("--numerical_multicontext_plotly requires a numerical multicontext model")
+
+                    sample_numeric_series: Dict[str, List[float]] = {}
+                    for name in dataset_names:
+                        decoded = decode_numerical_series(
+                            token_state[name][0].tolist(),
+                            dataset_meta[name],
+                            model.config.numerical_multicontext_input_format,
+                        )
+                        sample_numeric_series[name] = decoded.tolist()
+                    plotly_samples.append(sample_numeric_series)
+
                 for name, text in output_dict.items():
                     key_color = "bold light_slate_blue"
                     text_color = "bold cyan"
@@ -1567,6 +1602,15 @@ def main():
                     with open(args.sample_file, "w") as file:
                         for name, text in output_dict.items():
                             file.write(f"\n{name}: \n{text}\n")
+
+        if args.numerical_multicontext_plotly:
+            plot_output = write_plotly_report(
+                output_path=args.numerical_multicontext_plotly_file,
+                sample_series=plotly_samples,
+                prompt_lengths=prompt_lengths,
+                include_prompt=args.numerical_multicontext_plotly_include_prompt,
+            )
+            print(f"Saved numerical multicontext plot to: {plot_output}")
     else:
         sample_with_existing_model(
                 model,
