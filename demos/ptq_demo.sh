@@ -49,7 +49,7 @@ python3 sample.py \
   --sample_file before_ptq.txt
 
 # 6. Apply fake PTQ (8-bit uniform)
-python3 quantizations/ptq/fake_quantize_ckpt.py "$out_dir" --num_bits 8 --out_dir "${out_dir}_ptq"
+python3 quantization/ptq/fake_quantize_ckpt.py "$out_dir" --num_bits 8 --out_dir "${out_dir}_ptq"
 
 # 7. Compute model stats after quantization
 run_name_after="ptq_int8"

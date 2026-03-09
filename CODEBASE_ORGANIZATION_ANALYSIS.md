@@ -16,8 +16,7 @@ nanoGPT/
 ├── shared_param_utils.py (285 lines)  - Parameter sharing utilities
 ├── variations/           (16 files)   - Model architecture variants
 ├── train_variations/     (5 files)    - Training algorithm variants
-├── quantization/         (4 files)    - Quantization tools
-├── quantizations/ptq/    (2 files)    - Post-training quantization
+├── quantization/         (6 files)    - Quantization tools (including ptq/)
 ├── initializations/      (4 files)    - Weight initialization variants
 ├── utils/                (6 files)    - GPU monitoring, model stats, plots
 ├── data/                 (80+ dirs)   - Dataset preparation scripts
@@ -83,7 +82,7 @@ nanoGPT/
 
 ### 3. Duplicate and Overlapping Directories (Medium Priority)
 
-- **`quantization/` vs `quantizations/`** — Two directories with very similar names and related functionality. Should be consolidated into one.
+- ~~**`quantization/` vs `quantizations/`**~~ — **DONE**: Merged `quantizations/ptq/` into `quantization/ptq/`.
 - **`util_factorization/`** — Could live under `utils/` or `tools/`.
 - **`logging/`** has only one file (`view_csv_logs.py`) — could merge into `utils/`.
 - **`tests/`** has only 3 files with no `__init__.py` — very low test coverage for a project this size.
@@ -221,7 +220,7 @@ nanoGPT/
 ## Prioritized Action Items
 
 ### Phase 1 — Quick Wins (Low Risk)
-1. Merge `quantization/` and `quantizations/` into one directory
+1. ~~Merge `quantization/` and `quantizations/` into one directory~~ **DONE**
 2. Add `__init__.py` to `variations/`, `train_variations/`, `utils/`
 3. Move standalone tool scripts from root to `tools/`
 4. Move shell scripts from root to `scripts/`

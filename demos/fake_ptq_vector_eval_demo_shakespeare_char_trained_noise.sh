@@ -159,12 +159,12 @@ for train_noise in "${TRAIN_NOISE_LEVELS[@]}"; do
       echo "=== Step ${step}: Quantize to ${bit}-bit weights (${granularity}) ==="
       if [ ! -f "$QUANT_OUT_DIR/ckpt.pt" ]; then
         if [ "$granularity" = "vector" ]; then
-          python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
+          python3 quantization/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
             --out_dir "$QUANT_OUT_DIR" \
             --num_bits "$bit" \
             --granularity vector
         else
-          python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
+          python3 quantization/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
             --out_dir "$QUANT_OUT_DIR" \
             --num_bits "$bit"
         fi

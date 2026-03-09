@@ -120,7 +120,7 @@ for bit in "${BITS[@]}"; do
 
   echo "=== Step ${step}: Quantize to ${bit}-bit weights ==="
   if [ ! -f "$QUANT_OUT_DIR/ckpt.pt" ]; then
-    python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
+    python3 quantization/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
       --out_dir "$QUANT_OUT_DIR" \
       --num_bits "$bit"
   else

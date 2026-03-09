@@ -57,7 +57,7 @@ fi
 echo "Tip: When the planner opens, use arrow keys to move, '+'/'-' or digits to edit, and press 'p' for the command menu."
 echo "The planner records your selections to $LAST_PLAN_PATH for reuse on subsequent runs."
 
-python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
+python3 quantization/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
   --out_dir "$QUANTIZED_OUT_DIR" \
   --num_bits 8 \
   --quantization asymmetric \

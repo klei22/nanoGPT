@@ -173,6 +173,33 @@ python3 quantization/visualize.py \
 
 ---
 
+## Post-Training Quantization (PTQ)
+
+Tools for applying quantization to already-trained checkpoints live in `quantization/ptq/`.
+
+### Fake Quantize Checkpoint
+
+`quantization/ptq/fake_quantize_ckpt.py` applies fake (simulated) post-training quantization to a saved checkpoint. It quantizes weights and saves a new checkpoint that can be evaluated to measure quantization impact.
+
+```bash
+python3 quantization/ptq/fake_quantize_ckpt.py <ckpt_dir> \
+  --out_dir <output_dir> \
+  --num_bits 8 \
+  --granularity vector
+```
+
+### Embedding Gaussian Noise Checkpoint
+
+`quantization/ptq/embedding_gaussian_noise_ckpt.py` applies embedding-style Gaussian vector noise to all weights in a checkpoint for robustness analysis.
+
+```bash
+python3 quantization/ptq/embedding_gaussian_noise_ckpt.py <ckpt_dir> \
+  --alphas 0.1 0.2 \
+  --seed 1337
+```
+
+---
+
 ## Quantization Warmup Iterations
 
 - **Warmup Iterations**:

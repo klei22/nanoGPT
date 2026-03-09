@@ -127,7 +127,7 @@ for bit in "${BITS[@]}"; do
 
   echo "=== Step ${step}: Quantize to ${bit}-bit weights (vector) ==="
   if [ ! -f "$QUANT_OUT_DIR/ckpt.pt" ]; then
-    python3 quantizations/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
+    python3 quantization/ptq/fake_quantize_ckpt.py "$OUT_DIR" \
       --out_dir "$QUANT_OUT_DIR" \
       --num_bits "$bit" \
       --granularity vector
@@ -160,7 +160,7 @@ for bit in "${BITS[@]}"; do
 done
 
 echo "=== Step ${step}: Sweep embedding Gaussian noise perturbations ==="
-python3 quantizations/ptq/embedding_gaussian_noise_ckpt.py "$OUT_DIR" \
+python3 quantization/ptq/embedding_gaussian_noise_ckpt.py "$OUT_DIR" \
   --out_dir "$NOISE_SWEEP_ROOT" \
   --alphas "${ALPHAS[@]}"
 
