@@ -101,6 +101,17 @@ python3 prepare.py -t input.txt --method custom --tokens_file phoneme_list.txt
 python3 prepare.py -t input.txt --method custom_char_byte_fallback --custom_chars_file tokens.txt
 ```
 
+
+##### JSON-Constrained BPE with Byte Fallback
+
+```bash
+python3 prepare.py -t input.txt --method json_bpe_byte_fallback --json_tokens_file tokens.json
+```
+
+After tokenization this writes inspection artifacts similar to `char_bpe`:
+- `json_bpe_vocab.json` (token list by ID, including `<byte:N>` entries)
+- `json_bpe_token_counts.json` (when `-T/--track_token_counts` is enabled)
+
 ##### Whisper-style Mel Spectrogram CSV Export
 
 This emits a CSV file where each row is a time frame and each column is a mel
