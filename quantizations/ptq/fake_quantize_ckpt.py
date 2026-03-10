@@ -1637,38 +1637,33 @@ def _fake_quant_symmetric(tensor: torch.Tensor, num_bits: int) -> torch.Tensor:
 
 
 def _fake_quant_asymmetric(tensor: torch.Tensor, num_bits: int) -> torch.Tensor:
-    # Unsigned quantization with range [0, 2^{B}-1]
     qmin = 0
     qmax = (1 << num_bits) - 1
-    if qmax <= qmin:
+    if qmax <= qmin or tensor.numel() == 0:
         return tensor
 
-    if tensor.numel() == 0:
-        return tensor
+    # Do qparam math in fp32 for stability, then cast back.
+    x = tensor.to(torch.float32)
 
-    # min/max provide scalar tensors; handle degenerate ranges gracefully
-    min_val = tensor.min()
-    max_val = tensor.max()
-    if min_val.numel() == 0 or max_val.numel() == 0:
-        return tensor
+    min_val, max_val = torch.aminmax(x)
+    min_float = min(min_val.item(), 0.0)   # force 0 into range
+    max_float = max(max_val.item(), 0.0)   # force 0 into range
 
-    min_float = min_val.item()
-    max_float = max_val.item()
     if not (math.isfinite(min_float) and math.isfinite(max_float)):
         return tensor
     if max_float <= min_float:
         return tensor
 
     scale = (max_float - min_float) / float(qmax - qmin)
-    if scale == 0.0 or not math.isfinite(scale):
+    if scale <= 0.0 or not math.isfinite(scale):
         return tensor
 
-    zero_point = qmin - round(min_float / scale)
-    zero_point = max(qmin, min(qmax, int(zero_point)))
+    zero_point = int(round(qmin - min_float / scale))
+    zero_point = max(qmin, min(qmax, zero_point))
 
-    q = torch.round(tensor / scale + zero_point)
-    q = torch.clamp(q, qmin, qmax)
-    return ((q - zero_point) * scale).to(tensor.dtype)
+    q = torch.clamp(torch.round(x / scale + zero_point), qmin, qmax)
+    dq = (q - zero_point) * scale
+    return dq.to(tensor.dtype)
 
 
 def fake_quant_tensor(
