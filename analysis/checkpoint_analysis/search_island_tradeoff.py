@@ -302,18 +302,21 @@ def main():
             "selected": None,
             "stop_reason": None,
             "selected_config": to_selected_config(tensor_candidates, chosen_idx),
-            "current_val_loss": current_loss,
+            "pre_round_val_loss": current_loss,
+            "post_round_val_loss": current_loss,
             "current_decode_token_latency_ms": None,
             "current_decode_tokens_per_s": None,
         }
 
         if not tested:
             round_log["stop_reason"] = "no_more_threshold_steps"
+            round_log["post_round_val_loss"] = current_loss
             rounds.append(round_log)
             break
 
         if best is None or best["val_loss"] > max_allowed:
             round_log["stop_reason"] = "best_above_loss_threshold"
+            round_log["post_round_val_loss"] = current_loss
             rounds.append(round_log)
             break
 
@@ -322,7 +325,7 @@ def main():
         accepted_rounds += 1
         round_log["selected"] = best
         round_log["selected_config"] = to_selected_config(tensor_candidates, chosen_idx)
-        round_log["current_val_loss"] = current_loss
+        round_log["post_round_val_loss"] = current_loss
         round_log["current_decode_token_latency_ms"] = float(best["decode_token_latency_ms"])
         round_log["current_decode_tokens_per_s"] = float(best["decode_tokens_per_s"])
         rounds.append(round_log)
