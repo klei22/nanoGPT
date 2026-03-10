@@ -141,6 +141,7 @@ Outputs in `--out_dir` (default: `<ckpt_dir>/island_tradeoff_search`):
 - `search_results.json`: JSON mirror of the final search state including baseline-vs-selected speed comparison
 - `selected/ckpt.pt`: checkpoint for selected configuration
 - per-candidate subdirs with eval artifacts
+- by default, unselected `candidates/*/ckpt.pt` files are deleted after evaluation (`--delete_unselected_ckpts`) to reduce disk usage
 
 Example:
 
@@ -154,7 +155,7 @@ python3 analysis/checkpoint_analysis/search_island_tradeoff.py out_shakespeare_c
   --device cpu --dtype float32
 ```
 
-The selected checkpoint is exported by default (`--export_selected_ckpt`) and speed is compared against baseline using eval-derived iteration/token latency metrics.
+The selected checkpoint is exported by default (`--export_selected_ckpt`), unselected candidate checkpoint files are deleted by default (`--delete_unselected_ckpts`), and speed is compared against baseline using eval-derived iteration/token latency metrics.
 
 TUI log viewer (template-style similar to `view_hp_log.py`):
 

@@ -51,6 +51,15 @@ def parse_args():
         help="Whether to export selected/ckpt.pt (default: true)",
     )
     p.add_argument(
+        "--delete_unselected_ckpts",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Delete candidates/*/ckpt.pt that are not selected (default: true). "
+            "Useful to reduce disk usage during large searches."
+        ),
+    )
+    p.add_argument(
         "--out_dir",
         type=str,
         default=None,
@@ -202,6 +211,11 @@ def write_yaml(path: str, payload: Dict):
         yaml.safe_dump(payload, f, sort_keys=False)
 
 
+def remove_file_if_exists(path: str):
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def main():
     args = parse_args()
     ckpt_path = os.path.join(args.ckpt_dir, "ckpt.pt")
@@ -290,10 +304,18 @@ def main():
                 "decode_tokens_per_s": float(em.get("decode_tokens_per_s", 0.0)),
                 "iter_latency_ms": float(em.get("iter_latency_ms", 0.0)),
                 "feasible": vloss <= max_allowed,
+                "candidate_dir": cand_dir,
             }
             tested.append(rec)
             if best is None or rec["loss_delta_pct"] < best["loss_delta_pct"]:
                 best = rec
+
+        if args.delete_unselected_ckpts:
+            best_dir = best["candidate_dir"] if best is not None else None
+            for rec in tested:
+                cand_ckpt_path = os.path.join(rec["candidate_dir"], "ckpt.pt")
+                if rec["candidate_dir"] != best_dir:
+                    remove_file_if_exists(cand_ckpt_path)
 
         round_log = {
             "round": rnd,
@@ -383,6 +405,7 @@ def main():
             "accepted_rounds": accepted_rounds,
             "max_rounds": args.max_rounds,
             "export_selected_ckpt": args.export_selected_ckpt,
+            "delete_unselected_ckpts": args.delete_unselected_ckpts,
         },
         "initial_config": to_selected_config(
             tensor_candidates,
@@ -405,6 +428,15 @@ def main():
     write_yaml(yaml_path, log_payload)
     with open(os.path.join(out_dir, "search_results.json"), "w", encoding="utf-8") as f:
         json.dump(log_payload, f, indent=2)
+
+    if args.delete_unselected_ckpts:
+        selected_ckpt_real = os.path.realpath(os.path.join(selected_dir, "ckpt.pt")) if args.export_selected_ckpt else None
+        for rec in (r for rnd in rounds for r in rnd.get("tested", [])):
+            cand_ckpt_path = os.path.join(rec["candidate_dir"], "ckpt.pt")
+            if selected_ckpt_real is not None and os.path.exists(cand_ckpt_path):
+                if os.path.realpath(cand_ckpt_path) == selected_ckpt_real:
+                    continue
+            remove_file_if_exists(cand_ckpt_path)
 
     print(f"Baseline val loss: {base_loss:.6f}")
     print(f"Max allowed val loss: {max_allowed:.6f}")
