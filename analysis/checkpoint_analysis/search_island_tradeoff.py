@@ -45,6 +45,12 @@ def parse_args():
     )
     p.add_argument("--max_rounds", type=int, default=999, help="Max greedy rounds")
     p.add_argument(
+        "--export_selected_ckpt",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to export selected/ckpt.pt (default: true)",
+    )
+    p.add_argument(
         "--out_dir",
         type=str,
         default=None,
@@ -69,7 +75,20 @@ def island_rep(weight: torch.Tensor, island: Dict, provider_mode: str) -> torch.
     return weight[members].mean(dim=0)
 
 
-def run_eval(candidate_dir: str, eval_dataset: str, eval_iters: int, device: str, dtype: str) -> Dict:
+def eval_metrics_to_latency(metrics: Dict, block_size: int) -> Dict:
+    elapsed = float(metrics.get("elapsed_time_s", 0.0) or 0.0)
+    num_batches = int(metrics.get("num_batches", 0) or 0)
+    iter_ms = (elapsed / max(num_batches, 1)) * 1000.0
+    tok_ms = (elapsed / max(num_batches * max(block_size, 1), 1)) * 1000.0
+    tok_s = 1000.0 / max(tok_ms, 1e-9)
+    return {
+        "iter_latency_ms": iter_ms,
+        "decode_token_latency_ms": tok_ms,
+        "decode_tokens_per_s": tok_s,
+    }
+
+
+def run_eval(candidate_dir: str, eval_dataset: str, eval_iters: int, device: str, dtype: str, block_size: int) -> Dict:
     eval_out = os.path.join(candidate_dir, "eval")
     os.makedirs(eval_out, exist_ok=True)
     cmd = [
@@ -86,11 +105,12 @@ def run_eval(candidate_dir: str, eval_dataset: str, eval_iters: int, device: str
     ]
     subprocess.run(cmd, check=True)
     with open(os.path.join(eval_out, "eval_loss.txt"), "r", encoding="utf-8") as f:
-        return json.load(f)
+        metrics = json.load(f)
+    metrics.update(eval_metrics_to_latency(metrics, block_size))
+    return metrics
 
 
 def canonical_tensor_candidates(report: Dict) -> List[Dict]:
-    """Create one candidate per unique threshold, sorted by descending threshold."""
     entries: List[Dict] = []
     for e in report.get("threshold_tries", []):
         thr = float(e.get("threshold", 0.0))
@@ -105,13 +125,11 @@ def canonical_tensor_candidates(report: Dict) -> List[Dict]:
     dedup = {}
     for e in entries:
         dedup[e["threshold"]] = e
-    out = [dedup[t] for t in sorted(dedup.keys(), reverse=True)]
-    return out
+    return [dedup[t] for t in sorted(dedup.keys(), reverse=True)]
 
 
 def initial_candidate_index(cands: List[Dict], start_threshold: float) -> int:
-    best_i = 0
-    best_dist = 1e9
+    best_i, best_dist = 0, 1e9
     for i, c in enumerate(cands):
         dist = abs(float(c["threshold"]) - start_threshold)
         if dist < best_dist:
@@ -175,11 +193,7 @@ def to_selected_config(tensor_candidates: Dict[str, List[Dict]], chosen_idx: Dic
         if not cands or idx < 0 or idx >= len(cands):
             continue
         c = cands[idx]
-        out[tname] = {
-            "idx": idx,
-            "threshold": float(c["threshold"]),
-            "num_islands": int(c["num_islands"]),
-        }
+        out[tname] = {"idx": idx, "threshold": float(c["threshold"]), "num_islands": int(c["num_islands"])}
     return out
 
 
@@ -196,6 +210,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     base_ckpt, base_state = load_ckpt(ckpt_path)
+    block_size = int(base_ckpt.get("config", {}).get("block_size", 1))
     dataset = args.eval_dataset or base_ckpt.get("config", {}).get("dataset")
     if not dataset:
         raise ValueError("--eval_dataset is required when checkpoint config has no dataset")
@@ -224,7 +239,7 @@ def main():
     if os.path.exists(meta_path):
         shutil.copy2(meta_path, os.path.join(baseline_dir, "meta.pkl"))
 
-    base_eval = run_eval(baseline_dir, dataset, args.eval_iters, args.device, args.dtype)
+    base_eval = run_eval(baseline_dir, dataset, args.eval_iters, args.device, args.dtype, block_size)
     base_loss = float(base_eval["val"])
     max_allowed = base_loss * (1 + args.loss_tolerance_pct / 100.0)
 
@@ -258,7 +273,7 @@ def main():
             if os.path.exists(meta_path):
                 shutil.copy2(meta_path, os.path.join(cand_dir, "meta.pkl"))
 
-            em = run_eval(cand_dir, dataset, args.eval_iters, args.device, args.dtype)
+            em = run_eval(cand_dir, dataset, args.eval_iters, args.device, args.dtype, block_size)
             vloss = float(em["val"])
             rec = {
                 "tensor": tname,
@@ -271,6 +286,9 @@ def main():
                 "val_loss": vloss,
                 "loss_delta_pct": (vloss / base_loss - 1.0) * 100.0,
                 "decode_reduction_proxy": trial_meta["decode_reduction_proxy"],
+                "decode_token_latency_ms": float(em.get("decode_token_latency_ms", 0.0)),
+                "decode_tokens_per_s": float(em.get("decode_tokens_per_s", 0.0)),
+                "iter_latency_ms": float(em.get("iter_latency_ms", 0.0)),
                 "feasible": vloss <= max_allowed,
             }
             tested.append(rec)
@@ -285,6 +303,8 @@ def main():
             "stop_reason": None,
             "selected_config": to_selected_config(tensor_candidates, chosen_idx),
             "current_val_loss": current_loss,
+            "current_decode_token_latency_ms": None,
+            "current_decode_tokens_per_s": None,
         }
 
         if not tested:
@@ -303,19 +323,45 @@ def main():
         round_log["selected"] = best
         round_log["selected_config"] = to_selected_config(tensor_candidates, chosen_idx)
         round_log["current_val_loss"] = current_loss
+        round_log["current_decode_token_latency_ms"] = float(best["decode_token_latency_ms"])
+        round_log["current_decode_tokens_per_s"] = float(best["decode_tokens_per_s"])
         rounds.append(round_log)
 
     final_state, final_meta = build_mutated_state(base_state, tensor_candidates, chosen_idx, args.provider_mode)
-    selected_ckpt = {k: v for k, v in base_ckpt.items()}
-    selected_ckpt["model"] = final_state
-    selected_dir = os.path.join(out_dir, "selected")
-    os.makedirs(selected_dir, exist_ok=True)
-    torch.save(selected_ckpt, os.path.join(selected_dir, "ckpt.pt"))
-    if os.path.exists(meta_path):
-        shutil.copy2(meta_path, os.path.join(selected_dir, "meta.pkl"))
 
-    selected_eval = run_eval(selected_dir, dataset, args.eval_iters, args.device, args.dtype)
-    selected_loss = float(selected_eval["val"])
+    selected_loss = current_loss
+    selected_eval = None
+    selected_dir = os.path.join(out_dir, "selected")
+    if args.export_selected_ckpt:
+        selected_ckpt = {k: v for k, v in base_ckpt.items()}
+        selected_ckpt["model"] = final_state
+        os.makedirs(selected_dir, exist_ok=True)
+        torch.save(selected_ckpt, os.path.join(selected_dir, "ckpt.pt"))
+        if os.path.exists(meta_path):
+            shutil.copy2(meta_path, os.path.join(selected_dir, "meta.pkl"))
+        selected_eval = run_eval(selected_dir, dataset, args.eval_iters, args.device, args.dtype, block_size)
+        selected_loss = float(selected_eval["val"])
+
+    baseline_speed = {
+        "iter_latency_ms": float(base_eval.get("iter_latency_ms", 0.0)),
+        "decode_token_latency_ms": float(base_eval.get("decode_token_latency_ms", 0.0)),
+        "decode_tokens_per_s": float(base_eval.get("decode_tokens_per_s", 0.0)),
+    }
+    selected_speed = baseline_speed.copy()
+    if selected_eval is not None:
+        selected_speed = {
+            "iter_latency_ms": float(selected_eval.get("iter_latency_ms", 0.0)),
+            "decode_token_latency_ms": float(selected_eval.get("decode_token_latency_ms", 0.0)),
+            "decode_tokens_per_s": float(selected_eval.get("decode_tokens_per_s", 0.0)),
+        }
+
+    speed_comparison = {
+        "baseline": baseline_speed,
+        "selected": selected_speed,
+        "iter_speedup": baseline_speed["iter_latency_ms"] / max(selected_speed["iter_latency_ms"], 1e-9),
+        "decode_token_latency_speedup": baseline_speed["decode_token_latency_ms"] / max(selected_speed["decode_token_latency_ms"], 1e-9),
+        "decode_tokens_per_s_speedup": selected_speed["decode_tokens_per_s"] / max(baseline_speed["decode_tokens_per_s"], 1e-9),
+    }
 
     log_payload = {
         "dataset": dataset,
@@ -323,6 +369,7 @@ def main():
             "val_loss": base_loss,
             "max_allowed_val_loss": max_allowed,
             "loss_tolerance_pct": args.loss_tolerance_pct,
+            **baseline_speed,
         },
         "search": {
             "strategy": "greedy_per_tensor_threshold_stepdown",
@@ -332,8 +379,12 @@ def main():
             "pattern": args.pattern,
             "accepted_rounds": accepted_rounds,
             "max_rounds": args.max_rounds,
+            "export_selected_ckpt": args.export_selected_ckpt,
         },
-        "initial_config": to_selected_config(tensor_candidates, {t: initial_candidate_index(c, args.start_threshold) for t, c in tensor_candidates.items()}),
+        "initial_config": to_selected_config(
+            tensor_candidates,
+            {t: initial_candidate_index(c, args.start_threshold) for t, c in tensor_candidates.items()},
+        ),
         "rounds": rounds,
         "selected": {
             "config": to_selected_config(tensor_candidates, chosen_idx),
@@ -341,7 +392,10 @@ def main():
             "loss_delta_pct": (selected_loss / base_loss - 1.0) * 100.0,
             "decode_reduction_proxy": final_meta["decode_reduction_proxy"],
             "tensor_meta": final_meta["tensors"],
+            **selected_speed,
+            "exported_ckpt_dir": selected_dir if args.export_selected_ckpt else None,
         },
+        "speed_comparison": speed_comparison,
     }
 
     yaml_path = os.path.join(out_dir, "search_log.yaml")
@@ -353,6 +407,7 @@ def main():
     print(f"Max allowed val loss: {max_allowed:.6f}")
     print(f"Selected val loss: {selected_loss:.6f}")
     print(f"Accepted rounds: {accepted_rounds}")
+    print(f"Decode speedup (tok/s): {speed_comparison['decode_tokens_per_s_speedup']:.4f}x")
     print(f"Wrote {yaml_path}")
 
 

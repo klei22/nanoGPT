@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 import yaml
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 from textual.app import App
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -17,6 +18,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 DEFAULT_LOG = "search_log.yaml"
 POLL_INTERVAL = 3.0
 SUMMARY_LABEL = "Selected Summary"
+SELECTED_STYLE = "bold orange3"
 
 
 def load_yaml(path: Path) -> Dict[str, Any]:
@@ -24,6 +26,17 @@ def load_yaml(path: Path) -> Dict[str, Any]:
         return {}
     data = yaml.safe_load(path.read_text())
     return data or {}
+
+
+def heat_text(value: float, lo: float, hi: float) -> Text:
+    if hi <= lo:
+        t = 0.0
+    else:
+        t = (value - lo) / (hi - lo)
+    r = int(255 * t)
+    g = int(255 * (1.0 - t))
+    style = f"rgb({r},{g},0)"
+    return Text(f"{value:.6f}", style=style)
 
 
 class IslandTradeoffViewer(App):
@@ -73,6 +86,7 @@ class IslandTradeoffViewer(App):
             "baseline": data.get("baseline", {}),
             "search": data.get("search", {}),
             "selected": data.get("selected", {}),
+            "speed_comparison": data.get("speed_comparison", {}),
         }
         if initial and self.rounds:
             self.idx = len(self.rounds) - 1
@@ -107,6 +121,7 @@ class IslandTradeoffViewer(App):
             sel = self.summary.get("selected", {})
             base = self.summary.get("baseline", {})
             srch = self.summary.get("search", {})
+            spd = self.summary.get("speed_comparison", {})
             panel_tbl = Table.grid(padding=1)
             panel_tbl.add_column(justify="right")
             panel_tbl.add_column()
@@ -116,6 +131,9 @@ class IslandTradeoffViewer(App):
             panel_tbl.add_row("Selected val", f"{sel.get('val_loss', '-')}")
             panel_tbl.add_row("Loss delta %", f"{sel.get('loss_delta_pct', '-')}")
             panel_tbl.add_row("Decode proxy", f"{sel.get('decode_reduction_proxy', '-')}")
+            panel_tbl.add_row("Selected tok ms", f"{sel.get('decode_token_latency_ms', '-')}")
+            panel_tbl.add_row("Selected tok/s", f"{sel.get('decode_tokens_per_s', '-')}")
+            panel_tbl.add_row("Speedup tok/s", f"{spd.get('decode_tokens_per_s_speedup', '-')}")
             panel_tbl.add_row("Accepted rounds", f"{srch.get('accepted_rounds', '-')}")
             top.update(Panel(panel_tbl, title="Selected summary", border_style="green"))
 
@@ -136,6 +154,8 @@ class IslandTradeoffViewer(App):
         panel_tbl.add_column()
         panel_tbl.add_row("Round", str(r.get("round", "-")))
         panel_tbl.add_row("Current val", str(r.get("current_val_loss", "-")))
+        panel_tbl.add_row("Current tok ms", str(r.get("current_decode_token_latency_ms", "-")))
+        panel_tbl.add_row("Current tok/s", str(r.get("current_decode_tokens_per_s", "-")))
         panel_tbl.add_row("Stop reason", str(r.get("stop_reason", "-")))
         best = r.get("best_candidate") or {}
         panel_tbl.add_row("Best tensor", str(best.get("tensor", "-")))
@@ -152,19 +172,40 @@ class IslandTradeoffViewer(App):
         table.add_column("to_islands")
         table.add_column("val_loss")
         table.add_column("loss_delta_pct")
+        table.add_column("tok_ms")
+        table.add_column("tok/s")
         table.add_column("decode_proxy")
         table.add_column("feasible")
-        for cand in r.get("tested", []):
+
+        tested = r.get("tested", [])
+        vals = [float(c.get("val_loss", 0.0)) for c in tested if isinstance(c.get("val_loss"), (float, int))]
+        lo = min(vals) if vals else 0.0
+        hi = max(vals) if vals else 1.0
+        selected_tensor = (r.get("selected") or {}).get("tensor")
+
+        for cand in tested:
+            is_selected = cand.get("tensor") == selected_tensor
+            def cell(v):
+                txt = Text(str(v))
+                if is_selected:
+                    txt.stylize(SELECTED_STYLE)
+                return txt
+            vloss = float(cand.get("val_loss", 0.0)) if isinstance(cand.get("val_loss"), (int, float)) else 0.0
+            vloss_txt = heat_text(vloss, lo, hi)
+            if is_selected:
+                vloss_txt.stylize(SELECTED_STYLE)
             table.add_row(
-                str(cand.get("tensor", "-")),
-                str(cand.get("from_threshold", "-")),
-                str(cand.get("to_threshold", "-")),
-                str(cand.get("from_num_islands", "-")),
-                str(cand.get("to_num_islands", "-")),
-                str(cand.get("val_loss", "-")),
-                str(cand.get("loss_delta_pct", "-")),
-                str(cand.get("decode_reduction_proxy", "-")),
-                "yes" if cand.get("feasible") else "no",
+                cell(cand.get("tensor", "-")),
+                cell(cand.get("from_threshold", "-")),
+                cell(cand.get("to_threshold", "-")),
+                cell(cand.get("from_num_islands", "-")),
+                cell(cand.get("to_num_islands", "-")),
+                vloss_txt,
+                cell(cand.get("loss_delta_pct", "-")),
+                cell(cand.get("decode_token_latency_ms", "-")),
+                cell(cand.get("decode_tokens_per_s", "-")),
+                cell(cand.get("decode_reduction_proxy", "-")),
+                cell("yes" if cand.get("feasible") else "no"),
             )
 
 

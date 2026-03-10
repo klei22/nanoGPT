@@ -137,16 +137,24 @@ Use `search_island_tradeoff.py` for a **greedy per-tensor threshold-step search*
 4) stop if the best candidate exceeds the loss tolerance; otherwise accept and continue.
 
 Outputs in `--out_dir` (default: `<ckpt_dir>/island_tradeoff_search`):
-- `search_log.yaml`: round-by-round tested candidates, losses, selections, stop reason
-- `search_results.json`: JSON mirror of the final search state
+- `search_log.yaml`: round-by-round tested candidates, losses, selected candidate, decode latency estimates, stop reason
+- `search_results.json`: JSON mirror of the final search state including baseline-vs-selected speed comparison
 - `selected/ckpt.pt`: checkpoint for selected configuration
 - per-candidate subdirs with eval artifacts
 
 Example:
 
 ```bash
-python3 analysis/checkpoint_analysis/search_island_tradeoff.py out_shakespeare_checkpoint_demo   --start_threshold 0.5   --threshold_step 0.05   --loss_tolerance_pct 2.0   --eval_dataset shakespeare_char   --eval_iters 100   --device cpu --dtype float32
+python3 analysis/checkpoint_analysis/search_island_tradeoff.py out_shakespeare_checkpoint_demo \
+  --start_threshold 0.5 \
+  --threshold_step 0.05 \
+  --loss_tolerance_pct 2.0 \
+  --eval_dataset shakespeare_char \
+  --eval_iters 100 \
+  --device cpu --dtype float32
 ```
+
+The selected checkpoint is exported by default (`--export_selected_ckpt`) and speed is compared against baseline using eval-derived iteration/token latency metrics.
 
 TUI log viewer (template-style similar to `view_hp_log.py`):
 
