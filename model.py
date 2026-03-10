@@ -458,7 +458,7 @@ class GPT(nn.Module):
                             loss_i = F.huber_loss(
                                 preds.squeeze(-1)[mask],
                                 targets[mask],
-                                delta=1.0,
+                                delta=0.5,
                                 reduction="mean",
                             )
                         else:
