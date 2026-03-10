@@ -1347,6 +1347,15 @@ class Trainer:
                 f"{target_dataset}/bit_loss_penalty_tokens", penalty_term, tokens_trained
             )
 
+    def _safe_better_than_chance(self, vocab_size: float, loss_value: float) -> float:
+        """Return vocab_size / exp(loss) without raising overflow for huge losses."""
+        if not math.isfinite(loss_value):
+            return 0.0
+        # math.exp overflows around 709 on float64; beyond that the ratio is effectively 0.
+        if loss_value >= 709.0:
+            return 0.0
+        return vocab_size / math.exp(loss_value)
+
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance):
         compute_rankme = self.args.log_rankme or self.args.log_areq
 
@@ -1699,7 +1708,7 @@ class Trainer:
         self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
         if self.args.dataset_list is not None:
             for dataset, dataset_losses in losses['datasets'].items():
-                better_than_chance = self.model_args['vocab_size'] / math.exp(dataset_losses['val'].item())
+                better_than_chance = self._safe_better_than_chance(self.model_args['vocab_size'], dataset_losses['val'].item())
                 log_message=f"step {self.iter_num}: "
                 log_message+=f"{dataset:<20s}"
                 log_message+=f", {self.model.num_param}"
@@ -1728,10 +1737,10 @@ class Trainer:
                 log_message+=f", lr {self.lr:.4f}"
                 log_message+=f", tokens_trained {self.tokens_trained:.2e}"
                 self.console.print(log_message)
-                better_than_chance = self.vocab_sizes[dataset] / math.exp(dataset_losses['val'].item())
+                better_than_chance = self._safe_better_than_chance(self.vocab_sizes[dataset], dataset_losses['val'].item())
                 self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained, dataset, better_than_chance)
         else:
-            better_than_chance = self.model_args['vocab_size'] / math.exp(losses['val'].item())
+            better_than_chance = self._safe_better_than_chance(self.model_args['vocab_size'], losses['val'].item())
             log_message=f"step {self.iter_num}:"
             log_message+=f", {self.model.num_param}"
             log_message+=f", train loss {losses['train']:.4f}"
@@ -1766,7 +1775,7 @@ class Trainer:
                 self.best_tokens = self.tokens_trained
                 peak_mb = self.peak_gpu_usage / (1024 ** 2)
                 with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                    chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
+                    chance_ratio = self._safe_better_than_chance(self.model_args['vocab_size'], self.best_val_loss.item())
                     metrics = [
                             f"{self.best_val_loss.item()}",
                             f"{self.iter_num}",
@@ -1834,7 +1843,7 @@ class Trainer:
         log_message+= f", {self.model.num_param}"
         if self.args.multicontext_datasets:
             for i, mc_dataset in enumerate(self.args.multicontext_datasets):
-                self.mc_btc_train[mc_dataset] = self.vocab_sizes[mc_dataset] / math.exp(training_losses[i].item())
+                self.mc_btc_train[mc_dataset] = self._safe_better_than_chance(self.vocab_sizes[mc_dataset], training_losses[i].item())
                 log_message+= f", {self.underscore_abbr(mc_dataset)}"
                 if self.args.log_btc_train:
                     log_message+= f" btc {self.mc_btc_train[mc_dataset]:.4f}"
@@ -1842,7 +1851,7 @@ class Trainer:
                 log_message+= f" loss {training_losses[i].item():.4f}"
             better_than_chance = None
         else:
-            better_than_chance = self.model_args['vocab_size'] / math.exp(lossf)
+            better_than_chance = self._safe_better_than_chance(self.model_args['vocab_size'], lossf)
             log_message+= f", loss {lossf:.4f}"
             if self.args.log_btc_train:
                 log_message+=f", btc_train {better_than_chance:.2e}"
