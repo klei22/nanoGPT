@@ -1639,7 +1639,7 @@ def _fake_quant_asymmetric(tensor: torch.Tensor, num_bits: int) -> torch.Tensor:
         return tensor
 
     zero_point = qmin - round(min_float / scale)
-    zero_point = max(qmin, min(qmax, int(zero_point)))
+    zero_point = int(zero_point)
 
     q = torch.round(tensor / scale + zero_point)
     q = torch.clamp(q, qmin, qmax)
