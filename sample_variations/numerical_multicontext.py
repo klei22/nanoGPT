@@ -7,14 +7,26 @@ import numpy as np
 
 
 def decode_numerical_series(token_ids: List[int], meta: Dict[str, object], model_input_format: str) -> np.ndarray:
-    """Decode token ids into numeric values aligned with model input format."""
+    """Decode token ids into numeric values aligned with model input format.
+
+    For scalar integer-quantized datasets, if quantization metadata exists we
+    approximately invert it for plotting.
+    """
     input_format = model_input_format or str(meta.get("numerical_multicontext_input_format", "scalar"))
 
     if input_format == "fp16_bits":
         raw = np.asarray(token_ids, dtype=np.uint16)
         return raw.view(np.float16).astype(np.float32)
 
-    return np.asarray(token_ids, dtype=np.float32)
+    values = np.asarray(token_ids, dtype=np.float32)
+    quant = meta.get("quantization") if isinstance(meta, dict) else None
+    if isinstance(quant, dict) and quant.get("type") == "shift_scale_round_clip_uint16":
+        scale = float(quant.get("scale", 1.0))
+        shift = float(quant.get("shift", 0.0))
+        if scale != 0.0:
+            values = (values / scale) - shift
+
+    return values
 
 
 def write_plotly_report(
