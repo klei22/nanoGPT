@@ -55,3 +55,15 @@ data/<output_root>/<column>/meta.pkl
 ```text
 raw ~= (quantized / scale) - shift
 ```
+
+
+## File-based prompt input at sampling time
+
+For numerical multicontext sampling, you can now provide per-channel `.bin` files
+instead of `--multicontext_start` text:
+
+```bash
+python3 sample.py   --out_dir out/numerical_mc_csv_int   --multicontext   --multicontext_datasets csv_num_mc_int/bpm csv_num_mc_int/spo2   --multicontext_start_files data/csv_num_mc_int/bpm/train.bin data/csv_num_mc_int/spo2/train.bin   --multicontext_start_file_dtype uint16   --multicontext_start_file_max_tokens 128   --numerical_multicontext_plotly
+```
+
+See `demos/num_mc_csv_int_file_input.sh` for an end-to-end example.

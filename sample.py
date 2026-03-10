@@ -117,6 +117,12 @@ def parse_args():
     parser.add_argument('--multicontext_start', type=str, nargs='+', default=None,
                         help="List of start strings, one for each context, if using --multicontext. "
                         "Must match the number/order of --multicontext_datasets.")
+    parser.add_argument('--multicontext_start_files', type=str, nargs='+', default=None,
+                        help="Optional list of .bin files (one per multicontext dataset) used as start token sequences.")
+    parser.add_argument('--multicontext_start_file_dtype', type=str, default='uint16', choices=['uint16', 'uint32'],
+                        help="Element dtype for --multicontext_start_files.")
+    parser.add_argument('--multicontext_start_file_max_tokens', type=int, default=None,
+                        help="If set, keep only the last N tokens from each --multicontext_start_files input.")
     parser.add_argument(
         '--numerical_multicontext_plotly',
         action=argparse.BooleanOptionalAction,
@@ -1366,10 +1372,19 @@ def main():
         with open(args.start[5:], 'r', encoding='utf-8') as f:
             args.start = f.read()
 
-    if args.multicontext and args.multicontext_start is None and args.multicontext_datasets:
+    if (
+        args.multicontext
+        and args.multicontext_start is None
+        and args.multicontext_start_files is None
+        and args.multicontext_datasets
+    ):
         args.multicontext_start = [args.start] * len(args.multicontext_datasets)
 
-    start_ids = encode(args.start)
+    if args.multicontext and args.multicontext_start_files is not None:
+        # Avoid single-context encode path when multicontext starts come from raw token files.
+        start_ids = [0]
+    else:
+        start_ids = encode(args.start)
     if len(start_ids) == 0:
         if meta and meta.get('tokenizer') == 'sinewave':
             print("Start string produced no tokens for sinewave tokenizer; defaulting to '0'.")
@@ -1469,21 +1484,30 @@ def main():
     elif args.multicontext:
         if not args.multicontext_datasets:
             raise ValueError("Must specify --multicontext_datasets when using --multicontext")
-        if args.multicontext_start is None:
-            raise ValueError("Must specify --multicontext_start when using --multicontext")
-        if len(args.multicontext_datasets) != len(args.multicontext_start):
-            raise ValueError(
-                "Number of --multicontext_datasets must match number of --multicontext_start strings."
-            )
+        if args.multicontext_start is None and args.multicontext_start_files is None:
+            raise ValueError("Must specify --multicontext_start or --multicontext_start_files when using --multicontext")
 
         dataset_names = list(args.multicontext_datasets)
-        start_strings = list(args.multicontext_start)
+        if args.multicontext_start_files is not None:
+            if len(args.multicontext_datasets) != len(args.multicontext_start_files):
+                raise ValueError(
+                    "Number of --multicontext_datasets must match number of --multicontext_start_files."
+                )
+            start_strings = None
+            start_files = list(args.multicontext_start_files)
+        else:
+            if len(args.multicontext_datasets) != len(args.multicontext_start):
+                raise ValueError(
+                    "Number of --multicontext_datasets must match number of --multicontext_start strings."
+                )
+            start_strings = list(args.multicontext_start)
+            start_files = None
 
         dataset_meta: Dict[str, Dict[str, object]] = {}
         decode_lookup: Dict[str, Callable[[Sequence[int]], str]] = {}
         initial_tokens: Dict[str, torch.Tensor] = {}
 
-        for dataset_name, start_str in zip(dataset_names, start_strings):
+        for i, dataset_name in enumerate(dataset_names):
             meta_path = os.path.join("data", dataset_name, "meta.pkl")
             if not os.path.exists(meta_path):
                 raise FileNotFoundError(f"meta.pkl not found at {meta_path}")
@@ -1491,17 +1515,31 @@ def main():
                 dataset_meta[dataset_name] = pickle.load(f)
 
             encode_i, decode_i = get_tokenizer_functions(dataset_meta[dataset_name])
-            token_ids = encode_i(start_str)
+
+            if start_files is not None:
+                start_file = start_files[i]
+                if not os.path.exists(start_file):
+                    raise FileNotFoundError(f"start file not found: {start_file}")
+                dtype = np.uint16 if args.multicontext_start_file_dtype == 'uint16' else np.uint32
+                token_ids = np.fromfile(start_file, dtype=dtype).astype(np.int64).tolist()
+                if args.multicontext_start_file_max_tokens is not None:
+                    if args.multicontext_start_file_max_tokens <= 0:
+                        raise ValueError("--multicontext_start_file_max_tokens must be > 0")
+                    token_ids = token_ids[-args.multicontext_start_file_max_tokens:]
+            else:
+                start_str = start_strings[i]
+                token_ids = encode_i(start_str)
+
             if len(token_ids) == 0:
                 if dataset_meta[dataset_name].get('tokenizer') == 'sinewave':
                     print(
-                        f"Start string for dataset '{dataset_name}' produced no tokens; defaulting to '0'."
+                        f"Start input for dataset '{dataset_name}' produced no tokens; defaulting to '0'."
                     )
                     token_ids = [0]
                 else:
                     raise ValueError(
-                        f"Start string for dataset '{dataset_name}' produced no tokens. "
-                        "Provide a valid prompt or comma-separated values for numerical tokenizers."
+                        f"Start input for dataset '{dataset_name}' produced no tokens. "
+                        "Provide valid --multicontext_start text or non-empty --multicontext_start_files data."
                     )
 
             token_tensor = torch.tensor(token_ids, dtype=torch.long, device=args.device)[None, ...]
