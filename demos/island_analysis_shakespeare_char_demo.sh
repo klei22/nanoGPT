@@ -3,11 +3,11 @@
 
 set -euo pipefail
 
-SKIP_TRAINING="${1:-yes}"
+SKIP_TRAINING="${1:-no}"
 OUT_DIR="out_shakespeare_island_demo"
 ANALYSIS_DIR="${OUT_DIR}/island_analysis"
-RUN_ROUTING_AUGMENT="${RUN_ROUTING_AUGMENT:-no}"
-RUN_TRADEOFF_SEARCH="${RUN_TRADEOFF_SEARCH:-no}"
+RUN_ROUTING_AUGMENT="${RUN_ROUTING_AUGMENT:-yes}"
+RUN_TRADEOFF_SEARCH="${RUN_TRADEOFF_SEARCH:-yes}"
 
 bash data/shakespeare_char/get_dataset.sh
 
@@ -19,9 +19,9 @@ if [[ "${SKIP_TRAINING}" == "no" ]]; then
     --max_iters 600 \
     --eval_interval 100 \
     --log_interval 10 \
-    --n_layer 4 \
-    --n_head 4 \
-    --n_embd 256
+    --n_layer 6 \
+    --n_head 6 \
+    --n_embd 384
 fi
 
 if [[ ! -f "${OUT_DIR}/ckpt.pt" ]]; then
@@ -34,7 +34,7 @@ python3 analysis/checkpoint_analysis/analyze_dot_islands_ckpt.py \
   "${OUT_DIR}" \
   --pattern "transformer\\.(wte|h\\.[0-9]+\\.(attn|mlp))" \
   --metric cosine \
-  --thresholds 0.2,0.3,0.4,0.5 \
+  --thresholds 0.2,0.3,0.4,0.5,0.6 \
   --min_island_size 4 \
   --top_providers 8 \
   --out_dir "${ANALYSIS_DIR}"
@@ -67,7 +67,7 @@ if [[ "${RUN_TRADEOFF_SEARCH}" == "yes" ]]; then
   python3 analysis/checkpoint_analysis/search_island_tradeoff.py \
     "${OUT_DIR}" \
     --island_json "${ANALYSIS_DIR}/islands_detailed.json" \
-    --loss_tolerance_pct 2.0 \
+    --loss_tolerance_pct 10.0 \
     --eval_dataset shakespeare_char \
     --eval_iters 50 \
     --device cpu \

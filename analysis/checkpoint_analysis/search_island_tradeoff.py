@@ -29,7 +29,7 @@ def parse_args():
     p.add_argument("--device", type=str, default="cpu", help="Device for eval subprocess")
     p.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
     p.add_argument("--loss_tolerance_pct", type=float, default=2.0, help="Max allowed val-loss increase (%)")
-    p.add_argument("--start_threshold", type=float, default=0.5, help="Start threshold per tensor")
+    p.add_argument("--start_threshold", type=float, default=0.6, help="Start threshold per tensor")
     p.add_argument("--threshold_step", type=float, default=0.05, help="Threshold decrement per step")
     p.add_argument(
         "--pattern",
