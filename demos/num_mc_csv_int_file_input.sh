@@ -14,8 +14,10 @@ CSV_INPUT="${1:-data/csv_num_mc_int/input.csv}"
 data/csv_num_mc_int/get_datasets.sh "$CSV_INPUT" \
   --output_root csv_num_mc_int \
   --train_ratio 0.9 \
-  --column-transform bpm:-40:2 \
-  --column-transform spo2:0:10
+  --column-transform bpm:-30:250 \
+  --column-transform spo2:-60:500 \
+  --column-transform movement:0:200
+
 
 python3 train.py \
   --training_mode multicontext \
@@ -24,21 +26,31 @@ python3 train.py \
   --multicontext_datasets \
     csv_num_mc_int/bpm \
     csv_num_mc_int/spo2 \
+    csv_num_mc_int/movement \
   --numerical_multicontext \
   --numerical_multicontext_input_format scalar \
+  --numerical_mlp_activation_variant gelu \
   --numerical_embedding_variant mlp \
   --numerical_output_variant mlp \
-  --numerical_mlp_hidden_dims 128 128 \
-  --n_layer 8 \
-  --n_head 8 \
-  --n_embd 256 \
-  --block_size 256 \
-  --batch_size 32 \
+  --numerical_mlp_hidden_dims 128 128 128 \
+  --use_qk_norm \
+  --use_qk_norm_scale \
+  --use_rotary_embeddings \
+  --no-use_abs_pos_embeddings \
+  --attention_variant infinite \
+  --use_concat_heads \
+  --mlp_size 2000 \
+  --n_layer 12 \
+  --n_head 5 \
+  --n_qk_head_dim 200 \
+  --n_v_head_dim 200 \
+  --n_embd 384 \
+  --block_size 500 \
+  --batch_size 64 \
   --max_iters 3000 \
   --eval_interval 300 \
   --eval_iters 100 \
-  --learning_rate 3e-4 \
-  --dtype bfloat16 \
+  --dtype float16 \
   --compile \
   --out_dir out/numerical_mc_csv_int_file_input
 
@@ -50,9 +62,11 @@ python3 sample.py \
   --multicontext_datasets \
     csv_num_mc_int/bpm \
     csv_num_mc_int/spo2 \
+    csv_num_mc_int/movement \
   --multicontext_start_files \
-    data/csv_num_mc_int/bpm/train.bin \
-    data/csv_num_mc_int/spo2/train.bin \
+    data/csv_num_mc_int/bpm/val.bin \
+    data/csv_num_mc_int/spo2/val.bin \
+    data/csv_num_mc_int/movement/val.bin \
   --multicontext_start_file_dtype uint16 \
   --multicontext_start_file_max_tokens 128 \
   --numerical_multicontext_plotly \
