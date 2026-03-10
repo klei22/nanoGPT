@@ -135,6 +135,10 @@ def parse_args():
 
     parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size to use for evaluation")
+    parser.add_argument('--tokenizer', type=str, default=None,
+                        help="Optional manual tokenizer override for generation/eval setup (e.g. gpt2, tiktoken, byte, char_bpe, custom_char_with_byte_fallback, json_byte_fallback, python_json_byte_fallback, sinewave).")
+    parser.add_argument('--tokenizer_meta_path', type=str, default=None,
+                        help="Optional explicit meta.pkl path used together with --tokenizer for tokenizers that require metadata.")
 
     return parser.parse_args()
 
@@ -1234,6 +1238,44 @@ def get_tokenizer_functions(meta):
     decode = lambda l: ''.join([itos[i] for i in l])
     return encode, decode
 
+
+def resolve_manual_tokenizer(args, checkpoint_dataset=None):
+    """Resolve encode/decode from explicit CLI tokenizer settings."""
+    if args.tokenizer is None:
+        return None, None, None
+
+    tokenizer_name = args.tokenizer
+    if tokenizer_name == "gpt2":
+        enc = tiktoken.get_encoding("gpt2")
+        encode = lambda s: enc.encode(s, allowed_special={""})
+        decode = lambda l: enc.decode(l)
+        return encode, decode, {"tokenizer": "gpt2"}
+
+    candidate_meta_paths = []
+    if args.tokenizer_meta_path:
+        candidate_meta_paths.append(args.tokenizer_meta_path)
+    if args.out_dir:
+        candidate_meta_paths.append(os.path.join(args.out_dir, 'meta.pkl'))
+    if args.eval_dataset:
+        candidate_meta_paths.append(os.path.join('data', args.eval_dataset, 'meta.pkl'))
+    if checkpoint_dataset:
+        candidate_meta_paths.append(os.path.join('data', checkpoint_dataset, 'meta.pkl'))
+
+    meta_path = next((p for p in candidate_meta_paths if p and os.path.exists(p)), None)
+    if meta_path is None:
+        raise ValueError(
+            f"--tokenizer {tokenizer_name} requires metadata, but no meta.pkl was found. "
+            "Provide --tokenizer_meta_path explicitly."
+        )
+
+    with open(meta_path, 'rb') as f:
+        meta = pickle.load(f)
+
+    meta = dict(meta)
+    meta['tokenizer'] = tokenizer_name
+    encode, decode = get_tokenizer_functions(meta)
+    return encode, decode, meta
+
 def main():
     args = parse_args()
 
@@ -1330,15 +1372,22 @@ def main():
                 load_meta = True
                 break
 
-    # For using gpt2 pretrained models
-    if args.init_from.startswith('gpt2'):
-        # use tiktoken for gpt2
+    encode = decode = None
+    checkpoint_dataset = checkpoint.get('config', {}).get('dataset') if args.init_from == 'resume' and isinstance(checkpoint, dict) else None
+
+    # Optional explicit tokenizer override from CLI.
+    manual_encode, manual_decode, manual_meta = resolve_manual_tokenizer(args, checkpoint_dataset=checkpoint_dataset)
+    if manual_encode is not None:
+        encode, decode = manual_encode, manual_decode
+
+    # For using gpt2 pretrained models when no explicit tokenizer override was provided.
+    if encode is None and args.init_from.startswith('gpt2'):
         enc = tiktoken.get_encoding("gpt2")
         encode = lambda s: enc.encode(s, allowed_special={""})
         decode = lambda l: enc.decode(l)
 
-    meta = None
-    if load_meta:
+    meta = manual_meta if manual_meta is not None else None
+    if encode is None and load_meta:
         print(f"Loading meta from {meta_path}...")
         with open(meta_path, 'rb') as f:
             meta = pickle.load(f)
@@ -1353,11 +1402,12 @@ def main():
 
     start_ids = None
     if not args.eval_only:
-        if 'encode' not in locals():
-            # Fallback tokenizer for generation paths when meta/tokenizer info is unavailable.
-            enc = tiktoken.get_encoding("gpt2")
-            encode = lambda s: enc.encode(s, allowed_special={""})
-            decode = lambda l: enc.decode(l)
+        if encode is None:
+            raise ValueError(
+                "No tokenizer could be resolved for generation. "
+                "Provide --tokenizer (and optionally --tokenizer_meta_path), "
+                "or ensure meta.pkl is available in out_dir/data dataset paths."
+            )
 
         start_ids = encode(args.start)
         if len(start_ids) == 0:
