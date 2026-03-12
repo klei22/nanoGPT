@@ -36,6 +36,9 @@ Hardware Related
   * [Prepare Training and Validation Data Sets](#prepare-training-and-validation-data-sets)
   * [Train Model From Scratch](#train-model-from-scratch)
   * [Perform Inference From Custom Model](#perform-inference-from-custom-model)
+* [Knowledge Distillation](#knowledge-distillation)
+  * [Online Distillation](#online-distillation)
+  * [Offline Distillation](#offline-distillation)
 * [Explorations](#explorations)
   * [Start Exploration](#start-exploration)
   * [Inspect and Monitor Best Val Losses](#inspect-and-monitor-best-val-losses)
@@ -126,6 +129,49 @@ python3 train_mezo.py --init_from resume --out_dir out
 
 You can adjust the perturbation scale with `--mezo_epsilon` and optionally fix
 the perturbation seed per step with `--mezo_seed`.
+
+## Knowledge Distillation
+
+Knowledge distillation reuses a teacher model to provide target logits for the
+student during training. Distillation uses the same dataset batches as normal
+training and adds an auxiliary loss term defined by
+`--distillation_loss` (with temperature/weight controls). This repo currently
+supports both online distillation (teacher checkpoint loaded at runtime) and
+offline distillation (precomputed logits stored on disk).
+
+### Online Distillation
+
+Provide a teacher checkpoint and a loss variant to enable online distillation.
+The teacher model is loaded in evaluation mode and its logits are computed on
+the fly for each batch.
+
+```bash
+python3 train.py \
+  --distillation_teacher_ckpt /path/to/ckpt.pt \
+  --distillation_loss kl_divergence \
+  --distillation_temperature 2.0 \
+  --distillation_weight 0.5
+```
+
+### Offline Distillation
+
+For offline distillation, precompute the teacher logits for each token position
+in the training dataset and store them as a contiguous memmap `.bin` file with
+shape `(num_tokens, vocab_size)`. The token rows must align with the token IDs
+in `train.bin`, so row `i` corresponds to the teacher logits for the token at
+position `i` and its next-token prediction. Then point training at the logits
+file:
+
+```bash
+python3 train.py \
+  --distillation_teacher_logits /path/to/teacher_logits.bin \
+  --distillation_teacher_logits_dtype float16 \
+  --distillation_loss kl_divergence \
+  --distillation_temperature 2.0 \
+  --distillation_weight 0.5
+```
+
+Offline distillation currently supports single-dataset training only.
 
 ### Perform Inference From Custom Model
 
