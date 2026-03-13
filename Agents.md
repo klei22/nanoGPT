@@ -1,10 +1,10 @@
-# AGENTS.md
+# Agents.md
 
 ## Purpose
 This file gives coding agents the minimum repository-specific rules needed to complete tasks correctly.
 
 ## Scope
-- Applies to the entire repository unless a deeper `AGENTS.md` overrides it.
+- Applies to the entire repository unless a deeper `Agents.md` overrides it.
 
 ## Must-Follow Rules
 - Required behavior for fixes:
@@ -61,11 +61,12 @@ This file gives coding agents the minimum repository-specific rules needed to co
   directory.`
 - `optimization_and_search/...`: `This folder should contain any optimization
   and search related script, and configuration settings for ip_addresses to
-  utilize for the search when in distributed mode. run_explorations.py contained
-  runs grid searches on the explorations/ yaml file specified. We also have a
-  genetic algorithm search which has the distributed search implemented. Note:
-  hyperparam_search.py should belong in here, and we still need to add
-  distributed machine solution to hyperparam_search.py and run_explorations.py`
+  utilize for the search when in distributed mode. Scripts such as
+  run_experiments.py and run_from_yaml.py run grid searches on the explorations/
+  yaml file specified. We also have a genetic algorithm search which has the
+  distributed search implemented. Note: hyperparam_search.py should belong in
+  here, and we still need to add a distributed machine solution to
+  hyperparam_search.py and the relevant optimization scripts in this directory.`
 
 ## Validation Gate (before finishing)
 - [ ] All required commands pass locally.
