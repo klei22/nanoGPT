@@ -151,6 +151,25 @@ def parse_args():
             "Per-vector mode groups vectors following the JL transform initialization heuristics."
         ),
     )
+    parser.add_argument(
+        "--vector-group-count",
+        type=int,
+        default=0,
+        help=(
+            "Optional number of contiguous groups along each quantized vector when "
+            "--granularity=vector. For example, n_embd=300 with --vector-group-count=10 "
+            "uses 30 values per group with independent quantization parameters."
+        ),
+    )
+    parser.add_argument(
+        "--vector-group-size",
+        type=int,
+        default=0,
+        help=(
+            "Optional contiguous group size along each quantized vector when "
+            "--granularity=vector. Mutually exclusive with --vector-group-count."
+        ),
+    )
     args = parser.parse_args()
     if args.num_bits < 0:
         parser.error("--num_bits must be non-negative")
@@ -162,6 +181,12 @@ def parse_args():
         parser.error("--min-bits cannot exceed --max-bits")
     if args.tui_page_size <= 0:
         parser.error("--tui-page-size must be positive")
+    if args.vector_group_count < 0:
+        parser.error("--vector-group-count must be non-negative")
+    if args.vector_group_size < 0:
+        parser.error("--vector-group-size must be non-negative")
+    if args.vector_group_count > 0 and args.vector_group_size > 0:
+        parser.error("--vector-group-count and --vector-group-size are mutually exclusive")
     return args
 
 
@@ -1612,38 +1637,33 @@ def _fake_quant_symmetric(tensor: torch.Tensor, num_bits: int) -> torch.Tensor:
 
 
 def _fake_quant_asymmetric(tensor: torch.Tensor, num_bits: int) -> torch.Tensor:
-    # Unsigned quantization with range [0, 2^{B}-1]
     qmin = 0
     qmax = (1 << num_bits) - 1
-    if qmax <= qmin:
+    if qmax <= qmin or tensor.numel() == 0:
         return tensor
 
-    if tensor.numel() == 0:
-        return tensor
+    # Do qparam math in fp32 for stability, then cast back.
+    x = tensor.to(torch.float32)
 
-    # min/max provide scalar tensors; handle degenerate ranges gracefully
-    min_val = tensor.min()
-    max_val = tensor.max()
-    if min_val.numel() == 0 or max_val.numel() == 0:
-        return tensor
+    min_val, max_val = torch.aminmax(x)
+    min_float = min(min_val.item(), 0.0)   # force 0 into range
+    max_float = max(max_val.item(), 0.0)   # force 0 into range
 
-    min_float = min_val.item()
-    max_float = max_val.item()
     if not (math.isfinite(min_float) and math.isfinite(max_float)):
         return tensor
     if max_float <= min_float:
         return tensor
 
     scale = (max_float - min_float) / float(qmax - qmin)
-    if scale == 0.0 or not math.isfinite(scale):
+    if scale <= 0.0 or not math.isfinite(scale):
         return tensor
 
-    zero_point = qmin - round(min_float / scale)
-    zero_point = max(qmin, min(qmax, int(zero_point)))
+    zero_point = int(round(qmin - min_float / scale))
+    zero_point = max(qmin, min(qmax, zero_point))
 
-    q = torch.round(tensor / scale + zero_point)
-    q = torch.clamp(q, qmin, qmax)
-    return ((q - zero_point) * scale).to(tensor.dtype)
+    q = torch.clamp(torch.round(x / scale + zero_point), qmin, qmax)
+    dq = (q - zero_point) * scale
+    return dq.to(tensor.dtype)
 
 
 def fake_quant_tensor(
@@ -1666,7 +1686,11 @@ def fake_quant_tensor(
 
 
 def _quantize_vectors_along_axis(
-    tensor: torch.Tensor, num_bits: int, scheme: str, axis: int
+    tensor: torch.Tensor,
+    num_bits: int,
+    scheme: str,
+    axis: int,
+    vector_group_size: Optional[int] = None,
 ) -> torch.Tensor:
     """Apply fake quantization independently to vectors along ``axis``."""
 
@@ -1682,8 +1706,15 @@ def _quantize_vectors_along_axis(
     if flat.numel() == 0:
         return tensor
 
+    group_size = int(vector_group_size) if vector_group_size else 0
     for row_idx in range(flat.shape[0]):
-        flat[row_idx] = fake_quant_tensor(flat[row_idx], num_bits, scheme)
+        if group_size > 0 and flat.shape[1] > group_size:
+            row = flat[row_idx]
+            for start in range(0, row.shape[0], group_size):
+                end = min(start + group_size, row.shape[0])
+                row[start:end] = fake_quant_tensor(row[start:end], num_bits, scheme)
+        else:
+            flat[row_idx] = fake_quant_tensor(flat[row_idx], num_bits, scheme)
 
     return torch.movedim(moved, -1, axis)
 
@@ -1693,6 +1724,7 @@ def fake_quant_tensor_per_vector(
     num_bits: int,
     scheme: str,
     embedding_dim: Optional[int],
+    vector_group_size: Optional[int] = None,
 ) -> torch.Tensor:
     """Apply fake quantization per vector using JL transform heuristics."""
 
@@ -1703,11 +1735,15 @@ def fake_quant_tensor_per_vector(
     result = tensor
 
     if tensor.ndim >= 1 and tensor.shape[-1] == embedding_dim:
-        result = _quantize_vectors_along_axis(result, num_bits, scheme, -1)
+        result = _quantize_vectors_along_axis(
+            result, num_bits, scheme, -1, vector_group_size
+        )
         applied = True
 
     if tensor.ndim > 1 and tensor.shape[0] == embedding_dim:
-        result = _quantize_vectors_along_axis(result, num_bits, scheme, 0)
+        result = _quantize_vectors_along_axis(
+            result, num_bits, scheme, 0, vector_group_size
+        )
         applied = True
     elif tensor.ndim == 1 and tensor.shape[0] == embedding_dim:
         if not applied:
@@ -1718,6 +1754,30 @@ def fake_quant_tensor_per_vector(
         result = fake_quant_tensor(result, num_bits, scheme)
 
     return result
+
+
+def resolve_vector_group_size(
+    embedding_dim: int, group_count: int, group_size: int
+) -> Optional[int]:
+    if group_count <= 0 and group_size <= 0:
+        return None
+
+    if group_count > 0:
+        if embedding_dim % group_count != 0:
+            raise ValueError(
+                f"Embedding dimension {embedding_dim} is not divisible by vector group count {group_count}."
+            )
+        return embedding_dim // group_count
+
+    if group_size > embedding_dim:
+        raise ValueError(
+            f"Vector group size {group_size} cannot exceed embedding dimension {embedding_dim}."
+        )
+    if embedding_dim % group_size != 0:
+        raise ValueError(
+            f"Embedding dimension {embedding_dim} is not divisible by vector group size {group_size}."
+        )
+    return group_size
 
 
 def iter_state_tensors(state_dict) -> Iterable[torch.Tensor]:
@@ -2101,6 +2161,7 @@ def main():
     )
 
     embedding_dim: Optional[int] = None
+    vector_group_size: Optional[int] = None
     if args.granularity == "vector":
         embedding_dim = infer_embedding_dimension(checkpoint, state_dict)
         if embedding_dim is None:
@@ -2109,9 +2170,23 @@ def main():
                 "could not be inferred. Falling back to per-tensor quantization."
             )
         else:
+            try:
+                vector_group_size = resolve_vector_group_size(
+                    embedding_dim,
+                    args.vector_group_count,
+                    args.vector_group_size,
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
+
             _print_info(
                 f"Using per-vector quantization with embedding dimension {embedding_dim}."
             )
+            if vector_group_size:
+                _print_info(
+                    "Vector group quantization enabled: "
+                    f"group_size={vector_group_size}, groups_per_vector={embedding_dim // vector_group_size}."
+                )
 
     applied_tensor_bits: Dict[str, int] = {}
     for key, value in state_dict.items():
@@ -2125,7 +2200,11 @@ def main():
             continue
         if args.granularity == "vector" and embedding_dim is not None:
             state_dict[key] = fake_quant_tensor_per_vector(
-                value, int(bits), args.quantization, embedding_dim
+                value,
+                int(bits),
+                args.quantization,
+                embedding_dim,
+                vector_group_size,
             )
         else:
             state_dict[key] = fake_quant_tensor(value, int(bits), args.quantization)
