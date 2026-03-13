@@ -25,6 +25,9 @@ class GPTConfig:
     numerical_output_variant: str = "mlp"
     numerical_mapping_weight_tying: bool = True
     numerical_multicontext_input_format: str = "scalar"
+    numerical_loss_huber_delta: float = 1.0
+    numerical_loss_use_cosine: bool = False
+    numerical_loss_cosine_coeff: float = 0.5
 
     # Optional post-mapping channel normalization for numerical embeddings
     norm_channel_variant: str | None = None

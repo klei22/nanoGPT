@@ -454,13 +454,28 @@ class GPT(nn.Module):
                         else:
                             targets = target_list[i].to(preds.dtype)
                         mask = target_list[i] != -1
+
                         if mask.any():
-                            loss_i = F.huber_loss(
-                                preds.squeeze(-1)[mask],
-                                targets[mask],
-                                delta=1.0,
+                            pred_sel = preds[mask]
+                            target_sel = targets.unsqueeze(-1)[mask]
+
+                            huber = F.huber_loss(
+                                pred_sel,
+                                target_sel,
+                                delta=self.config.numerical_loss_huber_delta,
                                 reduction="mean",
                             )
+
+                            if self.config.numerical_loss_use_cosine:
+                                cos = 1.0 - F.cosine_similarity(
+                                    pred_sel,
+                                    target_sel,
+                                    dim=-1,
+                                    eps=1e-8,
+                                ).mean()
+                                loss_i = huber + (self.config.numerical_loss_cosine_coeff * cos)
+                            else:
+                                loss_i = huber
                         else:
                             loss_i = torch.zeros((), device=preds.device, dtype=preds.dtype)
                         losses.append(loss_i)

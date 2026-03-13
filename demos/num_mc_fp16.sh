@@ -2,6 +2,7 @@
 # FP16-bits numerical multicontext demo:
 # 1) generate sinewave contexts with regular sinewave-like phase/range and fp16-bit encoding
 # 2) train numerical multicontext with model-side fp16 bit decoding
+# 3) sample and write Plotly channel report
 
 set -euo pipefail
 
@@ -57,3 +58,21 @@ python3 train.py \
   --dtype bfloat16 \
   --compile \
   --out_dir out/numerical_mc_fp16_sine
+
+python3 sample.py \
+  --out_dir out/numerical_mc_fp16_sine \
+  --multicontext \
+  --multicontext_datasets \
+    sinewave_fp16/s1 \
+    sinewave_fp16/s2 \
+    sinewave_fp16/s3 \
+    sinewave_fp16/s4 \
+    sinewave_fp16/s5 \
+    sinewave_fp16/s6 \
+    sinewave_fp16/s7 \
+    sinewave_fp16/s8 \
+  --multicontext_start "0" "0" "0" "0" "0" "0" "0" "0" \
+  --numerical_multicontext_plotly \
+  --numerical_multicontext_plotly_file out/numerical_mc_fp16_sine/num_mc_fp16_samples.html \
+  --max_new_tokens 256 \
+  --num_samples 3

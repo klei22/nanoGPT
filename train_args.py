@@ -289,6 +289,24 @@ def parse_args():
         ),
     )
     model_group.add_argument(
+        '--numerical_loss_huber_delta',
+        default=0.5,
+        type=float,
+        help="Delta parameter for numerical multicontext Huber loss.",
+    )
+    model_group.add_argument(
+        '--numerical_loss_use_cosine',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Enable cosine similarity term in numerical multicontext regression loss.",
+    )
+    model_group.add_argument(
+        '--numerical_loss_cosine_coeff',
+        default=0.5,
+        type=float,
+        help="Coefficient for cosine loss term when --numerical_loss_use_cosine is enabled.",
+    )
+    model_group.add_argument(
         '--norm_channel_variant',
         type=str,
         default=None,
