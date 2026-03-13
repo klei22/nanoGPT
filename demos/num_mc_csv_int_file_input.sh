@@ -19,10 +19,14 @@ data/csv_num_mc_int/get_datasets.sh "$CSV_INPUT" \
   --column-transform movement:0:200
 
 
-for i in "0.2" "0.1" "0.05"; do
+
+for i in "0.1" "0.01" "0.001"; do
+  for j in "0.1" "0.01" "0.001"; do
   python3 train.py \
     --training_mode multicontext \
     --dataset csv_num_mc_int/bpm \
+    --numerical_loss_use_cosine \
+    --numerical_loss_cosine_coeff "$j" \
     --multicontext \
     --multicontext_datasets \
       csv_num_mc_int/bpm \
@@ -41,6 +45,7 @@ for i in "0.2" "0.1" "0.05"; do
     --no-use_abs_pos_embeddings \
     --attention_variant infinite \
     --use_concat_heads \
+    --dropout 0.2 \
     --mlp_size 2000 \
     --n_layer 12 \
     --n_head 5 \
@@ -49,12 +54,12 @@ for i in "0.2" "0.1" "0.05"; do
     --n_embd 384 \
     --block_size 250 \
     --batch_size 64 \
-    --max_iters 3000 \
+    --max_iters 600 \
     --eval_interval 300 \
     --eval_iters 100 \
     --dtype float16 \
     --compile \
-    --out_dir out/numerical_mc_csv_int_file_input_"$i"
+    --out_dir out/numerical_mc_csv_int_file_input_"$i"_"$j"
 
   # Use channel-specific binary token files as prompts; keep only the most recent
   # tokens to control prompt length.
@@ -72,8 +77,8 @@ for i in "0.2" "0.1" "0.05"; do
     --multicontext_start_file_dtype uint16 \
     --multicontext_start_file_max_tokens 128 \
     --numerical_multicontext_plotly \
-    --numerical_multicontext_plotly_file out/numerical_mc_csv_int_file_input_"$i"/num_mc_csv_int_file_input_samples_"$i".html \
-    --max_new_tokens 256 \
+    --numerical_multicontext_plotly_file out/samples/num_mc_csv_int_file_input_samples_"$i"_"$j".html \
+    --max_new_tokens 1024 \
     --num_samples 1
-
+done
 done
