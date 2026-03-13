@@ -14,6 +14,27 @@ def _maybe_print_l2_norm(name: str, weight: torch.Tensor, dim: int, enabled: boo
     if enabled and should_print:
         print(f"L2-normalizing {name} over dim {dim} (size {weight.size(dim)})")
 
+
+def _init_cproj_scale(config, prefix: str):
+    base_scale = float(getattr(config, f"{prefix}_cproj_scale", 1.0))
+    learn_scale = bool(getattr(config, f"{prefix}_cproj_scale_learning", False))
+    init_learning_scale = float(getattr(config, f"{prefix}_cproj_scale_init_learning_scale", 1.0))
+    if learn_scale:
+        if init_learning_scale == 0.0:
+            raise ValueError(f"{prefix}_cproj_scale_init_learning_scale cannot be 0 when learning scale")
+        learned_init = base_scale / init_learning_scale
+        return nn.Parameter(torch.tensor([learned_init], dtype=torch.float32)), True, init_learning_scale
+    return base_scale, False, 1.0
+
+
+def _apply_cproj_scale(x: torch.Tensor, cproj_scale, cproj_scale_learning: bool, cproj_scale_factor: float):
+    effective_scale = cproj_scale_factor * cproj_scale if cproj_scale_learning else cproj_scale
+    if torch.is_tensor(effective_scale):
+        return x / effective_scale
+    if effective_scale is not None and effective_scale != 1.0:
+        return x / effective_scale
+    return x
+
 class OriginalMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -106,7 +127,7 @@ class OriginalMLP(nn.Module):
         _maybe_print_l2_norm("MLP down projection", self.c_proj.weight, down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dims)
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
-        self.cproj_scale = config.mlp_cproj_scale
+        self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor = _init_cproj_scale(config, "mlp")
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -135,8 +156,7 @@ class OriginalMLP(nn.Module):
         if self.post_act_l2_norm:
             x = x / x.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x = x / self.cproj_scale
+        x = _apply_cproj_scale(x, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
@@ -259,7 +279,7 @@ class EdgeLLMASICMLP(nn.Module):
         )
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
-        self.cproj_scale = config.mlp_cproj_scale
+        self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor = _init_cproj_scale(config, "mlp")
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -301,8 +321,7 @@ class EdgeLLMASICMLP(nn.Module):
         if self.post_act_l2_norm:
             x = x / x.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x = x / self.cproj_scale
+        x = _apply_cproj_scale(x, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
@@ -417,7 +436,7 @@ class DualPathMLP(nn.Module):
         _maybe_print_l2_norm("DualPathMLP down projection 2", self.c_proj2.weight, down_dim, self.l2_norm_mlp_down, self.l2_norm_print_dims)
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
-        self.cproj_scale = config.mlp_cproj_scale
+        self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor = _init_cproj_scale(config, "mlp")
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -447,8 +466,7 @@ class DualPathMLP(nn.Module):
         if self.post_act_l2_norm:
             x1 = x1 / x1.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x1 = x1 / self.cproj_scale
+        x1 = _apply_cproj_scale(x1, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         # normalization
         if self.l2_norm_mlp_down:
@@ -465,8 +483,7 @@ class DualPathMLP(nn.Module):
         if self.post_act_l2_norm:
             x2 = x2 / x2.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x2 = x2 / self.cproj_scale
+        x2 = _apply_cproj_scale(x2, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         # normalization
         if self.l2_norm_mlp_down:
@@ -586,7 +603,7 @@ class Swiglu(nn.Module):
         )
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
-        self.cproj_scale = config.mlp_cproj_scale
+        self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor = _init_cproj_scale(config, "mlp")
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -631,8 +648,7 @@ class Swiglu(nn.Module):
         if self.post_act_l2_norm:
             x_out = x_out / x_out.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x_out = x_out / self.cproj_scale
+        x_out = _apply_cproj_scale(x_out, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         # optional down projection normalization to keep vectors on hypersphere
         if self.l2_norm_mlp_down:
@@ -754,7 +770,7 @@ class DualPathSwiglu(nn.Module):
         )
 
         self.post_act_l2_norm = config.mlp_post_act_l2_norm
-        self.cproj_scale = config.mlp_cproj_scale
+        self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor = _init_cproj_scale(config, "mlp")
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -798,8 +814,7 @@ class DualPathSwiglu(nn.Module):
         if self.post_act_l2_norm:
             x_out = x_out / x_out.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x_out = x_out / self.cproj_scale
+        x_out = _apply_cproj_scale(x_out, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_input_bits"]
@@ -813,8 +828,7 @@ class DualPathSwiglu(nn.Module):
         if self.post_act_l2_norm:
             x1 = x1 / x1.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x1 = x1 / self.cproj_scale
+        x1 = _apply_cproj_scale(x1, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         # normalization
         if self.l2_norm_mlp_down:
@@ -831,8 +845,7 @@ class DualPathSwiglu(nn.Module):
         if self.post_act_l2_norm:
             x2 = x2 / x2.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            x2 = x2 / self.cproj_scale
+        x2 = _apply_cproj_scale(x2, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         # normalization
         if self.l2_norm_mlp_down:
