@@ -1146,6 +1146,9 @@ def parse_args():
     model_group.add_argument("--rope_variant", type=str, default="rope", choices=["rope", "soap"])
     model_group.add_argument("--rope_length", type=int, default=None, help="Defaults to all embeddings (if set to None), else must be even.")
     model_group.add_argument('--use_abs_pos_embeddings', default=True, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--abs_pos_embedding_variant', type=str, default='default', choices=['default', 'cyclic'], help='Selector for absolute position embedding implementation')
+    model_group.add_argument('--abs_pos_cyclic_periods', nargs='+', type=int, default=None, help='For --abs_pos_embedding_variant cyclic: list of channel periods to sum cyclic absolute embeddings over')
+    model_group.add_argument('--abs_pos_cyclic_random_start', default=True, action=argparse.BooleanOptionalAction, help='For cyclic absolute embeddings: randomize per-channel start offsets')
     model_group.add_argument('--use_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--shared_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
 
