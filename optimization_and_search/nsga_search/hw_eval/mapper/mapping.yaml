@@ -1,0 +1,80 @@
+mapping:
+  - target: Registers
+    type: dataspace
+    keep:
+      - Weights
+    bypass:
+      - Inputs
+      - Outputs
+  - target: PECols
+    type: dataspace
+    keep:
+      []
+    bypass:
+      - Weights
+      - Inputs
+      - Outputs
+  - target: Accumulator
+    type: dataspace
+    keep:
+      - Outputs
+    bypass:
+      - Weights
+      - Inputs
+  - target: PERows
+    type: dataspace
+    keep:
+      []
+    bypass:
+      - Weights
+      - Inputs
+      - Outputs
+  - target: Scratchpad
+    type: dataspace
+    keep:
+      - Weights
+      - Inputs
+    bypass:
+      - Outputs
+  - target: DRAM
+    type: dataspace
+    keep:
+      - Weights
+      - Inputs
+      - Outputs
+    bypass:
+      []
+  - target: Registers
+    type: temporal
+    factors: [L=16, E=1, D=1]
+    permutation: [L, E, D]
+  - target: PECols
+    type: spatial
+    factors: [L=1, E=16, D=1]
+    permutation: [E, L, D]
+    split: 1
+  - target: PECols
+    type: temporal
+    factors: [L=1, E=1, D=1]
+    permutation: [L, E, D]
+  - target: Accumulator
+    type: temporal
+    factors: [L=1, E=64, D=1]
+    permutation: [L, E, D]
+  - target: PERows
+    type: spatial
+    factors: [L=1, E=1, D=16]
+    permutation: [D, L, E]
+    split: 0
+  - target: PERows
+    type: temporal
+    factors: [L=1, E=1, D=1]
+    permutation: [L, E, D]
+  - target: Scratchpad
+    type: temporal
+    factors: [L=256, E=1, D=32]
+    permutation: [L, E, D]
+  - target: DRAM
+    type: temporal
+    factors: [L=1, E=1, D=6]
+    permutation: [D, E, L]

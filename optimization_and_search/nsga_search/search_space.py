@@ -55,7 +55,7 @@ class Individual(dict):
                     cproj_params = n_cproj * (v * d)
 
                 attn_cost = q_params + k_params + v_params + cproj_params
-            elif attn_variant == "mha":
+            elif attn_variant == "causal" or attn_variant == "mha":
                 # QKV projection weights
                 qkv_params = d * (h * (qk + qk + v))
                 # Output projection params
@@ -115,7 +115,7 @@ class Individual(dict):
 
                 attn_cost = q_proj + k_proj + v_proj + attn_core + outp
                 
-            elif attn_variant == "mha":
+            elif attn_variant == "causal" or attn_variant == "mha":
                 # QKV projections
                 qkv_proj = 2.0 * seq * d * (h * (qk + qk + v))
                 # Attention core
@@ -175,7 +175,7 @@ class Individual(dict):
 
                 attn_cost = q_proj + k_proj + v_proj + attn_core + outp
 
-            elif attn_variant == "mha":
+            elif attn_variant == "causal" or attn_variant == "mha":
                 # QKV projections
                 qkv_proj = 2.0 * seq * d * (h * (qk + qk + v))
                 # Attention core
@@ -194,6 +194,41 @@ class Individual(dict):
 
             cost += attn_cost + mlp
         return cost
+    
+    def estimate_kv_cache_size(self, seq_len: int = 512) -> int:
+        x = self
+        g = x["globals"]
+        d = g.get("n_embd", g.get("d_model", 768))
+        seq = int(g.get("block_size", 512))
+        total = 0.0
+
+        mask = g.get("layer_mask", [True] * len(x["layers"]))
+        indices = [i for i, active in enumerate(mask) if active and i < len(x["layers"])]
+        for i in indices:
+            li = x["layers"][i]
+            if li.get("attention_variant", g.get("attention_variant", "mha")) == "infinite":
+                qk = int(li.get("n_qk_head_dim", None))
+                v = int(li.get("n_v_head_dim", None))
+                n_kv_group = int(li.get("n_kv_group", None))
+
+                # KV cache size
+                k_size = seq * (n_kv_group * qk)
+                v_size = seq * (n_kv_group * v)
+                total += k_size + v_size
+
+            elif li.get("attention_variant", g.get("attention_variant", "mha")) == "causal":
+                n_head = int(li.get("n_head", 2**li.get("n_head_exp", 1)))
+                n_kv_group = int(li.get("n_kv_group", 2**li.get("n_kv_group_exp", 1)))
+
+                # KV cache size
+                k_size = seq * (n_kv_group * (d // n_head))
+                v_size = seq * (n_kv_group * (d // n_head))
+                total += k_size + v_size
+            elif li.get("attention_variant", g.get("attention_variant", "mha")) == "identity":
+                # no kv cache needed
+                continue
+
+        return int(total)
         
     
 
@@ -364,10 +399,10 @@ class HeteroSearchSpace:
         print("Global parameters:")
         for k, s in self.globals.items():
             print(f"  - {k}: {s}")
-        print(f"Per-layer parameters (L_max={self.L_max}):")
         for k, s in self.layer_spec.items():
             print(f"  - {k}: {s}")
-        print(f"Minimum active layers (L_min): {self.L_min}")
+        print(f"Max number of layers (L_max={self.L_max})")
+        print(f"Minimum active layers (L_min={self.L_min})")
         print(f"No repair mode: {self.no_repair}")
         return
 
@@ -438,6 +473,11 @@ class HeteroSearchSpace:
                         li["n_head"] = closest
                     else:
                         li["n_head"] = 1  # fallback
+            elif attn_type == "causal":
+                n_head_exp = li.get("n_head_exp")
+                n_kv_group_exp = li.get("n_kv_group_exp")
+                if n_kv_group_exp > n_head_exp:
+                    li["n_kv_group_exp"] = n_head_exp  # clamp to n_head_exp
                         
             # if n_kv_group is defined, ensure it divides n_head
             if "n_kv_group" in li:

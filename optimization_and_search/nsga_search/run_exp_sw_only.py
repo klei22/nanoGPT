@@ -112,7 +112,7 @@ def main():
 
     exp_name = args.exp_name
 
-    objs = ["val_loss", "token_delay", "energy_per_token_uJ"]  # Minimize validation loss and number of parameters
+    objs = ["val_loss", "kv_cache_size", "params"]  # Minimize validation loss and number of parameters
     cons = {
         "params": 800_000_000,  # 800 million params
         "val_loss": 3.6,  # 3.6
@@ -126,19 +126,20 @@ def main():
         else:
             raise FileNotFoundError(f"Checkpoint file not found: {args.resume_ckpt}")
         population.search_space = search_space  # Ensure search space is set
-        population.print_summary()
 
         population.objs_settings = objs
         population.cons_settings = cons
+        population.print_summary()
     else:
         # initialize Population class from nsga.py with individuals randomly
         individuals = [search_space.sample() for _ in range(init_population_size)]
+        
 
         population = Population(individuals, search_space=search_space, objs_settings=objs, cons_settings=cons)
         population.delete_duplicates()  # Remove duplicates if any
 
         # initial evaluation
-        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters)
+        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters, sw_only=True)
         population.print_summary()
 
     # nsga parameters defined here
@@ -163,7 +164,7 @@ def main():
         population.generate_offspring()
         gen = population.gen
         print(f"\n\n================ Generation {gen} ================\n")
-        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters)
+        population.sw_eval(hosts=hosts, user=user, key_filename=key_filename, run_dir_name=exp_name, conda_env=args.conda_env, max_iters=args.max_iters, sw_only=True)
         population.save_checkpoint(f"ckpts/{exp_name}/{run_time}_ckpt_offspring_gen{gen}.json")
         population.update_elimination()
         population.print_summary()
@@ -172,6 +173,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
 
 
 

@@ -1,0 +1,99 @@
+architecture:
+  version: 0.4
+  DIM: 32
+  IN_BITWIDTH: 8
+  ACC_BITWIDTH: 32
+  SP_SIZE: 262144 #bytes #256KB
+  SP_BANKS: 4
+  ACC_SIZE: 131072 #bytes #128KB!
+  nodes:
+  - !Container
+    name: System
+    attributes:
+      latency: "1ns"
+    
+  - !Component
+    name: DRAM
+    class: DRAM
+    attributes:
+      type: "LPDDR4"
+      instances: 1
+      datawidth: 8
+      width: 64
+      shared_bandwidth: 8
+
+  - !Container
+    name: Chip
+    attributes:
+      technology: "32nm"
+
+  - !Component
+    name: Scratchpad 
+    class: SRAM
+    attributes:
+      entries: SP_SIZE
+      depth: (SP_SIZE*8)//(IN_BITWIDTH*DIM)
+      width: IN_BITWIDTH*DIM
+      instances: 1
+      meshX: 1
+      datawidth: IN_BITWIDTH
+      n_rdwr_ports: 1
+      n_banks: SP_BANKS
+      read_bandwidth: IN_BITWIDTH*DIM # Bits per cycle
+      write_bandwidth: IN_BITWIDTH*DIM # Bits per cycle
+      network_fill_latency: 1
+      network_drain_latency: 1
+  
+  - !Component
+    name: Accumulator
+    class: SRAM
+    attributes:
+      entries: ACC_SIZE
+      depth: (ACC_SIZE*8)//ACC_BITWIDTH
+      width: ACC_BITWIDTH
+      datawidth: ACC_BITWIDTH
+      network_word_bits: 16
+      n_rdwr_ports: DIM # MY HYPOTHESIS
+      n_banks: 1
+      read_bandwidth: ACC_BITWIDTH # Bits per cycle
+      write_bandwidth: ACC_BITWIDTH # Bits per cycle
+      network_fill_latency: 1
+      network_drain_latency: 1
+  
+  - !Container
+    name: PERows
+    spatial: {meshY: DIM}
+    constraints:
+      spatial:
+        factors: [E=1, L=1] # weight or output stationary
+  
+  - !Container
+    name: PECols
+    spatial: {meshX: DIM}
+    constraints:
+      spatial:
+        #factors: [D=1, E=1] # output stationary
+        factors: [D=1, L=1] # weight stationary
+
+  - !Component
+    name: Registers
+    class: SRAM
+    attributes:
+      depth: 1
+      width: 8
+      entries: 1 # one space, either for the output or weight
+      datawidth: 8
+      n_rdwr_ports: 2
+      n_banks: 1
+      #no bandwidth specified = infinite bandwidth
+      meshX: DIM 
+      meshY: DIM
+  
+  - !Component
+    name: MAC
+    class: intmac
+    attributes:
+      multiplier_width: IN_BITWIDTH
+      adder_width: ACC_BITWIDTH
+      meshX: DIM
+      meshY: DIM

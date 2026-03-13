@@ -1,0 +1,106 @@
+architecture:
+  version: 0.4
+  nodes:
+  - !Container
+    name: System
+    attributes:
+      latency: "1ns"
+    
+  - !Component
+    name: DRAM
+    class: DRAM
+    attributes:
+      type: "LPDDR4"
+      instances: 1
+      datawidth: 8
+      width: 64 # replaces block_size, dunno why...
+      #block_size: 64
+      read_bandwidth: 4 # byte/cycle
+      write_bandwidth: 4 # byte/cycle
+
+
+  - !Container
+    name: Chip
+    attributes:
+      technology: "32nm"
+
+  - !Component
+    name: Scratchpad 
+    class: SRAM
+    attributes:
+      # ADJUSTED TO 512KB! #256KB!
+      entries: 262144*2
+      depth: 16384*2
+      width: 128
+      instances: 1
+      meshX: 1
+      datawidth: 8
+      n_rdwr_ports: 2
+      n_banks: 4
+      read_bandwidth: 16 # byte/cycle
+      write_bandwidth: 16 # byte/cycle
+      network_fill_latency: 1
+      network_drain_latency: 1
+  
+  - !Container
+    name: PERows
+    spatial: {meshY: 16} # was 16
+    constraints:
+      spatial:
+        factors: [E=1, L=1, D=16] # weight or output stationary
+
+  - !Component
+    name: Accumulator
+    class: SRAM
+    attributes:
+      # ADJUSTED TO 256KB! #128KB!
+      entries: 2048*2 #1024 # acc size / pe_dim = 16384/16
+      depth: 2048*2 #1024
+      width: 32
+      datawidth: 32
+      network_word_bits: 16
+      n_rdwr_ports: 2
+      n_banks: 2
+      read_bandwidth: 4 # byte/cycle
+      write_bandwidth: 4 # byte/cycle
+      #instances: 16 # was 16
+      meshY: 16 # was instances
+      network_fill_latency: 1
+      network_drain_latency: 1
+  
+  - !Container
+    name: PECols # only the K dim can be parallelized across Accumulator columns
+    spatial: {meshX: 16} # was 16
+    constraints:
+      spatial:
+        #factors: [D=1, E=1] # output stationary
+        factors: [D=1, L=1, E=16] # weight stationary
+        #factors: [D=1] # weight or output stationary
+
+  - !Component
+    name: Registers
+    class: regfile
+    attributes:
+      depth: 1
+      width: 8
+      entries: 1 # one space, either for the output or weight
+      datawidth: 8
+      n_rdwr_ports: 2
+      n_banks: 1
+      #no bandwidth specified = infinite bandwidth
+      #instances: 256 # was 256
+      meshX: 16 # was instances
+      meshY: 16 # was instances
+    constraints:
+      temporal:
+          factors: [D=1, E=1, L=16]
+          permutation: [E, D, L]
+  
+  - !Component
+    name: MAC
+    class: intmac
+    attributes:
+      multiplier_width: 8 # was datawidth
+      adder_width: 32 # same as accumulator datawidth
+      meshX: 16
+      meshY: 16

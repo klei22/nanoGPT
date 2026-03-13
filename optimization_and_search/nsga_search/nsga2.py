@@ -4,6 +4,8 @@ from typing import Any, Dict, List
 from search_space import HeteroSearchSpace, Individual
 import hashlib, json, csv
 from remote_trainer import RemoteTrainer
+from hw_exp import evaluate_population
+from hardware_search import evaluate_individual_on_hardware
 
 # -----------------------------
 # Problem with proxy evaluation
@@ -14,45 +16,10 @@ class EvaluationResult:
         self.cons = cons
         self.aux = aux
 
-class Problem:
-    def __init__(self, space: HeteroSearchSpace):
-        self.space = space
-        # now using 3 objectives: val_loss, energy_per_token, TTFT
-        self.n_objs = 3
-        self.mem_budget_bytes = 1_200_000_000  # ~1.2GB
-        self.param_budget = 110_000_000
-        self.latency_limit_ms = 180.0
-        self._cache: Dict[str, EvaluationResult] = {}
-
-    def hash(self, x: Individual) -> str:
-        return hashlib.md5(json.dumps(x, sort_keys=True).encode()).hexdigest()
-
-    def eval(self, x: Individual) -> EvaluationResult:
-        key = self.hash(x)
-        if key in self._cache:
-            return self._cache[key]
-        params = estimate_params_hetero(x)
-        mem_bytes = estimate_mem_hetero(x)
-        flops = estimate_flops_hetero(x)
-        val_loss, throughput, e_per_token, ttft = proxy_measure(x, params, mem_bytes, flops)
-        # constraints
-        c1 = params - self.param_budget
-        c2 = mem_bytes - self.mem_budget_bytes
-        c3 = latency_from_tp(throughput) - self.latency_limit_ms
-    # three objectives: minimize val_loss, minimize energy per token, minimize TTFT
-        objs = [float(val_loss), float(e_per_token), float(ttft)]
-        res = EvaluationResult(objs, [c1, c2, c3], {
-            "params": params, "mem_bytes": mem_bytes, "FLOPs": flops,
-            "val_loss": val_loss, "throughput": throughput, "energy/token": e_per_token, "TTFT": ttft,
-            "globals": x["globals"]
-        })
-        self._cache[key] = res
-        return res
-
 class Population:
     # Holds individuals and their evaluations
     # initialized after evaluation 
-    def __init__(self, individuals: List[Individual], evaluations: List[EvaluationResult] = None, search_space: HeteroSearchSpace = None):
+    def __init__(self, individuals: List[Individual], evaluations: List[EvaluationResult] = None, search_space: HeteroSearchSpace = None, cons_settings: Dict[str, Any] = None, objs_settings: List[str] = None):
         self.individuals: List[Individual] = []
         for ind in individuals:
             if isinstance(ind, Individual):
@@ -67,6 +34,8 @@ class Population:
         self.gen = 0
 
         self.search_space = search_space
+        self.objs_settings = objs_settings
+        self.cons_settings = cons_settings
 
         # parameter options
         self.n_population = 16
@@ -87,25 +56,20 @@ class Population:
             # Show objective statistics
             objs = [ev.objs for ev in self.evaluations]
             if objs:
-                val_losses = [obj[0] for obj in objs]
-                energy_per_token = [obj[1] for obj in objs]
-                ttft = [obj[2] for obj in objs]
-                
                 print(f"\nObjective Statistics:")
-                print(f"  Validation Loss: {min(val_losses):.3f} - {max(val_losses):.3f} (avg: {sum(val_losses)/len(val_losses):.3f})")
-                print(f"  Energy/Token:    {min(energy_per_token):.3f} - {max(energy_per_token):.3f} (avg: {sum(energy_per_token)/len(energy_per_token):.3f})")
-                print(f"  TTFT:           {min(ttft):.3f} - {max(ttft):.3f} (avg: {sum(ttft)/len(ttft):.3f})")
-                
-                # Show constraint violations
-                cons = [ev.cons for ev in self.evaluations]
-                if cons:
-                    param_violations = sum(1 for c in cons if c[0] > 0)
-                    mem_violations = sum(1 for c in cons if c[1] > 0)
-                    # latency_violations = sum(1 for c in cons if c[2] > 0)
-                    print(f"\nConstraint Violations:")
-                    print(f"  Parameter budget: {param_violations}/{len(cons)} individuals")
-                    print(f"  Memory budget:    {mem_violations}/{len(cons)} individuals")
-                    # print(f"  Latency limit:    {latency_violations}/{len(cons)} individuals")
+                # do not hardcode
+                for i, obj_name in enumerate(self.objs_settings):
+                    values = [o[i] for o in objs]
+                    print(f"  {obj_name}: {min(values):.3f} - {max(values):.3f} (avg: {sum(values)/len(values):.3f})")
+
+            # Show constraint violations
+            cons = [ev.cons for ev in self.evaluations]
+            if cons:
+                print(f"\nConstraint Violations:")
+                for i, con_name in enumerate(self.cons_settings.keys()):
+                    values = [c[i] for c in cons]
+                    violations = [v for v in values if v > 0]
+                    print(f"  {con_name}: {len(violations)}/{len(values)} violated (max violation: {max(violations) if violations else 0:.3f})")
         else:
             print("No evaluations completed yet")
         
@@ -252,11 +216,19 @@ class Population:
             # Build lists for active layers
             for key, _ in layers[0].items():
                 layerlist = []
-                arg = f"{key}_layerlist"
-                for j in active_indices:
-                    if j < len(layers):
-                        layer = layers[j]
-                        layerlist.append(layer.get(key))
+                # if key ends with "_exp", convert to actual value
+                if key.endswith("_exp"):
+                    arg = f"{key[:-4]}_layerlist"
+                    for j in active_indices:
+                        if j < len(layers):
+                            layer = layers[j]
+                            layerlist.append(2 ** layer.get(key))
+                else:
+                    arg = f"{key}_layerlist"
+                    for j in active_indices:
+                        if j < len(layers):
+                            layer = layers[j]
+                            layerlist.append(layer.get(key))
                 yaml_lines.append(f"  {arg}: {layerlist}")
 
             yaml_lines.append(f"# n_layers: {len(active_indices)}")
@@ -368,13 +340,37 @@ class Population:
         # User should call pop.search_space = HeteroSearchSpace(...) after loading if needed
         
         return pop
+    
+    def hw_eval(self) -> list:
+        # call hw_eval function from hw_exp.py
+        if self.gen == 0:
+            individuals = self.individuals
+        else:
+            individuals = self.offspring
+        hw_data = evaluate_population(individuals, base_work_dir="./hw_eval/runs/")
 
-    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str = "default", max_iters: int = 10000, conda_env: str = "reallmforge") -> None:
+        return hw_data
+
+    def sw_eval(self, hosts: List[str], user: str, key_filename: str, run_dir_name: str, max_iters: int = 10000, conda_env: str = "reallmforge", sw_only: bool = False, hw_eval_on_reallmasic: bool = False) -> None:
         # send the training work to worker nodes and wait for results
         train_yaml_path = self.to_yaml(save_path="train")
         trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
         trainer.submit_job(path_to_yaml=train_yaml_path, remote_work_dir=f"/home/{user}/Evo_GPT", dir_name=run_dir_name, max_iters=max_iters, conda_env=conda_env)
-        trainer.wait_for_all(poll_interval=300, timeout=72000, verbose=True)
+        time.sleep(5)  # wait a bit before polling
+        trainer.poll_jobs() 
+        # start hw eval while waiting for training
+        if sw_only:
+            if hw_eval_on_reallmasic:
+                hw_data = [evaluate_individual_on_hardware(ind) for ind in (self.individuals if self.gen == 0 else self.offspring)]
+            else:
+                hw_data = []
+        else:
+            start_time = time.time()
+            hw_data = self.hw_eval()
+            elapsed_time = time.time() - start_time
+            print(f"Finished HW evaluation for generation {self.gen} in {elapsed_time:.1f}s")
+            print("====================================================")
+        trainer.wait_for_all(poll_interval=120, timeout=10000, verbose=True)
         data_csv = trainer.fetch_results(local_dir="train", gen=self.gen)
         # read the csv and populate self.evaluations
         # load the csv file's second column as a list of floats
@@ -386,32 +382,101 @@ class Population:
         else:
             self.offspring_evaluations = []
 
-        for i, ind in enumerate(self.individuals if self.gen == 0 else self.offspring):
-            idx = i + 1  # CSV idx starts from 1
-            if idx in sw_data:
-                val_loss = sw_data[idx]
-                # reconstruct evaluation result
-                # params = estimate_params_hetero_infi(ind)
+        if (self.objs_settings is None): 
+            # set val_loss and params as default objectives
+            self.objs_settings = ["val_loss", "params"]
+        if (self.cons_settings is None):
+            # set default constraints
+            self.cons_settings = {
+                "params": 800_000_000,  # 800 million params
+                "val_loss": 3.6,  # 3.6 
+            }
+
+        if sw_only:
+            print("Software-only evaluation completed.")
+            # just aggregate sw data (optionally merge HW metrics if provided)
+            for i, ind in enumerate(self.individuals if self.gen == 0 else self.offspring):
+                sw_res = sw_data.get(i+1, float("inf"))
                 params = ind.estimate_params()
                 mem_bytes = ind.estimate_mem_access()
                 flops = ind.estimate_flops()
-                _, e_per_token, ttft = proxy_measure(ind, params, mem_bytes, flops)
-                c1 = params - 1_000_000_000
-                c2 = val_loss - 3.0
-                # c3 = latency_from_tp(throughput) - 180.0
-                objs = [float(val_loss), float(e_per_token), float(ttft)]
-                eval_res = EvaluationResult(objs, [c1, c2], {
-                    "params": params, "mem_bytes": mem_bytes, "FLOPs": flops
-                })
+                kv_cache_size = ind.estimate_kv_cache_size()
+                hw_res = hw_data[i] if hw_data and i < len(hw_data) and hw_data[i] else {}
+                auxs = {
+                    "val_loss": sw_res,
+                    "params": params/1e6,
+                    "mem_bytes": mem_bytes,
+                    "flops": flops/1e3,
+                    "kv_cache_size": kv_cache_size/1e6,
+                    **hw_res,
+                }
+
+                # Ensure all objectives/constraints exist; fall back to +inf if missing
+                for key in self.objs_settings:
+                    if key not in auxs or auxs[key] is None:
+                        auxs[key] = float("inf")
+                for key in self.cons_settings.keys():
+                    if key not in auxs or auxs[key] is None:
+                        auxs[key] = float("inf")
+
+                objs = [float(auxs[obj]) for obj in self.objs_settings]
+                cons = [float(auxs[con]) - self.cons_settings[con] for con in self.cons_settings.keys()]
+
+                eval_res = EvaluationResult(objs, cons, auxs)
                 if self.gen == 0:
                     self.evaluations.append(eval_res)
                 else:
                     self.offspring_evaluations.append(eval_res)
+
+                ind.print_individual()
+                print(f"gen {self.gen} individual {i+1}: objs={objs}, cons={cons}, auxs={auxs}")
+        else:
+            self.aggregate_hw_sw_eval(sw_data, hw_data)
+
+
+        return
+    
+    def aggregate_hw_sw_eval(self, sw_data: list, hw_data: list) -> None:
+        """Aggregate software and hardware evaluation results."""
+        if not sw_data or not hw_data:
+            raise ValueError("Both SW and HW data must be provided.")
+        
+        # gather a list of metrics
+        metrics = list(hw_data[0].keys()) + ["val_loss", "mem_bytes", "flops", "params"]
+
+        # check if the chosen objs and cons are in the metrics
+        for obj in self.objs_settings:
+            if obj not in metrics:
+                raise ValueError(f"Objective '{obj}' not found in evaluation metrics.")
+        for cons in self.cons_settings.keys():
+            if cons not in metrics:
+                raise ValueError(f"Constraint '{cons}' not found in evaluation metrics.")
+            
+        # aggregate evaluations
+        for i, ind in enumerate(self.individuals if self.gen == 0 else self.offspring):
+            sw_res = sw_data[i+1] # idx in csv starts from 1
+            hw_res = hw_data[i]
+            params = ind.estimate_params()
+            mem_bytes = ind.estimate_mem_access()
+            flops = ind.estimate_flops()
+            auxs = {
+                "val_loss": sw_res,
+                "params": params,
+                "mem_bytes": mem_bytes,
+                "flops": flops,
+                **{k: hw_res[k] for k in hw_res.keys()}
+            }
+            objs = [float(auxs[obj]) for obj in self.objs_settings]
+            cons = [float(auxs[con]) - self.cons_settings[con] for con in self.cons_settings.keys()]
+
+            eval_res = EvaluationResult(objs, cons, auxs)
+            if self.gen == 0:
+                self.evaluations.append(eval_res)
             else:
-                print(f"Warning: No result for individual idx {idx} in CSV")
+                self.offspring_evaluations.append(eval_res)
 
             ind.print_individual()
-            print(f"gen {self.gen} individual {idx}: val_loss={val_loss:.3f}, energy/token={e_per_token:.3f}, TTFT={ttft:.3f}, params={params/1e6:.1f}M, mem={mem_bytes/1e9:.2f}GB")
+            print(f"gen {self.gen} individual {i+1}: objs={objs}, cons={cons}, auxs={auxs}")
         return
 
     def generate_offspring(self) -> None:
@@ -436,6 +501,23 @@ class Population:
         self.offspring_evaluations = []
         self.gen += 1
         print(f"Generated {self.n_offspring} offspring for generation {self.gen}")
+        return
+    
+    def generate_offspring_random(self) -> None:
+        """Generate offspring randomly from the search space."""
+        if self.search_space is None:
+            raise ValueError("Search space is not defined for sampling.")
+        offspring = []
+        for _ in range(self.n_offspring):
+            child = self.search_space.sample()
+            print("Generated random offspring:")
+            child.print_individual()
+            offspring.append(child)
+
+        self.offspring = offspring
+        self.offspring_evaluations = []
+        self.gen += 1
+        print(f"Generated {self.n_offspring} random offspring for generation {self.gen}")
         return
 
     def update_elimination(self, verbose: bool = False) -> None:
@@ -514,24 +596,6 @@ def estimate_mem_hetero(x: Individual):
     kv = 4 * seq * d
     return int(params*bytes_per_param + kv)
 
-def latency_from_tp(tp_tok_s: float) -> float:
-    if tp_tok_s <= 1e-9: return 1e9
-    return 1000.0 / tp_tok_s
-
-def proxy_measure(x: Individual, params, mem_bytes, flops):
-    scale = 1e-9
-    # throughput decreases with flops and params (rough)
-    # throughput = max(0.5, 30_000_000 / (flops*scale + 3.0) / (1.0 + params/150e6))
-    # TTFT depends on params and whether using flash/linear
-    mask = x["globals"].get("layer_mask", [True]*len(x["layers"]))
-    L = sum(1 for v in mask if v)
-    ttft = params/1e6  #ms  scale with size
-    # energy per token depends on flops and memory
-    e_per_token = flops/1e3
-    # val_loss improves with capacity but worsens with aggressive quant + sparsity
-    val_loss = 99
-    return val_loss, e_per_token, ttft
-
 # -----------------------------
 # NSGA-II core
 # -----------------------------
@@ -584,6 +648,14 @@ def fast_non_dominated_sort(objs, cons):
 
 def crowding_distance(front, objs):
     if not front: return {}
+    # verify objs are of the same len
+    n_objs = len(objs[0])
+    for i, obj in enumerate(objs):
+        if len(obj) != n_objs:
+            raise ValueError(f"Objective length mismatch at index {i}: got {len(obj)}, expected {n_objs}")
+        if any(x is None or (isinstance(x, float) and (x != x)) for x in obj):
+            raise ValueError(f"Invalid objective value (None/NaN) at index {i}: {obj}")
+
     m = len(objs[0])
     dist = {i: 0.0 for i in front}
     for k in range(m):
@@ -608,146 +680,4 @@ def tournament_select(pop, evals, k=2):
         if d == -1 or (d == 0 and random.random() < 0.5):
             i = j
     return i
-
-def nsga2(problem, pop_size=32, n_gen=6, seed=42, log_fn=None, log_every: int = 1, verbose: bool = False):
-    random.seed(seed)
-    space = problem.space
-    pop = [space.sample() for _ in range(pop_size)]
-    evals = [problem.eval(ind) for ind in pop]
-    history = []
-    for gen in range(n_gen):
-        pop_before_len = len(pop)
-        offspring = []
-        while len(offspring) < pop_size:
-            p1 = pop[tournament_select(pop, evals)]
-            p2 = pop[tournament_select(pop, evals)]
-            c1, c2 = space.crossover(p1, p2)
-            c1 = space.mutate(c1)
-            c2 = space.mutate(c2)
-            offspring.append(c1)
-            if len(offspring) < pop_size:
-                offspring.append(c2)
-        off_evals = [problem.eval(ind) for ind in offspring]
-        union = pop + offspring
-        union_evals = evals + off_evals
-        objs = [e.objs for e in union_evals]
-        cons = [e.cons for e in union_evals]
-        fronts = fast_non_dominated_sort(objs, cons)
-        new_pop = []
-        new_evals = []
-        selected_union_idx = []
-        for front in fronts:
-            if len(new_pop) + len(front) <= pop_size:
-                for idx in front:
-                    new_pop.append(union[idx]); new_evals.append(union_evals[idx]); selected_union_idx.append(idx)
-            else:
-                cd = crowding_distance(front, objs)
-                sorted_front = sorted(front, key=lambda i: cd[i], reverse=True)
-                for idx in sorted_front[:pop_size - len(new_pop)]:
-                    new_pop.append(union[idx]); new_evals.append(union_evals[idx]); selected_union_idx.append(idx)
-                break
-        pop, evals = new_pop, new_evals
-        # compute current-population Pareto summary (not the union)
-        cur_objs = [e.objs for e in evals]
-        cur_cons = [e.cons for e in evals]
-        cur_fronts = fast_non_dominated_sort(cur_objs, cur_cons)
-        bf = cur_fronts[0] if cur_fronts and cur_fronts[0] else []
-        bf_objs = [cur_objs[i] for i in bf] if bf else []
-        if bf_objs:
-            avg = tuple(round(sum(col)/len(col), 4) for col in zip(*bf_objs))
-        else:
-            avg = tuple()
-        gen_log = {"gen": gen+1, "pareto_size": len(bf), "avg_objs": avg}
-        history.append(gen_log)
-        # optional external logging callback
-        if log_fn is not None and (gen + 1) % max(1, log_every) == 0:
-            try:
-                log_state = {
-                    "ts": time.time(),
-                    "gen": gen + 1,
-                    "pareto_size": len(bf),
-                    "avg_objs": avg,
-                }
-                if verbose:
-                    # Include heavy details only when verbose is enabled
-                    pareto_set = set(bf)
-                    log_state.update({
-                        "fronts": cur_fronts,
-                        "objs": cur_objs,
-                        "cons": cur_cons,
-                        "population_size": len(pop),
-                        "offspring_generated": len(offspring),
-                    })
-                    population = []
-                    for i_pop in range(len(pop)):
-                        ev = evals[i_pop]
-                        population.append({
-                            "x": pop[i_pop],
-                            "objs": ev.objs,
-                            "cons": ev.cons,
-                            "aux": ev.aux,
-                            "on_pareto": i_pop in pareto_set,
-                        })
-                    offspring_logs = []
-                    base = pop_before_len
-                    selected_set = set(selected_union_idx)
-                    selected_offspring_count = 0
-                    for k in range(len(offspring)):
-                        e = off_evals[k]
-                        sel = (base + k) in selected_set
-                        if sel:
-                            selected_offspring_count += 1
-                        offspring_logs.append({
-                            "x": offspring[k],
-                            "objs": e.objs,
-                            "cons": e.cons,
-                            "aux": e.aux,
-                            "selected": sel,
-                        })
-                    log_state["population"] = population
-                    log_state["offspring"] = offspring_logs
-                    log_state["offspring_selected"] = selected_offspring_count
-                log_fn(log_state)
-            except Exception:
-                # keep search running even if logging fails
-                pass
-    return pop, evals, history
-
-
-def make_jsonl_logger(path: str):
-    """Return a logger callable that appends one JSON object per generation to `path`.
-
-    Each record at minimum contains: ts, gen, pareto_size, avg_objs.
-    When nsga2(verbose=True), records may also include: fronts, objs, cons,
-    population, offspring (with selection flags).
-    """
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-
-    def _log_fn(state: Dict[str, Any]):
-        # ensure JSON serializable content; state is constructed from primitives
-        with open(path, "a") as f:
-            f.write(json.dumps(state) + "\n")
-
-    return _log_fn
-
-
-def make_json_list_logger(path: str):
-    """Return a logger that stores all generation states in memory and writes a single JSON array.
-
-    Use this when you prefer one compact `.json` artifact over a streaming `.jsonl` log.
-    NOTE: Holds all records until process end; for very long runs prefer JSONL.
-    """
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    buffer = []
-
-    def _log_fn(state: Dict[str, Any]):
-        buffer.append(state)
-        # Overwrite file each time so you can tail partial progress safely
-        try:
-            with open(path, "w") as f:
-                json.dump(buffer, f, indent=2)
-        except Exception:
-            pass
-
-    return _log_fn
 

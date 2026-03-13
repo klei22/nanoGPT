@@ -1,0 +1,93 @@
+constraints:
+  version: 0.4
+  targets:
+    # =======================================
+    # DRAM
+    # =======================================
+    - target: DRAM
+      type: dataspace
+      keep: [Inputs, Outputs, Weights]
+      bypass: []
+    #- target: DRAM
+    #  type: temporal
+    #  factors: D=1 E=1
+    #  permutation: EDL
+    # =======================================
+    # Scratchpad Constraints
+    # =======================================
+    - target: Scratchpad
+      type: dataspace
+      keep: [Inputs, Weights]
+      bypass: [Outputs]
+    - target: Scratchpad
+      type: temporal
+      # This is needed when fusing, but is it needed otherwise?
+      factors: [D=1] #[E=1, D=1]
+      #maximize_dims: [[D, E], [L]]
+      #maximize_dims_capacity: max(EMBEDDING, SEQ_LENGTH)
+    #- target: Scratchpad
+    #  type: spatial
+    #  factors: [E=1, D=1]
+    # =======================================
+    # Outputs Accumulator Constraints
+    # =======================================
+    - target: Accumulator
+      type: dataspace
+      keep: [Outputs]
+      bypass: [Inputs, Weights]
+    #- target: Accumulator
+    #  type: spatial
+    #  factors: [E=1, D=1]
+    #- target: Accumulator
+    #  type: temporal
+      #ISSUE:
+      # this works but is not correct! Yes, now all weights are stored in the accumulator,
+      # but the hierarchy cannot iterate across L at the DRAM or scratchpad levels, which
+      # instead is needed to work on inputs!
+      # ideally, the whole architecture should be partitioned in two lines, one to bring
+      # down weights, one to bring up outputs...
+      # Study the Gemmini dataflow and see from there to model it!
+      # SOLUTION 1:
+      #factors: [L=0]
+      # this should allow entire columns to be completed before moving to the next set,
+      # hence when E and D are 1 at every level above, we have full columns in the accumulator.
+      # permutation: [E, D, L]
+      # SOLUTION 2:
+      #factors: [E=4, D=32]
+      # this forces all levels above to have E=D=1, same as before...
+      # SOLUTION 3:
+      #permutation: [E, D, L] # >> enable during fusion only <<
+      # It is fine if L is iterated over at DRAM, as long as the last iteration over D and E
+      # happen at the level of the spatial array! Hence not on the Scratchpad or DRAM!
+      # Permutation EDL as to have already completed vector elements after the inner-most loop.
+    # =======================================
+    # WS Registers Constraints
+    # =======================================
+    - target: Registers
+      type: dataspace
+      keep: [Weights]
+      bypass: [Inputs, Outputs]
+    - target: Registers
+      type: temporal
+      factors: [E=1, D=1, L=16] # the 16 here is not mandatory, but the Gemmini ISA seems to imply it...
+    # =======================================
+    # OS Registers Constraints
+    # =======================================
+    #- target: Registers
+    #  type: dataspace
+    #  keep: [Outputs]
+    #  bypass: [Inputs, Weights]
+    #- target: Registers
+    #  type: temporal
+    #  factors: [D=1, L=1]
+
+    #- target: Registers
+    #  type: skew
+    #  modulo: 16
+    #  terms:
+    #    - variable:
+    #      - dimension: E
+    #      - type: spatial
+    #    - variable:
+    #      - dimension: D
+    #      - type: spatial

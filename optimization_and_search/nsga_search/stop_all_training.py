@@ -22,7 +22,7 @@ def main():
     parser.add_argument(
         "--hosts",
         type=str,
-        default="../host_configs/internal_hosts.yaml",
+        default="../host_configs/host_11-16.yaml",
         help="Path to YAML file listing remote hosts",
     )
     parser.add_argument(
@@ -46,6 +46,8 @@ def main():
     key_filename = args.key_filename
 
     trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
+    trainer.check_connectivity()
+    trainer.perform_git_pull("/home/xinting/Evo_GPT")
     trainer.clear_all_jobs()
     print("Cleared all training jobs on remote hosts.")
 

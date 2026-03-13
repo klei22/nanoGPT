@@ -1,0 +1,26 @@
+mapper:
+  version: 0.4
+  live_status: False
+  diagnostics: False
+  emit_whoop_nest: True
+  optimization_metrics: [ edp, delay, energy ]
+  
+  # NICE ONES:
+  # num_threads: 64
+  # timeout: 15000
+  # victory_condition: 7500
+  # sync_interval: 2500
+
+  # DEFAULTS:
+  num_threads: 36
+  timeout: 720
+  victory_condition: 100
+  sync_interval: 0
+
+  # EXHAUSTIVE:
+  #num_threads: 64
+  #timeout: 2147483647
+  #victory_condition: 0
+  #algorithm: linear_pruned
+  #sync_interval: 0
+  #search_size: 0

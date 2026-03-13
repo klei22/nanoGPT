@@ -1,0 +1,122 @@
+architecture:
+  version: 0.4
+  nodes:
+  - !Container
+    name: System
+    attributes:
+      latency: "1ns"
+    
+  # In this NO version, the outputs of the original are the inputs,
+  # outputs are a vector, and the weights are fake!
+
+  - !Component
+    name: DRAM
+    class: DRAM
+    attributes:
+      type: "LPDDR4"
+      instances: 1
+      datawidth: 8
+      width: 64
+      shared_bandwidth: 8
+
+  - !Container
+    name: Chip
+    attributes:
+      technology: "32nm"
+
+  - !Component
+    name: Scratchpad 
+    class: SRAM
+    attributes:
+      # ADJUSTED TO 512KB! #256KB!
+      entries: 262144*2
+      depth: 16384*2
+      width: 128
+      instances: 1
+      meshX: 1
+      datawidth: 8
+      n_rdwr_ports: 2
+      n_banks: 4
+      read_bandwidth: 16 # byte/cycle
+      write_bandwidth: 16 # byte/cycle
+  
+  #- !Container
+  #  name: PERows
+  #  spatial: {meshY: 16}
+  #  constraints:
+  #      spatial:
+  #        factors: [L=1, D=1, E=16]
+
+  - !Component
+    name: Accumulator
+    class: SRAM
+    attributes:
+      # ADJUST TO 256KB! #128KB!
+      entries: 16384*4 #1024 # acc size / pe_dim = 16384/16
+      depth: 16384*4 #1024
+      width: 32
+      datawidth: 32
+      network_word_bits: 16
+      n_rdwr_ports: 32 #2
+      n_banks: 32 #2
+      #meshY: 16
+      read_bandwidth: 4*16 # byte/cycle
+      write_bandwidth: 4*16 # byte/cycle
+
+  - !Parallel
+    nodes:
+    - !Component
+      name: Registers
+      class: SRAM
+      attributes:
+        vector_access_energy: 0 # fake weights have 0 cost
+        addr_gen_energy: 0 # fake weights have 0 cost
+        cluster_area: 0 # fake weights have 0 cost
+        depth: 3 #64
+        width: 8
+        entries: 3 #64
+        datawidth: 8
+        n_rdwr_ports: 2
+        n_banks: 1
+        #meshY: 16
+    
+    - !Component
+      name: Registers_Outputs
+      class: SRAM
+      attributes:
+        vector_access_energy: 0 # fake weights have 0 cost
+        addr_gen_energy: 0 # fake weights have 0 cost
+        cluster_area: 0 # fake weights have 0 cost
+        depth: 1024 #4096
+        width: 8
+        entries: 1024 #4096
+        datawidth: 8
+        n_rdwr_ports: 2
+        n_banks: 1
+        #meshY: 16
+
+    - !Component
+      name: Registers_Inputs
+      class: SRAM
+      attributes:
+        vector_access_energy: 0 # fake weights have 0 cost
+        addr_gen_energy: 0 # fake weights have 0 cost
+        cluster_area: 0 # fake weights have 0 cost
+        depth: 1024 #4096
+        width: 8
+        entries: 1024 #4096
+        datawidth: 8
+        n_rdwr_ports: 2
+        n_banks: 1
+        #meshY: 16
+  
+  - !Component
+    name: MAC
+    class: free_compute
+    attributes:
+      technology: "free"
+      #energy: 0 # add manually the operation cost of the NO module
+      #area: 0
+      multiplier_width: 8 # was datawidth
+      adder_width: 8 # same as accumulator datawidth
+      #meshY: 16

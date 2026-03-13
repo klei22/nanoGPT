@@ -1,4 +1,4 @@
-import json, logging, threading, time, uuid, tempfile
+import json, logging, threading, time, uuid, tempfile, math
 import yaml
 import os
 from dataclasses import dataclass, field
@@ -81,30 +81,6 @@ class RemoteTrainer:
         job.heartbeat_thread = t
         t.start()
         
-    def clear_all_jobs(self) -> None:
-        overall_ok = True
-        for i, host in enumerate(self.hosts):
-            try:
-                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
-                try:
-                    conn.open()
-                    cmd = f"pkill -f optimization_and_search/run_from_yaml.py"
-                    r = conn.run(cmd, hide=True, warn=True)
-                    if r.ok:
-                        logging.info(f"\033[32mKilling jobs succeeded on host_{i} ({host})\033[0m")
-                    else:
-                        logging.error(f"\033[31mKilling jobs failed on host_{i} ({host}): {r.stderr}\033[0m")
-                        overall_ok = False
-                finally:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-            except Exception as e:
-                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
-                overall_ok = False
-        return overall_ok
-        
     def perform_git_pull(self, remote_work_dir: str) -> bool:
         overall_ok = True
         for i, host in enumerate(self.hosts):
@@ -126,6 +102,80 @@ class RemoteTrainer:
                         pass
             except Exception as e:
                 logging.error(f"\033[31mConnection to host_{i} ({host}) failed during git pull: {e}\033[0m")
+                overall_ok = False
+        return overall_ok
+        
+    def clear_all_jobs(self) -> bool:
+        """Kill all GPU-using processes detected by nvidia-smi on each host.
+
+        This attempts a best-effort query for GPU process PIDs using
+        `nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits` and
+        falls back if the option isn't supported. Each discovered PID is
+        killed with SIGKILL. Returns True if all hosts succeeded (or had no
+        GPU pids), False if any host encountered errors.
+        """
+        overall_ok = True
+        for i, host in enumerate(self.hosts):
+            try:
+                # Use context manager to ensure proper cleanup/close even on exceptions
+                with Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {}) as conn:
+                    conn.open()
+                    # Robust remote snippet: try query-compute-apps first, then try a looser CSV parse
+                    cmd = """
+set -o pipefail
+if command -v nvidia-smi >/dev/null 2>&1; then
+    # try modern query for compute-apps pid (noheader,nounits); fall back to older format if needed
+    PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null || true)
+    if [ -z "$PIDS" ]; then
+        # fallback: try query without nounits/noheader or parse the process table
+        PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null || true)
+    fi
+    if [ -z "$PIDS" ]; then
+        # final fallback: try to parse the nvidia-smi textual table for digits in the processes section
+        PIDS=$(nvidia-smi 2>/dev/null | awk '/Processes:/{p=1;next} p && /[0-9]+/ { for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) print $i }' | sort -u || true)
+    fi
+    if [ -n "$PIDS" ]; then
+        KILLED=()
+        for pid in $PIDS; do
+            # sanity: ensure pid is numeric
+            case $pid in [0-9]*) true ;; *) continue ;; esac
+            kill -9 $pid >/dev/null 2>&1 || true
+            KILLED+=("$pid")
+        done
+        if [ ${#KILLED[@]} -gt 0 ]; then
+            printf 'KILLED:%s\n' "$(printf '%s,' "${KILLED[@]}" | sed 's/,$//')"
+            exit 0
+        else
+            printf 'NO_KILLED\n'
+            exit 0
+        fi
+    else
+        printf 'NO_GPU_PIDS\n'
+        exit 0
+    fi
+else
+    printf 'NO_NVIDIA_SMI\n'
+    exit 0
+fi
+"""
+                    r = conn.run(cmd, hide=True, warn=True)
+                    out = (r.stdout or "").strip()
+                    if r.ok:
+                        if out.startswith("KILLED:"):
+                            killed_list = out.replace("KILLED:", "").strip()
+                            logging.info(f"\033[32mKilled GPU PIDs on host_{i} ({host}): {killed_list}\033[0m")
+                        elif out.startswith("NO_GPU_PIDS") or out.startswith("NO_KILLED"):
+                            logging.info(f"\033[33mNo GPU PIDs found on host_{i} ({host}).\033[0m")
+                        elif out.startswith("NO_NVIDIA_SMI"):
+                            logging.warning(f"\033[33mnvidia-smi not found on host_{i} ({host}); nothing to kill.\033[0m")
+                        else:
+                            # If output is unexpected but command succeeded, log it
+                            logging.info(f"\033[32mclear_all_jobs output on host_{i} ({host}): {out}\033[0m")
+                    else:
+                        logging.error(f"\033[31mKilling GPU jobs failed on host_{i} ({host}): {r.stderr}\033[0m")
+                        overall_ok = False
+            except Exception as e:
+                logging.error(f"\033[31mConnection to host_{i} ({host}) failed during GPU-kill: {e}\033[0m")
                 overall_ok = False
         return overall_ok
 
@@ -348,7 +398,6 @@ class RemoteTrainer:
                     else:
                         job.status = JobStatus.FAILED
                         logging.error(f"\033[31mJob {job.id}@{job.host} failed.\033[0m")
-                        exit()  # early exit on failure
                     job.finished_at = time.time()
                     # stop heartbeat
                     if job.heartbeat_stop:
@@ -474,6 +523,25 @@ class RemoteTrainer:
                 except Exception:
                     pass
 
+                job_idx_set = set()
+                recorded_idx = set()
+                # Fetch the configuration slice to know which indices were expected on this host
+                try:
+                    local_slice_path = logs_local_dir / f"{job.id}.slice.yaml"
+                    conn.get(job.yaml_path, local=str(local_slice_path))
+                    with local_slice_path.open("r") as slice_file:
+                        slice_docs = yaml.safe_load(slice_file) or []
+                    if not isinstance(slice_docs, list):
+                        slice_docs = []
+                    for cfg in slice_docs:
+                        if isinstance(cfg, dict) and "idx" in cfg:
+                            try:
+                                job_idx_set.add(int(cfg["idx"]))
+                            except (TypeError, ValueError):
+                                continue
+                except Exception:
+                    logging.warning(f"\033[33mUnable to fetch config slice for {job.id}@{job.host}\033[0m")
+
                 r = conn.run(f"test -f {remote_logs_path}", hide=True, warn=True)
                 if r.ok:
                     # Download the YAML results file locally
@@ -488,23 +556,57 @@ class RemoteTrainer:
                         for doc in docs:
                             if not isinstance(doc, dict):
                                 continue
-                            # Append to aggregate.yaml
+                            config = doc.get("config") or {}
+                            if "idx" not in config:
+                                continue
+                            idx = config["idx"]
+                            try:
+                                idx_value = int(idx)
+                            except (TypeError, ValueError):
+                                logging.warning(f"\033[33mSkipping result without valid idx from {job.id}@{job.host}: {idx}\033[0m")
+                                continue
+                            raw_bvl = doc.get("best_val_loss")
+                            try:
+                                bvl = float(raw_bvl)
+                            except (TypeError, ValueError):
+                                bvl = float("inf")
+                            if not math.isfinite(bvl):
+                                bvl = float("inf")
+                            doc["best_val_loss"] = bvl
+                            name = doc.get("formatted_name", "")
+                            # Append to aggregate.yaml with sanitized loss
                             with agg_yaml_path.open("a") as fa:
                                 yaml.safe_dump(doc, fa, explicit_start=True, sort_keys=False, width=4096)
-                            # Append best_val_loss to CSV if present
-                            idx = doc["config"]["idx"]
-                            bvl = doc.get("best_val_loss")
-                            name = doc.get("formatted_name", "")
-                            if bvl is not None:
-                                with summary_csv_path.open("a") as fc:
-                                    fc.write(f"{gen},{job.id},{name},{bvl}\n")
-                                with gen_csv_path.open("a") as fc:
-                                    fc.write(f"{idx},{bvl}\n")
+                            bvl_str = "inf" if math.isinf(bvl) else f"{bvl}"
+                            with summary_csv_path.open("a") as fc:
+                                fc.write(f"{gen},{job.id},{name},{bvl_str}\n")
+                            with gen_csv_path.open("a") as fc:
+                                fc.write(f"{idx_value},{bvl_str}\n")
+                            recorded_idx.add(idx_value)
                         logging.info(f"\033[32mFetched results from {job.id}@{job.host}\033[0m")
                     except Exception as ye:
                         logging.error(f"\033[31mYAML parse error for results from {job.id}@{job.host}: {ye}\033[0m")
                 else:
                     logging.warning(f"\033[33mNo results YAML found at {remote_logs_path} for {job.id}@{job.host}\033[0m")
+
+                # For any configs that failed before producing results, emit a fallback record with inf loss
+                missing_idx = sorted(job_idx_set - recorded_idx)
+                if missing_idx:
+                    for idx_value in missing_idx:
+                        name = f"{job.id}-idx{idx_value}"
+                        fallback_doc = {
+                            "formatted_name": name,
+                            "config": {"idx": idx_value},
+                            "best_val_loss": float("inf"),
+                            "status": job.status,
+                        }
+                        with agg_yaml_path.open("a") as fa:
+                            yaml.safe_dump(fallback_doc, fa, explicit_start=True, sort_keys=False, width=4096)
+                        with summary_csv_path.open("a") as fc:
+                            fc.write(f"{gen},{job.id},{name},inf\n")
+                        with gen_csv_path.open("a") as fc:
+                            fc.write(f"{idx_value},inf\n")
+                    logging.warning(f"\033[33mRecorded fallback inf losses for {len(missing_idx)} configs from {job.id}@{job.host}\033[0m")
             except Exception as e:
                 logging.error(f"Fetch failed for {job.id}@{job.host}: {e}")
             finally:

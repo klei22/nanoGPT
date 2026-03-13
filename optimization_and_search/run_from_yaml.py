@@ -29,7 +29,6 @@ METRIC_KEYS = [
     "num_params",
 ]
 
-
 def _parse_override_args(arg_list: list[str] | None) -> dict:
     """Parse --override_args entries like ["batch_size=32", "learning_rate=0.001"].
 
@@ -60,6 +59,9 @@ def format_run_name(combo: dict, base: str, prefix: str, row_index: int) -> str:
     Preferred scheme (stable, short): <base><prefix>-row<row_index>
     Fallback if row_index is None: concatenate parameter values (legacy behavior).
     """
+    if 'out_dir' in combo and combo['out_dir'] is not None:
+        # If out_dir is specified, use it to derive a stable name
+        return combo['out_dir']
     return f"{prefix}-row{row_index}"
 
 
@@ -210,36 +212,43 @@ def main(yaml_path, base, args) -> int:
         cli_overrides = _parse_override_args(getattr(args, "override_args", None))
 
     any_failed = False
+
+    # calculate batch size based on block size
     for row_index, config in enumerate(configs):
-            # Start with the config from YAML
-            dynamic_cfg = config.copy()
+        # Start with the config from YAML
+        dynamic_cfg = config.copy()
 
-            # Ensure required training runtime parameters are set/overridden locally.
-            overrides = {
-                "batch_size": 64,  # Reduced from 128 to save memory
-                "device": "cuda",
-                "dataset": "minipile",
-                "eval_iters": 50,  # Reduced from default to save memory
-                "gradient_accumulation_steps": 2,  # Compensate for smaller batch with grad accumulation
-                # "compute_model_stats": False,  # Disable model stats to save memory
-                "dtype": "bfloat16",  # Use bfloat16 to save memory vs float16
-                # "norm_variant_abs": "hyperspherenorm",
-                # "hsnorm_gain": True,
-                # "hsnorm_scale": 5.0,
-                # "attn_residual_combination": "slerp",
-                # "mlp_residual_combination": "slerp",
-            }
-            # Apply overrides (explicit local precedence)
-            dynamic_cfg.update(overrides)
+        block_size = dynamic_cfg.get("block_size", 512)
+        batch_size = 512 * 64 // block_size
 
-            # Finally, apply CLI overrides with highest precedence
-            if cli_overrides:
-                dynamic_cfg.update(cli_overrides)
+        # Ensure required training runtime parameters are set/overridden locally.
+        overrides = {
+            "batch_size": batch_size,  # Reduced from 128 to save memory
+            "device": "cuda",
+            "dataset": args.dataset,
+            "eval_iters": 50,  # Reduced from default to save memory
+            "gradient_accumulation_steps": 2,  # Compensate for smaller batch with grad accumulation
+            # "compute_model_stats": False,  # Disable model stats to save memory
+            "dtype": "bfloat16",  # Use bfloat16 to save memory vs float16
+            # "norm_variant_abs": "hyperspherenorm",
+            # "hsnorm_gain": True,
+            # "hsnorm_scale": 5.0,
+            # "attn_residual_combination": "slerp",
+            # "mlp_residual_combination": "slerp",
+            # "use_qk_norm": True,
+            # "use_v_norm": True
+        }
+        # Apply overrides (explicit local precedence)
+        dynamic_cfg.update(overrides)
 
-            # Run experiment
-            ok = run_experiment(dynamic_cfg, base, args, row_index=row_index)
-            if not ok:
-                any_failed = True
+        # Finally, apply CLI overrides with highest precedence
+        if cli_overrides:
+            dynamic_cfg.update(cli_overrides)
+
+        # Run experiment
+        ok = run_experiment(dynamic_cfg, base, args, row_index=row_index)
+        if not ok:
+            any_failed = True
 
     return 1 if any_failed else 0
 
@@ -251,6 +260,7 @@ if __name__ == "__main__":
     parser.add_argument("--prefix", type=str, default="train", help="Prefix for run names")
     parser.add_argument("--override_args", type=str, nargs='*', help="Additional args to override YAML configs, e.g., --override_args batch_size=32 learning_rate=0.001")
     parser.add_argument("--dry_run", action="store_true", help="If set, only print commands without executing")
+    parser.add_argument("--dataset", type=str, default="minipile", help="Dataset name for training evaluations")
     args, unknown = parser.parse_known_args()
 
     yaml_path = Path(args.yaml)
