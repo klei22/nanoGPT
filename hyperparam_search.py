@@ -32,7 +32,7 @@ import torch
 import yaml
 
 
-TrialMetrics = Tuple[float, float, int, float, float, float, float, float, float]
+TrialMetrics = Tuple[float, float, int, float, float, float, float, float, float, float]
 
 
 # ───────────────────────── helpers ──────────────────────────
@@ -94,6 +94,7 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
             iter_latency_ms,
             rankme,
             areq,
+            energy_joules,
         )
     """
     from train import Trainer
@@ -119,6 +120,7 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
     iter_latency_ms = float(getattr(tr, "iter_latency_avg", 0.0))
     rankme = float(getattr(tr, "latest_rankme", float("nan")))
     areq = float(getattr(tr, "latest_areq", float("nan")))
+    energy_joules = float(getattr(tr, "total_energy_joules", 0.0))
 
     del tr
     _cleanup_cuda()
@@ -132,6 +134,7 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
         iter_latency_ms,
         rankme,
         areq,
+        energy_joules,
     )
 
 
@@ -148,6 +151,7 @@ def _parse_best_metrics_file(metrics_path: Path) -> TrialMetrics:
     iter_latency_ms = float(line[9])
     rankme = float(line[19])
     areq = float(line[20])
+    energy_joules = float(line[31]) if len(line) > 31 else 0.0
 
     return (
         loss,
@@ -159,6 +163,7 @@ def _parse_best_metrics_file(metrics_path: Path) -> TrialMetrics:
         iter_latency_ms,
         rankme,
         areq,
+        energy_joules,
     )
 
 
@@ -244,12 +249,13 @@ def main():
     )
     ap.add_argument(
         "--efficiency_target",
-        choices=["params", "vram", "iter", "torch_allocated", "torch_reserved", "process_gpu"],
+        choices=["params", "vram", "iter", "torch_allocated", "torch_reserved", "process_gpu", "energy"],
         default="params",
         help=(
             "Metric to normalize score gain: 'params' (default) for parameter count, "
             "'vram' (legacy alias for torch_allocated), 'torch_allocated', "
-            "'torch_reserved', 'process_gpu', or 'iter' for average iteration latency in ms."
+            "'torch_reserved', 'process_gpu', 'iter' for average iteration latency in ms, "
+            "or 'energy' for total GPU energy in joules (requires zeus-ml)."
         ),
     )
     ap.add_argument(
@@ -343,6 +349,7 @@ def main():
         base_torch_reserved = last["baseline_metrics"].get("peak_torch_reserved_mb", 0.0)
         base_process_gpu = last["baseline_metrics"].get("peak_process_gpu_mb", 0.0)
         base_iter_ms = last["baseline_metrics"].get("iter_latency_avg", 0.0)
+        base_energy = last["baseline_metrics"].get("energy_joules", 0.0)
         cur_iter = last["iter"] + 1
         _apply_overrides_to_active_config(
             baseline_cfg, args.override_cfg, "resumed baseline_cfg"
@@ -364,6 +371,7 @@ def main():
             base_iter_ms,
             base_rankme,
             base_areq,
+            base_energy,
         ) = run_fn(deepcopy(baseline_cfg))
         base_score = 1 / math.exp(base_loss)
         log["iterations"].append(
@@ -380,6 +388,7 @@ def main():
                     "best_iter": base_best_iter,
                     "rankme": base_rankme,
                     "areq": base_areq,
+                    "energy_joules": base_energy,
                 },
                 "baseline_config_after": deepcopy(baseline_cfg),
             }
@@ -430,6 +439,7 @@ def main():
                             iter_ms,
                             rankme,
                             areq,
+                            energy_j,
                         ) = run_fn(cfg_run)
                     except Exception as exc:
                         print("   ⚠", exc)
@@ -448,6 +458,7 @@ def main():
                             "iter_latency_ms": iter_ms,
                             "rankme": rankme,
                             "areq": areq,
+                            "energy_joules": energy_j,
                         }
                     )
                     scores.append(score)
@@ -463,6 +474,7 @@ def main():
                     sum(s["peak_process_gpu_mb"] for s in seed_runs) / len(seed_runs)
                 )
                 avg_iter = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
+                avg_energy = sum(s["energy_joules"] for s in seed_runs) / len(seed_runs)
                 avg_rankme = _nanmean([s["rankme"] for s in seed_runs])
                 avg_areq = _nanmean([s["areq"] for s in seed_runs])
                 avg_loss = -math.log(avg_score)
@@ -483,6 +495,7 @@ def main():
                 d_torch_reserved = avg_torch_reserved - base_torch_reserved
                 d_process_gpu = avg_process_gpu - base_process_gpu
                 d_iter = avg_iter - base_iter_ms
+                d_energy = avg_energy - base_energy
 
                 if args.efficiency_target == "params":
                     d_cost = d_param
@@ -494,6 +507,8 @@ def main():
                     d_cost = d_process_gpu
                 elif args.efficiency_target == "iter":
                     d_cost = d_iter
+                elif args.efficiency_target == "energy":
+                    d_cost = d_energy
                 else:
                     raise ValueError("Unknown efficiency target")
 
@@ -536,6 +551,7 @@ def main():
                     "peak_torch_reserved_mb": avg_torch_reserved,
                     "peak_process_gpu_mb": avg_process_gpu,
                     "iter_latency_avg": avg_iter,
+                    "energy_joules": avg_energy,
                     "delta_score": d_score,
                     "delta_rankme": d_rankme,
                     "delta_areq": d_areq,
@@ -544,6 +560,7 @@ def main():
                     "delta_torch_reserved_mb": d_torch_reserved,
                     "delta_process_gpu_mb": d_process_gpu,
                     "delta_iter_latency": d_iter,
+                    "delta_energy_joules": d_energy,
                     "efficiency": eff,
                     "target_metric": args.optimize_target,
                     "target_mode": args.optimize_mode,
@@ -648,6 +665,7 @@ def main():
                                 "peak_torch_reserved_mb": base_torch_reserved,
                                 "peak_process_gpu_mb": base_process_gpu,
                                 "iter_latency_avg": base_iter_ms,
+                                "energy_joules": base_energy,
                                 "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
                                 "rankme": base_rankme,
                                 "areq": base_areq,
@@ -708,6 +726,7 @@ def main():
         base_torch_reserved = chosen.get("peak_torch_reserved_mb", base_torch_reserved)
         base_process_gpu = chosen.get("peak_process_gpu_mb", base_process_gpu)
         base_iter_ms = chosen.get("iter_latency_avg", base_iter_ms)
+        base_energy = chosen.get("energy_joules", base_energy)
         base_rankme = chosen.get("avg_rankme", base_rankme)
         base_areq = chosen.get("avg_areq", base_areq)
 
@@ -722,9 +741,11 @@ def main():
                     "peak_torch_reserved_mb": base_torch_reserved,
                     "peak_process_gpu_mb": base_process_gpu,
                     "iter_latency_avg": base_iter_ms,
+                    "energy_joules": base_energy,
                     "best_iter": chosen["best_iter"],
                     "rankme": base_rankme,
                     "areq": base_areq,
+                    "energy_joules": base_energy,
                 },
                 "candidates": candidates,
                 "chosen": chosen,

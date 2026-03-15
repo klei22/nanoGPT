@@ -40,6 +40,9 @@ METRIC_KEYS = [
     "areq",
 ]
 
+# energy_joules is at CSV index 31 (after 10 weight/activation stat fields)
+ENERGY_CSV_INDEX = 31
+
 
 def parse_args() -> argparse.Namespace:
     """
@@ -574,9 +577,16 @@ def read_metrics(out_dir: str) -> dict:
         float,
         float,
         float,
+        float,
     ]
 
-    return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
+    result = {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts)}
+    # energy_joules lives after the weight/activation stats block
+    if len(parts) > ENERGY_CSV_INDEX:
+        result["energy_joules"] = float(parts[ENERGY_CSV_INDEX])
+    else:
+        result["energy_joules"] = 0.0
+    return result
 
 
 def completed_runs(log_file: Path) -> set[str]:

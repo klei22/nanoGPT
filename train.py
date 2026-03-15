@@ -27,6 +27,7 @@ from train_variations.loss_variants import build_loss_function
 from train_variations.distillation_loss_variants import build_distillation_loss
 
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
+from utils.energy_monitoring import is_zeus_available, create_zeus_monitor, begin_measurement, end_measurement
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated, max_memory_reserved
 
 from utils.model_info import (
@@ -110,6 +111,17 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+
+        # Zeus energy profiling
+        self.total_energy_joules: float = 0.0
+        self.zeus_monitor = None
+        if self.args.device != "cpu" and is_zeus_available():
+            gpu_idx = getattr(self.args, 'device', 'cuda')
+            if gpu_idx == 'cuda':
+                gpu_indices = [torch.cuda.current_device()] if torch.cuda.is_available() else None
+            else:
+                gpu_indices = None
+            self.zeus_monitor = create_zeus_monitor(gpu_indices=gpu_indices)
 
         # track latest evaluation metrics for progress bar
         self.latest_top1_prob = float('nan')
@@ -1723,6 +1735,12 @@ class Trainer:
             # Backward-compatible field used by older tools.
             self.peak_gpu_usage = self.peak_torch_allocated
 
+        # Accumulate Zeus energy measurement
+        if self.zeus_monitor is not None:
+            energy = end_measurement(self.zeus_monitor, label="training")
+            self.total_energy_joules += energy
+            begin_measurement(self.zeus_monitor, label="training")
+
         self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
         if self.args.dataset_list is not None:
             for dataset, dataset_losses in losses['datasets'].items():
@@ -1828,6 +1846,7 @@ class Trainer:
                             f"{self.latest_overall_activation_stats['max']:.6f}",
                             f"{self.latest_overall_activation_stats['min']:.6f}",
                             f"{self.latest_overall_activation_stats['abs_max']:.6f}",
+                            f"{self.total_energy_joules:.3f}",
                     ]
                     best_loss_file.write(", ".join(metrics) + "\n")
                 num_steps_with_worse_loss = 0
@@ -1925,6 +1944,7 @@ class Trainer:
         t_start = time.time()
         t0 = t_start
         local_iter_num = 0
+        begin_measurement(self.zeus_monitor, label="training")
         running_mfu = -1.0
         current_epoch = 0.0
         self.evaluations_remaining = (self.args.max_iters - self.iter_num) // self.args.eval_interval + 1
@@ -2208,6 +2228,11 @@ class Trainer:
                             self.sample_and_print()
                             live.start()
                     break
+
+            # Finalize Zeus energy measurement
+            if self.zeus_monitor is not None:
+                energy = end_measurement(self.zeus_monitor, label="training")
+                self.total_energy_joules += energy
 
             if self.args.plot_statistics:
                 plot_statistics(self.args, self.stats, graph_y_labels)
