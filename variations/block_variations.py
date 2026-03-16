@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Callable
 from functools import partial
+import copy
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
@@ -253,10 +254,64 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     return x
 
 
+def sequential_ops_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+    """Forward pass over a configurable op sequence (attn/mlp)."""
+
+    residual_anchor = x
+    chain_x = x
+
+    for op_kind, op_module in block.op_sequence_modules:
+        op_input = chain_x
+
+        # Pre-LN
+        if op_kind == "attn" and block.use_pre_ln_attn:
+            op_input = block.pre_ln_attn(op_input)
+        elif op_kind == "mlp" and block.use_pre_ln_mlp:
+            op_input = block.pre_ln_mlp(op_input)
+
+        op_out = op_module(op_input, iter_num)
+
+        # Peri-LN
+        if op_kind == "attn" and block.use_peri_ln_attn:
+            op_out = block.peri_ln_attn(op_out)
+        elif op_kind == "mlp" and block.use_peri_ln_mlp:
+            op_out = block.peri_ln_mlp(op_out)
+
+        # Optional learned residual scaling
+        if op_kind == "attn" and block.attn_resid_scaler is not None:
+            op_out = block.attn_resid_scaler(op_out)
+        elif op_kind == "mlp" and block.mlp_resid_scaler is not None:
+            op_out = block.mlp_resid_scaler(op_out)
+
+        if block.sequence_intermediate_skip_connections:
+            chain_x = block._combine_resid(op_kind, chain_x, op_out)
+
+            # Post-LN after each sub-operation residual, if enabled
+            if op_kind == "attn" and block.use_post_ln_attn:
+                chain_x = block.post_ln_attn(chain_x)
+            elif op_kind == "mlp" and block.use_post_ln_mlp:
+                chain_x = block.post_ln_mlp(chain_x)
+        else:
+            # Pure sequential composition (no intermediate residual adds)
+            chain_x = op_out
+
+    if not block.sequence_intermediate_skip_connections and block.sequence_final_skip_connection:
+        final_kind = block.sequence_kinds[-1]
+        chain_x = block._combine_resid(final_kind, residual_anchor, chain_x)
+
+        if final_kind == "attn" and block.use_post_ln_attn:
+            chain_x = block.post_ln_attn(chain_x)
+        elif final_kind == "mlp" and block.use_post_ln_mlp:
+            chain_x = block.post_ln_mlp(chain_x)
+
+    return chain_x
+
+
 block_forward_variations = {
     "parallel_mlp": parallel_mlp_forward,
     "attn_then_mlp": attn_then_mlp_forward,
     "edgellm_asic": edgellm_asic_forward,
+    "sequential_ops": sequential_ops_forward,
 }
 
 
@@ -325,6 +380,7 @@ normalization_setup_variations = {
     "parallel_mlp": _setup_norms_parallel,
     "attn_then_mlp": _setup_norms_sequential,
     "edgellm_asic": _setup_norms_sequential,
+    "sequential_ops": _setup_norms_sequential,
 }
 
 
@@ -365,7 +421,42 @@ resid_scaler_setup_variations = {
     "parallel_mlp": _setup_resid_scalers_parallel,
     "attn_then_mlp": _setup_resid_scalers_sequential,
     "edgellm_asic": _setup_resid_scalers_sequential,
+    "sequential_ops": _setup_resid_scalers_sequential,
 }
+
+
+def _normalize_sequence_token(token: str) -> str:
+    norm = token.strip().lower()
+    if norm in {"attn", "attention"}:
+        return "attn"
+    if norm in {"mlp"}:
+        return "mlp"
+    raise ValueError(f"Unsupported block operation token '{token}'. Supported: attn, mlp")
+
+
+def _resolve_block_sequence(config) -> list[str]:
+    explicit = getattr(config, "block_operation_sequence", None)
+    if explicit:
+        return [_normalize_sequence_token(tok) for tok in explicit]
+
+    attn_repeats = max(1, getattr(config, "block_attn_repeat", 1))
+    mlp_repeats = max(1, getattr(config, "block_mlp_repeat", 1))
+    return ["attn"] * attn_repeats + ["mlp"] * mlp_repeats
+
+
+def _make_mlp_config_for_sequence(config, sequence_kinds: list[str]):
+    """Split MLP width across repeated MLP ops to preserve base MLP parameter budget."""
+    if not getattr(config, "match_sequential_mlp_param_budget", False):
+        return config
+
+    mlp_count = sum(1 for kind in sequence_kinds if kind == "mlp")
+    if mlp_count <= 1:
+        return config
+
+    seq_config = copy.copy(config)
+    base_mlp_size = config.mlp_size if config.mlp_size is not None else config.mlp_expansion_factor * config.n_embd
+    seq_config.mlp_size = max(1, base_mlp_size // mlp_count)
+    return seq_config
 
 
 class Block(nn.Module):
@@ -388,6 +479,7 @@ class Block(nn.Module):
         # Forward variation choice
         self.use_parallel_mlp = getattr(config, "use_parallel_mlp", False)
         self.use_edgellm_asic = getattr(config, "use_edgellm_asic", False)
+        self.use_sequential_ops = getattr(config, "use_sequential_ops", False)
 
         self.use_flash_norm = getattr(config, "use_flash_norm", False)
 
@@ -405,6 +497,11 @@ class Block(nn.Module):
             self.eval_interval = config.eval_interval
             self.start_quant_level = config.start_quant_level
             self.quant_scheduler = config.quant_scheduler
+        elif self.use_sequential_ops:
+            variant = "sequential_ops"
+            self.sequence_kinds = _resolve_block_sequence(config)
+            self.sequence_intermediate_skip_connections = getattr(config, "sequence_intermediate_skip_connections", True)
+            self.sequence_final_skip_connection = getattr(config, "sequence_final_skip_connection", True)
         else:
             variant = "attn_then_mlp"
 
@@ -418,15 +515,36 @@ class Block(nn.Module):
         resid_scaler_setup_variations[variant](self, config)
 
         ## Instantiate Block Forward Variant Submodules
-        if attn is None:
-            self.attn = attention_dictionary[config.attention_variant](config)
-        else:
-            self.attn = attn
+        if variant == "sequential_ops":
+            seq_mlp_config = _make_mlp_config_for_sequence(config, self.sequence_kinds)
 
-        if mlp is None:
-            self.mlp = get_mlp_instance(config)
+            self.attn_layers = nn.ModuleList()
+            self.mlp_layers = nn.ModuleList()
+            self.op_sequence_modules = []
+
+            attn_idx = 0
+            mlp_idx = 0
+            for kind in self.sequence_kinds:
+                if kind == "attn":
+                    module = attention_dictionary[config.attention_variant](config)
+                    self.attn_layers.append(module)
+                    self.op_sequence_modules.append((kind, module))
+                    attn_idx += 1
+                else:
+                    module = get_mlp_instance(seq_mlp_config)
+                    self.mlp_layers.append(module)
+                    self.op_sequence_modules.append((kind, module))
+                    mlp_idx += 1
         else:
-            self.mlp = mlp
+            if attn is None:
+                self.attn = attention_dictionary[config.attention_variant](config)
+            else:
+                self.attn = attn
+
+            if mlp is None:
+                self.mlp = get_mlp_instance(config)
+            else:
+                self.mlp = mlp
 
         self.attn_resid_type = getattr(config, "attn_residual_combination", "add")
         self.mlp_resid_type = getattr(config, "mlp_residual_combination", "add")

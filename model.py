@@ -240,8 +240,10 @@ class GPT(nn.Module):
                     pos_embd = nn.Embedding(new_block_size, self.config.n_embd)
                 self.transformer.wpe = pos_embd
             for block in self.transformer.h:
-                if hasattr(block.attn, 'bias'):
-                    block.attn.bias = torch.tril(torch.ones(new_block_size, new_block_size)).view(1, 1, new_block_size, new_block_size)
+                attn_modules = [block.attn] if hasattr(block, 'attn') else list(getattr(block, 'attn_layers', []))
+                for attn_mod in attn_modules:
+                    if hasattr(attn_mod, 'bias'):
+                        attn_mod.bias = torch.tril(torch.ones(new_block_size, new_block_size)).view(1, 1, new_block_size, new_block_size)
 
     def build_norm_from_variant(self, config, variant_key: str, prefix: str):
         """Helper to deep-copy config and override hsnorm parameters if present."""
@@ -294,16 +296,20 @@ class GPT(nn.Module):
         """Update the number of angles for rotary embeddings in all attention layers."""
         device = next(self.parameters()).device
         for block in self.transformer.h:
-            if hasattr(block.attn, 'rotary_emb_q') and hasattr(block.attn, 'rotary_emb_k'):
-                block.attn.rotary_emb_q.update_num_angles(num_angles, device)
-                block.attn.rotary_emb_k.update_num_angles(num_angles, device)
+            attn_modules = [block.attn] if hasattr(block, 'attn') else list(getattr(block, 'attn_layers', []))
+            for attn_mod in attn_modules:
+                if hasattr(attn_mod, 'rotary_emb_q') and hasattr(attn_mod, 'rotary_emb_k'):
+                    attn_mod.rotary_emb_q.update_num_angles(num_angles, device)
+                    attn_mod.rotary_emb_k.update_num_angles(num_angles, device)
 
     def update_rope_length(self, rope_length):
         """Update the number of angles for rotary embeddings in all attention layers."""
         for block in self.transformer.h:
-            if hasattr(block.attn, 'rotary_emb_q') and hasattr(block.attn, 'rotary_emb_k'):
-                block.attn.rotary_emb_q.update_rope_length(rope_length)
-                block.attn.rotary_emb_k.update_rope_length(rope_length)
+            attn_modules = [block.attn] if hasattr(block, 'attn') else list(getattr(block, 'attn_layers', []))
+            for attn_mod in attn_modules:
+                if hasattr(attn_mod, 'rotary_emb_q') and hasattr(attn_mod, 'rotary_emb_k'):
+                    attn_mod.rotary_emb_q.update_rope_length(rope_length)
+                    attn_mod.rotary_emb_k.update_rope_length(rope_length)
 
     def import_wte(self, file_path):
         """ Replace wte with values from numpy and retie weights """
@@ -812,8 +818,10 @@ class GPT(nn.Module):
         if self.config.use_abs_pos_embeddings:
             self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
         for block in self.transformer.h:
-            if hasattr(block.attn, 'bias'):
-                block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
+            attn_modules = [block.attn] if hasattr(block, 'attn') else list(getattr(block, 'attn_layers', []))
+            for attn_mod in attn_modules:
+                if hasattr(attn_mod, 'bias'):
+                    attn_mod.bias = attn_mod.bias[:,:,:block_size,:block_size]
 
     @classmethod
     def from_pretrained(cls, config, model_type):

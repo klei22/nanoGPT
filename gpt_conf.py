@@ -203,6 +203,13 @@ class GPTConfig:
 
     # MLP Options
     use_parallel_mlp: bool = False
+    use_sequential_ops: bool = False
+    block_operation_sequence: List[str] = field(default_factory=list)
+    block_attn_repeat: int = 1
+    block_mlp_repeat: int = 1
+    sequence_intermediate_skip_connections: bool = True
+    sequence_final_skip_connection: bool = True
+    match_sequential_mlp_param_budget: bool = False
     mlp_variant: str = "mlp"
     mlp_expansion_factor: int = 4
     mlp_size: int = None
