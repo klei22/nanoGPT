@@ -203,6 +203,10 @@ class GPTConfig:
 
     # MLP Options
     use_parallel_mlp: bool = False
+    use_block_operation_sequence: bool = False
+    block_operation_sequence: List[str] = field(default_factory=lambda: ["attn", "mlp"])
+    block_sequence_use_intermediate_skips: bool = True
+    block_sequence_share_modules: bool = True
     mlp_variant: str = "mlp"
     mlp_expansion_factor: int = 4
     mlp_size: int = None
