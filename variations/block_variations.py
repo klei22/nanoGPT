@@ -522,19 +522,15 @@ class Block(nn.Module):
             self.mlp_layers = nn.ModuleList()
             self.op_sequence_modules = []
 
-            attn_idx = 0
-            mlp_idx = 0
             for kind in self.sequence_kinds:
                 if kind == "attn":
                     module = attention_dictionary[config.attention_variant](config)
                     self.attn_layers.append(module)
                     self.op_sequence_modules.append((kind, module))
-                    attn_idx += 1
                 else:
                     module = get_mlp_instance(seq_mlp_config)
                     self.mlp_layers.append(module)
                     self.op_sequence_modules.append((kind, module))
-                    mlp_idx += 1
         else:
             if attn is None:
                 self.attn = attention_dictionary[config.attention_variant](config)

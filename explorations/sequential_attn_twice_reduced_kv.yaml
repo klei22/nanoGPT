@@ -1,0 +1,30 @@
+# Approximate same attention parameter budget exploration:
+# two attention ops per block with reduced KV groups to keep total attention params near baseline.
+---
+max_iters: [20000]
+eval_interval: [500]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["float16"]
+compile: [true]
+
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_pre_ln: [true]
+
+use_sequential_ops: [true]
+sequence_intermediate_skip_connections: [true]
+sequence_final_skip_connection: [true]
+
+# Two attention ops, one MLP op.
+block_operation_sequence:
+  - ["attn", "attn", "mlp"]
+
+# Reducing KV groups lowers per-attention projection params (MQA/GQA style),
+# so 2x attentions is closer to the baseline single-attention budget.
+n_kv_group: [1]
