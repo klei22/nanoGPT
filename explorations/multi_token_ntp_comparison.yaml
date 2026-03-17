@@ -1,0 +1,82 @@
+# multi_token_ntp_comparison.yaml
+# ======================================================================
+# Compare 1-token, 2-token, and 3-token next-token prediction (NTP)
+# on minipile using train_multi_token_ntp.py
+# ======================================================================
+#
+# Usage:
+#   python run_multi_token_ntp_exploration.py \
+#     --yaml explorations/multi_token_ntp_comparison.yaml \
+#     --output_dir out/multi_token_ntp
+#
+# Each configuration trains from scratch with the same model architecture,
+# varying only the number of NTP tokens predicted per training step.
+# The loss is the sum of cross-entropy losses across all prediction steps.
+# ======================================================================
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Embedding Norm
+  - named_group: "rmsnorm_wte"
+    norm_variant_wte: ["rmsnorm"]
+
+  # MLP Activation
+  - named_group: "squared_relu"
+    activation_variant: ["squared_relu"]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  _train_script: ["train_multi_token_ntp.py"]
+
+parameter_groups:
+  # 1-token NTP (standard baseline)
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "squared_relu"
+    ntp_tokens: [1]
+    out_dir: ["out/multi_token_ntp/ntp_1_token"]
+
+  # 2-token NTP
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "squared_relu"
+    ntp_tokens: [2]
+    out_dir: ["out/multi_token_ntp/ntp_2_token"]
+
+  # 3-token NTP
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "squared_relu"
+    ntp_tokens: [3]
+    out_dir: ["out/multi_token_ntp/ntp_3_token"]
