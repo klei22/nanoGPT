@@ -160,6 +160,14 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size to use for evaluation")
 
+    # KV Cache
+    parser.add_argument('--use_kv_cache', default=False, action=argparse.BooleanOptionalAction,
+                        help="Use KV caching for faster autoregressive generation")
+    parser.add_argument('--kv_cache_sharing', default=False, action=argparse.BooleanOptionalAction,
+                        help="Enable cross-layer KV cache sharing (layers in same group share cache)")
+    parser.add_argument('--shared_kv_cache_size', type=int, default=1,
+                        help="Number of layers per shared KV cache group")
+
     return parser.parse_args()
 
 
@@ -582,6 +590,58 @@ def sample_with_existing_model(
             # ------------- END LSV per-sample section -------------------
 
             x = start_ids.clone()
+
+            # ---- KV Cache fast path ----
+            if getattr(args, 'use_kv_cache', False) and not colorize_output and not show_heatmaps:
+                # Apply KV cache config to model
+                model.config.use_kv_cache = True
+                model.config.kv_cache_sharing = getattr(args, 'kv_cache_sharing', False)
+                model.config.shared_kv_cache_size = getattr(args, 'shared_kv_cache_size', 1)
+                # Enable cache flag on each attention layer
+                for blk in model.transformer.h:
+                    if hasattr(blk.attn, '_use_kv_cache'):
+                        blk.attn._use_kv_cache = True
+                    else:
+                        blk.attn._use_kv_cache = True
+
+                kv_caches = None
+                with torch.no_grad():
+                    # Prefill: process the full prompt
+                    logits, kv_caches = model.forward_with_kv_cache(x, dataset_idx=dataset_idx)
+
+                    for _step in range(max_new_tokens):
+                        logits_scaled = logits[:, -1, :] / temperature
+
+                        if args.softmax_threshold is not None:
+                            probs = F.softmax(logits_scaled, dim=-1)
+                            max_prob = torch.max(probs)
+                            prob_threshold = max_prob * args.softmax_threshold
+                            probs[probs < prob_threshold] = 0
+                            idx_next = torch.multinomial(probs, num_samples=1)
+                        elif current_k is not None:
+                            v_topk, _ = torch.topk(logits_scaled, min(current_k, logits_scaled.size(-1)))
+                            logits_scaled[logits_scaled < v_topk[:, [-1]]] = -float("inf")
+                            probs = F.softmax(logits_scaled, dim=-1)
+                            idx_next = torch.multinomial(probs, num_samples=1)
+                        else:
+                            probs = F.softmax(logits_scaled, dim=-1)
+                            idx_next = torch.multinomial(probs, num_samples=1)
+
+                        x = torch.cat((x, idx_next), dim=1)
+                        # Decode: single-token forward with KV cache
+                        logits, kv_caches = model.forward_with_kv_cache(idx_next, kv_caches, dataset_idx=dataset_idx)
+
+                # Disable cache flag
+                for blk in model.transformer.h:
+                    blk.attn._use_kv_cache = False
+
+                # Decode and print
+                plain_text = decode(x[0].tolist())
+                if token_boundary is not None:
+                    plain_text = plain_text.replace(token_boundary, " ")
+                console.print(plain_text)
+                console.print("---")
+                continue  # next sample
 
             # storage for colouring
             tokens_for_color: List[int] = []

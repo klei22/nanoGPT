@@ -278,7 +278,7 @@ class CausalSelfAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, kv_cache=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
@@ -326,6 +326,19 @@ class CausalSelfAttention(nn.Module):
             q = self.rotary_emb_q(q)
             k = self.rotary_emb_k(k)
 
+        # KV Cache: concatenate past keys/values with current ones
+        new_kv_cache = None
+        if kv_cache is not None:
+            past_k, past_v = kv_cache
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
+            new_kv_cache = (k, v)
+        elif hasattr(self, '_use_kv_cache') and self._use_kv_cache:
+            new_kv_cache = (k, v)
+
+        # Total KV sequence length (may differ from T when using cache)
+        S = k.size(2)
+
         y = None
 
         if self.use_qk_norm:
@@ -335,7 +348,7 @@ class CausalSelfAttention(nn.Module):
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
 
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, S) -> (B, nh, T, S)
         if self.flash:
 
             k_attn = self._expand_kv(k)
@@ -365,6 +378,15 @@ class CausalSelfAttention(nn.Module):
                 else:
                     attn_bias[..., 0] = self.flash_lobo_log_const    # first column only
 
+            # When using KV cache, Q and K have different seq lengths;
+            # is_causal=True requires equal lengths, so build a causal mask instead
+            use_causal_flag = (kv_cache is None) and (attn_bias is None or not self.use_flash_lobo)
+            if not use_causal_flag and attn_bias is None:
+                # Build explicit causal mask for cached generation
+                S_k = k_attn.size(2)
+                causal = torch.ones(T, S_k, dtype=torch.bool, device=q.device).tril(diagonal=S_k - T)
+                attn_bias = torch.zeros(T, S_k, dtype=q.dtype, device=q.device)
+                attn_bias.masked_fill_(~causal, float('-inf'))
 
             # Efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(
@@ -373,7 +395,7 @@ class CausalSelfAttention(nn.Module):
                 v_attn,
                 attn_mask=attn_bias,
                 dropout_p=self.dropout if self.training else 0,
-                is_causal=True,
+                is_causal=use_causal_flag,
             )
         elif self.use_flex_attn and self.window_size is not None:
             block_mask = self.get_block_mask(T, x.device)
@@ -409,6 +431,10 @@ class CausalSelfAttention(nn.Module):
             if self.window_size is not None:
                 # add mask for sliding window attention
                 att = att.masked_fill(self.window_mask == 0, float('-inf'))
+            elif kv_cache is not None:
+                # KV cache: build causal mask for Q(T) attending to K(S)
+                causal = torch.ones(T, S, dtype=torch.bool, device=x.device).tril(diagonal=S - T)
+                att = att.masked_fill(~causal.view(1, 1, T, S), float('-inf'))
             else:
                 # regular lower triangle attention
                 att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
@@ -458,6 +484,8 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method, iter_num)
 
+        if new_kv_cache is not None:
+            return y, new_kv_cache
         return y
 
 class EdgeLLMASICAttention(nn.Module):

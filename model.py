@@ -994,3 +994,142 @@ class GPT(nn.Module):
                     return idx, generated_text
 
         return idx, generated_text
+
+    def _build_kv_cache_sharing_map(self):
+        """Build a mapping from layer index to cache index for KV cache sharing.
+
+        When kv_cache_sharing is enabled, layers within the same group
+        (determined by shared_kv_cache_size) share the same KV cache slot.
+        """
+        n = self.config.n_layer
+        group_size = max(1, self.config.shared_kv_cache_size)
+        return [i // group_size for i in range(n)]
+
+    @torch.no_grad()
+    def forward_with_kv_cache(self, idx, kv_caches=None, dataset_idx=None):
+        """Forward pass that uses and returns KV caches for each layer.
+
+        Args:
+            idx: token indices (B, T) - can be just the new token(s)
+            kv_caches: list of (k, v) tuples per cache slot, or None for first pass
+            dataset_idx: optional dataset index for multidataset models
+
+        Returns:
+            logits: (B, 1, vocab_size)
+            new_kv_caches: updated list of (k, v) tuples
+        """
+        device = idx.device
+        b, t = idx.size()
+
+        # Embedding
+        if self.config.multidataset_wte and dataset_idx is not None:
+            tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
+        else:
+            tok_emb = self.transformer.wte(idx)
+
+        tok_emb = self.add_embedding_gaussian_noise(tok_emb)
+        if self.n_embd_wte:
+            tok_emb = self.transformer.scale_up(tok_emb)
+
+        if self.config.use_embedding_scale:
+            tok_emb = tok_emb * self.embedding_scale
+
+        if self.config.norm_variant_wte is not None:
+            tok_emb = self.transformer.post_embedding_norm(tok_emb)
+
+        if self.config.use_abs_pos_embeddings:
+            # For cached generation, positions must account for already-cached tokens
+            past_len = 0
+            if kv_caches is not None:
+                # Find the first non-None cache to get past length
+                for _c in kv_caches:
+                    if _c is not None:
+                        past_len = _c[0].size(2)
+                        break
+            pos = torch.arange(past_len, past_len + t, dtype=torch.long, device=device)
+            pos_emb = self.transformer.wpe(pos)
+            x = self.transformer.drop(tok_emb + pos_emb)
+        else:
+            x = self.transformer.drop(tok_emb)
+
+        # Ensure attention layers know to produce cache entries
+        for blk in self.transformer.h:
+            blk.attn._use_kv_cache = True
+
+        # Build sharing map
+        sharing_map = None
+        if self.config.kv_cache_sharing:
+            sharing_map = self._build_kv_cache_sharing_map()
+
+        new_kv_caches = [None] * self.config.n_layer
+        for layer_idx, block in enumerate(self.transformer.h):
+            # Determine which cache slot this layer reads/writes
+            if sharing_map is not None:
+                cache_slot = sharing_map[layer_idx]
+            else:
+                cache_slot = layer_idx
+
+            layer_cache = kv_caches[cache_slot] if kv_caches is not None else None
+
+            result = block(x, iter_num=None, kv_cache=layer_cache)
+            if isinstance(result, tuple):
+                x, layer_kv = result
+            else:
+                x = result
+                layer_kv = None
+
+            # Store the cache; shared layers overwrite the same slot
+            if layer_kv is not None:
+                new_kv_caches[cache_slot] = layer_kv
+
+        x = self.transformer.ln_f(x)
+
+        if self.n_embd_wte:
+            x = F.linear(x, self.transformer.scale_down.weight.t())
+
+        if self.config.multidataset_wte and dataset_idx is not None:
+            logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
+        else:
+            logits = self.lm_head(x[:, [-1], :])
+
+        if self.config.final_logit_softcapping is not None:
+            logits = logits / self.config.final_logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * self.config.final_logit_softcapping
+
+        return logits, new_kv_caches
+
+    @torch.no_grad()
+    def generate_with_kv_cache(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        """Generate tokens using KV cache for efficient autoregressive inference.
+
+        First pass processes the full prompt; subsequent passes process one token
+        at a time, reusing cached keys and values from prior steps.
+        """
+        # Enable KV caching on attention layers
+        for block in self.transformer.h:
+            if hasattr(block.attn, '_use_kv_cache'):
+                block.attn._use_kv_cache = True
+
+        # First pass: process entire prompt, populate caches
+        logits, kv_caches = self.forward_with_kv_cache(idx)
+
+        for _ in range(max_new_tokens):
+            logits_scaled = logits[:, -1, :] / temperature
+            if top_k is not None:
+                v, _ = torch.topk(logits_scaled, min(top_k, logits_scaled.size(-1)))
+                logits_scaled[logits_scaled < v[:, [-1]]] = -float('Inf')
+
+            probs = F.softmax(logits_scaled, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat((idx, idx_next), dim=1)
+
+            # Single-token forward with cached KV
+            logits, kv_caches = self.forward_with_kv_cache(idx_next, kv_caches)
+
+        # Disable KV caching
+        for block in self.transformer.h:
+            if hasattr(block.attn, '_use_kv_cache'):
+                block.attn._use_kv_cache = False
+
+        return idx

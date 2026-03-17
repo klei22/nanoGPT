@@ -1,0 +1,117 @@
+# kv_cache.yaml - KV Cache and KV Cache Sharing exploration
+# Based on default_inf.yaml template
+#
+# Compares default (no KV cache) vs KV cache vs KV cache with sharing
+# across different model configurations.
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # MQA (single KV group - maximizes KV cache sharing benefit)
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+  # GQA with 4 groups
+  - named_group: "gqa_4"
+    n_kv_group: [4]
+
+  # Full MHA (no KV grouping)
+  - named_group: "mha"
+    n_kv_group: [12]
+
+  # Softmax
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  # KV Cache disabled (baseline)
+  - named_group: "no_kv_cache"
+    use_kv_cache: [false]
+    kv_cache_sharing: [false]
+
+  # KV Cache enabled, no sharing
+  - named_group: "kv_cache"
+    use_kv_cache: [true]
+    kv_cache_sharing: [false]
+
+  # KV Cache with sharing (2 layers per group)
+  - named_group: "kv_cache_shared_2"
+    use_kv_cache: [true]
+    kv_cache_sharing: [true]
+    shared_kv_cache_size: [2]
+
+  # KV Cache with sharing (4 layers per group)
+  - named_group: "kv_cache_shared_4"
+    use_kv_cache: [true]
+    kv_cache_sharing: [true]
+    shared_kv_cache_size: [4]
+
+  # KV Cache with sharing (all layers share one cache)
+  - named_group: "kv_cache_shared_all"
+    use_kv_cache: [true]
+    kv_cache_sharing: [true]
+    shared_kv_cache_size: [12]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+
+parameter_groups:
+  # Baseline: MHA without KV cache vs with KV cache
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "mha"
+    named_group_alternates: ["no_kv_cache", "kv_cache"]
+    n_head:
+      range:
+        start: 4
+        end: 12
+        step: 4
+
+  # MQA: compare KV cache sharing granularities
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "mqa"
+    named_group_alternates: ["no_kv_cache", "kv_cache", "kv_cache_shared_2", "kv_cache_shared_4", "kv_cache_shared_all"]
+    n_head:
+      range:
+        start: 4
+        end: 12
+        step: 4
+
+  # GQA: compare KV cache sharing granularities
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "gqa_4"
+    named_group_alternates: ["no_kv_cache", "kv_cache", "kv_cache_shared_2", "kv_cache_shared_4"]
+    n_head:
+      range:
+        start: 4
+        end: 12
+        step: 4

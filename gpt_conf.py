@@ -224,6 +224,12 @@ class GPTConfig:
     shared_attn_sym: bool = False
     shared_attn_seq: int = 1
 
+    # KV Cache (inference only)
+    use_kv_cache: bool = False  # enable KV caching during generation
+    # KV Cache Sharing: multiple layers reuse the same cached K,V
+    kv_cache_sharing: bool = False  # enable cross-layer KV cache sharing
+    shared_kv_cache_size: int = 1   # layers per shared KV cache group
+
     # Softmax Alternatives and Options
     softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
     softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
