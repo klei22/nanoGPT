@@ -11,6 +11,7 @@ from variations.mlp_variations import get_mlp_instance
 from variations.norm_variations import norm_dictionary
 from variations.learned_confidence_variations import learned_confidence_dictionary
 from quantization.quantize import fake_quantize_act
+from quantization.learned_clipping import LearnedClippingQAT, compute_kurtosis
 
 # type alias for the forward function
 BlockForward = Callable[['Block', torch.Tensor, int], torch.Tensor]
@@ -114,6 +115,8 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """Attention followed by MLP."""
 
+    kurtosis_acc = torch.tensor(0.0, device=x.device)
+
     # Make sure not to override skip connection
     x_attn_in = x
 
@@ -121,8 +124,16 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     if block.use_pre_ln_attn:
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
+    # QAT: learned clipping on attention input
+    if block.use_learned_clipping_qat:
+        x_attn_in = block.qat_clip_attn(x_attn_in)
+
     # Attn Operation
     attn_out = block.attn(x_attn_in, iter_num)
+
+    # Kurtosis regularization on attention output
+    if block.output_kurtosis_reg and block.training:
+        kurtosis_acc = kurtosis_acc + compute_kurtosis(attn_out)
 
     # Attn Peri-LN
     if block.use_peri_ln_attn:
@@ -146,8 +157,16 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     if block.use_pre_ln_mlp:
         x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
+    # QAT: learned clipping on MLP input
+    if block.use_learned_clipping_qat:
+        x_mlp_in = block.qat_clip_mlp(x_mlp_in)
+
     # MLP Operation
     mlp_out = block.mlp(x_mlp_in, iter_num)
+
+    # Kurtosis regularization on MLP output
+    if block.output_kurtosis_reg and block.training:
+        kurtosis_acc = kurtosis_acc + compute_kurtosis(mlp_out)
 
     # MLP Peri-LN
     if block.use_peri_ln_mlp:
@@ -163,6 +182,8 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     # MLP Post-LN
     if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
+
+    block._kurtosis_loss = kurtosis_acc
 
     return x
 
@@ -467,6 +488,21 @@ class Block(nn.Module):
             "attn": residual_combine_dict[self.attn_resid_type],
             "mlp": residual_combine_dict[self.mlp_resid_type],
         }
+
+        # Outlier channel mitigation: QAT on inputs, kurtosis reg on outputs
+        self.use_learned_clipping_qat = getattr(config, "use_learned_clipping_qat", False)
+        self.output_kurtosis_reg = getattr(config, "output_kurtosis_reg", False)
+        self.output_kurtosis_lambda = getattr(config, "output_kurtosis_lambda", 1e-5)
+
+        if self.use_learned_clipping_qat:
+            bits = getattr(config, "learned_clipping_bits", 4)
+            init_clip = getattr(config, "learned_clipping_init", 4.0)
+            align_zero = getattr(config, "learned_clipping_align_zero", True)
+            self.qat_clip_attn = LearnedClippingQAT(bits, init_clip, align_zero)
+            self.qat_clip_mlp = LearnedClippingQAT(bits, init_clip, align_zero)
+
+        # Accumulated kurtosis penalty (set during forward, read by model)
+        self._kurtosis_loss = torch.tensor(0.0)
 
         # Gradient checkpointing
         self.use_gradient_checkpointing = getattr(config, "use_gradient_checkpointing", False)

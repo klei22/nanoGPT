@@ -1,0 +1,89 @@
+# outlier_channels_quantization.yaml
+#
+# Exploration comparing outlier channel mitigation strategies from:
+# "Mitigating the Impact of Outlier Channels for Language Model Quantization
+#  with Activation Regularization" (Nrusimha et al., arXiv:2404.03605)
+#
+# Compares: baseline, QAT-only, kurtosis-only, QAT + kurtosis
+# against default_inf.yaml style settings.
+---
+
+named_static_groups:
+  # Shared architecture settings (matching default_inf.yaml spirit)
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Outlier channel mitigation variants
+  - named_group: "baseline"
+    use_learned_clipping_qat: [false]
+    output_kurtosis_reg: [false]
+
+  - named_group: "qat_only"
+    use_learned_clipping_qat: [true]
+    learned_clipping_bits: [4]
+    learned_clipping_init: [4.0]
+    output_kurtosis_reg: [false]
+
+  - named_group: "kurtosis_only"
+    use_learned_clipping_qat: [false]
+    output_kurtosis_reg: [true]
+    output_kurtosis_lambda: [0.00001]
+
+  - named_group: "qat_kurtosis"
+    use_learned_clipping_qat: [true]
+    learned_clipping_bits: [4]
+    learned_clipping_init: [4.0]
+    output_kurtosis_reg: [true]
+    output_kurtosis_lambda: [0.00001]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [1000]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  block_size: [256]
+  dtype: ["bfloat16"]
+
+parameter_groups:
+  # Baseline: no quantization-aware training, no kurtosis
+  - named_group_static:
+      - "qk_norm"
+      - "rotary"
+      - "baseline"
+
+  # QAT only: learned clipping on inputs
+  - named_group_static:
+      - "qk_norm"
+      - "rotary"
+      - "qat_only"
+
+  # Kurtosis only: output regularization without QAT
+  - named_group_static:
+      - "qk_norm"
+      - "rotary"
+      - "kurtosis_only"
+
+  # QAT + Kurtosis: full method from the paper
+  - named_group_static:
+      - "qk_norm"
+      - "rotary"
+      - "qat_kurtosis"
+
+  # QAT + Kurtosis with lambda sweep
+  - named_group_static:
+      - "qk_norm"
+      - "rotary"
+    use_learned_clipping_qat: [true]
+    learned_clipping_bits: [4]
+    learned_clipping_init: [4.0]
+    output_kurtosis_reg: [true]
+    output_kurtosis_lambda: [0.000001, 0.00001, 0.0001]

@@ -1158,6 +1158,18 @@ def parse_args():
     ## Quantized Linear Warmup Iterations -- how many to first use regular linear, before switching to quantized
     model_group.add_argument("--quantization_warmup_iters", type=int, default=100)
 
+    ## Outlier Channel Mitigation (QAT with learned clipping + kurtosis regularization)
+    model_group.add_argument("--use_learned_clipping_qat", default=False, action=argparse.BooleanOptionalAction,
+                             help="Enable QAT with learned clip values on linear layer inputs (PACT/LSQ-style)")
+    model_group.add_argument("--learned_clipping_bits", type=int, default=4, help="Bit width for learned clipping QAT")
+    model_group.add_argument("--learned_clipping_init", type=float, default=4.0, help="Initial clip value magnitude for learned clipping")
+    model_group.add_argument("--learned_clipping_align_zero", default=True, action=argparse.BooleanOptionalAction,
+                             help="Align zero point in learned clipping quantization")
+    model_group.add_argument("--output_kurtosis_reg", default=False, action=argparse.BooleanOptionalAction,
+                             help="Enable kurtosis regularization on linear layer outputs")
+    model_group.add_argument("--output_kurtosis_lambda", type=float, default=1e-5,
+                             help="Regularization strength for output kurtosis penalty")
+
     # POSITIONAL EMBEDDING VARIATIONS
     model_group.add_argument('--use_rotary_embeddings', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--sym_rot_num_angles', type=int, default=512, help="number of angles to use for symmetric rope variant")

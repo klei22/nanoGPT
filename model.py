@@ -603,6 +603,12 @@ class GPT(nn.Module):
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
                 else:
                     loss = loss_fn(logits, targets, iter_num=iter_num)
+
+                # Add kurtosis regularization from block outputs
+                if self.config.output_kurtosis_reg:
+                    kurt_loss = sum(block._kurtosis_loss for block in self.transformer.h)
+                    loss = loss + self.config.output_kurtosis_lambda * kurt_loss
+
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
                 if self.config.multidataset_wte and dataset_idx is not None:

@@ -543,6 +543,15 @@ class GPTConfig:
     quantize_linear_mlp_down_bits: int = None
     quantization_warmup_iters: int = 100
 
+    # Outlier Channel Mitigation (QAT with learned clipping + kurtosis reg)
+    # Reference: Nrusimha et al., arXiv:2404.03605
+    use_learned_clipping_qat: bool = False
+    learned_clipping_bits: int = 4
+    learned_clipping_init: float = 4.0
+    learned_clipping_align_zero: bool = True
+    output_kurtosis_reg: bool = False
+    output_kurtosis_lambda: float = 1e-5
+
     @classmethod
     def from_json(cls, filename: str):
         try:
