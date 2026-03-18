@@ -1,0 +1,37 @@
+# t_plus_n_latent_prediction.yaml
+# Compares standard next-token prediction vs latent T+1 / T+N training modes.
+#
+# Training modes:
+#   single     - standard autoregressive next-token prediction
+#   t_plus_one - encode first T tokens, take pre-LM-head hidden as latent
+#                start token, re-run model to predict token T+1
+#   t_plus_n   - same idea extended to predict T+1..T+n (teacher-forced)
+---
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: ["4"]
+  n_head: ["4"]
+  n_embd: ["128"]
+  block_size: ["128"]
+  batch_size: ["32"]
+  max_iters: [5000]
+  eval_interval: [500]
+  device: ["cpu"]
+  dtype: ["float32"]
+  never_save_checkpoint: [true]
+  compile: [false]
+
+parameter_groups:
+  # Baseline: standard autoregressive training
+  - training_mode: ["single"]
+
+  # T+1 latent prediction: predict only one token ahead from latent
+  - training_mode: ["t_plus_one"]
+
+  # T+N latent prediction: predict half the context from latent (default)
+  - training_mode: ["t_plus_n"]
+
+  # T+N latent prediction: predict a small window (16 tokens) from latent
+  - training_mode: ["t_plus_n"]
+    t_plus_n_extra: [16]

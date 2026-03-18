@@ -98,6 +98,15 @@ def parse_args():
 
 
 
+    # Latent Decode Modes
+    parser.add_argument('--latent_decode', default=False, action=argparse.BooleanOptionalAction,
+                        help="Encode prompt to a latent (pre-LM-head) vector, use it as the sole "
+                             "start embedding, then generate tokens normally from that point.")
+    parser.add_argument('--latent_decode_continuous', default=False, action=argparse.BooleanOptionalAction,
+                        help="Like --latent_decode but during generation each step appends the "
+                             "pre-LM-head hidden vector (not the sampled token embedding) for "
+                             "predicting the next token. Sampled tokens are still printed.")
+
     # Steering Vector Related
     parser.add_argument('--save_avg_vector', type=str, default=None, help="Path to save the average vector of the start text to an .npy file")
     parser.add_argument('--apply_vector_file1', type=str, default=None, help="First .npy file to load the vector for subtraction")
@@ -583,6 +592,9 @@ def sample_with_existing_model(
 
             x = start_ids.clone()
 
+            use_latent = getattr(args, 'latent_decode', False) or getattr(args, 'latent_decode_continuous', False)
+            continuous_latent = getattr(args, 'latent_decode_continuous', False)
+
             # storage for colouring
             tokens_for_color: List[int] = []
             full_rows: List[torch.Tensor] = []
@@ -592,117 +604,175 @@ def sample_with_existing_model(
             ranks_list: List[int] = []  # NEW
 
             with torch.no_grad():
-                for _step in range(max_new_tokens):
-                    idx_cond = (
-                        x
-                        if x.size(1) <= model.config.block_size
-                        else x[:, -model.config.block_size :]
+                # ── Latent-decode: encode prompt into a single latent vector ──
+                if use_latent and x.size(1) > 0:
+                    console.print("[bold cyan]Latent decode:[/bold cyan] encoding prompt to latent vector...")
+                    prompt_emb = model.embed_tokens(x, dataset_idx=dataset_idx)
+                    _, prompt_hidden = model.forward_embedded(
+                        prompt_emb, return_hidden=True, dataset_idx=dataset_idx,
                     )
+                    # Use the last position's pre-LM-head hidden as the latent start
+                    latent_seq = prompt_hidden[:, -1:, :]       # (B, 1, E)
+                    # We keep x around for decoding the prompt text later, but
+                    # generation works entirely in embedding space via latent_seq.
+                    generated_token_ids: List[torch.Tensor] = []
 
-                    model_logits, _ = model(idx_cond, dataset_idx=dataset_idx)
-                    raw_logits_row = model_logits[:, -1, :]      # Raw logits from model
-
-                    # --- Apply Cosine Similarity Penalty (if enabled) ---
-                    if args.cosine_penalty is not None:
-                        N = 5 if len(args.cosine_penalty) < 1 else int(args.cosine_penalty[0])
-                        alpha = 1.0 if len(args.cosine_penalty) < 2 else args.cosine_penalty[1]
-
-                        # Calculate original probabilities for comparison
-                        probs_before = F.softmax(raw_logits_row / temperature, dim=-1)
-
-
-                        # Apply penalty as long as there are tokens in the context and N > 0
-                        if x.size(1) > 0 and N > 0:
-                            # Python's negative slicing gracefully handles cases where x.size(1) < N
-                            last_n_tokens = x[0, -N:]
-
-                            embedding_matrix = model.transformer.wte.weight
-
-                            # Normalize embeddings
-                            last_n_embeds = F.normalize(embedding_matrix[last_n_tokens], p=2, dim=1)
-                            all_embeds = F.normalize(embedding_matrix, p=2, dim=1)
-
-                            # Calculate max cosine similarity for each candidate against the last N tokens
-                            sim_matrix = torch.matmul(all_embeds, last_n_embeds.T)
-                            max_sim_per_candidate, _ = torch.max(sim_matrix, dim=1)
-                            penalty = alpha * max_sim_per_candidate
-                            raw_logits_row = raw_logits_row - penalty
-
-                            # Calculate KL divergence to measure the change
-                            probs_after = F.softmax(raw_logits_row / temperature, dim=-1)
-                            # Add a small epsilon to avoid log(0)
-                            kl_div = F.kl_div(torch.log(probs_after + 1e-9), probs_before, reduction='sum')
-                            kl_divergences.append(kl_div.item())
-
-
-                    logits = raw_logits_row / temperature        # Scaled logits for sampling
-                    full_row = logits[0].clone()               # pre-mask
-
-
-                    # Apply the selected truncation logic
-                    if args.softmax_threshold is not None:
-                        # Calculate probabilities and find the threshold
-                        probs = F.softmax(logits, dim=-1)
-                        max_prob = torch.max(probs)
-                        prob_threshold = max_prob * args.softmax_threshold
-                        # Set probabilities of tokens below the threshold to 0
-                        probs[probs < prob_threshold] = 0
-
-
-                    topk_row = logits[0].clone()               # post-mask
-
-                    if args.softmax_threshold is not None:
-                        # Calculate probabilities and find the threshold
-                        probs = F.softmax(logits, dim=-1)
-                        max_prob = torch.max(probs)
-                        prob_threshold = max_prob * args.softmax_threshold
-                        # Set probabilities of tokens below the threshold to 0
-                        probs[probs < prob_threshold] = 0
-                        # Sample from the modified, unnormalized distribution of probabilities
-                        idx_next = torch.multinomial(probs, num_samples=1)
-                        # For colorization, we can still use the unmasked logits
-                        topk_row = logits[0].clone()
-                    elif current_k is not None:
-                        v, _ = torch.topk(logits, min(current_k, logits.size(-1)))
-                        logits[logits < v[:, [-1]]] = -float("inf")
-                        topk_row = logits[0].clone()               # post-mask
-                        probs = F.softmax(logits, dim=-1) # Re-softmax after masking
-                        idx_next = torch.multinomial(probs, num_samples=1)
-                    else: # No truncation / default case
-                        topk_row = logits[0].clone()
-                        probs = F.softmax(logits, dim=-1)
-                        idx_next = torch.multinomial(probs, num_samples=1)
-
-                    x = torch.cat((x, idx_next), dim=1)
-
-                    if colorize_output:
-                        chosen = idx_next.item()
-                        # rank: 1 = best
-                        rank = (full_row > full_row[chosen]).sum().item() + 1
-
-                        tokens_for_color.append(chosen)
-                        full_rows.append(full_row)
-                        topk_rows.append(topk_row)
-                        scalar_rows.append(full_row[chosen])
-                        if args.show_minmax_chart:
-                            pre_temp_scalar_rows.append(raw_logits_row[0, chosen])
-                        ranks_list.append(rank)
-
-                    if show_heatmaps:
-                        sel_txt = decode([idx_next.item()])
-                        save_chart(                             # type: ignore
-                            probs,
-                            x,
-                            decode,
-                            _step,
-                            out_dir,
-                            last_k_tokens,
-                            chart_type,
-                            sel_txt,
-                            current_k,
-                            args,
-
+                    for _step in range(max_new_tokens):
+                        # Crop latent sequence to block_size
+                        emb_cond = (
+                            latent_seq
+                            if latent_seq.size(1) <= model.config.block_size
+                            else latent_seq[:, -model.config.block_size:, :]
                         )
+
+                        model_logits, hidden = model.forward_embedded(
+                            emb_cond, return_hidden=True, dataset_idx=dataset_idx,
+                        )
+                        raw_logits_row = model_logits[:, -1, :]
+
+                        logits = raw_logits_row / temperature
+
+                        # top-k truncation
+                        if current_k is not None:
+                            v, _ = torch.topk(logits, min(current_k, logits.size(-1)))
+                            logits[logits < v[:, [-1]]] = -float("inf")
+
+                        probs = F.softmax(logits, dim=-1)
+                        idx_next = torch.multinomial(probs, num_samples=1)
+                        generated_token_ids.append(idx_next)
+
+                        if continuous_latent:
+                            # Append the pre-LM-head hidden instead of the token embedding
+                            next_hidden = hidden[:, -1:, :]     # (B, 1, E)
+                            latent_seq = torch.cat([latent_seq, next_hidden], dim=1)
+                        else:
+                            # Normal: embed the sampled token and append
+                            next_emb = model.embed_tokens(idx_next, dataset_idx=dataset_idx)
+                            latent_seq = torch.cat([latent_seq, next_emb], dim=1)
+
+                        if colorize_output:
+                            chosen = idx_next.item()
+                            full_row = (raw_logits_row / temperature)[0].clone()
+                            rank = (full_row > full_row[chosen]).sum().item() + 1
+                            tokens_for_color.append(chosen)
+                            full_rows.append(full_row)
+                            topk_rows.append(full_row.clone())
+                            scalar_rows.append(full_row[chosen])
+                            ranks_list.append(rank)
+
+                    # Reconstruct x with the generated tokens for decoding
+                    if generated_token_ids:
+                        gen_ids = torch.cat(generated_token_ids, dim=1)
+                        x = torch.cat([x, gen_ids], dim=1)
+
+                else:
+                    # ── Standard generation loop ──────────────────────────────
+                    for _step in range(max_new_tokens):
+                        idx_cond = (
+                            x
+                            if x.size(1) <= model.config.block_size
+                            else x[:, -model.config.block_size :]
+                        )
+
+                        model_logits, _ = model(idx_cond, dataset_idx=dataset_idx)
+                        raw_logits_row = model_logits[:, -1, :]      # Raw logits from model
+
+                        # --- Apply Cosine Similarity Penalty (if enabled) ---
+                        if args.cosine_penalty is not None:
+                            N = 5 if len(args.cosine_penalty) < 1 else int(args.cosine_penalty[0])
+                            alpha = 1.0 if len(args.cosine_penalty) < 2 else args.cosine_penalty[1]
+
+                            # Calculate original probabilities for comparison
+                            probs_before = F.softmax(raw_logits_row / temperature, dim=-1)
+
+                            # Apply penalty as long as there are tokens in the context and N > 0
+                            if x.size(1) > 0 and N > 0:
+                                # Python's negative slicing gracefully handles cases where x.size(1) < N
+                                last_n_tokens = x[0, -N:]
+
+                                embedding_matrix = model.transformer.wte.weight
+
+                                # Normalize embeddings
+                                last_n_embeds = F.normalize(embedding_matrix[last_n_tokens], p=2, dim=1)
+                                all_embeds = F.normalize(embedding_matrix, p=2, dim=1)
+
+                                # Calculate max cosine similarity for each candidate against the last N tokens
+                                sim_matrix = torch.matmul(all_embeds, last_n_embeds.T)
+                                max_sim_per_candidate, _ = torch.max(sim_matrix, dim=1)
+                                penalty = alpha * max_sim_per_candidate
+                                raw_logits_row = raw_logits_row - penalty
+
+                                # Calculate KL divergence to measure the change
+                                probs_after = F.softmax(raw_logits_row / temperature, dim=-1)
+                                # Add a small epsilon to avoid log(0)
+                                kl_div = F.kl_div(torch.log(probs_after + 1e-9), probs_before, reduction='sum')
+                                kl_divergences.append(kl_div.item())
+
+                        logits = raw_logits_row / temperature        # Scaled logits for sampling
+                        full_row = logits[0].clone()               # pre-mask
+
+                        # Apply the selected truncation logic
+                        if args.softmax_threshold is not None:
+                            # Calculate probabilities and find the threshold
+                            probs = F.softmax(logits, dim=-1)
+                            max_prob = torch.max(probs)
+                            prob_threshold = max_prob * args.softmax_threshold
+                            # Set probabilities of tokens below the threshold to 0
+                            probs[probs < prob_threshold] = 0
+
+                        topk_row = logits[0].clone()               # post-mask
+
+                        if args.softmax_threshold is not None:
+                            # Calculate probabilities and find the threshold
+                            probs = F.softmax(logits, dim=-1)
+                            max_prob = torch.max(probs)
+                            prob_threshold = max_prob * args.softmax_threshold
+                            # Set probabilities of tokens below the threshold to 0
+                            probs[probs < prob_threshold] = 0
+                            # Sample from the modified, unnormalized distribution of probabilities
+                            idx_next = torch.multinomial(probs, num_samples=1)
+                            # For colorization, we can still use the unmasked logits
+                            topk_row = logits[0].clone()
+                        elif current_k is not None:
+                            v, _ = torch.topk(logits, min(current_k, logits.size(-1)))
+                            logits[logits < v[:, [-1]]] = -float("inf")
+                            topk_row = logits[0].clone()               # post-mask
+                            probs = F.softmax(logits, dim=-1) # Re-softmax after masking
+                            idx_next = torch.multinomial(probs, num_samples=1)
+                        else: # No truncation / default case
+                            topk_row = logits[0].clone()
+                            probs = F.softmax(logits, dim=-1)
+                            idx_next = torch.multinomial(probs, num_samples=1)
+
+                        x = torch.cat((x, idx_next), dim=1)
+
+                        if colorize_output:
+                            chosen = idx_next.item()
+                            # rank: 1 = best
+                            rank = (full_row > full_row[chosen]).sum().item() + 1
+
+                            tokens_for_color.append(chosen)
+                            full_rows.append(full_row)
+                            topk_rows.append(topk_row)
+                            scalar_rows.append(full_row[chosen])
+                            if args.show_minmax_chart:
+                                pre_temp_scalar_rows.append(raw_logits_row[0, chosen])
+                            ranks_list.append(rank)
+
+                        if show_heatmaps:
+                            sel_txt = decode([idx_next.item()])
+                            save_chart(                             # type: ignore
+                                probs,
+                                x,
+                                decode,
+                                _step,
+                                out_dir,
+                                last_k_tokens,
+                                chart_type,
+                                sel_txt,
+                                current_k,
+                                args,
+                            )
 
             # ---------- Print summary statistics for this sample ------------------
             if kl_divergences:

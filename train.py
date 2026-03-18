@@ -2029,6 +2029,62 @@ class Trainer:
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
+                        elif self.args.training_mode in ('t_plus_one', 't_plus_n'):
+                            # ----------------------------------------------------------
+                            # T+1 / T+N latent-chaining training
+                            # ----------------------------------------------------------
+                            # Decide how many tokens are "context" vs "continuation"
+                            B, full_T = self.X.size()
+                            if self.args.training_mode == 't_plus_one':
+                                n_ctx = full_T - 1   # use all but last as context
+                                n_pred = 1
+                            else:  # t_plus_n
+                                n_extra = self.args.t_plus_n_extra
+                                if n_extra is None:
+                                    n_pred = full_T // 2
+                                else:
+                                    n_pred = min(n_extra, full_T - 1)
+                                n_ctx = full_T - n_pred
+
+                            ctx_tokens = self.X[:, :n_ctx]          # (B, n_ctx)
+                            # Targets for the continuation: tokens n_ctx .. n_ctx+n_pred-1
+                            # from the Y tensor (which is X shifted by 1)
+                            cont_targets = self.Y[:, n_ctx - 1 : n_ctx - 1 + n_pred]  # (B, n_pred)
+
+                            # Pass 1: encode context → pre-LM-head hidden
+                            ctx_emb = self.model.embed_tokens(ctx_tokens)
+                            _, ctx_hidden = self.model.forward_embedded(
+                                ctx_emb, iter_num=self.iter_num, return_hidden=True,
+                            )
+                            # Take the last position's hidden as the latent "start token"
+                            latent_start = ctx_hidden[:, -1:, :]    # (B, 1, E)
+
+                            # Pass 2: build input for the continuation pass
+                            if n_pred == 1:
+                                # Just the latent vector
+                                cont_emb = latent_start               # (B, 1, E)
+                            else:
+                                # Teacher-forced: latent + embeddings of ground-truth tokens
+                                # Continuation input tokens are ctx_tokens[-1] (= token n_ctx-1)
+                                # followed by the actual tokens at positions n_ctx .. n_ctx+n_pred-2
+                                cont_input_tokens = self.X[:, n_ctx : n_ctx + n_pred - 1]  # (B, n_pred-1)
+                                cont_tok_emb = self.model.embed_tokens(cont_input_tokens)
+                                cont_emb = torch.cat([latent_start, cont_tok_emb], dim=1)  # (B, n_pred, E)
+
+                            # Forward the continuation through the full model
+                            logits, _ = self.model.forward_embedded(
+                                cont_emb, iter_num=self.iter_num,
+                            )
+
+                            # Compute loss: logits (B, n_pred, vocab) vs cont_targets (B, n_pred)
+                            if self.loss_fn is None:
+                                loss = F.cross_entropy(
+                                    logits.view(-1, logits.size(-1)),
+                                    cont_targets.reshape(-1),
+                                    ignore_index=-1,
+                                )
+                            else:
+                                loss = self.loss_fn(logits, cont_targets, iter_num=self.iter_num)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
                             logits, loss = self.model(

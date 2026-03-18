@@ -701,6 +701,18 @@ class GPT(nn.Module):
 
         return (logits, x) if return_hidden else (logits, None)
 
+    def get_pre_lm_head_hidden(self, idx, dataset_idx=None, iter_num=None):
+        """
+        Run a standard forward pass on token IDs and return the pre-LM-head
+        hidden state (B, T, n_embd) — the output of ln_f (+ optional
+        scale_down) *before* the lm_head projection.
+        """
+        x_emb = self.embed_tokens(idx, dataset_idx=dataset_idx)
+        _, hidden = self.forward_embedded(x_emb, iter_num=iter_num,
+                                          return_hidden=True,
+                                          dataset_idx=dataset_idx)
+        return hidden
+
     def set_lsv_scaling_factor(self, factor):
         self.lsv_matrix.update_lsv_scaling_factor(factor)
 

@@ -253,8 +253,19 @@ def parse_args():
     training_group.add_argument(
         '--training_mode',
         default='single',
-        choices=['single', 'multidataset', 'multicontext'],
-        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously."
+        choices=['single', 'multidataset', 'multicontext', 't_plus_one', 't_plus_n'],
+        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. "
+             "'multicontext' processes multiple contexts simultaneously. "
+             "'t_plus_one' encodes first T tokens, takes the pre-LM-head hidden as a latent start token, "
+             "and re-runs the model to predict token T+1. "
+             "'t_plus_n' extends this to predict tokens T+1..T+n up to block_size."
+    )
+    training_group.add_argument(
+        '--t_plus_n_extra',
+        type=int,
+        default=None,
+        help="Number of extra tokens (n) to predict in t_plus_n mode. "
+             "If None, defaults to filling up to block_size."
     )
 
     # Data args
