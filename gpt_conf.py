@@ -29,6 +29,10 @@ class GPTConfig:
     numerical_loss_use_cosine: bool = False
     numerical_loss_cosine_coeff: float = 0.5
 
+    # Learned-vector and log-scaled-vector embedding settings
+    numerical_learned_vector_attn_coeff: float = 1.0
+    numerical_log_vector_activation: str = "log"
+
     # Optional post-mapping channel normalization for numerical embeddings
     norm_channel_variant: str | None = None
     norm_channel_radius: float | None = None

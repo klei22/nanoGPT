@@ -144,11 +144,90 @@ class NumericalScaledVectorEmbedding(nn.Module):
         return out
 
 
+class NumericalLearnedVectorEmbedding(nn.Module):
+    """Per-channel randomly-initialized learned vector, scaled element-wise by
+    the input scalar.  A global attenuation coefficient ``attn_coeff`` scales
+    the entire output so that the effective magnitude can be controlled without
+    changing the learned direction.
+
+    Config attributes read:
+        numerical_learned_vector_attn_coeff (float, default 1.0): global
+            multiplicative attenuation applied after the scalar-vector product.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.n_embd = config.n_embd
+        self.vector = nn.Parameter(torch.empty(1, config.n_embd))
+        self.attn_coeff = getattr(config, "numerical_learned_vector_attn_coeff", 1.0)
+        self.channel_norm = _build_channel_norm(config)
+        nn.init.normal_(self.vector, mean=0.0, std=0.02)
+
+    def forward(self, x):
+        # x: (..., 1)  ->  out: (..., n_embd)
+        vector = self.vector.to(device=x.device, dtype=x.dtype)
+        out = x * vector * self.attn_coeff
+        if self.channel_norm is not None:
+            out = self.channel_norm(out)
+        return out
+
+
+class NumericalLogScaledVectorEmbedding(nn.Module):
+    """Like NumericalLearnedVectorEmbedding but the scalar value is first
+    passed through an activation function (default: ``torch.log``) before
+    being used to scale the learned vector.  The activation can be changed via
+    ``numerical_log_vector_activation`` in config.
+
+    Config attributes read:
+        numerical_learned_vector_attn_coeff (float, default 1.0): global
+            attenuation applied after the activation-scaled vector product.
+        numerical_log_vector_activation (str, default "log"): activation to
+            apply to the scalar before scaling.  Supported values are keys in
+            ``activation_dictionary`` plus the special value ``"log"``
+            (torch.log) and ``"log1p"`` (torch.log1p).
+    """
+
+    _SPECIAL_ACTIVATIONS = {
+        "log": torch.log,
+        "log1p": torch.log1p,
+    }
+
+    def __init__(self, config):
+        super().__init__()
+        self.n_embd = config.n_embd
+        self.vector = nn.Parameter(torch.empty(1, config.n_embd))
+        self.attn_coeff = getattr(config, "numerical_learned_vector_attn_coeff", 1.0)
+        act_name = getattr(config, "numerical_log_vector_activation", "log")
+        if act_name in self._SPECIAL_ACTIVATIONS:
+            self.activation = self._SPECIAL_ACTIVATIONS[act_name]
+            self._activation_module = None
+        else:
+            act_cls = activation_dictionary[act_name]
+            self._activation_module = act_cls(config=config)
+            self.activation = None
+        self.channel_norm = _build_channel_norm(config)
+        nn.init.normal_(self.vector, mean=0.0, std=0.02)
+
+    def forward(self, x):
+        # x: (..., 1) scalar input
+        if self.activation is not None:
+            x_act = self.activation(x)
+        else:
+            x_act = self._activation_module(x)
+        vector = self.vector.to(device=x.device, dtype=x.dtype)
+        out = x_act * vector * self.attn_coeff
+        if self.channel_norm is not None:
+            out = self.channel_norm(out)
+        return out
+
+
 numerical_embedding_dictionary = {
     "mlp": NumericalMLPEmbedding,
     "linear": NumericalLinearEmbedding,
     "cayley": NumericalCayleyEmbedding,
     "scaled_vector": NumericalScaledVectorEmbedding,
+    "learned_vector": NumericalLearnedVectorEmbedding,
+    "log_scaled_vector": NumericalLogScaledVectorEmbedding,
 }
 
 numerical_output_dictionary = {

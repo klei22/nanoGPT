@@ -274,9 +274,13 @@ def parse_args():
     model_group.add_argument('--numerical_mlp_activation_variant', default="relu", type=str,
                                     help="Activation variant for numerical MLP mappings")
     model_group.add_argument('--numerical_embedding_variant', default="mlp", type=str,
-                                    help="Variant for numerical multicontext input mapping (e.g., mlp, linear)")
+                                    help="Variant for numerical multicontext input mapping (e.g., mlp, linear, learned_vector, log_scaled_vector)")
     model_group.add_argument('--numerical_output_variant', default="mlp", type=str,
                                     help="Variant for numerical multicontext output mapping (e.g., mlp, linear)")
+    model_group.add_argument('--numerical_learned_vector_attn_coeff', default=1.0, type=float,
+                                    help="Global attenuation coefficient for learned_vector and log_scaled_vector embeddings")
+    model_group.add_argument('--numerical_log_vector_activation', default="log", type=str,
+                                    help="Activation applied to scalar before vector scaling in log_scaled_vector embedding (e.g., log, log1p, relu)")
     model_group.add_argument('--numerical_mapping_weight_tying', default=True, action=argparse.BooleanOptionalAction,
                                     help="Tie numerical embedding/output mapping weights when supported")
     model_group.add_argument(
