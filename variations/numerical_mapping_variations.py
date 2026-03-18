@@ -129,6 +129,51 @@ class NumericalLinearOutputTied(nn.Module):
         return F.linear(x, weight.t(), self.bias)
 
 
+class NumericalLearnedVectorScaledArcEmbedding(nn.Module):
+    """Learned base vector rotated along a great-circle arc scaled by input.
+
+    For each channel we learn:
+      - v        : base vector on the embedding hypersphere  (1, n_embd)
+      - d        : arc direction vector                       (1, n_embd)
+      - theta_scale : scalar controlling the angular sweep
+
+    Forward:
+      d_perp = normalise(d - proj_v(d))          # orthogonal component
+      out    = cos(x * theta_scale) * v  +  sin(x * theta_scale) * d_perp * ||v||
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.vector = nn.Parameter(torch.empty(1, config.n_embd))
+        self.arc_dir = nn.Parameter(torch.empty(1, config.n_embd))
+        self.theta_scale = nn.Parameter(torch.ones(1))
+        self.channel_norm = _build_channel_norm(config)
+        nn.init.normal_(self.vector, mean=0.0, std=0.02)
+        nn.init.normal_(self.arc_dir, mean=0.0, std=0.02)
+
+    def forward(self, x):
+        v = self.vector.to(device=x.device, dtype=x.dtype)
+        d = self.arc_dir.to(device=x.device, dtype=x.dtype)
+        ts = self.theta_scale.to(device=x.device, dtype=x.dtype)
+
+        # Gram-Schmidt: remove projection of d onto v to get orthogonal component
+        v_norm_sq = (v * v).sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        proj = (d * v).sum(dim=-1, keepdim=True) / v_norm_sq * v
+        d_perp = d - proj
+        d_perp_norm = d_perp.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        d_perp = d_perp / d_perp_norm
+
+        # Scale d_perp to match ||v|| so the arc stays on the same hypersphere
+        v_norm = v.norm(dim=-1, keepdim=True)
+
+        angle = x * ts  # (batch, seq, 1) * (1,) -> (batch, seq, 1)
+        out = torch.cos(angle) * v + torch.sin(angle) * d_perp * v_norm
+
+        if self.channel_norm is not None:
+            out = self.channel_norm(out)
+        return out
+
+
 class NumericalScaledVectorEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -149,6 +194,7 @@ numerical_embedding_dictionary = {
     "linear": NumericalLinearEmbedding,
     "cayley": NumericalCayleyEmbedding,
     "scaled_vector": NumericalScaledVectorEmbedding,
+    "learned_vector_scaled_arc": NumericalLearnedVectorScaledArcEmbedding,
 }
 
 numerical_output_dictionary = {
