@@ -1088,7 +1088,7 @@ class GPT(nn.Module):
         x = self.transformer.drop(x)
 
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, None)
 
         x = self.transformer.ln_f(x)
         if self.n_embd_wte:
