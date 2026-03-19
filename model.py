@@ -914,6 +914,10 @@ class GPT(nn.Module):
             cont_logits = torch.tanh(cont_logits)
             cont_logits = cont_logits * self.config.final_logit_softcapping
 
+        # Ensure contiguous layout before reshape/view (sliced tensors may not be)
+        cont_logits = cont_logits.contiguous()
+        continuation_targets = continuation_targets.contiguous()
+
         if loss_fn is None:
             summary_loss = F.cross_entropy(
                 cont_logits.view(-1, cont_logits.size(-1)),
