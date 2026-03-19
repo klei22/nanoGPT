@@ -21,7 +21,7 @@ def chat_with_image(image_path):
     processor = AutoImageProcessor.from_pretrained("google/siglip2-base-patch16-224")
 
     model = Gemma3Nano()
-    
+
     try:
         # strict=False ensures it loads even if some projector weights are newly initialized
         state_dict = torch.load(MODEL_WEIGHTS, map_location=device, weights_only=True)
@@ -40,19 +40,19 @@ def chat_with_image(image_path):
     except Exception as e:
         print(f"❌ Error loading image: {e}")
         return
-        
+
     pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device, dtype=torch.bfloat16)
 
     with torch.no_grad():
         # Pass through Vision Tower
         vision_outputs = model.vision_tower(pixel_values=pixel_values)
-        
+
         # Pre-compute BOTH representations so they are ready for the chat loop
         dense_image_embeds = model.projector(vision_outputs.last_hidden_state)
-        
+
         # Extract MAP embedding and unsqueeze to make it a [1, 1, 2048] sequence token
         raw_map_embed = model.map_projector(vision_outputs.pooler_output)
-        map_image_embeds = raw_map_embed.unsqueeze(1) 
+        map_image_embeds = raw_map_embed.unsqueeze(1)
 
     # 3. Initialize Conversation Memory
     history = ""
@@ -69,10 +69,10 @@ def chat_with_image(image_path):
     # 4. The Interactive Loop
     while True:
         user_input = input("\nYou: ").strip()
-        
+
         if not user_input:
             continue
-            
+
         # Exit condition
         if user_input.lower() in ['quit', 'exit']:
             print("Ending chat. Goodbye! 👋")
@@ -86,12 +86,12 @@ def chat_with_image(image_path):
             if not parts:
                 print("⚠️ Please provide concepts to categorize (e.g., /category cat dog bird)")
                 continue
-                
+
             print("\n🔍 Running Zero-Shot Categorization...")
             with torch.no_grad():
                 normalized_map = F.normalize(raw_map_embed, p=2, dim=-1)
                 gemma_embeddings_layer = model.llm.get_input_embeddings()
-                
+
                 results = {}
                 for concept in parts:
                     tokens = tokenizer(f" {concept}", add_special_tokens=False, return_tensors="pt").input_ids.to(device)
@@ -110,7 +110,7 @@ def chat_with_image(image_path):
         # DETERMINE AR DECODER MODE (Dense vs MAP)
         # ==========================================
         is_map_mode = user_input.lower().startswith('/map')
-        
+
         if is_map_mode:
             # Strip the '/map ' command from the query
             actual_query = user_input[4:].strip()
@@ -123,7 +123,7 @@ def chat_with_image(image_path):
 
         # Append the new user turn to the conversation history
         history += f"<start_of_turn>user\n{actual_query}<end_of_turn>\n<start_of_turn>model\n"
-        
+
         # Tokenize the ENTIRE history
         input_ids = tokenizer(history, return_tensors="pt").input_ids.to(device)
 
@@ -140,17 +140,17 @@ def chat_with_image(image_path):
             output_ids = model.llm.generate(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
-                max_new_tokens=100,      
-                do_sample=True,          
-                temperature=0.7,         
-                repetition_penalty=1.15, 
+                max_new_tokens=100,
+                do_sample=True,
+                temperature=0.7,
+                repetition_penalty=1.15,
                 pad_token_id=tokenizer.eos_token_id
             )
 
         # Decode the newly generated text
         prediction = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
         print(f"🤖 Model: {prediction}")
-        
+
         # Append the model's response to the history
         history += f"{prediction}<end_of_turn>\n"
 
@@ -159,5 +159,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Chat with your custom Vision-Language Model")
     parser.add_argument("image_path", type=str, help="Path to the image file")
     args = parser.parse_args()
-    
+
     chat_with_image(args.image_path)

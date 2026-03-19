@@ -52,8 +52,11 @@ authenticate_hf()
 # MODEL DEFINITION
 # ==========================================
 class Gemma3Nano(nn.Module):
-    def __init__(self):
+    def __init__(self, train_mode="default"):
         super().__init__()
+        self.train_mode = train_mode
+        print(f"🧠 Initializing Model with Train Mode: {self.train_mode.upper()}")
+
         print("Loading Vision: SigLIP 2 Base...")
         self.vision_tower = SiglipVisionModel.from_pretrained("google/siglip2-base-patch16-224")
         self.vision_tower.requires_grad_(False)
@@ -72,7 +75,7 @@ class Gemma3Nano(nn.Module):
             nn.LayerNorm(self.text_hidden_size)
         )
 
-        # 2. Projector for MAP Head (Zero-Shot Contrastive Path)
+        # 2. Projector for MAP Head (Zero-Shot Contrastive Path & Global Token Prompting)
         self.map_projector = nn.Sequential(
             nn.Linear(self.vision_hidden_size, self.text_hidden_size),
             nn.GELU(),
@@ -88,14 +91,37 @@ class Gemma3Nano(nn.Module):
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
 
         vision_outputs = None
+        raw_map_embed = None
+
         if pixel_values is not None:
             with torch.no_grad():
                 vision_outputs = self.vision_tower(pixel_values=pixel_values)
                 image_features = vision_outputs.last_hidden_state
 
-            image_embeds = self.projector(image_features)
+            # We always calculate the MAP embedding because we need it for the contrastive loss!
+            raw_map_embed = self.map_projector(vision_outputs.pooler_output)
 
+            # ==========================================
+            # ROUTING LOGIC: Dense Patches vs MAP Token
+            # ==========================================
+            use_map_token = False
+
+            if self.train_mode == "map_only":
+                use_map_token = True
+            elif self.train_mode == "dropout" and self.training:
+                # 50% chance to drop the dense patches and rely entirely on the MAP token
+                use_map_token = random.random() < 0.5
+
+            if use_map_token:
+                # Unsqueeze from [Batch, Hidden] -> [Batch, 1, Hidden] to act as a single token
+                image_embeds = raw_map_embed.unsqueeze(1)
+            else:
+                # Use standard dense patches [Batch, 196, Hidden]
+                image_embeds = self.projector(image_features)
+
+            # ==========================================
             # Sandwich Logic
+            # ==========================================
             bos_embeds = inputs_embeds[:, :1, :]
             rest_embeds = inputs_embeds[:, 1:, :]
             inputs_embeds = torch.cat([bos_embeds, image_embeds, rest_embeds], dim=1)
@@ -119,9 +145,8 @@ class Gemma3Nano(nn.Module):
         # MULTI-TASK LOSS: Add SigLIP Contrastive Loss
         # ==========================================
         if labels is not None and vision_outputs is not None and caption_input_ids is not None:
-            # 1. Image Global Embedding (MAP Head -> Projector)
-            image_global_embed = self.map_projector(vision_outputs.pooler_output)
-            image_global_embed = F.normalize(image_global_embed, dim=-1)
+            # 1. Image Global Embedding (Normalize the already projected MAP token)
+            image_global_embed = F.normalize(raw_map_embed, dim=-1)
 
             # 2. Text Global Embedding (Raw Gemma token embeddings mean-pooled)
             raw_text_embeds = self.llm.get_input_embeddings()(caption_input_ids)
@@ -134,11 +159,9 @@ class Gemma3Nano(nn.Module):
             # 3. Pairwise Sigmoid Loss Calculation
             logits = torch.matmul(image_global_embed, text_global_embed.T) * self.logit_scale.exp() + self.logit_bias
 
-            # Create targets: 1 for matching pairs (diagonal), -1 for non-matching pairs
             batch_size = logits.size(0)
             siglip_labels = 2 * torch.eye(batch_size, device=logits.device) - 1
 
-            # Loss = -mean(log(sigmoid(labels * logits)))
             contrastive_loss = -torch.sum(F.logsigmoid(siglip_labels * logits)) / batch_size
 
             # Combine Auto-Regressive Loss (75%) and Contrastive Loss (25%)
@@ -187,7 +210,6 @@ def prepare_data(batch, tokenizer, processor):
         attention_mask_list.append(mask)
         labels_list.append(lbls)
 
-    # Tokenize captions separately for the contrastive loss path
     raw_captions = [str(t) for t in batch['text']]
     caption_tokens = tokenizer(raw_captions, max_length=64, truncation=True, padding="max_length", return_tensors="pt")
 
@@ -200,11 +222,13 @@ def prepare_data(batch, tokenizer, processor):
         "caption_attention_mask": caption_tokens.attention_mask
     }
 
-def train_nano():
+def train_nano(train_mode="default"):
     tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-270m-it")
     tokenizer.pad_token = tokenizer.eos_token
     processor = AutoImageProcessor.from_pretrained("google/siglip2-base-patch16-224")
-    model = Gemma3Nano()
+
+    # Pass the selected mode into our custom architecture
+    model = Gemma3Nano(train_mode=train_mode)
 
     print("Loading 30k COCO Dataset for Real Pre-Training...")
     dataset = load_dataset("sayakpaul/coco-30-val-2014", split="train")
@@ -247,8 +271,10 @@ def run_batch_validation():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Gemma3Nano")
     parser.add_argument("--mode", type=str, choices=["train", "validate", "both"], default="train")
+    parser.add_argument("--train_mode", type=str, choices=["default", "dropout", "map_only"], default="default",
+                        help="Select how image embeddings are fed to the LLM during training.")
     args = parser.parse_args()
 
     if args.mode in ["train", "both"]:
-        print("\n>>> INITIATING TRAINING PHASE <<<")
-        train_nano()
+        print(f"\n>>> INITIATING TRAINING PHASE (Mode: {args.train_mode}) <<<")
+        train_nano(train_mode=args.train_mode)
