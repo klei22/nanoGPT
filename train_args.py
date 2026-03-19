@@ -234,6 +234,11 @@ def parse_args():
     training_group.add_argument('--dataset_benchmarks', default=False, action=argparse.BooleanOptionalAction, help="Run dataset benchmark metrics on a random slice after each validation")
     training_group.add_argument('--sample_metrics', default=False, action=argparse.BooleanOptionalAction, help="Display sample metrics like spelling correctness during sampling")
 
+    # Summary token sampling arg (training-specific)
+    training_group.add_argument('--sample_with_summary_token', default=False, action=argparse.BooleanOptionalAction,
+                                help="When sampling during training, use the summary token to compress the start text "
+                                     "into a summary vector before generating.")
+
     # Checkpoint args
     training_group.add_argument('--save_major_ckpt_interval', default=None, type=int, help="Interval for saving major checkpoints.")
     training_group.add_argument('--only_save_checkpoint_at_end', default=False, action=argparse.BooleanOptionalAction)
@@ -1376,6 +1381,15 @@ def parse_args():
     model_group.add_argument('--softmax_io_logging', default=False, action=argparse.BooleanOptionalAction, help="logs inputs and outputs of supported softmaxes")
     model_group.add_argument('--softmax_io_log_interval', default=1, type=int)
     model_group.add_argument('--consmax_beta_gamma_logging', default=False, action=argparse.BooleanOptionalAction, help="logs beta and gamma")
+
+    # Summary token model args (these go into GPTConfig)
+    model_group.add_argument('--use_summary_token', default=False, action=argparse.BooleanOptionalAction,
+                             help="Enable the learned summary token embedding in the model.")
+    model_group.add_argument('--summary_token_loss_weight', default=1.0, type=float,
+                             help="Weight multiplier for the summary token loss component.")
+    model_group.add_argument('--summary_token_n_prefill', default=None, type=int,
+                             help="Number of prefill tokens before appending summary token. Defaults to block_size//2.")
+
     logging_group.add_argument('--create_statistics', default=False, action=argparse.BooleanOptionalAction)
     logging_group.add_argument('--plot_statistics', default=False, action=argparse.BooleanOptionalAction)
 

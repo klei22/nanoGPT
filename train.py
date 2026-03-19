@@ -2075,6 +2075,20 @@ class Trainer:
                         else float('nan')
                     )
 
+                    # Summary token training (Phase 2)
+                    if (
+                        hasattr(self.raw_model, 'use_summary_token')
+                        and self.raw_model.use_summary_token
+                        and self.args.training_mode != 'multicontext'
+                        and hasattr(self, 'X') and hasattr(self, 'Y')
+                    ):
+                        summary_loss = self.raw_model.forward_summary_token(
+                            self.X, self.Y,
+                            iter_num=self.iter_num,
+                            loss_fn=self.loss_fn,
+                        )
+                        loss = loss + self.raw_model.config.summary_token_loss_weight * summary_loss
+
                     loss = loss / self.args.gradient_accumulation_steps
 
                     prior_dataset = current_dataset

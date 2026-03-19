@@ -472,6 +472,11 @@ class GPTConfig:
     gaussian_min_norm: float = 0.0
     gaussian_max_norm: float = float('inf')
 
+    # Summary Token
+    use_summary_token: bool = False
+    summary_token_loss_weight: float = 1.0
+    summary_token_n_prefill: int = None  # Number of tokens to prefill before appending summary token; defaults to block_size // 2
+
     # Quantizations
     start_quant_level: float = 0
     quant_scheduler: str = None

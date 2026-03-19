@@ -141,6 +141,11 @@ def parse_args():
         help="Include prompt values in Plotly traces. Disable to plot only generated continuation.",
     )
 
+    # Summary Token
+    parser.add_argument('--use_summary_token', default=False, action=argparse.BooleanOptionalAction,
+                        help="Append the learned summary token after the start text. "
+                             "The model produces a summary vector which is then used as context for generation.")
+
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
@@ -1650,26 +1655,65 @@ def main():
             )
             print(f"Saved numerical multicontext plot to: {plot_output}")
     else:
-        sample_with_existing_model(
-                model,
-                torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...],
-                decode,
-                device=args.device,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-                top_k=args.top_k,
-                num_samples=args.num_samples,
-                colorize_output=args.colorize_output,
-                colorize_mode=args.colorize_mode,
-                token_boundary=args.token_boundary,
-                show_heatmaps=args.show_heatmaps,
-                chart_type=args.chart_type,
-                last_k_tokens=args.last_k_tokens,
-                out_dir=out_dir,
-                sample_file=args.sample_file,
-                args=args,
-                dataset_idx=0,
-                )
+        # --- Summary token generation mode ---
+        if args.use_summary_token and hasattr(model, 'use_summary_token') and model.use_summary_token:
+            print("[bold cyan]Summary token mode:[/bold cyan] computing summary vector from start text...")
+            start_tensor = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
+            with torch.no_grad(), ctx:
+                summary_vec = model.compute_summary_vector(start_tensor)  # (1, 1, n_embd)
+
+            # Generate from summary vector using forward_embedded
+            console = Console()
+            model.eval()
+            for sample_idx in range(args.num_samples):
+                x_emb = summary_vec.clone()
+                generated_ids = []
+                with torch.no_grad():
+                    for _step in range(args.max_new_tokens):
+                        logits, _ = model.forward_embedded(x_emb)
+                        logits_last = logits[:, -1, :] / args.temperature
+                        top_k_val = args.top_k[0] if isinstance(args.top_k, list) else args.top_k
+                        if top_k_val is not None:
+                            v, _ = torch.topk(logits_last, min(top_k_val, logits_last.size(-1)))
+                            logits_last[logits_last < v[:, [-1]]] = -float("inf")
+                        probs = F.softmax(logits_last, dim=-1)
+                        idx_next = torch.multinomial(probs, num_samples=1)
+                        generated_ids.append(idx_next.item())
+                        # Get embedding for next token and append
+                        next_emb = model.transformer.wte(idx_next)
+                        if model.n_embd_wte:
+                            next_emb = model.transformer.scale_up(next_emb)
+                        if model.config.use_embedding_scale:
+                            next_emb = next_emb * model.embedding_scale
+                        x_emb = torch.cat([x_emb, next_emb], dim=1)
+                        # Crop if too long
+                        if x_emb.size(1) > model.config.block_size:
+                            x_emb = x_emb[:, -model.config.block_size:]
+
+                output_text = decode(generated_ids)
+                console.print(f"\n[bold cyan]--- Summary token sample {sample_idx+1} ---[/bold cyan]")
+                console.print("[bold green]" + output_text + "[/bold green]")
+        else:
+            sample_with_existing_model(
+                    model,
+                    torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...],
+                    decode,
+                    device=args.device,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    num_samples=args.num_samples,
+                    colorize_output=args.colorize_output,
+                    colorize_mode=args.colorize_mode,
+                    token_boundary=args.token_boundary,
+                    show_heatmaps=args.show_heatmaps,
+                    chart_type=args.chart_type,
+                    last_k_tokens=args.last_k_tokens,
+                    out_dir=out_dir,
+                    sample_file=args.sample_file,
+                    args=args,
+                    dataset_idx=0,
+                    )
 
 if __name__ == "__main__":
     main()

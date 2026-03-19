@@ -186,6 +186,11 @@ class GPT(nn.Module):
                 self.transformer.scale_up.weight.requires_grad = False
                 self.transformer.scale_down.weight.requires_grad = False
 
+        # Summary token: a learned embedding vector of size n_embd
+        self.use_summary_token = config.use_summary_token
+        if self.use_summary_token:
+            self.summary_token_embedding = nn.Parameter(torch.randn(config.n_embd) * 0.02)
+
         # init all weights
         self.apply(self._init_weights)
 
@@ -803,6 +808,123 @@ class GPT(nn.Module):
 
         return out
 
+    def forward_summary_token(self, idx, targets, iter_num=None, loss_fn=None):
+        """
+        Two-phase summary token training:
+        Phase 1: Normal next-token prediction loss (computed by caller).
+        Phase 2 (this method):
+          2a) Prefill the first n tokens, append the summary token embedding,
+              run through the transformer to produce a summary vector.
+          2b) Extract the hidden state at the summary token position (right
+              before lm_head).
+          2c) Use that summary vector as the sole starting context and predict
+              the continuation tokens (n+1, n+2, ...) in parallel using
+              teacher-forced targets with causal masking.
+        Returns the summary-phase loss.
+        """
+        device = idx.device
+        b, t = idx.size()
+        n_prefill = self.config.summary_token_n_prefill
+        if n_prefill is None:
+            n_prefill = self.config.block_size // 2
+        # Ensure we have enough tokens for prefill + at least a few continuation targets
+        if t < n_prefill + 2:
+            return torch.tensor(0.0, device=device)
+
+        # --- Phase 2a: prefill + summary token ---
+        prefill_idx = idx[:, :n_prefill]  # (b, n_prefill)
+
+        # Get token embeddings for the prefill
+        tok_emb = self.transformer.wte(prefill_idx)
+        if self.n_embd_wte:
+            tok_emb = self.transformer.scale_up(tok_emb)
+        if self.config.use_embedding_scale:
+            tok_emb = tok_emb * self.embedding_scale
+        if self.config.norm_variant_wte is not None:
+            tok_emb = self.transformer.post_embedding_norm(tok_emb)
+
+        # Append the summary token embedding as the last position
+        summary_emb = self.summary_token_embedding.unsqueeze(0).unsqueeze(0).expand(b, 1, -1)
+        x = torch.cat([tok_emb, summary_emb], dim=1)  # (b, n_prefill+1, n_embd)
+
+        if self.config.use_abs_pos_embeddings:
+            pos = torch.arange(0, n_prefill + 1, dtype=torch.long, device=device)
+            x = x + self.transformer.wpe(pos)
+            if self.config.norm_variant_abs is not None:
+                x = self.transformer.post_abs_norm(x)
+
+        x = self.transformer.drop(x)
+
+        # Run through transformer blocks
+        for block in self.transformer.h:
+            x = block(x, iter_num)
+
+        x = self.transformer.ln_f(x)
+
+        if self.n_embd_wte:
+            x = F.linear(x, self.transformer.scale_down.weight.t())
+
+        # --- Phase 2b: extract summary vector (last position = summary token) ---
+        summary_vec = x[:, -1:, :]  # (b, 1, n_embd)
+
+        # --- Phase 2c: predict continuation tokens starting from summary vector ---
+        # Continuation targets: tokens at positions n_prefill, n_prefill+1, ...
+        # We predict up to 4 tokens past n_prefill, or as many as available
+        max_continuation = min(4, t - n_prefill)
+        if max_continuation < 1:
+            return torch.tensor(0.0, device=device)
+
+        continuation_targets = targets[:, n_prefill:n_prefill + max_continuation]  # (b, max_continuation)
+
+        # Build the continuation input: summary_vec followed by the target tokens
+        # (teacher-forced), but we only need the summary vector as position 0
+        # and then the ground-truth tokens for positions 1..max_continuation-1
+        if max_continuation > 1:
+            cont_tok_emb = self.transformer.wte(idx[:, n_prefill:n_prefill + max_continuation - 1])
+            if self.n_embd_wte:
+                cont_tok_emb = self.transformer.scale_up(cont_tok_emb)
+            if self.config.use_embedding_scale:
+                cont_tok_emb = cont_tok_emb * self.embedding_scale
+            if self.config.norm_variant_wte is not None:
+                cont_tok_emb = self.transformer.post_embedding_norm(cont_tok_emb)
+            cont_input = torch.cat([summary_vec, cont_tok_emb], dim=1)  # (b, max_continuation, n_embd)
+        else:
+            cont_input = summary_vec  # (b, 1, n_embd)
+
+        if self.config.use_abs_pos_embeddings:
+            pos = torch.arange(0, cont_input.size(1), dtype=torch.long, device=device)
+            cont_input = cont_input + self.transformer.wpe(pos)
+            if self.config.norm_variant_abs is not None:
+                cont_input = self.transformer.post_abs_norm(cont_input)
+
+        cont_input = self.transformer.drop(cont_input)
+
+        # Run through transformer blocks again for continuation
+        for block in self.transformer.h:
+            cont_input = block(cont_input, iter_num)
+
+        cont_input = self.transformer.ln_f(cont_input)
+        if self.n_embd_wte:
+            cont_input = F.linear(cont_input, self.transformer.scale_down.weight.t())
+
+        cont_logits = self.lm_head(cont_input)  # (b, max_continuation, vocab_size)
+
+        if self.config.final_logit_softcapping is not None:
+            cont_logits = cont_logits / self.config.final_logit_softcapping
+            cont_logits = torch.tanh(cont_logits)
+            cont_logits = cont_logits * self.config.final_logit_softcapping
+
+        if loss_fn is None:
+            summary_loss = F.cross_entropy(
+                cont_logits.view(-1, cont_logits.size(-1)),
+                continuation_targets.view(-1),
+                ignore_index=-1
+            )
+        else:
+            summary_loss = loss_fn(cont_logits, continuation_targets, iter_num=iter_num)
+
+        return summary_loss
+
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
         # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
@@ -931,6 +1053,44 @@ class GPT(nn.Module):
         flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
         return mfu
+
+    @torch.no_grad()
+    def compute_summary_vector(self, idx):
+        """
+        Run the prefill tokens through the transformer with the summary token
+        appended. Returns the summary hidden vector (b, 1, n_embd) right before
+        lm_head, suitable for use as a condensed context for generation.
+        """
+        device = idx.device
+        b, t = idx.size()
+
+        tok_emb = self.transformer.wte(idx)
+        if self.n_embd_wte:
+            tok_emb = self.transformer.scale_up(tok_emb)
+        if self.config.use_embedding_scale:
+            tok_emb = tok_emb * self.embedding_scale
+        if self.config.norm_variant_wte is not None:
+            tok_emb = self.transformer.post_embedding_norm(tok_emb)
+
+        summary_emb = self.summary_token_embedding.unsqueeze(0).unsqueeze(0).expand(b, 1, -1)
+        x = torch.cat([tok_emb, summary_emb], dim=1)  # (b, t+1, n_embd)
+
+        if self.config.use_abs_pos_embeddings:
+            pos = torch.arange(0, t + 1, dtype=torch.long, device=device)
+            x = x + self.transformer.wpe(pos)
+            if self.config.norm_variant_abs is not None:
+                x = self.transformer.post_abs_norm(x)
+
+        x = self.transformer.drop(x)
+
+        for block in self.transformer.h:
+            x = block(x)
+
+        x = self.transformer.ln_f(x)
+        if self.n_embd_wte:
+            x = F.linear(x, self.transformer.scale_down.weight.t())
+
+        return x[:, -1:, :]  # (b, 1, n_embd) - the summary vector
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
