@@ -141,6 +141,16 @@ def parse_args():
         help="Include prompt values in Plotly traces. Disable to plot only generated continuation.",
     )
 
+    # Latent decode modes
+    parser.add_argument('--latent_decode', default=False, action=argparse.BooleanOptionalAction,
+                        help="Latent decode: encode start tokens, extract the final pre-LM-head hidden vector, "
+                             "and use it as the singular start token for autoregressive generation. "
+                             "Subsequent tokens are appended as normal token embeddings.")
+    parser.add_argument('--latent_continuous_decode', default=False, action=argparse.BooleanOptionalAction,
+                        help="Latent continuous decode: like --latent_decode, but during generation "
+                             "the raw pre-LM-head hidden vector is appended to the context instead of "
+                             "the sampled token embedding. The predicted token is still printed/returned.")
+
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
@@ -806,6 +816,92 @@ def sample_with_existing_model(
                     best_val_loss,
                     f"{run_name}_{k_tag}" if run_name else k_tag,
                 )
+
+
+def latent_decode_generation(
+    model: torch.nn.Module,
+    start_ids: torch.Tensor,
+    decode: Callable[[Sequence[int]], str],
+    device: str = "cuda",
+    max_new_tokens: int = 200,
+    temperature: float = 0.8,
+    top_k: Optional[int] = 200,
+    continuous: bool = False,
+    args=None,
+    console: Console | None = None,
+):
+    """
+    Latent decode: encode start tokens, get the final pre-LM-head hidden
+    vector, and use it as the singular start for autoregressive generation.
+
+    If continuous=False (--latent_decode): after the first prediction, each
+    new token is appended as a normal token embedding alongside the latent.
+
+    If continuous=True (--latent_continuous_decode): during decode, the raw
+    pre-LM-head hidden vector is appended instead of the sampled token
+    embedding.  The predicted token is still printed/returned.
+    """
+    console = console or Console()
+    model.eval()
+    block_size = model.config.block_size
+
+    mode_label = "latent_continuous_decode" if continuous else "latent_decode"
+    console.print(f"[bold cyan]--- {mode_label} ---[/bold cyan]")
+
+    # Resolve top_k list
+    if isinstance(top_k, (list, tuple)):
+        current_k = top_k[0]
+    else:
+        current_k = top_k
+
+    with torch.no_grad():
+        # Step 1: Encode start tokens and get pre-LM-head hidden state
+        x = start_ids.clone().to(device)
+        start_emb = model.embed_tokens(x)
+        _, hidden = model.forward_embedded(start_emb, return_hidden=True)
+
+        # Use last hidden position as the compressed context
+        latent_ctx = hidden[:, -1:, :]  # (B, 1, E)
+
+        generated_tokens: List[int] = []
+
+        # Step 2: Autoregressive generation
+        for _step in range(max_new_tokens):
+            logits, h = model.forward_embedded(latent_ctx, return_hidden=True)
+            next_logits = logits[:, -1, :] / temperature
+
+            if current_k is not None:
+                v, _ = torch.topk(next_logits, min(current_k, next_logits.size(-1)))
+                next_logits[next_logits < v[:, [-1]]] = -float("inf")
+
+            probs = F.softmax(next_logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)  # (B, 1)
+            generated_tokens.append(idx_next.item())
+
+            if continuous:
+                # Append the raw pre-LM-head hidden instead of token embedding
+                latent_ctx = torch.cat([latent_ctx, h[:, -1:, :]], dim=1)
+            else:
+                # Append the token embedding (normal decode after first step)
+                next_emb = model.embed_tokens(idx_next)  # (B, 1, E)
+                latent_ctx = torch.cat([latent_ctx, next_emb], dim=1)
+
+            # Crop to block_size if needed
+            if latent_ctx.size(1) > block_size:
+                latent_ctx = latent_ctx[:, -block_size:]
+
+    # Decode and print
+    start_text = decode(start_ids[0].tolist())
+    gen_text = decode(generated_tokens)
+    full_text = start_text + gen_text
+
+    console.print("[bold green]" + full_text + "[/bold green]")
+
+    if args and args.sample_file:
+        append_to_sample_file(
+            args.sample_file, full_text, start_text,
+            f"k={current_k}", None, None, mode_label,
+        )
 
 
 def interactive_generation(model, start_ids, device, max_new_tokens, temperature, top_k, stop_string, decode, encode):
@@ -1649,6 +1745,20 @@ def main():
                 include_prompt=args.numerical_multicontext_plotly_include_prompt,
             )
             print(f"Saved numerical multicontext plot to: {plot_output}")
+    elif args.latent_decode or args.latent_continuous_decode:
+        with ctx:
+            for sample_idx in range(args.num_samples):
+                latent_decode_generation(
+                    model,
+                    torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...],
+                    decode,
+                    device=args.device,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    continuous=args.latent_continuous_decode,
+                    args=args,
+                )
     else:
         sample_with_existing_model(
                 model,

@@ -1,0 +1,84 @@
+# latent_chaining_exploration.yaml
+# Compare standard training vs T+1 latent chaining vs T+N latent chaining.
+#
+# T+1 mode: forward T tokens, extract the pre-LM-head hidden vector,
+#   then do a second full forward pass using that vector to predict T+1.
+#
+# T+N mode: same first pass, then iteratively predict N tokens via
+#   latent chaining (T + N = block_size).
+#
+# Standard mode: regular next-token prediction baseline.
+#
+# After training, compare inference with:
+#   --latent_decode             (compress prompt to hidden, then normal decode)
+#   --latent_continuous_decode  (compress prompt, keep feeding hidden vectors)
+---
+
+named_static_groups:
+  # Position embeddings (rotary recommended for latent chaining since
+  # absolute pos embeddings are not applied in the second forward pass)
+  - named_group: "rotary"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      use_abs_pos_embeddings: [false]
+
+  - named_group: "abs"
+    named_group_settings:
+      use_rotary_embeddings: [false]
+      use_abs_pos_embeddings: [true]
+
+  # QK norm (generally helps stability)
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: [4]
+  n_embd: [128]
+  n_head: [4]
+  block_size: [256]
+  batch_size: [32]
+  max_iters: [5000]
+  eval_interval: [500]
+  compile: [true]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  # Baseline: standard next-token prediction with rotary
+  - training_mode: ["single"]
+    named_group_static:
+      - "rotary"
+      - "qk_norm"
+
+  # T+1 latent chaining with rotary
+  - training_mode: ["t_plus_one"]
+    named_group_static:
+      - "rotary"
+      - "qk_norm"
+
+  # T+N latent chaining (half context, half prediction) with rotary
+  - training_mode: ["t_plus_n"]
+    latent_context_size: [128]
+    named_group_static:
+      - "rotary"
+      - "qk_norm"
+
+  # T+N with smaller context (more prediction steps)
+  - training_mode: ["t_plus_n"]
+    latent_context_size: [64]
+    named_group_static:
+      - "rotary"
+      - "qk_norm"
+
+  # Baseline with abs pos embeddings for comparison
+  - training_mode: ["single"]
+    named_group_static:
+      - "abs"
+      - "qk_norm"
+
+  # T+1 with abs pos embeddings
+  - training_mode: ["t_plus_one"]
+    named_group_static:
+      - "abs"
+      - "qk_norm"

@@ -621,6 +621,37 @@ class GPT(nn.Module):
     # ------------------------------------------------------------------
     #  LATENT-CHAINING
     # ------------------------------------------------------------------
+    def embed_tokens_for_training(self, idx, dataset_idx=None):
+        """
+        Same as embed_tokens but without @torch.no_grad, so gradients
+        can flow back through the embedding for latent-chaining training.
+        """
+        device = idx.device
+        if self.config.multidataset_wte and dataset_idx is not None:
+            tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
+        else:
+            tok_emb = self.transformer.wte(idx)
+
+        tok_emb = self.add_embedding_gaussian_noise(tok_emb)
+
+        if self.n_embd_wte:
+            tok_emb = self.transformer.scale_up(tok_emb)
+
+        if self.config.use_embedding_scale:
+            tok_emb = tok_emb * self.embedding_scale
+
+        if self.config.norm_variant_wte is not None:
+            tok_emb = self.transformer.post_embedding_norm(tok_emb)
+
+        if self.config.use_abs_pos_embeddings:
+            t = idx.size(1)
+            pos = torch.arange(0, t, dtype=torch.long, device=device)
+            tok_emb = tok_emb + self.transformer.wpe(pos)
+            if self.config.norm_variant_abs is not None:
+                tok_emb = self.transformer.post_abs_norm(tok_emb)
+
+        return self.transformer.drop(tok_emb)
+
     @torch.no_grad()
     def embed_tokens(self, idx, dataset_idx=None):
         """

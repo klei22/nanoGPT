@@ -253,8 +253,22 @@ def parse_args():
     training_group.add_argument(
         '--training_mode',
         default='single',
-        choices=['single', 'multidataset', 'multicontext'],
-        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously."
+        choices=['single', 'multidataset', 'multicontext', 't_plus_one', 't_plus_n'],
+        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. "
+             "'multicontext' processes multiple contexts simultaneously. "
+             "'t_plus_one' uses latent chaining: forward T tokens, extract pre-LM-head hidden, "
+             "then do a second full forward pass using that hidden vector to predict token T+1. "
+             "'t_plus_n' extends latent chaining to predict up to N tokens beyond the context, "
+             "where T + N <= block_size."
+    )
+
+    # Latent chaining args (for t_plus_one / t_plus_n modes)
+    training_group.add_argument(
+        '--latent_context_size',
+        default=None,
+        type=int,
+        help="Number of context tokens (T) for latent chaining training modes. "
+             "Defaults to block_size // 2 for t_plus_n, or block_size for t_plus_one."
     )
 
     # Data args

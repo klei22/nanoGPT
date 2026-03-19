@@ -2029,6 +2029,66 @@ class Trainer:
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
+                        elif self.args.training_mode == 't_plus_one':
+                            # Latent chaining: forward T tokens, extract pre-LM-head hidden,
+                            # then do a second full forward using hidden to predict T+1.
+                            raw_model = self.raw_model if hasattr(self, 'raw_model') else self.model
+                            emb = raw_model.embed_tokens_for_training(self.X)
+                            logits_first, hidden = raw_model.forward_embedded(
+                                emb, iter_num=self.iter_num, return_hidden=True,
+                            )
+                            # Take the last position's hidden as the compressed context
+                            h_last = hidden[:, -1:, :]
+                            # Second full forward pass using hidden as start token
+                            logits, _ = raw_model.forward_embedded(
+                                h_last, iter_num=self.iter_num,
+                            )
+                            # Predict the T+1 token (last target in the batch)
+                            if self.loss_fn is not None:
+                                loss = self.loss_fn(
+                                    logits[:, -1:, :], self.Y[:, -1:],
+                                    iter_num=self.iter_num,
+                                )
+                            else:
+                                loss = F.cross_entropy(
+                                    logits[:, -1, :], self.Y[:, -1],
+                                )
+                        elif self.args.training_mode == 't_plus_n':
+                            # Latent chaining: forward T context tokens, then iteratively
+                            # predict N tokens via latent chaining (T + N = block_size).
+                            T = self.args.latent_context_size or (self.args.block_size // 2)
+                            N = self.args.block_size - T
+                            raw_model = self.raw_model if hasattr(self, 'raw_model') else self.model
+                            X_context = self.X[:, :T]
+                            emb = raw_model.embed_tokens_for_training(X_context)
+                            _, hidden = raw_model.forward_embedded(
+                                emb, iter_num=self.iter_num, return_hidden=True,
+                            )
+                            # Iteratively predict N tokens via latent chaining
+                            accumulated = hidden[:, -1:, :]
+                            total_loss = torch.tensor(0.0, device=self.X.device)
+                            for step in range(N):
+                                step_logits, step_hidden = raw_model.forward_embedded(
+                                    accumulated, iter_num=self.iter_num, return_hidden=True,
+                                )
+                                target_idx = T - 1 + step  # Y[:, T-1] = token at position T
+                                if self.loss_fn is not None:
+                                    step_loss = self.loss_fn(
+                                        step_logits[:, -1:, :],
+                                        self.Y[:, target_idx:target_idx + 1],
+                                        iter_num=self.iter_num,
+                                    )
+                                else:
+                                    step_loss = F.cross_entropy(
+                                        step_logits[:, -1, :],
+                                        self.Y[:, target_idx],
+                                    )
+                                total_loss = total_loss + step_loss
+                                accumulated = torch.cat(
+                                    [accumulated, step_hidden[:, -1:, :]], dim=1,
+                                )
+                            loss = total_loss / N
+                            logits = step_logits  # for entropy logging
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
                             logits, loss = self.model(
