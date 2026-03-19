@@ -1,0 +1,21 @@
+[
+  {
+    "max_iters": ["2000"],
+    "n_layer": ["12"],
+    "n_head": ["12"],
+    "n_embd": ["768"],
+    "block_size": ["1024"],
+    "device": ["cuda"],
+    "dtype": ["float16"],
+    "dataset": ["nca"],
+    "batch_size": ["16"],
+    "learning_rate": ["1e-4"],
+    "weight_decay": ["0"],
+    "warmup_iters": ["200"],
+    "lr_decay_iters": ["2000"],
+    "min_lr": ["1e-5"],
+    "use_rotary_embeddings": [false],
+    "use_abs_pos_embeddings": [true],
+    "tensorboard_run_name": ["nca_pre_pre_train"]
+  }
+]
