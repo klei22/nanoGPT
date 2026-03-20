@@ -1208,6 +1208,7 @@ def parse_args():
         "gelumax",
         "exppolymax",
         "pfla_softmax",
+        "ste_argmax_softmax",
         ]
 
     ## Selection of softmax variation for attention and output layers
