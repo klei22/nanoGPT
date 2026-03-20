@@ -577,6 +577,27 @@ class ReLU2Max(nn.Module):
         return result
 
 
+class ReLUNMax(nn.Module):
+    """ReLU^N Max: like ReLU2Max but with a configurable exponent."""
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.exponent = config.relunmax_exponent
+        self.relunmax_divisor = config.relunmax_divisor
+        self.div_by_seq_len = config.div_by_seq_len
+
+    def forward(self, x):
+
+        result = torch.relu(x) ** self.exponent / self.relunmax_divisor
+
+        # divide by sequence length
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
+
 class Softplus2Max(nn.Module):
     """ Softmax variant based on arxiv 1805.10829 with added handles for base """
     def __init__(self, config, dim=-1):
@@ -834,6 +855,7 @@ softmax_dictionary = {
     "sigsoftmax": SigSoftmax,
     "relumax": ReLUMax,
     "relu2max": ReLU2Max,
+    "relunmax": ReLUNMax,
     "sigmoidmax": SigmoidMax,
     "softshrink": Softshrink,
     "gelumax": Gelumax,
