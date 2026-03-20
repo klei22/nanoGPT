@@ -1534,6 +1534,95 @@ class Co4Attention(nn.Module):
         y = self.resid_dropout(self.out_proj(y))
         return y
 
+###############################################################################
+#  Residual Matrix Transformer (RMT) Attention
+#  (Mak & Flanigan, 2025 — arXiv:2506.22696)
+#
+#  Replaces QKV weight matrices with learned key vectors.  Features are
+#  *retrieved* from the residual matrix via tensor contraction and *stored*
+#  back via outer-product accumulation.
+###############################################################################
+
+class ResidualMatrixAttention(nn.Module):
+    """RMT attention: key-vector retrieval/storage on an outer-product memory."""
+
+    def __init__(self, config, fire_pos_enc=None):
+        super().__init__()
+
+        self.dk = config.rmt_dk
+        self.dv = config.rmt_dv
+        self.R = config.rmt_rank          # number of heads
+        self.n_embd = config.n_embd       # should equal dk * dv
+        self.dropout_p = config.dropout
+
+        assert self.n_embd == self.dk * self.dv, (
+            f"For RMT, n_embd ({self.n_embd}) must equal rmt_dk * rmt_dv "
+            f"({self.dk} * {self.dv} = {self.dk * self.dv})"
+        )
+
+        # ── Retrieval key vectors (replace W_Q, W_K, W_V matrices) ──────
+        # Initialised so that dk * σ² ≈ 1 (variance-preserving retrieval)
+        retrieval_std = 1.0 / math.sqrt(self.dk)
+        self.r_Q = nn.Parameter(torch.randn(self.R, self.dk) * retrieval_std)
+        self.r_K = nn.Parameter(torch.randn(self.R, self.dk) * retrieval_std)
+        self.r_V = nn.Parameter(torch.randn(self.R, self.dk) * retrieval_std)
+
+        # ── Storage key vectors (replace W_O matrix) ────────────────────
+        # Initialised so that R * σ² ≈ 1 (variance-preserving storage)
+        storage_std = 1.0 / math.sqrt(self.R)
+        self.w_O = nn.Parameter(torch.randn(self.R, self.dk) * storage_std)
+
+        # ── Softmax variant ─────────────────────────────────────────────
+        self.softmax_variant_attn = config.softmax_variant_attn
+        if self.softmax_variant_attn != "softmax":
+            self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
+
+        # ── Dropout ─────────────────────────────────────────────────────
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+
+        # ── Causal mask ─────────────────────────────────────────────────
+        self.register_buffer(
+            "bias",
+            torch.tril(torch.ones(config.block_size, config.block_size))
+                 .view(1, 1, config.block_size, config.block_size),
+        )
+
+    def forward(self, x, iter_num):
+        B, T, _ = x.size()
+
+        # Reshape flat residual stream to residual matrix: (B, T, Dk, Dv)
+        X = x.view(B, T, self.dk, self.dv)
+
+        # ── Retrieve Q, K, V via tensor contraction over Dk ─────────────
+        # Each head h retrieves a Dv-dim vector per token position.
+        Q = torch.einsum('hk, btkv -> bhtv', self.r_Q, X)   # (B, R, T, Dv)
+        K = torch.einsum('hk, btkv -> bhtv', self.r_K, X)   # (B, R, T, Dv)
+        V = torch.einsum('hk, btkv -> bhtv', self.r_V, X)   # (B, R, T, Dv)
+
+        # ── Scaled dot-product attention ────────────────────────────────
+        att = Q @ K.transpose(-2, -1) / math.sqrt(self.dv)   # (B, R, T, T)
+        att = att.masked_fill(
+            self.bias[:, :, :T, :T].to(x.device) == 0, float('-inf')
+        )
+
+        if self.softmax_variant_attn != "softmax":
+            att = self.softmax_layer_attn(att)
+        else:
+            att = F.softmax(att, dim=-1)
+
+        att = self.attn_dropout(att)
+        y = att @ V                                           # (B, R, T, Dv)
+
+        # ── Store back via outer-product accumulation ───────────────────
+        # Each head's output Dv-vector is associated with a Dk-dim key.
+        out = torch.einsum('hk, bhtv -> btkv', self.w_O, y)  # (B, T, Dk, Dv)
+        out = out.reshape(B, T, self.dk * self.dv)
+
+        out = self.resid_dropout(out)
+        return out
+
+
 attention_dictionary = {
     "causal": CausalSelfAttention,
     "edgellm_asic_attn": EdgeLLMASICAttention,
@@ -1543,4 +1632,5 @@ attention_dictionary = {
     "infinite": InfiniteHeadAttention,
     "mla": MultiHeadLatentAttention,
     "co4": Co4Attention,
+    "rmt": ResidualMatrixAttention,
 }

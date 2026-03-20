@@ -1,0 +1,92 @@
+# rmt_vs_default_inf.yaml
+#
+# Compare the Residual Matrix Transformer (RMT) against the default infinite
+# attention baseline.  RMT replaces QKV weight matrices with key-vector
+# retrieval/storage on an outer-product residual matrix (Mak & Flanigan 2025).
+#
+# The RMT group explores scaling the residual stream size (via rmt_dk) while
+# keeping compute roughly constant.  The infinite-attention group mirrors
+# default_inf.yaml settings for a fair comparison.
+---
+
+named_static_groups:
+  # ── RMT common settings ──────────────────────────────────────────────
+  - named_group: "rmt_base"
+    attention_variant: ["rmt"]
+    mlp_variant: ["rmt"]
+    rmt_dv: [64]
+    rmt_rank: [12]
+    use_abs_pos_embeddings: [true]
+
+  # ── Infinite attention common settings (from default_inf.yaml) ───────
+  - named_group: "inf_base"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+    n_v_head_dim: [64]
+    n_qk_head_dim: [64]
+    n_head: [12]
+    n_embd: [768]
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # ── Shared quality-of-life settings ──────────────────────────────────
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  - named_group: "relu2max"
+    softmax_variant_attn: ["relu2max"]
+
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+
+parameter_groups:
+  # ── RMT: scale residual stream via rmt_dk ────────────────────────────
+  # n_embd = rmt_dk * rmt_dv, so these give residual sizes 1024, 2048, 4096
+  - named_group_static:
+      - "rmt_base"
+    rmt_dk:
+      values: [16, 32, 64]
+    n_embd:
+      values: [1024, 2048, 4096]
+
+  # ── Infinite attention baseline (softmax) ────────────────────────────
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "inf_base"
+      - "softmax"
+      - "mqa"
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 3
+
+  # ── Infinite attention baseline (relu2max) ───────────────────────────
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "inf_base"
+      - "relu2max"
+      - "mqa"
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 3

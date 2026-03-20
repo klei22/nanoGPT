@@ -883,6 +883,84 @@ class MLP_Identity(nn.Module):
         x = self.activation(x)
         return x
 
+###############################################################################
+#  Residual Matrix Transformer (RMT) MLP
+#  (Mak & Flanigan, 2025 — arXiv:2506.22696)
+#
+#  Uses key-vector adapters between the residual matrix and a standard
+#  feed-forward core.  Retrieval concatenates R data-vectors from the
+#  residual matrix; storage splits the output into R chunks and writes
+#  them back via outer-product accumulation.
+###############################################################################
+
+class ResidualMatrixMLP(nn.Module):
+    """RMT feed-forward: key-vector adapters around a standard FF core."""
+
+    def __init__(self, config):
+        super().__init__()
+        import math as _math
+
+        self.dk = config.rmt_dk
+        self.dv = config.rmt_dv
+        self.R = config.rmt_rank
+
+        assert config.n_embd == self.dk * self.dv, (
+            f"For RMT, n_embd ({config.n_embd}) must equal rmt_dk * rmt_dv "
+            f"({self.dk} * {self.dv} = {self.dk * self.dv})"
+        )
+
+        # Effective FF input/output dimension (same as standard D = R * Dv)
+        ff_io_dim = self.R * self.dv
+
+        # Hidden dimension
+        if config.mlp_size is not None:
+            ff_hidden_dim = config.mlp_size
+        else:
+            ff_hidden_dim = config.mlp_expansion_factor * ff_io_dim
+
+        # ── Retrieval key vectors (input adapter) ───────────────────────
+        retrieval_std = 1.0 / _math.sqrt(self.dk)
+        self.r_FF = nn.Parameter(torch.randn(self.R, self.dk) * retrieval_std)
+
+        # ── Core FF layers (identical to standard transformer) ──────────
+        self.W1 = nn.Linear(ff_io_dim, ff_hidden_dim, bias=config.bias)
+        self.W2 = nn.Linear(ff_hidden_dim, ff_io_dim, bias=config.bias)
+
+        # ── Storage key vectors (output adapter) ────────────────────────
+        storage_std = 1.0 / _math.sqrt(self.R)
+        self.w_FF = nn.Parameter(torch.randn(self.R, self.dk) * storage_std)
+
+        # ── Activation ──────────────────────────────────────────────────
+        self.activation = activation_dictionary[config.activation_variant](config=config)
+
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x, iter_num=None):
+        B, T, _ = x.size()
+
+        # Reshape to residual matrix: (B, T, Dk, Dv)
+        X = x.view(B, T, self.dk, self.dv)
+
+        # ── Retrieve R data-vectors from residual matrix ────────────────
+        retrieved = torch.einsum('hk, btkv -> bhtv', self.r_FF, X)  # (B,R,T,Dv)
+
+        # Concat along head dim → (B, T, R*Dv)
+        retrieved = retrieved.transpose(1, 2).contiguous().view(B, T, self.R * self.dv)
+
+        # ── Core FF operation ───────────────────────────────────────────
+        ff_out = self.W2(self.activation(self.W1(retrieved)))  # (B, T, R*Dv)
+
+        # ── Store via outer-product accumulation ────────────────────────
+        # Reshape to (B, R, T, Dv) for storage
+        ff_out = ff_out.view(B, T, self.R, self.dv).transpose(1, 2)  # (B,R,T,Dv)
+
+        out = torch.einsum('hk, bhtv -> btkv', self.w_FF, ff_out)   # (B,T,Dk,Dv)
+        out = out.reshape(B, T, self.dk * self.dv)
+
+        out = self.dropout(out)
+        return out
+
+
 mlp_dictionary = {
     "mlp": OriginalMLP,
     "edgellm_asic_mlp": EdgeLLMASICMLP,
@@ -890,7 +968,8 @@ mlp_dictionary = {
     "identity": MLP_Identity,
     "kan": KanMLP,
     "dual_path": DualPathMLP,
-    "dual_path_swiglu": DualPathSwiglu
+    "dual_path_swiglu": DualPathSwiglu,
+    "rmt": ResidualMatrixMLP,
     }
 
 def get_mlp_instance(config):

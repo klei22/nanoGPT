@@ -98,6 +98,14 @@ class GPTConfig:
     n_cproj: int = None
     use_concat_heads: bool = False
 
+    # RMT (Residual Matrix Transformer) Options
+    # When using RMT, set n_embd = rmt_dk * rmt_dv, attention_variant = "rmt",
+    # and mlp_variant = "rmt". The rmt_rank (R) controls the number of
+    # retrieval/storage heads (analogous to n_head in standard transformer).
+    rmt_dk: int = 32       # Key dimension of residual matrix
+    rmt_dv: int = 64       # Value dimension of residual matrix
+    rmt_rank: int = 12     # R, number of retrieval/storage heads
+
     # Softcapping params
     attn_logit_softcapping: float | None = None
     final_logit_softcapping: float | None = None
