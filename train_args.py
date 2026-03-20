@@ -590,6 +590,15 @@ def parse_args():
     model_group.add_argument('--n_layer', default=6, type=int)
     model_group.add_argument('--n_head', default=6, type=int)
     model_group.add_argument('--n_kv_group', default=None, type=int)
+
+    # KV Cache (inference only)
+    model_group.add_argument('--use_kv_cache', default=False, action=argparse.BooleanOptionalAction,
+                             help='Enable KV caching for faster autoregressive generation (inference only)')
+    model_group.add_argument('--kv_cache_sharing', default=False, action=argparse.BooleanOptionalAction,
+                             help='Enable cross-layer KV cache sharing (layers in same group share cached K,V)')
+    model_group.add_argument('--shared_kv_cache_size', default=1, type=int,
+                             help='Number of layers per shared KV cache group (requires --kv_cache_sharing)')
+
     model_group.add_argument('--n_embd', default=384, type=int, help="Size of embeddings in decoder layer and wte unless n_embd_wte is set." )
     model_group.add_argument('--mlp_down_projs', default=1, type=int, help="Number of down projections in MLP/SwiGLU")
     model_group.add_argument('--n_embd_wte', default=None, type=int, help="If different from n_embd, an adapter table will be automatically created")
