@@ -7,11 +7,12 @@
 #   2. Show no generalization for a long period (val loss stays high)
 #   3. Eventually "grok" and suddenly generalize (val loss drops sharply)
 #
-# Key hyperparameters for grokking:
-#   - Weight decay (1.0): strong regularization is essential
-#   - Small dataset: 50% train split of (a + b) mod 97
-#   - Long training: 50,000 iterations to allow late generalization
-#   - Small model: 2 layers, 2 heads, 128 embedding dim
+# Key ingredients for grokking:
+#   - Exact 50/50 train/val split of all (a+b) mod 97 examples
+#   - Weight decay (1.0): strong regularization drives generalization
+#   - No learning rate decay: constant LR keeps optimization pressure
+#   - Long training (50k iters) to allow late generalization
+#   - Small model: 2 layers, 4 heads, 128 embedding dim
 
 set -euo pipefail
 
@@ -26,8 +27,8 @@ python3 generate_dataset.py \
   --train_fraction 0.5 \
   --seed 42
 
-echo "=== Step 2: Tokenize with character-level encoding ==="
-python3 prepare.py -t input.txt --method char
+echo "=== Step 2: Tokenize (using custom prepare.py for exact train/val split) ==="
+python3 prepare.py
 
 popd > /dev/null
 
@@ -47,6 +48,8 @@ python3 train.py \
   --eval_iters 100 \
   --log_interval 100 \
   --learning_rate 1e-3 \
+  --no-decay_lr \
+  --warmup_iters 10 \
   --weight_decay 1.0 \
   --dropout 0.0 \
   --csv_log \
