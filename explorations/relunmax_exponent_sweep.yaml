@@ -18,14 +18,6 @@ named_static_groups:
     use_rotary_embeddings: [true]
     use_abs_pos_embeddings: [false]
 
-  # Embedding Norm
-  - named_group: "rmsnorm_wte"
-    norm_variant_wte: ["rmsnorm"]
-
-  # MLP Activation
-  - named_group: "squared_relu"
-    activation_variant: ["squared_relu"]
-
   # Softmax baseline
   - named_group: "softmax"
     softmax_variant_attn: ["softmax"]
@@ -38,6 +30,11 @@ named_static_groups:
   - named_group: "infinite"
     attention_variant: ["infinite"]
     use_concat_heads: [true]
+
+  # Head Dimension
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
 
   # MQA
   - named_group: "mqa"
@@ -60,6 +57,7 @@ parameter_groups:
       - "rotary"
       - "softmax"
       - "infinite"
+      - "hd_100"
       - "mqa"
     n_head: [6]
 
@@ -70,6 +68,7 @@ parameter_groups:
       - "rotary"
       - "relu2max"
       - "infinite"
+      - "hd_100"
       - "mqa"
     n_head: [6]
 
@@ -79,6 +78,7 @@ parameter_groups:
       - "peri_ln"
       - "rotary"
       - "infinite"
+      - "hd_100"
       - "mqa"
     softmax_variant_attn: ["relunmax"]
     relunmax_exponent: [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
