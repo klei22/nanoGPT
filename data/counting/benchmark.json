@@ -1,0 +1,13 @@
+{
+  "name": "counting",
+  "description": "Histogram counting task: predict token frequencies in a sequence",
+  "val_examples_file": "val_examples.txt",
+  "grader": "benchmarks/grade_counting.py",
+  "grader_args": "--T 10 --L 8",
+  "max_new_tokens": 23,
+  "temperature": 0.0,
+  "top_k": 1,
+  "num_eval_examples": 100,
+  "T": 10,
+  "L": 8
+}

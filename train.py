@@ -702,6 +702,42 @@ class Trainer:
         except Exception as e:
             print(f"Error running dataset benchmarks: {e}")
 
+    def run_task_benchmarks(self):
+        """Run modular task benchmarks defined by JSON config files."""
+        if not self.args.task_benchmarks:
+            return {}
+
+        # Only run every N eval intervals
+        eval_count = getattr(self, '_task_benchmark_eval_count', 0)
+        self._task_benchmark_eval_count = eval_count + 1
+        if eval_count % self.args.task_benchmark_interval != 0:
+            return {}
+
+        try:
+            from benchmarks.task_benchmarks import run_task_benchmarks
+
+            encode_fn = self.encode
+            decode_fn = self.decode
+
+            self.console.rule("[bold cyan]Task Benchmarks[/bold cyan]")
+            results = run_task_benchmarks(
+                model=self.model,
+                encode=encode_fn,
+                decode=decode_fn,
+                device=self.device,
+                config_paths=self.args.task_benchmarks,
+                block_size=self.model.config.block_size,
+                writer=self.writer if self.args.tensorboard_log else None,
+                iter_num=self.iter_num,
+            )
+            self.console.rule("[bold cyan]End Task Benchmarks[/bold cyan]")
+            return results
+        except Exception as e:
+            print(f"Error running task benchmarks: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
+
     def load_data(self):
 
         if self.args.training_mode == 'multicontext':
@@ -1856,6 +1892,14 @@ class Trainer:
                 self.raw_model.export_wte(self.args.export_wte_npy)
             if self.args.export_scale_matrices_each_eval and self.args.export_scale_matrices_npz:
                 self.raw_model.export_scale_matrices(self.args.export_scale_matrices_npz)
+
+        # Run task benchmarks if configured
+        if self.args.task_benchmarks:
+            if live:
+                live.stop()
+            self.run_task_benchmarks()
+            if live:
+                live.start()
 
         return losses, num_steps_with_worse_loss
 

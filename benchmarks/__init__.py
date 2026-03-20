@@ -6,3 +6,7 @@ from .dataset_metrics import (
     correctly_spelled_char_total,
     run_all,
 )
+try:
+    from .task_benchmarks import run_task_benchmarks
+except ImportError:
+    pass
