@@ -1541,6 +1541,10 @@ class Co4Attention(nn.Module):
 #  Replaces QKV weight matrices with learned key vectors.  Features are
 #  *retrieved* from the residual matrix via tensor contraction and *stored*
 #  back via outer-product accumulation.
+#
+#  Supports rotary embeddings, QK norm, softmax variants, and Flash Lobo
+#  so that it can be fairly compared against other attention variants in
+#  this repo.
 ###############################################################################
 
 class ResidualMatrixAttention(nn.Module):
@@ -1572,6 +1576,43 @@ class ResidualMatrixAttention(nn.Module):
         storage_std = 1.0 / math.sqrt(self.R)
         self.w_O = nn.Parameter(torch.randn(self.R, self.dk) * storage_std)
 
+        # ── Rotary positional embeddings ────────────────────────────────
+        self.rotary_emb_q = None
+        self.rotary_emb_k = None
+        if config.use_rotary_embeddings:
+            if config.rope_variant == "soap":
+                self.sym_rot_num_angles = config.sym_rot_num_angles
+                self.rotary_emb_q = SymmetricalOverlapAngularPositions(
+                    config, size=self.dv, num_angles=self.sym_rot_num_angles)
+                self.rotary_emb_k = SymmetricalOverlapAngularPositions(
+                    config, size=self.dv, num_angles=self.sym_rot_num_angles)
+            elif config.rope_variant == "rope":
+                self.rotary_emb_q = RotaryEmbedding(config, size=self.dv)
+                self.rotary_emb_k = RotaryEmbedding(config, size=self.dv)
+
+        # ── QK norm ─────────────────────────────────────────────────────
+        self.use_qk_norm = config.use_qk_norm
+        self.use_qk_norm_scale = config.use_qk_norm_scale
+        self.use_v_norm = config.use_v_norm
+
+        if self.use_qk_norm_scale:
+            L = config.block_size
+            g0 = math.log2(L * L - L)
+            self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
+
+        # ── Flash Lobo ──────────────────────────────────────────────────
+        self.use_flash_lobo = config.use_flash_lobo
+        self.use_flash_lobo_per_head = config.use_flash_lobo_per_head
+        if self.use_flash_lobo:
+            if config.use_flash_obo_const:
+                self.flash_lobo_log_const = config.flash_lobo_log_const
+            elif config.use_flash_lobo_per_head:
+                self.flash_lobo_log_const = nn.Parameter(
+                    torch.full((self.R,), config.flash_lobo_log_const))
+            else:
+                self.flash_lobo_log_const = nn.Parameter(
+                    torch.tensor(config.flash_lobo_log_const))
+
         # ── Softmax variant ─────────────────────────────────────────────
         self.softmax_variant_attn = config.softmax_variant_attn
         if self.softmax_variant_attn != "softmax":
@@ -1600,8 +1641,27 @@ class ResidualMatrixAttention(nn.Module):
         K = torch.einsum('hk, btkv -> bhtv', self.r_K, X)   # (B, R, T, Dv)
         V = torch.einsum('hk, btkv -> bhtv', self.r_V, X)   # (B, R, T, Dv)
 
+        # ── Rotary positional embeddings ────────────────────────────────
+        if self.rotary_emb_q is not None and self.rotary_emb_k is not None:
+            Q = self.rotary_emb_q(Q)
+            K = self.rotary_emb_k(K)
+
+        # ── QK norm ─────────────────────────────────────────────────────
+        if self.use_qk_norm:
+            Q = Q / (Q.norm(dim=-1, keepdim=True) + 1e-6)
+            K = K / (K.norm(dim=-1, keepdim=True) + 1e-6)
+
+        if self.use_v_norm:
+            V = V / (V.norm(dim=-1, keepdim=True) + 1e-6)
+
         # ── Scaled dot-product attention ────────────────────────────────
-        att = Q @ K.transpose(-2, -1) / math.sqrt(self.dv)   # (B, R, T, T)
+        att = Q @ K.transpose(-2, -1)                         # (B, R, T, T)
+
+        if self.use_qk_norm_scale:
+            att = att * self.qk_norm_factor
+        else:
+            att = att / math.sqrt(self.dv)
+
         att = att.masked_fill(
             self.bias[:, :, :T, :T].to(x.device) == 0, float('-inf')
         )
