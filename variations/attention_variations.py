@@ -1314,6 +1314,72 @@ class InfiniteHeadAttention(nn.Module):
 
         return y
 
+
+class MemorySparseAttention(CausalSelfAttention):
+    """
+    Approximate Memory Sparse Attention (MSA) via top-k sparse causal masking.
+    """
+
+    def __init__(self, config, fire_pos_enc=None):
+        super().__init__(config, fire_pos_enc=fire_pos_enc)
+        # Current implementation uses explicit sparse masking (no flash kernel path).
+        self.flash = False
+        self.msa_topk = max(1, int(getattr(config, "msa_topk", 64)))
+        self.msa_min_tokens = max(1, int(getattr(config, "msa_min_tokens", 32)))
+
+    def forward(self, x, iter_num):
+        B, T, C = x.size()
+
+        q = self.c_attn_q(x)
+        k = self.c_attn_k(x)
+        v = self.c_attn_v(x)
+
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2)
+
+        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
+            q = self.rotary_emb_q(q)
+            k = self.rotary_emb_k(k)
+
+        if self.use_qk_norm:
+            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+
+        if self.use_v_norm:
+            v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+
+        k_attn = self._expand_kv(k)
+        v_attn = self._expand_kv(v)
+
+        att = q @ k_attn.transpose(-2, -1)
+        if self.use_qk_norm_scale:
+            att = att * self.qk_norm_factor
+        else:
+            att = att / math.sqrt(k_attn.size(-1))
+
+        causal_mask = self.bias[:, :, :T, :T].to(x.device).bool()
+        att = att.masked_fill(~causal_mask, float('-inf'))
+
+        keep_k = min(T, max(self.msa_topk, self.msa_min_tokens))
+        if keep_k < T:
+            topk_idx = torch.topk(att, k=keep_k, dim=-1).indices
+            sparse_mask = torch.zeros_like(att, dtype=torch.bool)
+            sparse_mask.scatter_(-1, topk_idx, True)
+            att = att.masked_fill(~sparse_mask, float('-inf'))
+
+        if self.softmax_variant_attn != 'softmax':
+            att = self.softmax_layer_attn(att)
+        else:
+            att = F.softmax(att, dim=-1)
+
+        att = self.attn_dropout(att)
+        y = att @ v_attn
+
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y = self.resid_dropout(self.c_proj(y))
+        return y
+
 ##############################################################################
 #  Multi-head Latent Attention (MLA) – DeepSeek-V2 implementation
 #  - low-rank joint compression of K & V (latent_kv_dim)
@@ -1541,6 +1607,7 @@ attention_dictionary = {
     # "ssm": MambaBlock,
     "identity": AttnIdentity,
     "infinite": InfiniteHeadAttention,
+    "msa": MemorySparseAttention,
     "mla": MultiHeadLatentAttention,
     "co4": Co4Attention,
 }

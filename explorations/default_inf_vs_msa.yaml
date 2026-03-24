@@ -1,0 +1,87 @@
+# Compare default infinite-attention setup vs an MSA-style sparse attention variant.
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Softmax variants
+  - named_group: "relu2max"
+    softmax_variant_attn: ["relu2max"]
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  # Head Dimension
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+  - named_group: "hd_150"
+    n_qk_head_dim: [150]
+    n_v_head_dim: [150]
+  - named_group: "hd_200"
+    n_qk_head_dim: [200]
+    n_v_head_dim: [200]
+
+  # MQA
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+named_variation_groups:
+  - named_group: "attention_compare"
+    parameter_groups:
+      - attention_variant: ["infinite"]
+        use_concat_heads: [true]
+      - attention_variant: ["msa"]
+        msa_topk: [64]
+        msa_min_tokens: [32]
+        use_concat_heads: [false]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "relu2max"
+      - "mqa"
+    named_group_variations: ["attention_compare"]
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 1
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "mqa"
+    named_group_variations: ["attention_compare"]
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 1
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
