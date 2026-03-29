@@ -12,7 +12,7 @@ Changes vs. the original version
   - Efficiency is computed on the **average objective** across those N runs.
 * Supports efficiency normalization by params, torch-allocated VRAM,
   torch-reserved VRAM, process GPU usage, or iteration latency.
-* Supports optimization on score, RankMe, or AReQ.
+* Supports optimization on score, RankMe, AReQ, target_left_prob, or target_rank.
 """
 
 import argparse
@@ -32,7 +32,7 @@ import torch
 import yaml
 
 
-TrialMetrics = Tuple[float, float, int, float, float, float, float, float, float]
+TrialMetrics = Tuple[float, float, int, float, float, float, float, float, float, float, float]
 
 
 # ───────────────────────── helpers ──────────────────────────
@@ -94,6 +94,8 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
             iter_latency_ms,
             rankme,
             areq,
+            target_left_prob,
+            target_rank,
         )
     """
     from train import Trainer
@@ -119,6 +121,8 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
     iter_latency_ms = float(getattr(tr, "iter_latency_avg", 0.0))
     rankme = float(getattr(tr, "latest_rankme", float("nan")))
     areq = float(getattr(tr, "latest_areq", float("nan")))
+    target_left_prob = float(getattr(tr, "latest_target_left_prob", float("nan")))
+    target_rank = float(getattr(tr, "latest_target_rank", float("nan")))
 
     del tr
     _cleanup_cuda()
@@ -132,6 +136,8 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
         iter_latency_ms,
         rankme,
         areq,
+        target_left_prob,
+        target_rank,
     )
 
 
@@ -146,6 +152,8 @@ def _parse_best_metrics_file(metrics_path: Path) -> TrialMetrics:
     torch_resv_mb = float(line[7])
     process_gpu_mb = float(line[8])
     iter_latency_ms = float(line[9])
+    target_rank = float(line[12])
+    target_left_prob = float(line[13])
     rankme = float(line[19])
     areq = float(line[20])
 
@@ -159,6 +167,8 @@ def _parse_best_metrics_file(metrics_path: Path) -> TrialMetrics:
         iter_latency_ms,
         rankme,
         areq,
+        target_left_prob,
+        target_rank,
     )
 
 
@@ -254,9 +264,13 @@ def main():
     )
     ap.add_argument(
         "--optimize_target",
-        choices=["score", "rankme", "areq"],
+        choices=["score", "rankme", "areq", "target_left_prob", "target_rank"],
         default="score",
-        help="Optimization objective: score (1/exp(loss)), rankme, or areq.",
+        help=(
+            "Optimization objective: score (1/exp(loss)), rankme, areq, "
+            "target_left_prob (avg probability mass left of target), or "
+            "target_rank (avg rank of the target token)."
+        ),
     )
     ap.add_argument(
         "--optimize_mode",
@@ -335,6 +349,8 @@ def main():
         base_score = last["baseline_metrics"]["score"]
         base_rankme = last["baseline_metrics"].get("rankme", float("nan"))
         base_areq = last["baseline_metrics"].get("areq", float("nan"))
+        base_target_left_prob = last["baseline_metrics"].get("target_left_prob", float("nan"))
+        base_target_rank = last["baseline_metrics"].get("target_rank", float("nan"))
         base_params = last["baseline_metrics"]["params"]
         base_torch_alloc = last["baseline_metrics"].get(
             "peak_torch_allocated_mb",
@@ -364,6 +380,8 @@ def main():
             base_iter_ms,
             base_rankme,
             base_areq,
+            base_target_left_prob,
+            base_target_rank,
         ) = run_fn(deepcopy(baseline_cfg))
         base_score = 1 / math.exp(base_loss)
         log["iterations"].append(
@@ -380,6 +398,8 @@ def main():
                     "best_iter": base_best_iter,
                     "rankme": base_rankme,
                     "areq": base_areq,
+                    "target_left_prob": base_target_left_prob,
+                    "target_rank": base_target_rank,
                 },
                 "baseline_config_after": deepcopy(baseline_cfg),
             }
@@ -430,6 +450,8 @@ def main():
                             iter_ms,
                             rankme,
                             areq,
+                            target_left_prob,
+                            target_rank,
                         ) = run_fn(cfg_run)
                     except Exception as exc:
                         print("   ⚠", exc)
@@ -448,6 +470,8 @@ def main():
                             "iter_latency_ms": iter_ms,
                             "rankme": rankme,
                             "areq": areq,
+                            "target_left_prob": target_left_prob,
+                            "target_rank": target_rank,
                         }
                     )
                     scores.append(score)
@@ -465,6 +489,8 @@ def main():
                 avg_iter = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
                 avg_rankme = _nanmean([s["rankme"] for s in seed_runs])
                 avg_areq = _nanmean([s["areq"] for s in seed_runs])
+                avg_target_left_prob = _nanmean([s["target_left_prob"] for s in seed_runs])
+                avg_target_rank = _nanmean([s["target_rank"] for s in seed_runs])
                 avg_loss = -math.log(avg_score)
 
                 d_score = avg_score - base_score
@@ -476,6 +502,16 @@ def main():
                 d_areq = (
                     avg_areq - base_areq
                     if not math.isnan(avg_areq) and not math.isnan(base_areq)
+                    else float("nan")
+                )
+                d_target_left_prob = (
+                    avg_target_left_prob - base_target_left_prob
+                    if not math.isnan(avg_target_left_prob) and not math.isnan(base_target_left_prob)
+                    else float("nan")
+                )
+                d_target_rank = (
+                    avg_target_rank - base_target_rank
+                    if not math.isnan(avg_target_rank) and not math.isnan(base_target_rank)
                     else float("nan")
                 )
                 d_param = nparam - base_params
@@ -506,6 +542,12 @@ def main():
                 elif args.optimize_target == "areq":
                     objective_value = avg_areq
                     baseline_objective = base_areq
+                elif args.optimize_target == "target_left_prob":
+                    objective_value = avg_target_left_prob
+                    baseline_objective = base_target_left_prob
+                elif args.optimize_target == "target_rank":
+                    objective_value = avg_target_rank
+                    baseline_objective = base_target_rank
                 else:
                     raise ValueError("Unknown optimize target")
 
@@ -529,6 +571,8 @@ def main():
                     "avg_score": avg_score,
                     "avg_rankme": avg_rankme,
                     "avg_areq": avg_areq,
+                    "avg_target_left_prob": avg_target_left_prob,
+                    "avg_target_rank": avg_target_rank,
                     "best_val_loss": avg_loss,
                     "best_iter": max(s["best_iter"] for s in seed_runs),
                     "num_params": nparam,
@@ -539,6 +583,8 @@ def main():
                     "delta_score": d_score,
                     "delta_rankme": d_rankme,
                     "delta_areq": d_areq,
+                    "delta_target_left_prob": d_target_left_prob,
+                    "delta_target_rank": d_target_rank,
                     "delta_params": d_param,
                     "delta_torch_allocated_mb": d_torch_alloc,
                     "delta_torch_reserved_mb": d_torch_reserved,
@@ -651,6 +697,8 @@ def main():
                                 "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
                                 "rankme": base_rankme,
                                 "areq": base_areq,
+                                "target_left_prob": base_target_left_prob,
+                                "target_rank": base_target_rank,
                             },
                             "candidates": candidates,
                             "chosen": None,
@@ -710,6 +758,8 @@ def main():
         base_iter_ms = chosen.get("iter_latency_avg", base_iter_ms)
         base_rankme = chosen.get("avg_rankme", base_rankme)
         base_areq = chosen.get("avg_areq", base_areq)
+        base_target_left_prob = chosen.get("avg_target_left_prob", base_target_left_prob)
+        base_target_rank = chosen.get("avg_target_rank", base_target_rank)
 
         log["iterations"].append(
             {
@@ -725,6 +775,8 @@ def main():
                     "best_iter": chosen["best_iter"],
                     "rankme": base_rankme,
                     "areq": base_areq,
+                    "target_left_prob": base_target_left_prob,
+                    "target_rank": base_target_rank,
                 },
                 "candidates": candidates,
                 "chosen": chosen,
