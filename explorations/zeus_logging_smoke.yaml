@@ -1,0 +1,41 @@
+# Quick A/B smoke test for Zeus profiling metrics.
+# Runs two otherwise-identical tiny jobs:
+#   1) zeus_profile = false (baseline)
+#   2) zeus_profile = true  (profiling enabled)
+#
+# Usage:
+# python optimization_and_search/run_experiments.py \
+#   --config explorations/zeus_logging_smoke.yaml \
+#   --config_format yaml \
+#   --output_dir out/zeus_smoke \
+#   --prefix zeus-smoke-
+#
+# Then inspect metrics in:
+# - exploration_logs/zeus_logging_smoke.yaml
+# - out/zeus_smoke/*/best_val_loss_and_iter.txt
+
+---
+common_group:
+  dataset: ["shakespeare_char"]
+  device: ["cpu"]
+  compile: [false]
+  max_iters: [30]
+  eval_interval: [10]
+  eval_iters: [5]
+  log_interval: [5]
+  batch_size: [8]
+  block_size: [64]
+  n_layer: [2]
+  n_head: [2]
+  n_embd: [64]
+  dropout: [0.0]
+  never_save_checkpoint: [true]
+  tensorboard_log: [false]
+  wandb_log: [false]
+
+parameter_groups:
+  - zeus_profile: [false]
+    zeus_window_name: ["smoke_no_zeus"]
+
+  - zeus_profile: [true]
+    zeus_window_name: ["smoke_with_zeus"]
