@@ -10,9 +10,12 @@
 # Results are written as CSV and PNG to a summary directory.
 #
 # Parallelization strategy (3 phases):
-#   Phase 1: Baseline fp32 eval (GPU) runs concurrently with all 6 quantizations (CPU)
+#   Phase 1: Baseline fp32 eval (GPU) runs concurrently with quantizations (CPU)
 #   Phase 2: GPU evals run sequentially; CPU angle analyses run in background
 #   Phase 3: Aggregate CSV + plot generation
+#
+# CPU jobs are capped at --max-parallel (default 2) to avoid OOM from loading
+# multiple full checkpoints into RAM simultaneously.
 
 set -euo pipefail
 
@@ -21,6 +24,7 @@ CKPT_DIR=""
 EVAL_DATASET=""
 EVAL_ITERS=200
 BIT_WIDTHS=(8 7 6 5 4 3)
+MAX_PARALLEL=2
 SWEEP_ROOT=""
 SUMMARY_ROOT=""
 
@@ -34,6 +38,7 @@ Required:
 
 Options:
   --eval-iters     Number of evaluation iterations (default: 200)
+  --max-parallel   Max concurrent CPU jobs to avoid OOM (default: 2)
   --sweep-root     Directory for quantized checkpoints
                    (default: <ckpt-dir>_sym_vector_sweep)
   --summary-root   Directory for output CSV and plots
@@ -54,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --eval-iters)
       EVAL_ITERS="$2"
+      shift 2
+      ;;
+    --max-parallel)
+      MAX_PARALLEL="$2"
       shift 2
       ;;
     --sweep-root)
@@ -104,12 +113,45 @@ fi
 EVAL_DATASET_DIR="data/${EVAL_DATASET}"
 EVAL_ROOT="${SWEEP_ROOT}_evals"
 
+# ── Helper: throttle background jobs to avoid OOM ───────────────────────────
+# Waits until the number of live PIDs in the given array drops below MAX_PARALLEL.
+# Usage: wait_for_slot ARRAY_NAME
+# Modifies the array in-place, removing completed PIDs.
+wait_for_slot() {
+  local -n _pids=$1
+  while (( ${#_pids[@]} >= MAX_PARALLEL )); do
+    local still_running=()
+    for pid in "${_pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        still_running+=("$pid")
+      else
+        # Reap and check exit status
+        wait "$pid" || { echo "Background job (PID $pid) failed" >&2; exit 1; }
+      fi
+    done
+    _pids=("${still_running[@]}")
+    if (( ${#_pids[@]} >= MAX_PARALLEL )); then
+      sleep 1
+    fi
+  done
+}
+
+# Drain all remaining PIDs in an array, failing on any error.
+wait_all() {
+  local -n _pids=$1
+  for pid in "${_pids[@]}"; do
+    wait "$pid" || { echo "Background job (PID $pid) failed" >&2; exit 1; }
+  done
+  _pids=()
+}
+
 echo "============================================================"
 echo "Symmetric per-vector PTQ analysis"
 echo "  Checkpoint:     $CKPT_DIR"
 echo "  Eval dataset:   $EVAL_DATASET"
 echo "  Eval iters:     $EVAL_ITERS"
 echo "  Bit-widths:     ${BIT_WIDTHS[*]}"
+echo "  Max parallel:   $MAX_PARALLEL"
 echo "  Sweep root:     $SWEEP_ROOT"
 echo "  Summary root:   $SUMMARY_ROOT"
 echo "============================================================"
@@ -135,9 +177,9 @@ mkdir -p "$SWEEP_ROOT" "$SUMMARY_ROOT" "$EVAL_ROOT"
 # Regex for weight tensors to compare angles (attention + MLP weights)
 PATTERN='transformer\.h\.[0-9]+\.(attn\.(c_attn|c_proj)|mlp\.(c_fc|c_proj))\.weight'
 
-# ── Phase 1: Baseline eval (GPU) + all quantizations (CPU) in parallel ──────
+# ── Phase 1: Baseline eval (GPU) + quantizations (CPU, throttled) ────────────
 echo ""
-echo "=== Phase 1: Baseline eval + all quantizations in parallel ==="
+echo "=== Phase 1: Baseline eval + quantizations (max $MAX_PARALLEL concurrent CPU jobs) ==="
 
 # Start baseline eval in background (uses GPU)
 BASELINE_EVAL_DIR="${EVAL_ROOT}/fp32"
@@ -151,12 +193,13 @@ python3 sample.py \
   --eval_output_dir "$BASELINE_EVAL_DIR" &
 BASELINE_PID=$!
 
-# Launch all quantizations in parallel (CPU-only, no GPU contention)
+# Launch quantizations with throttling (each loads full ckpt into RAM)
 QUANT_PIDS=()
 for bit in "${BIT_WIDTHS[@]}"; do
   QUANT_OUT_DIR="${SWEEP_ROOT}/${bit}bit"
   mkdir -p "$QUANT_OUT_DIR"
   if [ ! -f "$QUANT_OUT_DIR/ckpt.pt" ]; then
+    wait_for_slot QUANT_PIDS
     echo "  Starting int${bit} quantization..."
     python3 quantizations/ptq/fake_quantize_ckpt.py "$CKPT_DIR" \
       --out_dir "$QUANT_OUT_DIR" \
@@ -174,10 +217,8 @@ echo "  Waiting for baseline evaluation..."
 wait "$BASELINE_PID" || { echo "Baseline evaluation failed" >&2; exit 1; }
 echo "  Baseline evaluation complete."
 
-# Wait for all quantizations to finish
-for pid in "${QUANT_PIDS[@]}"; do
-  wait "$pid" || { echo "A quantization job failed" >&2; exit 1; }
-done
+# Wait for remaining quantizations
+wait_all QUANT_PIDS
 echo "  All quantizations complete."
 
 # ── Phase 2: Evaluations (GPU, sequential) + angle analyses (CPU, background)
@@ -188,9 +229,10 @@ ANGLE_PIDS=()
 for bit in "${BIT_WIDTHS[@]}"; do
   QUANT_OUT_DIR="${SWEEP_ROOT}/${bit}bit"
 
-  # Launch angle analysis in background (CPU-only)
+  # Launch angle analysis in background (CPU-only, throttled)
   ANGLE_DIR="${QUANT_OUT_DIR}/angle_reports"
   mkdir -p "$ANGLE_DIR"
+  wait_for_slot ANGLE_PIDS
   echo "  Starting int${bit} angle analysis (background)..."
   python3 analysis/checkpoint_analysis/checkpoint_regex_explorer.py \
     "$CKPT_DIR/ckpt.pt" \
@@ -215,9 +257,7 @@ done
 
 # Wait for any remaining angle analyses
 echo "  Waiting for angle analyses to finish..."
-for pid in "${ANGLE_PIDS[@]}"; do
-  wait "$pid" || { echo "An angle analysis job failed" >&2; exit 1; }
-done
+wait_all ANGLE_PIDS
 echo "  All evaluations and angle analyses complete."
 
 # ── Phase 3: Aggregate results, write CSV, and plot ─────────────────────────
