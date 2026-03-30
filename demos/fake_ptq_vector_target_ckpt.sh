@@ -1,6 +1,9 @@
 #!/bin/bash
-# demos/fake_ptq_symmetric_vector_analysis_demo.sh
+# demos/fake_ptq_vector_target_ckpt.sh
 #
+# call with the following
+# bash demos/fake_ptq_vector_target_ckpt.sh --ckpt-dir <name of out_dir with ckpt.pt file> --summary-root summary/<name-of-folder> --eval-dataset "shakespeare_char"
+
 # Performs symmetrical per-vector post-training quantization analysis on a
 # provided checkpoint directory.  Sweeps bit-widths int8 through int3,
 # evaluates validation loss for each, and computes angular distortion between
