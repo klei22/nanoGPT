@@ -176,12 +176,10 @@ for bit in "${BIT_WIDTHS[@]}"; do
   step=$((step + 1))
 done
 
-# ── Final step: Compute angles inline, aggregate CSV, and plot ──────────────
-# Angular distortion is computed here directly via per-vector cosine similarity
-# between the baseline and each quantized checkpoint.  This replaces the
-# checkpoint_regex_explorer.py calls which also computed expensive pairwise
-# intra-tensor metrics, L2 norm stats, group statistics, and histograms that
-# are not needed for the summary plots.
+# ── Final step: Aggregate eval results, compute angles, write CSV + plot ────
+# Uses checkpoint_angle_comparison.py for the lightweight O(n) per-vector angle
+# computation (instead of the heavyweight checkpoint_regex_explorer.py which
+# also runs O(n^2) pairwise stats, L2 norms, group metrics, and histograms).
 echo ""
 echo "=== Step ${step}: Generate summary CSV and plots ==="
 
@@ -194,11 +192,8 @@ python3 - \
 import argparse
 import csv
 import json
-import math
 import os
-import re
-import statistics
-from typing import Dict, List, Tuple
+import sys
 
 parser = argparse.ArgumentParser()
 parser.add_argument("ckpt_dir")
@@ -214,72 +209,11 @@ eval_root = os.path.abspath(args.eval_root)
 summary_root = os.path.abspath(args.summary_root)
 sweep_bits = sorted(args.bits, reverse=True)
 
-import torch
-import torch.nn.functional as F
+# Import the lightweight angle comparison module (script runs from repo root)
+sys.path.insert(0, os.path.join("analysis", "checkpoint_analysis"))
+from checkpoint_angle_comparison import load_state_dict, compare_angles
 
-WEIGHT_PATTERN = re.compile(
-    r"transformer\.h\.[0-9]+\.(attn\.(c_attn|c_proj)|mlp\.(c_fc|c_proj))\.weight"
-)
-
-# ── Helpers ─────────────────────────────────────────────────────────────────
-def load_state_dict(ckpt_path: str) -> Tuple[dict, int]:
-    """Load state dict and return (state_dict, embedding_dim)."""
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    sd = ckpt["model"]
-    # Strip compiler prefix if present
-    cleaned = {}
-    for k, v in sd.items():
-        cleaned[k.removeprefix("_orig_mod.")] = v
-    n_embd = ckpt.get("model_args", {}).get("n_embd")
-    return cleaned, n_embd
-
-def compute_angle_stats(
-    baseline_sd: dict, quantized_sd: dict, embedding_dim: int
-) -> Dict[str, float]:
-    """Compute per-vector angular distortion between two state dicts.
-
-    Only compares weight tensors matching WEIGHT_PATTERN along axes whose
-    size equals embedding_dim — the same logic as iter_vector_views in
-    checkpoint_regex_explorer.py.
-    """
-    all_angles: List[float] = []
-    all_cosines: List[float] = []
-
-    for name in baseline_sd:
-        if not WEIGHT_PATTERN.search(name):
-            continue
-        base_t = baseline_sd[name].detach().float()
-        quant_t = quantized_sd.get(name)
-        if quant_t is None or quant_t.shape != base_t.shape:
-            continue
-        quant_t = quant_t.detach().float()
-
-        for axis, axis_size in enumerate(base_t.shape):
-            if axis_size != embedding_dim:
-                continue
-            base_vecs = base_t.movedim(axis, -1).reshape(-1, embedding_dim)
-            quant_vecs = quant_t.movedim(axis, -1).reshape(-1, embedding_dim)
-            if base_vecs.numel() == 0:
-                continue
-
-            cos = F.cosine_similarity(base_vecs, quant_vecs, dim=-1, eps=1e-8)
-            cos = cos.clamp(-1.0, 1.0)
-            angles_deg = torch.rad2deg(torch.acos(cos))
-
-            all_angles.extend(angles_deg.tolist())
-            all_cosines.extend(cos.tolist())
-
-    if not all_angles:
-        return {}
-    return {
-        "mean_angle": statistics.mean(all_angles),
-        "median_angle": statistics.median(all_angles),
-        "max_angle": max(all_angles),
-        "min_angle": min(all_angles),
-        "mean_cosine": statistics.mean(all_cosines) if all_cosines else float("nan"),
-    }
-
-# ── Load baseline ───────────────────────────────────────────────────────────
+# ── Load baseline loss ──────────────────────────────────────────────────────
 baseline_eval = os.path.join(eval_root, "fp32", "eval_loss.txt")
 if not os.path.exists(baseline_eval):
     raise SystemExit(f"Missing baseline evaluation at {baseline_eval}")
@@ -289,7 +223,7 @@ if baseline_loss is None:
     raise SystemExit(f"No 'val' key in {baseline_eval}")
 baseline_loss = float(baseline_loss)
 
-# Load baseline state dict once for angle comparisons
+# Load baseline state dict once for all angle comparisons
 print("Loading baseline checkpoint for angle comparisons...")
 baseline_sd, embedding_dim = load_state_dict(os.path.join(ckpt_dir, "ckpt.pt"))
 if embedding_dim is None:
@@ -298,7 +232,6 @@ if embedding_dim is None:
 # ── Collect per-bit-width results ───────────────────────────────────────────
 entries = []
 for bit in sweep_bits:
-    # Validation loss
     loss_path = os.path.join(eval_root, f"{bit}bit", "eval_loss.txt")
     if not os.path.exists(loss_path):
         raise SystemExit(f"Missing evaluation at {loss_path}")
@@ -306,14 +239,14 @@ for bit in sweep_bits:
         val_loss = float(json.load(fh)["val"])
 
     # Angle analysis — load quantized ckpt, compare, then free it
-    angle_info: Dict[str, float] = {}
+    angle_info = {}
     if embedding_dim is not None:
         quant_ckpt_path = os.path.join(sweep_root, f"{bit}bit", "ckpt.pt")
         if os.path.exists(quant_ckpt_path):
             print(f"  Computing angles for int{bit}...")
             quant_sd, _ = load_state_dict(quant_ckpt_path)
-            angle_info = compute_angle_stats(baseline_sd, quant_sd, embedding_dim)
-            del quant_sd  # free memory before loading next
+            angle_info, _ = compare_angles(baseline_sd, quant_sd, embedding_dim)
+            del quant_sd
 
     entries.append({
         "bits": bit,
@@ -326,7 +259,7 @@ for bit in sweep_bits:
         "mean_cosine": angle_info.get("mean_cosine"),
     })
 
-del baseline_sd  # free baseline after all comparisons
+del baseline_sd
 
 entries.sort(key=lambda e: e["bits"], reverse=True)
 
@@ -342,7 +275,6 @@ with open(csv_path, "w", newline="", encoding="utf-8") as csv_out:
     writer = csv.DictWriter(csv_out, fieldnames=fieldnames)
     writer.writeheader()
 
-    # Write baseline row
     writer.writerow({
         "bits": 32,
         "label": "fp32",
@@ -385,7 +317,6 @@ losses = [e["val_loss"] for e in entries]
 mean_angles = [e["mean_angle"] for e in entries]
 median_angles = [e["median_angle"] for e in entries]
 
-# ── Left panel: Validation loss vs. bit-width ───────────────────────────────
 ax_loss.plot(bits, losses, marker="o", color="tab:blue", linewidth=2, label="Symmetric vector PTQ")
 ax_loss.axhline(baseline_loss, linestyle="--", color="tab:orange", linewidth=1.5, label="fp32 baseline")
 ax_loss.invert_xaxis()
@@ -397,7 +328,6 @@ ax_loss.set_title("Validation Loss vs. Bit-width\n(Symmetric Per-Vector Quantiza
 ax_loss.legend(fontsize=9)
 ax_loss.grid(True, which="both", linestyle=":", linewidth=0.5)
 
-# ── Right panel: Angular distortion vs. bit-width ───────────────────────────
 valid_mean = [(b, a) for b, a in zip(bits, mean_angles) if a is not None]
 valid_median = [(b, a) for b, a in zip(bits, median_angles) if a is not None]
 
