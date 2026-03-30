@@ -5,7 +5,7 @@
 set -e
 
 for target in params vram iter; do
-  python hyperparam_search.py \
+  python optimization_and_search/hyperparam_search.py \
     --orig_settings ./hp_searches/efficiency_targets_demo.yaml \
     --param_names n_layer n_head n_embd mlp_size \
     --increments 1 1 16 16 \

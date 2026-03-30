@@ -1,7 +1,7 @@
 #!/bin/bash
 # hp_searches/grow_inf_per_layer.sh
 
-python3 hyperparam_search.py \
+python3 optimization_and_search/hyperparam_search.py \
   --orig_settings ./hp_searches/grow_inf_per_layer.yaml \
   --param_names \
         n_layer \

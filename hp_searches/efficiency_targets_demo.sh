@@ -2,7 +2,7 @@
 # hp_searches/efficiency_targets_demo.sh
 
 for target in params iter; do
-  python3 hyperparam_search.py \
+  python3 optimization_and_search/hyperparam_search.py \
     --orig_settings ./hp_searches/efficiency_targets_demo.yaml \
     --param_names \
     n_layer \

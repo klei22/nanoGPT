@@ -40,7 +40,7 @@ Note: list parameter names in the same order as their min step size:
 #!/bin/bash
 # lobo_attnhead_search.sh
 
-python3 hyperparam_search.py \
+python3 optimization_and_search/hyperparam_search.py \
   --orig_settings ./hp_searches/lobo_attnhead_search.yaml \
   --param_names \
         n_layer \
@@ -100,17 +100,17 @@ To demo target optimization with both maximize and minimize modes, run:
 - `hp_searches/rankme_target_demo.sh`
 - `hp_searches/areq_target_demo.sh`
 
-1. View with `view_hp_log.py`
+1. View with `optimization_and_search/view_hp_log.py`
 
 ```bash
-python view_hp_log.py results.yaml
+python optimization_and_search/view_hp_log.py results.yaml
 ```
 
 Note, this will auto-refresh.
 
 3. Monitor via the above, and update max_iters as necessary.
 
-The hyperparameter_search.py has override features, useful for changing training
+The optimization_and_search/hyperparam_search.py has override features, useful for changing training
 settings needed as the model grows, e.g. max_iters, learning rate, batch size,
 etc.
 

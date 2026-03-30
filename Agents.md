@@ -23,7 +23,8 @@ This file gives coding agents the minimum repository-specific rules needed to co
 - `run_exploration_monitor.py`: `creates a tui for exploring yaml files created
   by optimization_and_search/run_experiments.py and may need to be updated when
   run_experiments.py is updated.`
-- `view_hp_log.py`: `for monitoring and exploring hyperparam_search.py searches..`
+- `optimization_and_search/view_hp_log.py`: `for monitoring and exploring
+  optimization_and_search/hyperparam_search.py searches.`
 
 ## Important Directories
 - `variations/...`: `The proper location for model architecture related
@@ -55,17 +56,16 @@ This file gives coding agents the minimum repository-specific rules needed to co
 - `huggingface_model/...`: `this and subfolders will contain scripts that
   directly build from models from huggingface.`
 - `hp_searches/...`: `This subfolder contains tests and saved search settings for
-  the hyperparam_search.py script in the main repo folder. When creating
-  modifications to the hyperparam_search.py script or the view_hp_log.py script,
-  ensure to create a new test .sh script and yaml file in the hp_searches
-  directory.`
+  the optimization_and_search/hyperparam_search.py script. When creating
+  modifications to hyperparam_search.py or view_hp_log.py, ensure to create a
+  new test .sh script and yaml file in the hp_searches directory.`
 - `optimization_and_search/...`: `This folder should contain any optimization
   and search related script, and configuration settings for ip_addresses to
   utilize for the search when in distributed mode. Scripts such as
   run_experiments.py and run_from_yaml.py run grid searches on the explorations/
   yaml file specified. We also have a genetic algorithm search which has the
-  distributed search implemented. Note: hyperparam_search.py should belong in
-  here, and we still need to add a distributed machine solution to
+  distributed search implemented. hyperparam_search.py and view_hp_log.py now
+  live here. We still need to add a distributed machine solution to
   hyperparam_search.py and the relevant optimization scripts in this directory.`
 
 ## Validation Gate (before finishing)

@@ -2,7 +2,7 @@
 # head_search.sh hp_searches/rubiks_cube_predictor.sh
 
 
-python3 hyperparam_search.py \
+python3 optimization_and_search/hyperparam_search.py \
   --orig_settings ./hp_searches/rubiks_cube_predictor.yaml \
   --param_names \
         n_layer \
