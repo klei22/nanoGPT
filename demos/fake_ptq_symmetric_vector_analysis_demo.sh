@@ -9,13 +9,11 @@
 #   2. Mean angular distortion (degrees) vs. bit-width
 # Results are written as CSV and PNG to a summary directory.
 #
-# Parallelization strategy (3 phases):
-#   Phase 1: Baseline fp32 eval (GPU) runs concurrently with quantizations (CPU)
-#   Phase 2: GPU evals run sequentially; CPU angle analyses run in background
-#   Phase 3: Aggregate CSV + plot generation
-#
-# CPU jobs are capped at --max-parallel (default 2) to avoid OOM from loading
-# multiple full checkpoints into RAM simultaneously.
+# The shell loop handles only quantization + eval.  Angular distortion is
+# computed directly in the final Python aggregation step (a lightweight
+# per-vector cosine similarity), avoiding the heavyweight
+# checkpoint_regex_explorer.py pipeline (pairwise stats, L2 norms, histograms,
+# group metrics, rich tables) that is unnecessary for these plots.
 
 set -euo pipefail
 
@@ -24,7 +22,6 @@ CKPT_DIR=""
 EVAL_DATASET=""
 EVAL_ITERS=200
 BIT_WIDTHS=(8 7 6 5 4 3)
-MAX_PARALLEL=2
 SWEEP_ROOT=""
 SUMMARY_ROOT=""
 
@@ -38,7 +35,6 @@ Required:
 
 Options:
   --eval-iters     Number of evaluation iterations (default: 200)
-  --max-parallel   Max concurrent CPU jobs to avoid OOM (default: 2)
   --sweep-root     Directory for quantized checkpoints
                    (default: <ckpt-dir>_sym_vector_sweep)
   --summary-root   Directory for output CSV and plots
@@ -59,10 +55,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --eval-iters)
       EVAL_ITERS="$2"
-      shift 2
-      ;;
-    --max-parallel)
-      MAX_PARALLEL="$2"
       shift 2
       ;;
     --sweep-root)
@@ -113,45 +105,12 @@ fi
 EVAL_DATASET_DIR="data/${EVAL_DATASET}"
 EVAL_ROOT="${SWEEP_ROOT}_evals"
 
-# ── Helper: throttle background jobs to avoid OOM ───────────────────────────
-# Waits until the number of live PIDs in the given array drops below MAX_PARALLEL.
-# Usage: wait_for_slot ARRAY_NAME
-# Modifies the array in-place, removing completed PIDs.
-wait_for_slot() {
-  local -n _pids=$1
-  while (( ${#_pids[@]} >= MAX_PARALLEL )); do
-    local still_running=()
-    for pid in "${_pids[@]}"; do
-      if kill -0 "$pid" 2>/dev/null; then
-        still_running+=("$pid")
-      else
-        # Reap and check exit status
-        wait "$pid" || { echo "Background job (PID $pid) failed" >&2; exit 1; }
-      fi
-    done
-    _pids=("${still_running[@]}")
-    if (( ${#_pids[@]} >= MAX_PARALLEL )); then
-      sleep 1
-    fi
-  done
-}
-
-# Drain all remaining PIDs in an array, failing on any error.
-wait_all() {
-  local -n _pids=$1
-  for pid in "${_pids[@]}"; do
-    wait "$pid" || { echo "Background job (PID $pid) failed" >&2; exit 1; }
-  done
-  _pids=()
-}
-
 echo "============================================================"
 echo "Symmetric per-vector PTQ analysis"
 echo "  Checkpoint:     $CKPT_DIR"
 echo "  Eval dataset:   $EVAL_DATASET"
 echo "  Eval iters:     $EVAL_ITERS"
 echo "  Bit-widths:     ${BIT_WIDTHS[*]}"
-echo "  Max parallel:   $MAX_PARALLEL"
 echo "  Sweep root:     $SWEEP_ROOT"
 echo "  Summary root:   $SUMMARY_ROOT"
 echo "============================================================"
@@ -174,95 +133,57 @@ echo "Found evaluation dataset at $EVAL_DATASET_DIR"
 
 mkdir -p "$SWEEP_ROOT" "$SUMMARY_ROOT" "$EVAL_ROOT"
 
-# Regex for weight tensors to compare angles (attention + MLP weights)
-PATTERN='transformer\.h\.[0-9]+\.(attn\.(c_attn|c_proj)|mlp\.(c_fc|c_proj))\.weight'
-
-# ── Phase 1: Baseline eval (GPU) + quantizations (CPU, throttled) ────────────
+# ── Step 2: Evaluate the baseline (fp32) checkpoint ─────────────────────────
 echo ""
-echo "=== Phase 1: Baseline eval + quantizations (max $MAX_PARALLEL concurrent CPU jobs) ==="
-
-# Start baseline eval in background (uses GPU)
+echo "=== Step 2: Evaluate the baseline (fp32) checkpoint ==="
 BASELINE_EVAL_DIR="${EVAL_ROOT}/fp32"
 mkdir -p "$BASELINE_EVAL_DIR"
-echo "  Starting baseline (fp32) evaluation..."
 python3 sample.py \
   --out_dir "$CKPT_DIR" \
   --eval_only \
   --eval_dataset "$EVAL_DATASET" \
   --eval_iters "$EVAL_ITERS" \
-  --eval_output_dir "$BASELINE_EVAL_DIR" &
-BASELINE_PID=$!
+  --eval_output_dir "$BASELINE_EVAL_DIR"
 
-# Launch quantizations with throttling (each loads full ckpt into RAM)
-QUANT_PIDS=()
+# ── Step 3: Quantize and evaluate each bit-width ────────────────────────────
+step=3
 for bit in "${BIT_WIDTHS[@]}"; do
   QUANT_OUT_DIR="${SWEEP_ROOT}/${bit}bit"
   mkdir -p "$QUANT_OUT_DIR"
+
+  echo ""
+  echo "=== Step ${step}: Quantize to int${bit} (symmetric, per-vector) ==="
   if [ ! -f "$QUANT_OUT_DIR/ckpt.pt" ]; then
-    wait_for_slot QUANT_PIDS
-    echo "  Starting int${bit} quantization..."
     python3 quantizations/ptq/fake_quantize_ckpt.py "$CKPT_DIR" \
       --out_dir "$QUANT_OUT_DIR" \
       --num_bits "$bit" \
       --quantization symmetric \
-      --granularity vector &
-    QUANT_PIDS+=($!)
+      --granularity vector
   else
-    echo "  Found existing int${bit} checkpoint; skipping quantization."
+    echo "Found existing int${bit} checkpoint at $QUANT_OUT_DIR/ckpt.pt; skipping."
   fi
-done
+  step=$((step + 1))
 
-# Wait for baseline eval first (frees GPU for phase 2)
-echo "  Waiting for baseline evaluation..."
-wait "$BASELINE_PID" || { echo "Baseline evaluation failed" >&2; exit 1; }
-echo "  Baseline evaluation complete."
-
-# Wait for remaining quantizations
-wait_all QUANT_PIDS
-echo "  All quantizations complete."
-
-# ── Phase 2: Evaluations (GPU, sequential) + angle analyses (CPU, background)
-echo ""
-echo "=== Phase 2: Evaluations + angle analyses ==="
-
-ANGLE_PIDS=()
-for bit in "${BIT_WIDTHS[@]}"; do
-  QUANT_OUT_DIR="${SWEEP_ROOT}/${bit}bit"
-
-  # Launch angle analysis in background (CPU-only, throttled)
-  ANGLE_DIR="${QUANT_OUT_DIR}/angle_reports"
-  mkdir -p "$ANGLE_DIR"
-  wait_for_slot ANGLE_PIDS
-  echo "  Starting int${bit} angle analysis (background)..."
-  python3 analysis/checkpoint_analysis/checkpoint_regex_explorer.py \
-    "$CKPT_DIR/ckpt.pt" \
-    "$PATTERN" \
-    --compare-ckpt "$QUANT_OUT_DIR/ckpt.pt" \
-    --comparison-csv "${ANGLE_DIR}/angles.csv" \
-    --angle-units degrees \
-    --no-colorize &
-  ANGLE_PIDS+=($!)
-
-  # Run evaluation sequentially (GPU — avoid contention)
+  echo "=== Step ${step}: Evaluate int${bit} checkpoint ==="
   EVAL_DIR="${EVAL_ROOT}/${bit}bit"
   mkdir -p "$EVAL_DIR"
-  echo "  Evaluating int${bit} checkpoint..."
   python3 sample.py \
     --out_dir "$QUANT_OUT_DIR" \
     --eval_only \
     --eval_dataset "$EVAL_DATASET" \
     --eval_iters "$EVAL_ITERS" \
     --eval_output_dir "$EVAL_DIR"
+  step=$((step + 1))
 done
 
-# Wait for any remaining angle analyses
-echo "  Waiting for angle analyses to finish..."
-wait_all ANGLE_PIDS
-echo "  All evaluations and angle analyses complete."
-
-# ── Phase 3: Aggregate results, write CSV, and plot ─────────────────────────
+# ── Final step: Compute angles inline, aggregate CSV, and plot ──────────────
+# Angular distortion is computed here directly via per-vector cosine similarity
+# between the baseline and each quantized checkpoint.  This replaces the
+# checkpoint_regex_explorer.py calls which also computed expensive pairwise
+# intra-tensor metrics, L2 norm stats, group statistics, and histograms that
+# are not needed for the summary plots.
 echo ""
-echo "=== Phase 3: Generate summary CSV and plots ==="
+echo "=== Step ${step}: Generate summary CSV and plots ==="
 
 python3 - \
   "$CKPT_DIR" \
@@ -275,8 +196,9 @@ import csv
 import json
 import math
 import os
+import re
 import statistics
-from typing import Dict, List, Optional
+from typing import Dict, List, Tuple
 
 parser = argparse.ArgumentParser()
 parser.add_argument("ckpt_dir")
@@ -292,7 +214,72 @@ eval_root = os.path.abspath(args.eval_root)
 summary_root = os.path.abspath(args.summary_root)
 sweep_bits = sorted(args.bits, reverse=True)
 
-# ── Load baseline loss ──────────────────────────────────────────────────────
+import torch
+import torch.nn.functional as F
+
+WEIGHT_PATTERN = re.compile(
+    r"transformer\.h\.[0-9]+\.(attn\.(c_attn|c_proj)|mlp\.(c_fc|c_proj))\.weight"
+)
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+def load_state_dict(ckpt_path: str) -> Tuple[dict, int]:
+    """Load state dict and return (state_dict, embedding_dim)."""
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    sd = ckpt["model"]
+    # Strip compiler prefix if present
+    cleaned = {}
+    for k, v in sd.items():
+        cleaned[k.removeprefix("_orig_mod.")] = v
+    n_embd = ckpt.get("model_args", {}).get("n_embd")
+    return cleaned, n_embd
+
+def compute_angle_stats(
+    baseline_sd: dict, quantized_sd: dict, embedding_dim: int
+) -> Dict[str, float]:
+    """Compute per-vector angular distortion between two state dicts.
+
+    Only compares weight tensors matching WEIGHT_PATTERN along axes whose
+    size equals embedding_dim — the same logic as iter_vector_views in
+    checkpoint_regex_explorer.py.
+    """
+    all_angles: List[float] = []
+    all_cosines: List[float] = []
+
+    for name in baseline_sd:
+        if not WEIGHT_PATTERN.search(name):
+            continue
+        base_t = baseline_sd[name].detach().float()
+        quant_t = quantized_sd.get(name)
+        if quant_t is None or quant_t.shape != base_t.shape:
+            continue
+        quant_t = quant_t.detach().float()
+
+        for axis, axis_size in enumerate(base_t.shape):
+            if axis_size != embedding_dim:
+                continue
+            base_vecs = base_t.movedim(axis, -1).reshape(-1, embedding_dim)
+            quant_vecs = quant_t.movedim(axis, -1).reshape(-1, embedding_dim)
+            if base_vecs.numel() == 0:
+                continue
+
+            cos = F.cosine_similarity(base_vecs, quant_vecs, dim=-1, eps=1e-8)
+            cos = cos.clamp(-1.0, 1.0)
+            angles_deg = torch.rad2deg(torch.acos(cos))
+
+            all_angles.extend(angles_deg.tolist())
+            all_cosines.extend(cos.tolist())
+
+    if not all_angles:
+        return {}
+    return {
+        "mean_angle": statistics.mean(all_angles),
+        "median_angle": statistics.median(all_angles),
+        "max_angle": max(all_angles),
+        "min_angle": min(all_angles),
+        "mean_cosine": statistics.mean(all_cosines) if all_cosines else float("nan"),
+    }
+
+# ── Load baseline ───────────────────────────────────────────────────────────
 baseline_eval = os.path.join(eval_root, "fp32", "eval_loss.txt")
 if not os.path.exists(baseline_eval):
     raise SystemExit(f"Missing baseline evaluation at {baseline_eval}")
@@ -302,40 +289,13 @@ if baseline_loss is None:
     raise SystemExit(f"No 'val' key in {baseline_eval}")
 baseline_loss = float(baseline_loss)
 
-# ── Load per-bit-width results ──────────────────────────────────────────────
-def load_angle_summary(bit: int) -> Dict[str, float]:
-    angle_csv = os.path.join(sweep_root, f"{bit}bit", "angle_reports", "angles.csv")
-    if not os.path.exists(angle_csv):
-        return {}
-    angles: List[float] = []
-    cosines: List[float] = []
-    with open(angle_csv, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                a = float(row.get("angle", "nan"))
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(a):
-                angles.append(a)
-            try:
-                c = float(row.get("cosine_similarity", "nan"))
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(c):
-                cosines.append(c)
-    if not angles:
-        return {}
-    result: Dict[str, float] = {
-        "mean_angle": statistics.mean(angles),
-        "median_angle": statistics.median(angles),
-        "max_angle": max(angles),
-        "min_angle": min(angles),
-    }
-    if cosines:
-        result["mean_cosine"] = statistics.mean(cosines)
-    return result
+# Load baseline state dict once for angle comparisons
+print("Loading baseline checkpoint for angle comparisons...")
+baseline_sd, embedding_dim = load_state_dict(os.path.join(ckpt_dir, "ckpt.pt"))
+if embedding_dim is None:
+    print("Warning: could not determine embedding_dim; angle analysis will be skipped.")
 
+# ── Collect per-bit-width results ───────────────────────────────────────────
 entries = []
 for bit in sweep_bits:
     # Validation loss
@@ -345,7 +305,15 @@ for bit in sweep_bits:
     with open(loss_path, encoding="utf-8") as fh:
         val_loss = float(json.load(fh)["val"])
 
-    angle_info = load_angle_summary(bit)
+    # Angle analysis — load quantized ckpt, compare, then free it
+    angle_info: Dict[str, float] = {}
+    if embedding_dim is not None:
+        quant_ckpt_path = os.path.join(sweep_root, f"{bit}bit", "ckpt.pt")
+        if os.path.exists(quant_ckpt_path):
+            print(f"  Computing angles for int{bit}...")
+            quant_sd, _ = load_state_dict(quant_ckpt_path)
+            angle_info = compute_angle_stats(baseline_sd, quant_sd, embedding_dim)
+            del quant_sd  # free memory before loading next
 
     entries.append({
         "bits": bit,
@@ -357,6 +325,8 @@ for bit in sweep_bits:
         "min_angle": angle_info.get("min_angle"),
         "mean_cosine": angle_info.get("mean_cosine"),
     })
+
+del baseline_sd  # free baseline after all comparisons
 
 entries.sort(key=lambda e: e["bits"], reverse=True)
 
