@@ -8,6 +8,11 @@
 #   1. Validation loss vs. bit-width
 #   2. Mean angular distortion (degrees) vs. bit-width
 # Results are written as CSV and PNG to a summary directory.
+#
+# Parallelization strategy (3 phases):
+#   Phase 1: Baseline fp32 eval (GPU) runs concurrently with all 6 quantizations (CPU)
+#   Phase 2: GPU evals run sequentially; CPU angle analyses run in background
+#   Phase 3: Aggregate CSV + plot generation
 
 set -euo pipefail
 
@@ -127,67 +132,97 @@ echo "Found evaluation dataset at $EVAL_DATASET_DIR"
 
 mkdir -p "$SWEEP_ROOT" "$SUMMARY_ROOT" "$EVAL_ROOT"
 
-# ── Step 2: Evaluate the baseline (fp32) checkpoint ─────────────────────────
+# Regex for weight tensors to compare angles (attention + MLP weights)
+PATTERN='transformer\.h\.[0-9]+\.(attn\.(c_attn|c_proj)|mlp\.(c_fc|c_proj))\.weight'
+
+# ── Phase 1: Baseline eval (GPU) + all quantizations (CPU) in parallel ──────
 echo ""
-echo "=== Step 2: Evaluate the baseline (fp32) checkpoint ==="
+echo "=== Phase 1: Baseline eval + all quantizations in parallel ==="
+
+# Start baseline eval in background (uses GPU)
 BASELINE_EVAL_DIR="${EVAL_ROOT}/fp32"
 mkdir -p "$BASELINE_EVAL_DIR"
+echo "  Starting baseline (fp32) evaluation..."
 python3 sample.py \
   --out_dir "$CKPT_DIR" \
   --eval_only \
   --eval_dataset "$EVAL_DATASET" \
   --eval_iters "$EVAL_ITERS" \
-  --eval_output_dir "$BASELINE_EVAL_DIR"
+  --eval_output_dir "$BASELINE_EVAL_DIR" &
+BASELINE_PID=$!
 
-# Regex for weight tensors to compare angles (attention + MLP weights)
-PATTERN='transformer\.h\.[0-9]+\.(attn\.(c_attn|c_proj)|mlp\.(c_fc|c_proj))\.weight'
-
-# ── Step 3: Quantize and evaluate each bit-width ────────────────────────────
-step=3
+# Launch all quantizations in parallel (CPU-only, no GPU contention)
+QUANT_PIDS=()
 for bit in "${BIT_WIDTHS[@]}"; do
   QUANT_OUT_DIR="${SWEEP_ROOT}/${bit}bit"
   mkdir -p "$QUANT_OUT_DIR"
-
-  echo ""
-  echo "=== Step ${step}: Quantize to int${bit} (symmetric, per-vector) ==="
   if [ ! -f "$QUANT_OUT_DIR/ckpt.pt" ]; then
+    echo "  Starting int${bit} quantization..."
     python3 quantizations/ptq/fake_quantize_ckpt.py "$CKPT_DIR" \
       --out_dir "$QUANT_OUT_DIR" \
       --num_bits "$bit" \
       --quantization symmetric \
-      --granularity vector
+      --granularity vector &
+    QUANT_PIDS+=($!)
   else
-    echo "Found existing int${bit} checkpoint at $QUANT_OUT_DIR/ckpt.pt; skipping."
+    echo "  Found existing int${bit} checkpoint; skipping quantization."
   fi
-  step=$((step + 1))
+done
 
-  echo "=== Step ${step}: Evaluate int${bit} checkpoint ==="
-  EVAL_DIR="${EVAL_ROOT}/${bit}bit"
-  mkdir -p "$EVAL_DIR"
-  python3 sample.py \
-    --out_dir "$QUANT_OUT_DIR" \
-    --eval_only \
-    --eval_dataset "$EVAL_DATASET" \
-    --eval_iters "$EVAL_ITERS" \
-    --eval_output_dir "$EVAL_DIR"
-  step=$((step + 1))
+# Wait for baseline eval first (frees GPU for phase 2)
+echo "  Waiting for baseline evaluation..."
+wait "$BASELINE_PID" || { echo "Baseline evaluation failed" >&2; exit 1; }
+echo "  Baseline evaluation complete."
 
-  echo "=== Step ${step}: Compute angular distortion for int${bit} ==="
+# Wait for all quantizations to finish
+for pid in "${QUANT_PIDS[@]}"; do
+  wait "$pid" || { echo "A quantization job failed" >&2; exit 1; }
+done
+echo "  All quantizations complete."
+
+# ── Phase 2: Evaluations (GPU, sequential) + angle analyses (CPU, background)
+echo ""
+echo "=== Phase 2: Evaluations + angle analyses ==="
+
+ANGLE_PIDS=()
+for bit in "${BIT_WIDTHS[@]}"; do
+  QUANT_OUT_DIR="${SWEEP_ROOT}/${bit}bit"
+
+  # Launch angle analysis in background (CPU-only)
   ANGLE_DIR="${QUANT_OUT_DIR}/angle_reports"
   mkdir -p "$ANGLE_DIR"
+  echo "  Starting int${bit} angle analysis (background)..."
   python3 analysis/checkpoint_analysis/checkpoint_regex_explorer.py \
     "$CKPT_DIR/ckpt.pt" \
     "$PATTERN" \
     --compare-ckpt "$QUANT_OUT_DIR/ckpt.pt" \
     --comparison-csv "${ANGLE_DIR}/angles.csv" \
     --angle-units degrees \
-    --no-colorize
-  step=$((step + 1))
+    --no-colorize &
+  ANGLE_PIDS+=($!)
+
+  # Run evaluation sequentially (GPU — avoid contention)
+  EVAL_DIR="${EVAL_ROOT}/${bit}bit"
+  mkdir -p "$EVAL_DIR"
+  echo "  Evaluating int${bit} checkpoint..."
+  python3 sample.py \
+    --out_dir "$QUANT_OUT_DIR" \
+    --eval_only \
+    --eval_dataset "$EVAL_DATASET" \
+    --eval_iters "$EVAL_ITERS" \
+    --eval_output_dir "$EVAL_DIR"
 done
 
-# ── Final step: Aggregate results, write CSV, and plot ──────────────────────
+# Wait for any remaining angle analyses
+echo "  Waiting for angle analyses to finish..."
+for pid in "${ANGLE_PIDS[@]}"; do
+  wait "$pid" || { echo "An angle analysis job failed" >&2; exit 1; }
+done
+echo "  All evaluations and angle analyses complete."
+
+# ── Phase 3: Aggregate results, write CSV, and plot ─────────────────────────
 echo ""
-echo "=== Step ${step}: Generate summary CSV and plots ==="
+echo "=== Phase 3: Generate summary CSV and plots ==="
 
 python3 - \
   "$CKPT_DIR" \
