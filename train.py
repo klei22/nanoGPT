@@ -1142,11 +1142,28 @@ class Trainer:
                         top1_probs.append(top1_prob)
                         top1_corrects.append((top1_idx == Y).float())
                         target_logits = logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
-                        ranks = (logits > target_logits.unsqueeze(-1)).sum(dim=-1) + 1
-                        target_ranks.append(ranks.float())
+                        # Chunked rank/left-prob computation avoids a full
+                        # [batch, seq, vocab_size] intermediate tensor, which
+                        # can exhaust VRAM when vocab_size is large (e.g. 256k).
+                        _VOCAB_CHUNK = 4096
+                        _V = logits.size(-1)
+                        ranks = torch.zeros(
+                            target_logits.shape, dtype=torch.long, device=logits.device
+                        )
                         target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
+                        left_prob = torch.zeros(
+                            target_prob.shape, dtype=torch.float, device=logits.device
+                        )
+                        tgt_l = target_logits.unsqueeze(-1)
+                        tgt_p = target_prob.unsqueeze(-1)
+                        for _c in range(0, _V, _VOCAB_CHUNK):
+                            _lg = logits[..., _c:_c + _VOCAB_CHUNK]
+                            ranks += (_lg > tgt_l).sum(dim=-1)
+                            _pr = probs[..., _c:_c + _VOCAB_CHUNK].float()
+                            left_prob += (_pr * (_pr > tgt_p)).sum(dim=-1)
+                        ranks += 1
+                        target_ranks.append(ranks.float())
                         target_probs.append(target_prob)
-                        left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
                         target_left_probs.append(left_prob)
                         left_inclusive_probs.append(left_prob + target_prob)
                         lm_head = (
