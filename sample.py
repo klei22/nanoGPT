@@ -1183,7 +1183,7 @@ def get_tokenizer_functions(meta):
         decode = lambda l: custom_char_with_byte_fallback_decode(l, itos)
         return encode, decode
 
-    if meta['tokenizer'] == 'json_byte_fallback':
+    if meta['tokenizer'] in {'json_byte_fallback', 'optimized_json_byte_fallback'}:
         stoi, itos = meta['stoi'], meta['itos']
         # Sort tokens by length in descending order for precedence
         string_token_tuples = [(token, token_id) for token, token_id in stoi.items() if isinstance(token, str)]

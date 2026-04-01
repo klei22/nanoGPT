@@ -1425,6 +1425,22 @@ def parse_args():
             help='If set, also save the printed model statistics table to this CSV file.'
             )
 
+    training_group.add_argument(
+        '--chunked_rank_eval',
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help='Compute rank and left-probability metrics in vocab-dimension chunks during '
+             'validation to avoid OOM when vocab_size is large (e.g. 256k+).  '
+             'Disable only when vocab is small and you prefer the one-liner.',
+    )
+    training_group.add_argument(
+        '--rank_eval_vocab_chunk_size',
+        default=4096,
+        type=int,
+        help='Number of vocab columns processed at a time when --chunked_rank_eval is '
+             'enabled.  Smaller values use less VRAM at the cost of more loop iterations.',
+    )
+
     ## Export Model graph
     logging_group.add_argument('--export_model_graph', default=False, action=argparse.BooleanOptionalAction, help="exports tensorboard model of graph")
 
