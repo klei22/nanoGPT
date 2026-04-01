@@ -1185,8 +1185,13 @@ def get_tokenizer_functions(meta):
 
     if meta['tokenizer'] in {'json_byte_fallback', 'optimized_json_byte_fallback'}:
         stoi, itos = meta['stoi'], meta['itos']
-        # Sort tokens by length in descending order for precedence
         string_token_tuples = [(token, token_id) for token, token_id in stoi.items() if isinstance(token, str)]
+        # optimized_json_byte_fallback was trained with longest-match (trie).
+        # Sort descending by byte-length so the encoder matches training behaviour.
+        # json_byte_fallback was trained with insertion-order (first-match), so
+        # preserve dict order for that tokenizer to avoid a training/inference gap.
+        if meta['tokenizer'] == 'optimized_json_byte_fallback':
+            string_token_tuples.sort(key=lambda t: len(t[0].encode('utf-8')), reverse=True)
 
         def encode(text):
             ids = []
