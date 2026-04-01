@@ -15,6 +15,7 @@ from tokenizers import (
     CharBPETokenizerWithByteFallback,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
+    OptimizedJsonByteTokenizerWithByteFallback,
 )
 from argparse import Namespace
 from rich.console import Console
@@ -337,6 +338,48 @@ class TestTokenizers(unittest.TestCase):
             os.remove(json_tokens_file)
 
         console.print("JsonByteTokenizerWithByteFallback test passed.")
+
+    def test_optimized_json_byte_tokenizer(self):
+        json_tokens_file = "test_tokens_opt.json"
+        # Include multi-byte tokens and overlapping prefixes to exercise trie
+        test_tokens = ["Hello", "world", "This", "is", "a", "test", "He", "wor"]
+        with open(json_tokens_file, 'w', encoding='utf-8') as f:
+            json.dump(test_tokens, f)
+
+        args = Namespace(json_tokens_file=json_tokens_file, track_token_counts=True,
+                         meta_output_path="meta.pkl")
+        test_string = "Hello world😊😊 This is a test"
+
+        tokenizer = OptimizedJsonByteTokenizerWithByteFallback(args)
+        ids = tokenizer.tokenize(test_string)
+        detokenized = tokenizer.detokenize(ids)
+
+        console.print("[input]Input:[/input]")
+        console.print(test_string, style="input")
+        console.print("[output]Detokenized Output:[/output]")
+        console.print(detokenized, style="output")
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
+
+        self._print_token_count_histogram(token_counts, itos)
+
+        self.assertEqual(test_string, detokenized)
+        self.assertEqual(meta["tokenizer"], "optimized_json_byte_fallback")
+        self.assertEqual(meta["custom_token_count"], len(test_tokens))
+
+        # Verify longest-match: "Hello" should win over "He" at position 0
+        hello_id = tokenizer.stoi["Hello"]
+        self.assertIn(hello_id, ids)
+        he_id = tokenizer.stoi["He"]
+        self.assertNotIn(he_id, ids)
+
+        if os.path.exists(json_tokens_file):
+            os.remove(json_tokens_file)
+
+        console.print("OptimizedJsonByteTokenizerWithByteFallback test passed.")
 
     # --------------------------------------------------------------------------
     # Tests for Token Counts (with histogram printing)

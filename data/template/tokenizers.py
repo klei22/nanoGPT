@@ -819,6 +819,174 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
         return ''.join(out_pieces)
 
 
+class OptimizedJsonByteTokenizerWithByteFallback(Tokenizer):
+    """
+    Optimized version of JsonByteTokenizerWithByteFallback.
+
+    Key differences from the original:
+    1. Trie (prefix tree) for token matching: reduces per-position work from
+       O(M * K) to O(L) where M=num custom tokens, K=avg token length, L=max token length.
+       Overall complexity drops from O(N * M * K) to O(N * L).
+    2. Longest-match semantics: always picks the longest matching custom token
+       at each position (original uses first-insertion-order match).
+    3. bytearray accumulation in detokenize: avoids building a list of 1-byte
+       bytes objects and joining them; appends ints directly.
+    4. Direct byte-value ID lookup: token_id == byte_value for IDs 0-255,
+       so no dict lookup is needed for the byte-fallback path.
+    5. Batched tqdm updates every UPDATE_INTERVAL bytes instead of every token,
+       reducing progress-bar overhead on large inputs.
+    """
+
+    # How often (in bytes processed) to tick the progress bar.
+    _TQDM_UPDATE_INTERVAL = 8192
+
+    def __init__(self, args):
+        super().__init__(args)
+        if args.json_tokens_file is None:
+            raise ValueError("JSON tokens file must be provided for this tokenizer.")
+
+        with open(args.json_tokens_file, "r", encoding="utf-8") as f:
+            self.custom_tokens = json.load(f)
+            if not isinstance(self.custom_tokens, list):
+                raise ValueError("JSON file must contain an array of tokens")
+
+        self.build_vocab()
+
+    # ------------------------------------------------------------------
+    # Internal trie helpers (nested dicts; byte-valued keys + sentinel '_id')
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _trie_insert(root: dict, token_bytes: bytes, token_id: int) -> None:
+        node = root
+        for byte in token_bytes:
+            if byte not in node:
+                node[byte] = {}
+            node = node[byte]
+        node['_id'] = token_id
+
+    @staticmethod
+    def _trie_longest_match(root: dict, data: bytes, start: int) -> tuple:
+        """Return (token_id, match_length) for the longest prefix of data[start:]
+        that exists in the trie.  Returns (-1, 0) when no token matches."""
+        node = root
+        best_id = -1
+        best_len = 0
+        pos = start
+        n = len(data)
+        while pos < n:
+            byte = data[pos]
+            if byte not in node:
+                break
+            node = node[byte]
+            pos += 1
+            if '_id' in node:
+                best_id = node['_id']
+                best_len = pos - start
+        return best_id, best_len
+
+    # ------------------------------------------------------------------
+    # Vocab / initialisation
+    # ------------------------------------------------------------------
+
+    def build_vocab(self):
+        self.stoi = {}
+        self.itos = {}
+
+        for b in range(256):
+            key = bytes([b])
+            self.stoi[key] = b
+            self.itos[b] = key
+
+        self._token_trie: dict = {}
+        offset = 256
+        self.custom_token_bytes = {}
+        for i, token_str in enumerate(self.custom_tokens):
+            token_id = offset + i
+            self.stoi[token_str] = token_id
+            self.itos[token_id] = token_str
+            token_bytes = token_str.encode('utf-8')
+            self.custom_token_bytes[token_str] = token_bytes
+            self._trie_insert(self._token_trie, token_bytes, token_id)
+
+        self.custom_token_count = len(self.custom_tokens)
+        self.vocab_size = 256 + self.custom_token_count
+
+    # ------------------------------------------------------------------
+    # Encode
+    # ------------------------------------------------------------------
+
+    def tokenize(self, data):
+        data_bytes = data.encode('utf-8')
+        n = len(data_bytes)
+        ids = []
+        trie = self._token_trie
+        i = 0
+        interval = self._TQDM_UPDATE_INTERVAL
+        last_update = 0
+
+        pbar = tqdm(total=n, desc="Tokenizing (Optimized JSON Byte Fallback)")
+        while i < n:
+            token_id, length = self._trie_longest_match(trie, data_bytes, i)
+            if token_id != -1:
+                self.record_token(token_id)
+                ids.append(token_id)
+                i += length
+            else:
+                # Byte fallback: token_id equals the byte value directly (0-255)
+                token_id = data_bytes[i]
+                self.record_token(token_id)
+                ids.append(token_id)
+                i += 1
+
+            if i - last_update >= interval:
+                pbar.update(i - last_update)
+                last_update = i
+
+        if i > last_update:
+            pbar.update(i - last_update)
+        pbar.close()
+
+        meta = {
+            "vocab_size": self.vocab_size,
+            "tokenizer": "optimized_json_byte_fallback",
+            "custom_tokens": self.custom_tokens,
+            "stoi": self.stoi,
+            "itos": self.itos,
+            "custom_token_count": self.custom_token_count,
+        }
+        self.finalize_meta(meta)
+        return ids
+
+    # ------------------------------------------------------------------
+    # Decode
+    # ------------------------------------------------------------------
+
+    def detokenize(self, ids):
+        """
+        IDs 0-255 are raw bytes; IDs >= 256 are custom token strings.
+        Raw bytes are accumulated in a bytearray (cheaper than a list of
+        1-byte bytes objects) and decoded as UTF-8 whenever a custom token
+        or the end of the sequence is reached.
+        """
+        out_pieces = []
+        byte_buffer = bytearray()
+
+        for token_id in ids:
+            if token_id < 256:
+                byte_buffer.append(token_id)
+            else:
+                if byte_buffer:
+                    out_pieces.append(byte_buffer.decode('utf-8', errors='replace'))
+                    byte_buffer = bytearray()
+                out_pieces.append(self.itos[token_id])
+
+        if byte_buffer:
+            out_pieces.append(byte_buffer.decode('utf-8', errors='replace'))
+
+        return ''.join(out_pieces)
+
+
 def _load_python_token_processor():
     """Load the PythonTokenProcessor helper without requiring a package install."""
     tokenizer_path = Path(__file__).parent / "programming_tokenizers" / "python_tokenizer.py"
