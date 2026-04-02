@@ -466,6 +466,48 @@ def rank_distance_focal_loss(
     scaled[mask] = ce[mask] * rank_scale * focal_scale
     return scaled[mask].mean()
 
+def temperature_scaled_ce_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    temperature: float = 2.0,
+) -> torch.Tensor:
+    """Cross entropy after dividing logits by ``temperature``.
+
+    Values above 1.0 produce a softer distribution over the vocabulary,
+    making the model less penalised for near-miss predictions.  Values
+    below 1.0 sharpen the distribution, acting like an implicit confidence
+    requirement.  Unlike distillation temperature this is applied to the
+    student's own logits rather than matching a teacher.
+    """
+    scaled = logits.float() / temperature
+    return F.cross_entropy(scaled.view(-1, scaled.size(-1)), targets.view(-1), ignore_index=-1)
+
+
+def confidence_penalty_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    beta: float = 0.01,
+) -> torch.Tensor:
+    """Cross entropy minus ``beta`` times the prediction entropy.
+
+    Subtracting entropy encourages *higher* entropy (less confident) outputs,
+    acting as a regulariser against overconfidence.  This is the complement of
+    ``entropy_penalty_loss`` which adds entropy to encourage peaky outputs.
+    Setting ``beta`` > 0 here discourages degenerate collapse to a single
+    token.
+    """
+    ce = cross_entropy_loss(logits, targets)
+    probs = torch.softmax(logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
+    entropy = -(probs * log_probs).sum(dim=-1)
+    mask = targets != -1
+    return ce - beta * entropy[mask].mean()
+
+
 def entropy_rank_distance_focal_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -502,6 +544,8 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "entropy_focal": entropy_focal_loss,
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
+    "temperature_scaled_ce": temperature_scaled_ce_loss,
+    "confidence_penalty": confidence_penalty_loss,
     "bit_balanced_cross_entropy": BitBalancedCrossEntropy(),
 }
 
@@ -657,6 +701,12 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             gamma=rank_gamma(iter_num),
             focal_gamma=getattr(args, "focal_gamma", 2.0),
             beta=getattr(args, "entropy_beta", 0.01),
+        ),
+        "temperature_scaled_ce": lambda l, t, *, iter_num=None: LOSS_VARIANTS["temperature_scaled_ce"](
+            l, t, iter_num=iter_num, temperature=getattr(args, "ce_temperature", 2.0)
+        ),
+        "confidence_penalty": lambda l, t, *, iter_num=None: LOSS_VARIANTS["confidence_penalty"](
+            l, t, iter_num=iter_num, beta=getattr(args, "confidence_beta", 0.01)
         ),
         "bit_balanced_cross_entropy": BitBalancedCrossEntropy(
             bit_penalty=getattr(args, "bit_loss_weight", 0.0),

@@ -192,6 +192,18 @@ def parse_args():
         default=0.0,
         help='Strength of distance-based attenuation in distance_attenuated_top1 loss.',
     )
+    training_group.add_argument(
+        '--ce_temperature',
+        type=float,
+        default=2.0,
+        help='Temperature applied to logits before cross entropy in temperature_scaled_ce loss.',
+    )
+    training_group.add_argument(
+        '--confidence_beta',
+        type=float,
+        default=0.01,
+        help='Weight of the entropy regulariser in confidence_penalty loss (higher = less confident outputs).',
+    )
 
     # Distillation options
     training_group.add_argument(
@@ -224,6 +236,36 @@ def parse_args():
         type=float,
         default=1e-8,
         help='Numerical stability epsilon for distillation losses.',
+    )
+    training_group.add_argument(
+        '--distillation_alpha',
+        type=float,
+        default=0.5,
+        help='Mix ratio for mixed_hard_soft loss: alpha * CE(hard) + (1-alpha) * KL(soft). 0=pure soft, 1=pure hard.',
+    )
+    training_group.add_argument(
+        '--distillation_top_k',
+        type=int,
+        default=50,
+        help='Number of teacher top-k tokens to distill from in top_k_kl loss.',
+    )
+    training_group.add_argument(
+        '--distillation_temp_start',
+        type=float,
+        default=4.0,
+        help='Starting temperature for adaptive_kl loss (annealed down over training).',
+    )
+    training_group.add_argument(
+        '--distillation_temp_end',
+        type=float,
+        default=1.0,
+        help='Ending temperature for adaptive_kl loss after annealing completes.',
+    )
+    training_group.add_argument(
+        '--distillation_temp_steps',
+        type=int,
+        default=10000,
+        help='Number of iterations over which adaptive_kl anneals temperature from start to end.',
     )
 
     # Sample args
