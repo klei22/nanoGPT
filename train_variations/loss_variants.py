@@ -18,6 +18,7 @@ from typing import Callable, Dict, Iterable, List, Tuple
 import math
 import torch
 import torch.nn.functional as F
+from torch.amp import autocast
 
 from utils.bit_usage import compute_total_bit_usage
 
@@ -104,6 +105,102 @@ class BitBalancedCrossEntropy:
             return base
         return base + self.bit_penalty * normalized
 
+
+
+@torch._dynamo.disable
+def compute_rankme_areq(features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute RankMe and aReQ from a feature matrix."""
+    if features.numel() == 0:
+        nan = torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
+        return nan, nan
+
+    # Keep this metric path out of autocast and in float32 so eigh is valid
+    # under bf16 training (e.g., --dtype bfloat16 + --compile).
+    with torch.no_grad(), autocast(device_type=features.device.type, enabled=False):
+        features = features.detach().to(torch.float32)
+        if features.ndim != 2:
+            features = features.view(features.shape[0], -1)
+        features = features - features.mean(dim=0, keepdim=True)
+        cov = features.T @ features / max(features.shape[0], 1)
+        eigvals = torch.linalg.eigvalsh(cov)
+        eigvals = torch.sort(eigvals, descending=True).values
+        total = eigvals.sum()
+        if total <= 0:
+            nan = torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
+            return nan, nan
+
+        probs = eigvals / total
+        entropy = -(probs * torch.log(probs + 1e-12)).sum()
+        rankme = torch.exp(entropy)
+
+        positive = eigvals > 0
+        if positive.sum() < 2:
+            return rankme, torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
+
+        eigvals = eigvals[positive]
+        idx = torch.arange(1, eigvals.numel() + 1, dtype=eigvals.dtype, device=eigvals.device)
+        log_i = torch.log(idx)
+        log_e = torch.log(eigvals)
+        log_i = log_i - log_i.mean()
+        log_e = log_e - log_e.mean()
+        denom = (log_i ** 2).sum()
+        if denom == 0:
+            areq = torch.tensor(float("nan"), device=features.device, dtype=features.dtype)
+        else:
+            areq = -(log_i * log_e).sum() / denom
+        return rankme, areq
+
+
+class RankMeRegularizedCrossEntropy:
+    """Cross-entropy with optional RankMe-based regularization."""
+
+    def __init__(self, embedding_dim: int, regularization_weight: float = 0.0, mode: str = "off") -> None:
+        self.embedding_dim = float(embedding_dim)
+        self.regularization_weight = regularization_weight
+        self.mode = mode
+        self._rankme_features: torch.Tensor | None = None
+        self._last_rankme: float | None = None
+        self._last_areq: float | None = None
+        self._last_regularization_term: float | None = None
+
+    def requires_rankme_features(self) -> bool:
+        return self.mode != "off" and self.regularization_weight != 0.0
+
+    def set_rankme_features(self, features: torch.Tensor) -> None:
+        self._rankme_features = features
+
+    def clear_rankme_features(self) -> None:
+        self._rankme_features = None
+
+    def rankme_statistics(self) -> Dict[str, float] | None:
+        if self._last_rankme is None and self._last_regularization_term is None:
+            return None
+        return {
+            "rankme": self._last_rankme,
+            "areq": self._last_areq,
+            "rankme_regularization_term": self._last_regularization_term,
+            "rankme_regularization_weight": self.regularization_weight,
+            "rankme_regularization_mode": self.mode,
+        }
+
+    def __call__(self, logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
+        base = cross_entropy_loss(logits, targets, iter_num=iter_num)
+
+        self._last_rankme = None
+        self._last_areq = None
+        self._last_regularization_term = None
+
+        if not self.requires_rankme_features() or self._rankme_features is None:
+            return base
+
+        rankme, areq = compute_rankme_areq(self._rankme_features)
+        self._last_rankme = float(rankme.detach())
+        self._last_areq = float(areq.detach())
+
+        sign = 1.0 if self.mode == "increase" else -1.0
+        reg_term = sign * (self.embedding_dim - rankme) * self.regularization_weight
+        self._last_regularization_term = float(reg_term.detach())
+        return base + reg_term.to(base.dtype)
 
 def label_smoothing_loss(
     logits: torch.Tensor,
@@ -503,6 +600,7 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
     "bit_balanced_cross_entropy": BitBalancedCrossEntropy(),
+    "rankme_regularized_cross_entropy": RankMeRegularizedCrossEntropy(embedding_dim=768),
 }
 
 
@@ -557,6 +655,33 @@ class ScheduledLoss:
         for loss in self.loss_dict.values():
             if hasattr(loss, "set_model"):
                 loss.set_model(model)
+
+    def requires_rankme_features(self) -> bool:
+        for loss in self.loss_dict.values():
+            req = getattr(loss, "requires_rankme_features", None)
+            if callable(req) and req():
+                return True
+        return False
+
+    def set_rankme_features(self, features: torch.Tensor) -> None:
+        for loss in self.loss_dict.values():
+            setter = getattr(loss, "set_rankme_features", None)
+            if callable(setter):
+                setter(features)
+
+    def clear_rankme_features(self) -> None:
+        for loss in self.loss_dict.values():
+            clearer = getattr(loss, "clear_rankme_features", None)
+            if callable(clearer):
+                clearer()
+
+    def rankme_statistics(self) -> Dict[str, float] | None:
+        if self._active_loss is None:
+            return None
+        stats_fn = getattr(self._active_loss, "rankme_statistics", None)
+        if callable(stats_fn):
+            return stats_fn()
+        return None
 
     def bit_statistics(self) -> Dict[str, float] | None:
         if self._active_loss is None or not hasattr(self._active_loss, "bit_statistics"):
@@ -662,6 +787,11 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             bit_penalty=getattr(args, "bit_loss_weight", 0.0),
             normalize_by_params=getattr(args, "bit_loss_normalize", False),
         ),
+        "rankme_regularized_cross_entropy": RankMeRegularizedCrossEntropy(
+            embedding_dim=getattr(args, "n_embd", 768),
+            regularization_weight=getattr(args, "rankme_regularization_weight", 0.0),
+            mode=getattr(args, "rankme_regularization_mode", "off"),
+        ),
     }
 
     if schedule_str:
@@ -670,4 +800,3 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
 
     loss_name = getattr(args, "loss_fn", "cross_entropy")
     return built_losses.get(loss_name, LOSS_VARIANTS["cross_entropy"])
-

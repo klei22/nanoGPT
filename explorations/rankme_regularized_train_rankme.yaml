@@ -1,0 +1,46 @@
+# rankme_regularized_train_rankme.yaml
+# Demonstrates:
+# 1) keeping the original validation RankMe/aReQ logs (--log_rankme / --log_areq)
+# 2) adding per-iteration training RankMe/aReQ logs as separate TensorBoard scalars
+#    (--log_rankme_per_iteration / --log_areq_per_iteration)
+# 3) enabling the new RankMe-regularized loss variant
+---
+
+common_group:
+  dataset: ["shakespeare_char"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  max_iters: [2000]
+  eval_interval: [200]
+  eval_iters: [50]
+  never_save_checkpoint: [true]
+
+  # TensorBoard on so we can view separate scalar series:
+  # - <dataset>/rankme        (validation metric, existing)
+  # - <dataset>/train_rankme  (new per-iteration training metric)
+  tensorboard_log: [true]
+
+  # Keep the existing validation-only logs.
+  log_rankme: [true]
+  log_areq: [true]
+
+  # Add per-iteration training logs as separate series.
+  log_rankme_per_iteration: [true]
+  log_areq_per_iteration: [true]
+
+parameter_groups:
+  # Baseline: no rankme regularization term
+  - loss_fn: ["cross_entropy"]
+    learning_rate: [0.001]
+    batch_size: [16]
+    block_size: [128]
+
+  # New loss variant: same CE + rankme regularization term
+  # (n_embd - rankme) * rankme_regularization_weight
+  - loss_fn: ["rankme_regularized_cross_entropy"]
+    rankme_regularization_mode: ["increase", "decrease"]
+    rankme_regularization_weight: [0.0, 0.001, 0.01]
+    learning_rate: [0.001]
+    batch_size: [16]
+    block_size: [128]
