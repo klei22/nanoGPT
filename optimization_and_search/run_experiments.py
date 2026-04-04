@@ -605,6 +605,7 @@ def read_metrics(out_dir: str) -> dict:
         float,
         float,
         float,
+        float,
     ]
 
     metrics: dict[str, float] = {}

@@ -1490,6 +1490,7 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
 
+            self._log_zeus_tensorboard(target_dataset, tokens_trained)
             self._log_bit_metrics(target_dataset, tokens_trained)
 
 
@@ -1590,6 +1591,7 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
 
+            self._log_zeus_tensorboard(target_dataset, tokens_trained)
             self._log_bit_metrics(target_dataset, tokens_trained)
 
     def write_to_csv(self, *args, prefix=""):
@@ -1735,6 +1737,26 @@ class Trainer:
         if torch.is_tensor(value):
             return value.item()
         return float(value)
+
+    def _log_zeus_tensorboard(self, target_dataset: str, tokens_trained: float) -> None:
+        if not self.zeus_enabled or not self.args.tensorboard_log:
+            return
+        self.writer.add_scalar(
+            f"{target_dataset}/zeus_train_step_energy_j",
+            self.zeus_train_step_energy_j,
+            self.iter_num,
+        )
+        self.writer.add_scalar(
+            f"{target_dataset}/zeus_last_step_energy_j",
+            self.zeus_last_step_energy_j,
+            self.iter_num,
+        )
+        if tokens_trained > 0:
+            self.writer.add_scalar(
+                f"{target_dataset}/zeus_energy_train_per_token_j",
+                self.zeus_train_step_energy_j / tokens_trained,
+                self.iter_num,
+            )
 
     def underscore_abbr(self, dataset_name):
         """ Transforms long dataset name to abbreviation
@@ -2302,6 +2324,15 @@ class Trainer:
                 zeus_total_measurement = self.zeus_monitor.end_window("entire_training")
                 self.zeus_total_energy_j = zeus_total_measurement.total_energy
                 self.zeus_total_time_s = zeus_total_measurement.time
+                if self.args.tensorboard_log:
+                    avg_power_w = (
+                        self.zeus_total_energy_j / self.zeus_total_time_s
+                        if self.zeus_total_time_s > 0
+                        else 0.0
+                    )
+                    self.writer.add_scalar("zeus/total_energy_j", self.zeus_total_energy_j, self.iter_num)
+                    self.writer.add_scalar("zeus/total_time_s", self.zeus_total_time_s, self.iter_num)
+                    self.writer.add_scalar("zeus/avg_power_w", avg_power_w, self.iter_num)
                 self._write_zeus_summary()
 
             if self.args.tensorboard_log:
