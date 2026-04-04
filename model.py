@@ -34,6 +34,7 @@ from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
+from variations.absolute_position_variations import absolute_position_embedding_dict
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
@@ -151,11 +152,7 @@ class GPT(nn.Module):
             self.transformer['post_abs_norm'] = self.build_norm_from_variant(config, "norm_variant_abs", "norm_abs")
 
         if self.config.use_abs_pos_embeddings:
-            if config.quantize_wpe:
-                pos_embd = QuantizedEmbedding(config.block_size, config.n_embd, config.quantize_wpe_method, config.quantize_wpe_bits)
-            else:
-                pos_embd = nn.Embedding(config.block_size, config.n_embd)
-            self.transformer['wpe'] = pos_embd
+            self.transformer['wpe'] = absolute_position_embedding_dict[config.absolute_pos_embedding_variant](config)
 
         # Select softmax variant for output layer
         self.softmax_variant_output = config.softmax_variant_output
@@ -226,7 +223,7 @@ class GPT(nn.Module):
         """
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding and self.config.use_abs_pos_embeddings:
-            n_params -= self.transformer.wpe.weight.numel()
+            n_params -= sum(p.numel() for p in self.transformer.wpe.parameters())
         return n_params
 
     def update_block_size(self, new_block_size):
@@ -234,11 +231,7 @@ class GPT(nn.Module):
         if new_block_size > self.config.block_size:
             self.config.block_size = new_block_size
             if self.config.use_abs_pos_embeddings:
-                if self.config.quantize_wpe:
-                    pos_embd = QuantizedEmbedding(new_block_size, self.config.n_embd, self.config.quantize_wpe_method, self.config.quantize_wpe_bits)
-                else:
-                    pos_embd = nn.Embedding(new_block_size, self.config.n_embd)
-                self.transformer.wpe = pos_embd
+                self.transformer.wpe.update_block_size(new_block_size)
             for block in self.transformer.h:
                 if hasattr(block.attn, 'bias'):
                     block.attn.bias = torch.tril(torch.ones(new_block_size, new_block_size)).view(1, 1, new_block_size, new_block_size)
@@ -397,8 +390,7 @@ class GPT(nn.Module):
                 x = x * self.embedding_scale
 
             if self.config.use_abs_pos_embeddings:
-                pos = torch.arange(0, t, dtype=torch.long, device=device)
-                pos_emb = self.transformer.wpe(pos)  # (t, n_embd)
+                pos_emb = self.transformer.wpe(t, device=device, training=self.training)  # (t, n_embd)
                 x = self.transformer.drop(x + pos_emb)
             else:
                 x = self.transformer.drop(x)
@@ -539,8 +531,7 @@ class GPT(nn.Module):
                 tok_emb = self.transformer.post_embedding_norm(tok_emb)
 
             if self.config.use_abs_pos_embeddings:
-                pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
-                pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+                pos_emb = self.transformer.wpe(t, device=device, training=self.training) # position embeddings of shape (t, n_embd)
                 x = tok_emb + pos_emb
                 if self.config.norm_variant_abs is not None:
                     x = self.transformer.post_abs_norm(x)
@@ -648,8 +639,7 @@ class GPT(nn.Module):
 
         if self.config.use_abs_pos_embeddings:
             t = idx.size(1)
-            pos = torch.arange(0, t, dtype=torch.long, device=device)
-            tok_emb = tok_emb + self.transformer.wpe(pos)
+            tok_emb = tok_emb + self.transformer.wpe(t, device=device, training=self.training)
             if self.config.norm_variant_abs is not None:
                 tok_emb = self.transformer.post_abs_norm(tok_emb)
 
@@ -810,7 +800,7 @@ class GPT(nn.Module):
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
         if self.config.use_abs_pos_embeddings:
-            self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
+            self.transformer.wpe.crop_block_size(block_size)
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
