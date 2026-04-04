@@ -13,7 +13,21 @@ named_static_groups:
     absolute_pos_embedding_variant: ["cyclic"]
     cyclic_abs_pos_cycle_lengths:
       - [2, 3, 5]
-    cyclic_abs_pos_randomize_starts: [false]
+  - named_group: "abs_cyclic_2357"
+    use_abs_pos_embeddings: [true]
+    absolute_pos_embedding_variant: ["cyclic"]
+    cyclic_abs_pos_cycle_lengths:
+      - [2, 3, 5, 7]
+  - named_group: "abs_cyclic_235711"
+    use_abs_pos_embeddings: [true]
+    absolute_pos_embedding_variant: ["cyclic"]
+    cyclic_abs_pos_cycle_lengths:
+      - [2, 3, 5, 7, 11]
+  - named_group: "abs_cyclic_23571113"
+    use_abs_pos_embeddings: [true]
+    absolute_pos_embedding_variant: ["cyclic"]
+    cyclic_abs_pos_cycle_lengths:
+      - [2, 3, 5, 7, 11, 13]
 
   - named_group: "rope_only"
     use_abs_pos_embeddings: [false]
@@ -29,13 +43,20 @@ named_static_groups:
 
   - named_group: "abs_norm_on"
     norm_variant_abs: ["hyperspherenorm"]
+    norm_abs_radius_learning: [true]
     norm_abs_radius: ["20.0"]
     norm_abs_scale: ["1.0"]
     norm_abs_gain: [false]
 
 named_variation_groups:
   - named_group: "abs_variant"
-    named_group_alternates: ["abs_learned", "abs_cyclic_235"]
+    named_group_alternates:
+      - "abs_learned"
+      - "abs_cyclic_235"
+      - "abs_cyclic_2357"
+      - "abs_cyclic_235711"
+      - "abs_cyclic_23571113"
+    cyclic_abs_pos_randomize_starts: [true, false]
   - named_group: "rotary_toggle"
     named_group_alternates: ["rotary_off", "rotary_on"]
 
