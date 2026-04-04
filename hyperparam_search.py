@@ -108,7 +108,7 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
 
     loss = float(tr.best_val_loss)
     nparam = float(tr.raw_model.num_param)
-    best_iter = int(getattr(tr, "best_iter", getattr(tr, "iter_num_best_val_loss", 0)))
+    best_iter = int(getattr(tr, "best_iter", 0))
     torch_alloc_mb = float(
         getattr(tr, "peak_torch_allocated", getattr(tr, "peak_gpu_usage", 0.0))
         / (1024 ** 2)
