@@ -819,6 +819,84 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
         return ''.join(out_pieces)
 
 
+class OptimizedJsonByteTokenizerWithByteFallback(JsonByteTokenizerWithByteFallback):
+    """
+    Optimized JSON byte-fallback tokenizer.
+
+    Uses a UTF-8 byte trie to match custom tokens in O(n * avg_match_depth)
+    instead of scanning every custom token at each byte position.
+    """
+
+    _END = "__token_id__"
+
+    def build_vocab(self):
+        super().build_vocab()
+        self._build_token_trie()
+
+    def _build_token_trie(self):
+        self.token_trie = {}
+        for token_str in self.custom_tokens:
+            token_id = self.stoi[token_str]
+            node = self.token_trie
+            for b in token_str.encode("utf-8"):
+                node = node.setdefault(b, {})
+            node[self._END] = token_id
+
+    def _longest_trie_match(self, data_bytes, start_idx):
+        node = self.token_trie
+        best_token_id = None
+        best_end = start_idx
+        i = start_idx
+        n = len(data_bytes)
+
+        while i < n and data_bytes[i] in node:
+            node = node[data_bytes[i]]
+            i += 1
+            if self._END in node:
+                best_token_id = node[self._END]
+                best_end = i
+        return best_token_id, best_end
+
+    def tokenize(self, data):
+        data_bytes = data.encode("utf-8")
+        i = 0
+        n = len(data_bytes)
+        ids = []
+
+        pbar = tqdm(total=n, desc="Tokenizing Trie JSON + Byte Fallback")
+        while i < n:
+            token_id, end_idx = self._longest_trie_match(data_bytes, i)
+            if token_id is not None:
+                ids.append(token_id)
+                self.record_token(token_id)
+                consumed = end_idx - i
+                i = end_idx
+                pbar.update(consumed)
+                continue
+
+            single_byte = data_bytes[i:i+1]
+            byte_id = self.stoi[single_byte]
+            ids.append(byte_id)
+            self.record_token(byte_id)
+            i += 1
+            pbar.update(1)
+
+        pbar.close()
+
+        meta = {
+            "vocab_size": self.vocab_size,
+            "tokenizer": "json_byte_fallback_optimized",
+            "custom_tokens": self.custom_tokens,
+            "stoi": self.stoi,
+            "itos": self.itos,
+            "custom_token_count": self.custom_token_count,
+            "matching_strategy": "utf8_byte_trie_longest_match",
+            "byte_fallback": True,
+        }
+        self.finalize_meta(meta)
+        return ids
+
+
 def _load_python_token_processor():
     """Load the PythonTokenProcessor helper without requiring a package install."""
     tokenizer_path = Path(__file__).parent / "programming_tokenizers" / "python_tokenizer.py"

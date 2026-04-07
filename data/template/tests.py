@@ -5,6 +5,7 @@ import os
 import sys
 import pickle
 import json
+import tempfile
 import prepare
 from tokenizers import (
     SentencePieceTokenizer,
@@ -15,6 +16,7 @@ from tokenizers import (
     CharBPETokenizerWithByteFallback,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
+    OptimizedJsonByteTokenizerWithByteFallback,
 )
 from argparse import Namespace
 from rich.console import Console
@@ -337,6 +339,73 @@ class TestTokenizers(unittest.TestCase):
             os.remove(json_tokens_file)
 
         console.print("JsonByteTokenizerWithByteFallback test passed.")
+
+    def test_optimized_json_byte_tokenizer_with_deepseek_vocab(self):
+        deepseek_tokens = os.path.join(
+            os.path.dirname(__file__),
+            "premade_vocab_sets",
+            "deepseek_tokens.json",
+        )
+        args = Namespace(json_tokens_file=deepseek_tokens, track_token_counts=True)
+        test_string = "DeepSeek tokenizer test 🚀 with bytes fallback: 漢字 + emoji 😀"
+
+        tokenizer = OptimizedJsonByteTokenizerWithByteFallback(args)
+        ids = tokenizer.tokenize(test_string)
+        detokenized = tokenizer.detokenize(ids)
+
+        self.assertEqual(test_string, detokenized)
+        self.assertTrue(any(token_id < 256 for token_id in ids), "Expected byte fallback tokens to be used.")
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        self.assertEqual(meta["tokenizer"], "json_byte_fallback_optimized")
+        self.assertEqual(meta["matching_strategy"], "utf8_byte_trie_longest_match")
+        self.assertEqual(meta["custom_token_count"], 32000)
+
+    def test_prepare_json_byte_fallback_optimized_creates_meta_and_bins(self):
+        deepseek_tokens = os.path.join(
+            os.path.dirname(__file__),
+            "premade_vocab_sets",
+            "deepseek_tokens.json",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            train_path = os.path.join(tmpdir, "train.txt")
+            with open(train_path, "w", encoding="utf-8") as f:
+                f.write("hello world 😀\nbyte fallback check 漢字\n")
+
+            cwd = os.getcwd()
+            old_argv = sys.argv
+            try:
+                os.chdir(tmpdir)
+                sys.argv = [
+                    "prepare.py",
+                    "--train_input", train_path,
+                    "--method", "json_byte_fallback_optimized",
+                    "--json_tokens_file", deepseek_tokens,
+                    "--percentage_train", "0.8",
+                    "--output_tokenization_subdir",
+                ]
+                prepare.main()
+            finally:
+                os.chdir(cwd)
+                sys.argv = old_argv
+
+            out_dir = os.path.join(tmpdir, "deepseek_tokens")
+            meta_path = os.path.join(out_dir, "meta.pkl")
+            train_bin = os.path.join(out_dir, "train.bin")
+            val_bin = os.path.join(out_dir, "val.bin")
+
+            self.assertTrue(os.path.exists(meta_path))
+            self.assertTrue(os.path.exists(train_bin))
+            self.assertTrue(os.path.exists(val_bin))
+
+            with open(meta_path, "rb") as f:
+                meta = pickle.load(f)
+            self.assertEqual(meta["tokenizer"], "json_byte_fallback_optimized")
+            self.assertGreater(meta["vocab_size"], 256)
+
+            self.assertGreater(os.path.getsize(train_bin), 0)
+            self.assertGreater(os.path.getsize(val_bin), 0)
 
     # --------------------------------------------------------------------------
     # Tests for Token Counts (with histogram printing)
