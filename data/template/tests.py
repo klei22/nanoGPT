@@ -407,6 +407,27 @@ class TestTokenizers(unittest.TestCase):
             self.assertGreater(os.path.getsize(train_bin), 0)
             self.assertGreater(os.path.getsize(val_bin), 0)
 
+    def test_sample_decode_supports_optimized_json_byte_fallback_meta(self):
+        deepseek_tokens = os.path.join(
+            os.path.dirname(__file__),
+            "premade_vocab_sets",
+            "deepseek_tokens.json",
+        )
+        args = Namespace(json_tokens_file=deepseek_tokens, track_token_counts=False)
+        text = "sample decode 漢字 😀"
+        tokenizer = OptimizedJsonByteTokenizerWithByteFallback(args)
+        ids = tokenizer.tokenize(text)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+
+        try:
+            from sample import get_tokenizer_functions
+        except ImportError as exc:
+            self.skipTest(f"sample.py dependencies unavailable: {exc}")
+        _, decode = get_tokenizer_functions(meta)
+        self.assertEqual(text, decode(ids))
+
     # --------------------------------------------------------------------------
     # Tests for Token Counts (with histogram printing)
     # --------------------------------------------------------------------------
