@@ -608,6 +608,15 @@ def read_metrics(out_dir: str) -> dict:
         float,
     ]
 
+    if len(base_metric_keys) != len(casts):
+        raise ValueError(
+            f"Metric schema mismatch: {len(base_metric_keys)} keys vs {len(casts)} casts."
+        )
+    if len(parts) < len(base_metric_keys):
+        raise ValueError(
+            f"Expected at least {len(base_metric_keys)} metrics in {path}, got {len(parts)}."
+        )
+
     metrics: dict[str, float] = {}
     for key, typ, value in zip(base_metric_keys, casts, parts):
         metrics[key] = float("nan") if value == "" else typ(value)

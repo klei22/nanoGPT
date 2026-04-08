@@ -113,6 +113,7 @@ class Trainer:
         self.zeus_total_energy_j = 0.0
         self.zeus_total_time_s = 0.0
         self.zeus_train_step_energy_j = 0.0
+        self.zeus_train_energy_j_total = 0.0
         self.zeus_best_train_step_energy_j = 0.0
         self.zeus_last_step_energy_j = 0.0
         self.total_training_time_ms: float = 0.0   # total run-time from start of training
@@ -256,6 +257,8 @@ class Trainer:
 
         self.device_type = 'cuda' if 'cuda' in self.args.device else 'cpu'
         if self.device_type == 'cuda':
+            if not self.ddp:
+                torch.cuda.set_device(self.device)
             reset_peak_memory_stats(self.device)
 
         if self.args.zeus_log:
@@ -269,7 +272,7 @@ class Trainer:
             if self.ddp:
                 gpu_indices = [self.ddp_local_rank]
             else:
-                gpu_indices = [torch.cuda.current_device()]
+                gpu_indices = [torch.device(self.device).index or torch.cuda.current_device()]
             self.zeus_monitor = ZeusMonitor(
                 gpu_indices=gpu_indices,
                 cpu_indices=[],
@@ -1630,7 +1633,7 @@ class Trainer:
                 args.append(self.gns)
             args.append(self.iter_latency_avg)
             if self.zeus_enabled:
-                args.append(self.zeus_train_step_energy_j)
+                args.append(self.zeus_train_energy_j_total)
                 args.append(self.zeus_last_step_energy_j)
             writer.writerow(args)
 
@@ -1656,6 +1659,7 @@ class Trainer:
                 else 0.0
             ),
             "zeus_train_step_energy_j": self.zeus_train_step_energy_j,
+            "zeus_train_energy_j_total": self.zeus_train_energy_j_total,
             "zeus_best_train_step_energy_j": self.zeus_best_train_step_energy_j,
             "zeus_energy_per_token_j": (
                 self.zeus_total_energy_j / total_tokens
@@ -1663,7 +1667,7 @@ class Trainer:
                 else 0.0
             ),
             "zeus_energy_train_per_token_j": (
-                self.zeus_train_step_energy_j / total_tokens
+                self.zeus_train_energy_j_total / total_tokens
                 if total_tokens > 0
                 else 0.0
             ),
@@ -1751,10 +1755,15 @@ class Trainer:
             self.zeus_last_step_energy_j,
             self.iter_num,
         )
+        self.writer.add_scalar(
+            f"{target_dataset}/zeus_train_energy_j_total",
+            self.zeus_train_energy_j_total,
+            self.iter_num,
+        )
         if tokens_trained > 0:
             self.writer.add_scalar(
                 f"{target_dataset}/zeus_energy_train_per_token_j",
-                self.zeus_train_step_energy_j / tokens_trained,
+                self.zeus_train_energy_j_total / tokens_trained,
                 self.iter_num,
             )
 
@@ -1888,7 +1897,7 @@ class Trainer:
                 self.best_iter = self.iter_num
                 self.best_tokens = self.tokens_trained
                 if self.zeus_enabled:
-                    self.zeus_best_train_step_energy_j = self.zeus_train_step_energy_j
+                    self.zeus_best_train_step_energy_j = self.zeus_last_step_energy_j
                 peak_torch_allocated_mb = self.peak_torch_allocated / (1024 ** 2)
                 peak_torch_reserved_mb = self.peak_torch_reserved / (1024 ** 2)
                 peak_process_gpu_mb = self.peak_process_gpu_usage / (1024 ** 2)
@@ -2241,7 +2250,8 @@ class Trainer:
                 if self.zeus_enabled:
                     zeus_step_measurement = self.zeus_monitor.end_window("train_step")
                     self.zeus_last_step_energy_j = zeus_step_measurement.total_energy
-                    self.zeus_train_step_energy_j += zeus_step_measurement.total_energy
+                    self.zeus_train_step_energy_j = self.zeus_last_step_energy_j
+                    self.zeus_train_energy_j_total += self.zeus_last_step_energy_j
 
                 # Estimate ETA
                 eta_update: ETAUpdate = self.eta.update(
