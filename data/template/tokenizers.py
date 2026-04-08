@@ -788,28 +788,24 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
 
     def detokenize(self, ids):
         """
-        If ID < 256 => single byte
-        If ID >= 256 => custom token string
-        We'll accumulate bytes in a buffer, and whenever we see a custom token,
-        we flush the buffer as text, then append the custom token as is.
+        Decode token IDs back into text.
+        Uses token type (bytes vs str) from `itos` rather than relying on fixed
+        numeric ID ranges, so it works for different ID layouts.
         """
         out_pieces = []
         byte_buffer = []
 
-        for idx, token_id in enumerate(ids):
-            if token_id < 256:
-                # Single raw byte
-                byte_buffer.append(self.itos[token_id])  # e.g. b'\x61'
-            else:
-                # It's a custom token
-                # First flush any accumulated bytes
-                if byte_buffer:
-                    all_bytes = b''.join(byte_buffer)
-                    out_pieces.append(all_bytes.decode('utf-8', errors='replace'))
-                    byte_buffer = []
-                # Append the custom token string
-                custom_str = self.itos[token_id]
-                out_pieces.append(custom_str)
+        for token_id in ids:
+            token = self.itos[token_id]
+            if isinstance(token, bytes):
+                byte_buffer.append(token)
+                continue
+
+            if byte_buffer:
+                all_bytes = b''.join(byte_buffer)
+                out_pieces.append(all_bytes.decode('utf-8', errors='replace'))
+                byte_buffer = []
+            out_pieces.append(token)
 
         # Flush remaining bytes
         if byte_buffer:
@@ -830,7 +826,27 @@ class OptimizedJsonByteTokenizerWithByteFallback(JsonByteTokenizerWithByteFallba
     _END = "__token_id__"
 
     def build_vocab(self):
-        super().build_vocab()
+        # Preserve provided JSON token indices (0..N-1), then append byte tokens.
+        self.stoi = {}
+        self.itos = {}
+        self.custom_token_bytes = {}
+
+        for i, token_str in enumerate(self.custom_tokens):
+            self.stoi[token_str] = i
+            self.itos[i] = token_str
+            self.custom_token_bytes[token_str] = token_str.encode("utf-8")
+
+        self.custom_token_count = len(self.custom_tokens)
+        self.byte_token_offset = self.custom_token_count
+        self.byte_value_to_token_id = {}
+        for b in range(256):
+            token_id = self.byte_token_offset + b
+            key = bytes([b])
+            self.stoi[key] = token_id
+            self.itos[token_id] = key
+            self.byte_value_to_token_id[b] = token_id
+
+        self.vocab_size = self.custom_token_count + 256
         self._build_token_trie()
 
     def _build_token_trie(self):
@@ -874,8 +890,7 @@ class OptimizedJsonByteTokenizerWithByteFallback(JsonByteTokenizerWithByteFallba
                 pbar.update(consumed)
                 continue
 
-            single_byte = data_bytes[i:i+1]
-            byte_id = self.stoi[single_byte]
+            byte_id = self.byte_value_to_token_id[data_bytes[i]]
             ids.append(byte_id)
             self.record_token(byte_id)
             i += 1
@@ -890,6 +905,8 @@ class OptimizedJsonByteTokenizerWithByteFallback(JsonByteTokenizerWithByteFallba
             "stoi": self.stoi,
             "itos": self.itos,
             "custom_token_count": self.custom_token_count,
+            "custom_tokens_offset": 0,
+            "byte_tokens_offset": self.byte_token_offset,
             "matching_strategy": "utf8_byte_trie_longest_match",
             "byte_fallback": True,
         }

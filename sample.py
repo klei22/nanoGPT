@@ -1096,8 +1096,7 @@ def json_byte_fallback_decode(token_ids, itos):
                     tokens.append('')  # Unicode replacement character
                 byte_buffer = []
 
-            # Handle the string token
-            token = token.replace('Ġ', ' ')  # Replace Ġ with space
+            # Handle the string token verbatim to preserve vocab indexing semantics.
             tokens.append(token)
 
     # Handle any remaining bytes in the buffer

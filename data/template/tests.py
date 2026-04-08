@@ -354,13 +354,18 @@ class TestTokenizers(unittest.TestCase):
         detokenized = tokenizer.detokenize(ids)
 
         self.assertEqual(test_string, detokenized)
-        self.assertTrue(any(token_id < 256 for token_id in ids), "Expected byte fallback tokens to be used.")
+        self.assertTrue(
+            any(token_id >= tokenizer.byte_token_offset for token_id in ids),
+            "Expected byte fallback tokens to be used.",
+        )
 
         with open("meta.pkl", "rb") as f:
             meta = pickle.load(f)
         self.assertEqual(meta["tokenizer"], "json_byte_fallback_optimized")
         self.assertEqual(meta["matching_strategy"], "utf8_byte_trie_longest_match")
         self.assertEqual(meta["custom_token_count"], 32000)
+        self.assertEqual(meta["custom_tokens_offset"], 0)
+        self.assertEqual(meta["byte_tokens_offset"], 32000)
 
     def test_prepare_json_byte_fallback_optimized_creates_meta_and_bins(self):
         deepseek_tokens = os.path.join(
