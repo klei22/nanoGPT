@@ -689,7 +689,8 @@ class CustomCharTokenizerWithByteFallback(Tokenizer):
 class JsonByteTokenizerWithByteFallback(Tokenizer):
     """
     Similar to CustomCharTokenizerWithByteFallback, but loads tokens from a JSON array.
-    IDs 0..255 are reserved for raw bytes, then custom tokens get IDs from 256 upwards.
+    Custom tokens preserve their JSON indices (0..N-1), and byte fallback tokens are
+    appended after them (N..N+255).
 
     During tokenization:
       1) Convert text to UTF-8 bytes.
@@ -717,27 +718,28 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
         self.build_vocab()
 
     def build_vocab(self):
-        # Assign IDs 0..255 to individual bytes
         self.stoi = {}
         self.itos = {}
+        self.custom_token_bytes = {}
 
-        for b in range(256):
-            # Store key as the actual single byte
-            key = bytes([b])
-            self.stoi[key] = b  # ID = b
-            self.itos[b] = key
-
-        # Now assign IDs to the custom tokens from 256 onwards
-        offset = 256
         self.custom_token_bytes = {}
         for i, token_str in enumerate(self.custom_tokens):
-            token_id = offset + i
+            token_id = i
             self.stoi[token_str] = token_id
             self.itos[token_id] = token_str
             self.custom_token_bytes[token_str] = token_str.encode('utf-8')
 
         self.custom_token_count = len(self.custom_tokens)
-        self.vocab_size = 256 + self.custom_token_count
+        self.byte_token_offset = self.custom_token_count
+        self.byte_value_to_token_id = {}
+        for b in range(256):
+            token_id = self.byte_token_offset + b
+            key = bytes([b])
+            self.stoi[key] = token_id
+            self.itos[token_id] = key
+            self.byte_value_to_token_id[b] = token_id
+
+        self.vocab_size = self.custom_token_count + 256
 
     def tokenize(self, data):
         # Convert entire string to UTF-8 bytes
@@ -765,8 +767,7 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
 
             if not matched:
                 # No custom token matched, so we treat this as a single byte
-                single_byte = data_bytes[i:i+1]
-                token_id = self.stoi[single_byte]  # 0..255
+                token_id = self.byte_value_to_token_id[data_bytes[i]]
                 self.record_token(token_id)
                 ids.append(token_id)
                 i += 1
@@ -782,6 +783,8 @@ class JsonByteTokenizerWithByteFallback(Tokenizer):
             "stoi": self.stoi,
             "itos": self.itos,
             "custom_token_count": self.custom_token_count,
+            "custom_tokens_offset": 0,
+            "byte_tokens_offset": self.byte_token_offset,
         }
         self.finalize_meta(meta)
         return ids

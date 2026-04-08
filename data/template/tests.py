@@ -333,6 +333,9 @@ class TestTokenizers(unittest.TestCase):
         self.assertEqual(test_string, detokenized)
         self.assertEqual(meta["tokenizer"], "json_byte_fallback")
         self.assertEqual(meta["custom_token_count"], len(test_tokens))
+        self.assertEqual(meta["custom_tokens_offset"], 0)
+        self.assertEqual(meta["byte_tokens_offset"], len(test_tokens))
+        self.assertTrue(any(token_id >= len(test_tokens) for token_id in ids))
 
         # Clean up
         if os.path.exists(json_tokens_file):
