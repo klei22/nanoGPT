@@ -9,6 +9,15 @@ use_rotary_embeddings: true
 use_abs_pos_embeddings: false
 never_save_checkpoint: true
 
+# HSNorm arch
+norm_variant_wte: "hyperspherenorm"
+norm_variant_attn: "hyperspherenorm"
+norm_variant_output: "hyperspherenorm"
+
+# Learnable radius
+norm_wte_radius_learning: true
+hsnorm_radius_learning: true
+
 # Context Length
 block_size: 256
 
@@ -16,23 +25,28 @@ block_size: 256
 use_qk_norm: true
 use_qk_norm_scale: true
 
+# Arch
+use_peri_ln: true
+
 # Inf Attn Settings
-use_concat_heads: True
+use_concat_heads: true
 attention_variant: "infinite"
 
 # Training Settings
-eta_variant: "eval_cycle"
-max_iters: 1000
-eval_interval: 1000
+eta_variant: "iteration"
+max_iters: 500
+eval_interval: 500
 compile: True
 batch_size: 32
 
 # changeable things
-n_layer: 2
-n_embd: 32
-
-# Layerlists
+n_layer: 1
 n_head: 1
-mlp_size: 32
-n_qk_head_dim: 32
-n_v_head_dim: 32
+n_kv_group: 1
+
+n_embd: 64
+
+mlp_size: 128
+
+n_qk_head_dim: 64
+n_v_head_dim: 64

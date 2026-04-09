@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scaling → Sum → Normalize</title>
+  <style>
+    :root {
+      --bg: #1b1b2f;
+      --panel: rgba(255,255,255,0.06);
+      --panel-2: rgba(255,255,255,0.08);
+      --border: rgba(255,255,255,0.12);
+      --text: #ffffff;
+      --muted: rgba(255,255,255,0.72);
+      --base: #ffd166;
+      --scaled: #f4a261;
+      --sum: #4ea8de;
+      --final: #52b788;
+      --grid: #8d99ae;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { overflow: hidden; }
+
+    #app {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #scene-wrap {
+      position: relative;
+      min-width: 0;
+    }
+
+    #scene {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .overlay-top {
+      position: absolute;
+      left: 20px;
+      top: 18px;
+      right: 20px;
+      pointer-events: none;
+    }
+
+    .title-card {
+      max-width: 880px;
+      background: rgba(0,0,0,0.18);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 16px 18px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .overlay-bottom {
+      position: absolute;
+      left: 18px;
+      bottom: 18px;
+      background: rgba(0,0,0,0.28);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 10px 12px;
+      color: rgba(255,255,255,0.85);
+      font-size: 13px;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+
+    #sidebar {
+      border-left: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      overflow: auto;
+      padding: 18px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+    }
+
+    .panel h2 {
+      margin: 0 0 12px 0;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: rgba(255,255,255,0.58);
+      font-weight: 700;
+    }
+
+    .stage-name {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    .button-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 16px;
+      padding: 11px 12px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      background: rgba(255,255,255,0.12);
+    }
+
+    button.active {
+      border-color: rgba(255,255,255,0.28);
+      background: rgba(255,255,255,0.16);
+    }
+
+    .controls-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .range-wrap {
+      margin-top: 14px;
+    }
+
+    .range-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #7dd3fc;
+    }
+
+    .toggle {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+      font-size: 14px;
+      color: rgba(255,255,255,0.9);
+    }
+
+    .help {
+      font-size: 14px;
+      line-height: 1.65;
+      color: var(--muted);
+    }
+
+    .scalar-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 14px;
+      font-size: 13px;
+    }
+
+    .scalar-item {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      padding-bottom: 4px;
+    }
+
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+    @media (max-width: 980px) {
+      #app {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr auto;
+      }
+      #sidebar {
+        border-left: 0;
+        border-top: 1px solid var(--border);
+        max-height: 42vh;
+      }
+      h1 { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="scene-wrap">
+      <canvas id="scene"></canvas>
+      <div class="overlay-top">
+        <div class="title-card">
+          <h1>Scaling → Sum → Normalize</h1>
+          <div class="subtitle">
+            Step through random unit vectors, scale each by a constant in [0, 2], add them tip-to-tail,
+            then project the sum back onto the unit sphere. Drag to rotate, scroll to zoom, and pan with right-drag.
+          </div>
+        </div>
+      </div>
+      <div class="overlay-bottom">Drag to rotate • Scroll to zoom • Right-drag to pan</div>
+    </div>
+
+    <aside id="sidebar">
+      <div class="panel">
+        <h2>Current stage</h2>
+        <div class="stage-name" id="stageName"></div>
+        <div class="button-grid">
+          <button data-stage="0">1. Unit</button>
+          <button data-stage="1">2. Scale</button>
+          <button data-stage="2">3. Sum</button>
+          <button data-stage="3">4. Normalize</button>
+        </div>
+        <div class="controls-row">
+          <button id="playPause">Pause</button>
+          <button id="resetStage">Reset stage</button>
+        </div>
+        <div class="range-wrap">
+          <div class="range-row">
+            <span>Stage progress</span>
+            <span id="progressLabel">0%</span>
+          </div>
+          <input id="progressSlider" type="range" min="0" max="1000" value="0" />
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>View options</h2>
+        <label class="toggle"><span>Auto-rotate scene</span><input id="autoRotate" type="checkbox" /></label>
+        <label class="toggle"><span>Show scale labels</span><input id="showLabels" type="checkbox" checked /></label>
+      </div>
+
+      <div class="panel">
+        <h2>What you are seeing</h2>
+        <div class="help">
+          <p>Each yellow vector starts on the unit sphere. In the next stage, each one is multiplied by its own scalar in the range [0, 2].</p>
+          <p>The blue chain shows tip-to-tail addition, which forms the raw summed vector. A faint blue arrow from the origin shows the same total displacement.</p>
+          <p>In the last stage, the raw sum is projected back to radius 2, leaving only its direction as the normalized output vector.</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Scalars used</h2>
+        <div class="scalar-grid" id="scalarGrid"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module">
+    // Use esm.sh so bare imports inside modules are resolved correctly
+    import * as THREE from 'https://esm.sh/three@0.160.0';
+    import { OrbitControls } from 'https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+    const BG = '#1b1b2f';
+    const GRID = '#8d99ae';
+    const BASE = '#ffd166';
+    const SCALED = '#f4a261';
+    const SUM = '#4ea8de';
+    const FINAL = '#52b788';
+    const WHITE = '#ffffff';
+
+    const NUM_VECTORS = 8;
+    const SPHERE_RADIUS = 2;
+    const AXIS_LEN = 3.25;
+    const STAGE_SECONDS = 1.15;
+
+    function clamp01(x) {
+      return Math.max(0, Math.min(1, x));
+    }
+
+    function smoothstep01(x) {
+      const t = clamp01(x);
+      return t * t * (3 - 2 * t);
+    }
+
+    function unit(v) {
+      const n = v.length();
+      return n > 1e-9 ? v.clone().multiplyScalar(1 / n) : new THREE.Vector3(0, 0, 0);
+    }
+
+    function lerpVec(a, b, t) {
+      return a.clone().lerp(b, t);
+    }
+
+    function colorLerp(c1, c2, t) {
+      return new THREE.Color(c1).lerp(new THREE.Color(c2), clamp01(t));
+    }
+
+    function seededRng(seed = 1) {
+      let s = seed >>> 0;
+      return function rand() {
+        s = (1664525 * s + 1013904223) >>> 0;
+        return s / 4294967296;
+      };
+    }
+
+    function gaussian3(rand) {
+      const arr = [];
+      for (let i = 0; i < 3; i++) {
+        const u1 = Math.max(rand(), 1e-12);
+        const u2 = rand();
+        arr.push(Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2));
+      }
+      return new THREE.Vector3(arr[0], arr[1], arr[2]);
+    }
+
+    function makeDataset() {
+      const rand = seededRng(7);
+      const unitVecs = [];
+      const scales = [];
+      const scaledVecs = [];
+      const chain = [];
+
+      for (let i = 0; i < NUM_VECTORS; i++) {
+        const g = gaussian3(rand);
+        const u = unit(g);
+        const s = 2 * rand();
+        unitVecs.push(u);
+        scales.push(s);
+        scaledVecs.push(u.clone().multiplyScalar(s * SPHERE_RADIUS));
+      }
+
+      let acc = new THREE.Vector3(0, 0, 0);
+      for (let i = 0; i < NUM_VECTORS; i++) {
+        const start = acc.clone();
+        const end = acc.clone().add(scaledVecs[i]);
+        chain.push({ start, end, index: i });
+        acc = end;
+      }
+
+      const sumVec = acc.clone();
+      const finalVec = unit(sumVec).multiplyScalar(SPHERE_RADIUS);
+      return { unitVecs, scales, scaledVecs, chain, sumVec, finalVec };
+    }
+
+    function stageLabel(stage) {
+      if (stage === 0) return 'Unit vectors';
+      if (stage === 1) return 'Scaled by constants in [0, 2]';
+      if (stage === 2) return 'Tip-to-tail vector sum';
+      return 'Normalized back to the unit sphere';
+    }
+
+    class Arrow3DObject {
+      constructor(color, opacity = 1, dashed = false) {
+        this.group = new THREE.Group();
+
+        this.lineMaterial = new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity,
+        });
+
+        this.lineGeometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, 0, 0),
+          new THREE.Vector3(0, 1, 0),
+        ]);
+
+        this.line = new THREE.Line(this.lineGeometry, this.lineMaterial);
+        this.group.add(this.line);
+
+        this.coneGeometry = new THREE.ConeGeometry(0.05, 0.18, 18);
+        this.coneMaterial = new THREE.MeshStandardMaterial({
+          color,
+          transparent: true,
+          opacity,
+          metalness: 0.05,
+          roughness: 0.55,
+        });
+        this.cone = new THREE.Mesh(this.coneGeometry, this.coneMaterial);
+        this.group.add(this.cone);
+
+        this.dashed = dashed;
+        if (dashed) {
+          this.lineMaterial.dispose();
+          this.lineMaterial = new THREE.LineDashedMaterial({
+            color,
+            transparent: true,
+            opacity,
+            dashSize: 0.12,
+            gapSize: 0.08,
+          });
+          this.line.material = this.lineMaterial;
+        }
+      }
+
+      set(start, end, color, opacity = 1) {
+        const dir = end.clone().sub(start);
+        const len = dir.length();
+
+        this.group.visible = len > 1e-6 && opacity > 0.001;
+        if (!this.group.visible) return;
+
+        const headLen = Math.min(0.24, Math.max(0.12, len * 0.18));
+        const shaftLen = Math.max(0.001, len - headLen);
+        const headRadius = Math.min(0.06, Math.max(0.035, len * 0.06));
+
+        const shaftEnd = start.clone().add(dir.clone().setLength(shaftLen));
+        const pts = [start, shaftEnd];
+        this.line.geometry.dispose();
+        this.line.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+        if (this.dashed) this.line.computeLineDistances();
+
+        this.line.material.color.set(color);
+        this.line.material.opacity = opacity;
+
+        this.cone.material.color.set(color);
+        this.cone.material.opacity = opacity;
+        this.cone.scale.set(headRadius / 0.05, headLen / 0.18, headRadius / 0.05);
+
+        const up = new THREE.Vector3(0, 1, 0);
+        const q = new THREE.Quaternion().setFromUnitVectors(up, dir.clone().normalize());
+        this.cone.quaternion.copy(q);
+
+        const center = end.clone().sub(dir.clone().normalize().multiplyScalar(headLen / 2));
+        this.cone.position.copy(center);
+      }
+    }
+
+    const data = makeDataset();
+
+    const canvas = document.getElementById('scene');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(BG, 1);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(BG);
+
+    const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 100);
+    camera.position.set(4.7, 3.9, 5.2);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.enablePan = true;
+    controls.target.set(0, 0, 0);
+    controls.update();
+
+    const ambient = new THREE.AmbientLight(0xffffff, 1.0);
+    scene.add(ambient);
+    const dir1 = new THREE.DirectionalLight(0xffffff, 1.2);
+    dir1.position.set(4, 5, 6);
+    scene.add(dir1);
+    const dir2 = new THREE.DirectionalLight(0xffffff, 0.45);
+    dir2.position.set(-5, -3, -4);
+    scene.add(dir2);
+
+    const world = new THREE.Group();
+    scene.add(world);
+
+    function makeAxis(start, end, color) {
+      const geom = new THREE.BufferGeometry().setFromPoints([start, end]);
+      const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.75 });
+      return new THREE.Line(geom, mat);
+    }
+
+    world.add(makeAxis(new THREE.Vector3(-AXIS_LEN, 0, 0), new THREE.Vector3(AXIS_LEN, 0, 0), GRID));
+    world.add(makeAxis(new THREE.Vector3(0, -AXIS_LEN, 0), new THREE.Vector3(0, AXIS_LEN, 0), GRID));
+    world.add(makeAxis(new THREE.Vector3(0, 0, -AXIS_LEN), new THREE.Vector3(0, 0, AXIS_LEN), GRID));
+
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(SPHERE_RADIUS, 32, 22),
+      new THREE.MeshBasicMaterial({ color: WHITE, wireframe: true, transparent: true, opacity: 0.08 })
+    );
+    world.add(sphere);
+
+    const baseArrows = [];
+    const scaledArrows = [];
+    const chainArrows = [];
+    const scaleSprites = [];
+
+    for (let i = 0; i < NUM_VECTORS; i++) {
+      const a = new Arrow3DObject(BASE, 1, false);
+      baseArrows.push(a);
+      world.add(a.group);
+
+      const b = new Arrow3DObject(SCALED, 1, false);
+      scaledArrows.push(b);
+      world.add(b.group);
+
+      const c = new Arrow3DObject(SUM, 1, false);
+      chainArrows.push(c);
+      world.add(c.group);
+    }
+
+    const sumArrow = new Arrow3DObject(SUM, 0.25, true);
+    world.add(sumArrow.group);
+
+    const finalArrow = new Arrow3DObject(FINAL, 1, false);
+    world.add(finalArrow.group);
+
+    function makeTextSprite(text, color = '#ffffff') {
+      const c = document.createElement('canvas');
+      const ctx = c.getContext('2d');
+      c.width = 256;
+      c.height = 96;
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.font = 'bold 34px Inter, Arial, sans-serif';
+      ctx.fillStyle = color;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, c.width / 2, c.height / 2);
+      const tex = new THREE.CanvasTexture(c);
+      tex.needsUpdate = true;
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(0.7, 0.26, 1);
+      return sprite;
+    }
+
+    for (let i = 0; i < NUM_VECTORS; i++) {
+      const sprite = makeTextSprite(data.scales[i].toFixed(2), WHITE);
+      scaleSprites.push(sprite);
+      world.add(sprite);
+    }
+
+    const normalizedLabel = makeTextSprite('normalized', FINAL);
+    world.add(normalizedLabel);
+
+    const scalarGrid = document.getElementById('scalarGrid');
+    data.scales.forEach((s, i) => {
+      const item = document.createElement('div');
+      item.className = 'scalar-item';
+      item.innerHTML = `<span>v${i + 1}</span><span class="mono">${s.toFixed(3)}</span>`;
+      scalarGrid.appendChild(item);
+    });
+
+    const state = {
+      stage: 0,
+      progress: 0,
+      playing: true,
+      autoRotate: false,
+      showLabels: true,
+      stageStartedAt: performance.now(),
+    };
+
+    const stageNameEl = document.getElementById('stageName');
+    const progressLabelEl = document.getElementById('progressLabel');
+    const progressSliderEl = document.getElementById('progressSlider');
+    const playPauseBtn = document.getElementById('playPause');
+    const resetStageBtn = document.getElementById('resetStage');
+    const autoRotateEl = document.getElementById('autoRotate');
+    const showLabelsEl = document.getElementById('showLabels');
+    const stageButtons = [...document.querySelectorAll('[data-stage]')];
+
+    function refreshUi() {
+      stageNameEl.textContent = stageLabel(state.stage);
+      progressLabelEl.textContent = `${Math.round(state.progress * 100)}%`;
+      progressSliderEl.value = String(Math.round(state.progress * 1000));
+      playPauseBtn.textContent = state.playing ? 'Pause' : 'Play';
+      stageButtons.forEach((btn) => {
+        btn.classList.toggle('active', Number(btn.dataset.stage) === state.stage);
+      });
+    }
+
+    function goToStage(next) {
+      const clamped = Math.max(0, Math.min(3, next));
+      state.stage = clamped;
+      state.playing = true;
+      state.stageStartedAt = performance.now();
+
+      // For the normalize stage, keep the summed configuration static
+      // and animate only the projection from the raw sum to the unit sphere.
+      // That means the summation itself should already be complete.
+      state.progress = clamped === 3 ? 0 : 0;
+      refreshUi();
+    }
+
+    stageButtons.forEach((btn) => {
+      btn.addEventListener('click', () => goToStage(Number(btn.dataset.stage)));
+    });
+
+    playPauseBtn.addEventListener('click', () => {
+      state.playing = !state.playing;
+      if (state.playing) {
+        state.stageStartedAt = performance.now() - state.progress * STAGE_SECONDS * 1000;
+      }
+      refreshUi();
+    });
+
+    resetStageBtn.addEventListener('click', () => {
+      state.progress = 0;
+      state.playing = false;
+      refreshUi();
+    });
+
+    progressSliderEl.addEventListener('input', (e) => {
+      state.progress = Number(e.target.value) / 1000;
+      state.playing = false;
+      refreshUi();
+    });
+
+    autoRotateEl.addEventListener('change', (e) => {
+      state.autoRotate = e.target.checked;
+    });
+
+    showLabelsEl.addEventListener('change', (e) => {
+      state.showLabels = e.target.checked;
+    });
+
+    function resize() {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+
+    window.addEventListener('resize', resize);
+    resize();
+    refreshUi();
+
+    function renderStage() {
+      const stage = state.stage;
+      const t = state.progress;
+
+      const baseOpacity = stage === 0 ? 1 : stage === 1 ? 0.2 : 0.08;
+      const scaledOpacity = stage === 0 ? 0 : stage === 1 ? 1 : stage === 2 ? 0.16 : 0.08;
+
+      for (let i = 0; i < NUM_VECTORS; i++) {
+        const baseEnd = data.unitVecs[i].clone().multiplyScalar(SPHERE_RADIUS);
+        baseArrows[i].set(new THREE.Vector3(0, 0, 0), baseEnd, BASE, baseOpacity);
+
+        let scaledEnd = data.scaledVecs[i];
+        if (stage === 1) {
+          scaledEnd = lerpVec(baseEnd, data.scaledVecs[i], t);
+        }
+        scaledArrows[i].set(new THREE.Vector3(0, 0, 0), scaledEnd, SCALED, scaledOpacity);
+
+        const spritePos = data.scaledVecs[i].clone().add(new THREE.Vector3(0.12, 0.12, 0.12));
+        scaleSprites[i].position.copy(spritePos);
+        scaleSprites[i].visible = state.showLabels && stage >= 1;
+      }
+
+      for (let i = 0; i < NUM_VECTORS; i++) {
+        if (stage < 2) {
+          chainArrows[i].group.visible = false;
+          continue;
+        }
+
+        const seg = data.chain[i];
+
+        if (stage === 2) {
+          const localT = clamp01(t * (NUM_VECTORS + 0.2) - i);
+          const eased = smoothstep01(localT);
+          const endNow = lerpVec(seg.start, seg.end, eased);
+          chainArrows[i].set(seg.start, endNow, SUM, localT > 0 ? 1 : 0);
+        } else {
+          // In normalize stage, keep the full summation already completed.
+          chainArrows[i].set(seg.start, seg.end, SUM, 1);
+        }
+      }
+
+      if (stage >= 2) {
+        const sumOpacity = stage === 2 ? Math.max(0.18, 1 - t * 0.55) : 0.22;
+        sumArrow.set(new THREE.Vector3(0, 0, 0), data.sumVec, SUM, sumOpacity);
+      } else {
+        sumArrow.group.visible = false;
+      }
+
+      if (stage >= 3) {
+        const end = lerpVec(data.sumVec, data.finalVec, smoothstep01(t));
+        const col = colorLerp(SUM, FINAL, t);
+        finalArrow.set(new THREE.Vector3(0, 0, 0), end, col, 1);
+        normalizedLabel.position.copy(data.finalVec.clone().add(new THREE.Vector3(0.24, 0.14, 0.12)));
+        normalizedLabel.visible = state.showLabels;
+      } else {
+        finalArrow.group.visible = false;
+        normalizedLabel.visible = false;
+      }
+    }
+
+    let lastTs = performance.now();
+    function animate(ts) {
+      const dt = Math.min(0.05, (ts - lastTs) / 1000);
+      lastTs = ts;
+
+      if (state.playing) {
+        const elapsed = (ts - state.stageStartedAt) / 1000;
+        state.progress = clamp01(elapsed / STAGE_SECONDS);
+        if (state.progress >= 1) state.playing = false;
+        refreshUi();
+      }
+
+      if (state.autoRotate) {
+        world.rotation.y += dt * 0.22;
+      }
+
+      controls.update();
+      renderStage();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
+

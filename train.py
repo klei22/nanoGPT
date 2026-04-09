@@ -26,8 +26,8 @@ from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 from train_variations.loss_variants import build_loss_function
 from train_variations.distillation_loss_variants import build_distillation_loss
 
-from utils.gpu_monitoring import get_gpu_memory_info
-from torch.cuda import reset_peak_memory_stats, max_memory_allocated
+from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
+from torch.cuda import reset_peak_memory_stats, max_memory_allocated, max_memory_reserved
 
 from utils.model_info import (
     print_summary,
@@ -100,6 +100,9 @@ class Trainer:
         self.tokens_trained = 0
         self.best_tokens = 0
         self.peak_gpu_usage = 0.0
+        self.peak_torch_allocated = 0.0
+        self.peak_torch_reserved = 0.0
+        self.peak_process_gpu_usage = 0.0
         self.total_training_time_ms: float = 0.0   # total run-time from start of training
         self.time_remaining_ms: float= 0.0
         self.total_time_est_ms: float= 0.0
@@ -1347,6 +1350,15 @@ class Trainer:
                 f"{target_dataset}/bit_loss_penalty_tokens", penalty_term, tokens_trained
             )
 
+    def _safe_better_than_chance(self, vocab_size: float, loss_value: float) -> float:
+        """Return vocab_size / exp(loss) without raising overflow for huge losses."""
+        if not math.isfinite(loss_value):
+            return 0.0
+        # math.exp overflows around 709 on float64; beyond that the ratio is effectively 0.
+        if loss_value >= 709.0:
+            return 0.0
+        return vocab_size / math.exp(loss_value)
+
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance):
         compute_rankme = self.args.log_rankme or self.args.log_areq
 
@@ -1573,7 +1585,11 @@ class Trainer:
             args.append(self.lr)
             args.append(self.args.batch_size)
             args.append(self.tokens_trained)
-            if hasattr(self, "peak_gpu_usage"):
+            if hasattr(self, "peak_torch_allocated"):
+                args.append(self.peak_torch_allocated / (1024 ** 2))
+                args.append(self.peak_torch_reserved / (1024 ** 2))
+                args.append(self.peak_process_gpu_usage / (1024 ** 2))
+            elif hasattr(self, "peak_gpu_usage"):
                 args.append(self.peak_gpu_usage / (1024 ** 2))
             if self.args.gns_type is not None:
                 args.append(self.gns)
@@ -1691,15 +1707,26 @@ class Trainer:
             self.gns = self.gns_ema.get_gns()
 
         if self.device_type == 'cuda':
-            self.peak_gpu_usage = max(
-                    self.peak_gpu_usage,
-                    max_memory_allocated(self.device)
-                    )
+            current_device_idx = torch.cuda.current_device()
+            self.peak_torch_allocated = max(
+                self.peak_torch_allocated,
+                max_memory_allocated(self.device),
+            )
+            self.peak_torch_reserved = max(
+                self.peak_torch_reserved,
+                max_memory_reserved(self.device),
+            )
+            self.peak_process_gpu_usage = max(
+                self.peak_process_gpu_usage,
+                get_process_gpu_memory_bytes(current_device_idx),
+            )
+            # Backward-compatible field used by older tools.
+            self.peak_gpu_usage = self.peak_torch_allocated
 
         self.vram_allocated = get_gpu_memory_info(info_type='used') if self.args.device != "cpu" else 0
         if self.args.dataset_list is not None:
             for dataset, dataset_losses in losses['datasets'].items():
-                better_than_chance = self.model_args['vocab_size'] / math.exp(dataset_losses['val'].item())
+                better_than_chance = self._safe_better_than_chance(self.model_args['vocab_size'], dataset_losses['val'].item())
                 log_message=f"step {self.iter_num}: "
                 log_message+=f"{dataset:<20s}"
                 log_message+=f", {self.model.num_param}"
@@ -1728,10 +1755,10 @@ class Trainer:
                 log_message+=f", lr {self.lr:.4f}"
                 log_message+=f", tokens_trained {self.tokens_trained:.2e}"
                 self.console.print(log_message)
-                better_than_chance = self.vocab_sizes[dataset] / math.exp(dataset_losses['val'].item())
+                better_than_chance = self._safe_better_than_chance(self.vocab_sizes[dataset], dataset_losses['val'].item())
                 self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained, dataset, better_than_chance)
         else:
-            better_than_chance = self.model_args['vocab_size'] / math.exp(losses['val'].item())
+            better_than_chance = self._safe_better_than_chance(self.model_args['vocab_size'], losses['val'].item())
             log_message=f"step {self.iter_num}:"
             log_message+=f", {self.model.num_param}"
             log_message+=f", train loss {losses['train']:.4f}"
@@ -1764,9 +1791,11 @@ class Trainer:
                 self.best_val_loss = losses['val']
                 self.best_iter = self.iter_num
                 self.best_tokens = self.tokens_trained
-                peak_mb = self.peak_gpu_usage / (1024 ** 2)
+                peak_torch_allocated_mb = self.peak_torch_allocated / (1024 ** 2)
+                peak_torch_reserved_mb = self.peak_torch_reserved / (1024 ** 2)
+                peak_process_gpu_mb = self.peak_process_gpu_usage / (1024 ** 2)
                 with open(os.path.join(self.args.out_dir, 'best_val_loss_and_iter.txt'), "w") as best_loss_file:
-                    chance_ratio = self.model_args['vocab_size']/math.exp(self.best_val_loss.item())
+                    chance_ratio = self._safe_better_than_chance(self.model_args['vocab_size'], self.best_val_loss.item())
                     metrics = [
                             f"{self.best_val_loss.item()}",
                             f"{self.iter_num}",
@@ -1774,7 +1803,9 @@ class Trainer:
                             f"{self.model.num_param}",
                             f"{chance_ratio:.3e}",
                             f"{chance_ratio/self.model.num_param:.3e}",
-                            f"{peak_mb:.1f}",
+                            f"{peak_torch_allocated_mb:.1f}",
+                            f"{peak_torch_reserved_mb:.1f}",
+                            f"{peak_process_gpu_mb:.1f}",
                             f"{self.iter_latency_avg:.1f}",
                             f"{self.latest_top1_prob:.6f}",
                             f"{self.latest_top1_correct:.6f}",
@@ -1834,7 +1865,7 @@ class Trainer:
         log_message+= f", {self.model.num_param}"
         if self.args.multicontext_datasets:
             for i, mc_dataset in enumerate(self.args.multicontext_datasets):
-                self.mc_btc_train[mc_dataset] = self.vocab_sizes[mc_dataset] / math.exp(training_losses[i].item())
+                self.mc_btc_train[mc_dataset] = self._safe_better_than_chance(self.vocab_sizes[mc_dataset], training_losses[i].item())
                 log_message+= f", {self.underscore_abbr(mc_dataset)}"
                 if self.args.log_btc_train:
                     log_message+= f" btc {self.mc_btc_train[mc_dataset]:.4f}"
@@ -1842,7 +1873,7 @@ class Trainer:
                 log_message+= f" loss {training_losses[i].item():.4f}"
             better_than_chance = None
         else:
-            better_than_chance = self.model_args['vocab_size'] / math.exp(lossf)
+            better_than_chance = self._safe_better_than_chance(self.model_args['vocab_size'], lossf)
             log_message+= f", loss {lossf:.4f}"
             if self.args.log_btc_train:
                 log_message+=f", btc_train {better_than_chance:.2e}"
@@ -1946,7 +1977,7 @@ class Trainer:
                     best_iter=f"{self.best_iter}",
                     best_tokens=f"{self.best_tokens}",
                     iter_latency=f"{self.iter_latency_avg:.1f}",
-                    peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                    peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
                     t1p=f"{self.latest_top1_prob:.6f}",
                     t1c=f"{self.latest_top1_correct:.6f}",
                     tr=f"{self.latest_target_rank:.2f}",
@@ -2150,7 +2181,7 @@ class Trainer:
                         best_iter=f"{self.best_iter}",
                         best_tokens=f"{self.best_tokens}",
                         iter_latency=f"{self.iter_latency_avg:.1f}",
-                        peak_gpu_mb=f"{self.peak_gpu_usage / (1024 ** 2):.1f}",
+                        peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
                         t1p=f"{self.latest_top1_prob:.6f}",
                         t1c=f"{self.latest_top1_correct:.6f}",
                         tr=f"{self.latest_target_rank:.2f}",
