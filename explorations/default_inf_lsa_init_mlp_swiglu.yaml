@@ -40,7 +40,7 @@ common_group:
   dataset: ["minipile"]
   eval_interval: [2500]
   max_iters: [10000]
-  never_save_checkpoint: [true]
+  never_save_checkpoint: [false]
   compile: [true]
   log_rankme: [true]
   log_areq: [true]
@@ -50,10 +50,8 @@ parameter_groups:
       - "qk_norm"
       - "peri_ln"
       - "rotary"
-      - "relu2max"
       - "infinite"
-      - "mqa"
       - "hd_100"
     mlp_variant: ["mlp", "swiglu"]
     activation_variant: ["learned_spline"]
-    lsa_init_activation: ["mish", "silu", "gelu", "squared_relu"]
+    lsa_init_activation: ["mish", "silu", "gelu", "squared_relu", "identity", "relu"]
