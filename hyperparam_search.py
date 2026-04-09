@@ -137,6 +137,10 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
 
 def _parse_best_metrics_file(metrics_path: Path) -> TrialMetrics:
     line = [x.strip() for x in metrics_path.read_text().strip().split(",")]
+    if len(line) < 21:
+        raise ValueError(
+            f"Unexpected metric layout in {metrics_path}: expected >=21 columns, got {len(line)}"
+        )
 
     loss = float(line[0])
     best_iter = int(line[1])
@@ -146,8 +150,12 @@ def _parse_best_metrics_file(metrics_path: Path) -> TrialMetrics:
     torch_resv_mb = float(line[7])
     process_gpu_mb = float(line[8])
     iter_latency_ms = float(line[9])
-    rankme = float(line[19])
-    areq = float(line[20])
+
+    # Optional Zeus column (zeus_best_train_step_energy_j) may be inserted at index 10.
+    rankme_idx = 20 if len(line) > 21 else 19
+    areq_idx = rankme_idx + 1
+    rankme = float(line[rankme_idx])
+    areq = float(line[areq_idx])
 
     return (
         loss,
