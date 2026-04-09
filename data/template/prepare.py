@@ -12,6 +12,7 @@ from tokenizers import (
     CharBPETokenizerWithByteFallback,
     CustomCharTokenizerWithByteFallback,
     JsonByteTokenizerWithByteFallback,
+    OptimizedJsonByteTokenizerWithByteFallback,
     PythonProgrammingTokenizer,
     SineWaveTokenizer,
     WhisperMelCsvTokenizer,
@@ -31,7 +32,7 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "char_bpe", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave", "whisper_mel_csv"],
+                       choices=["sentencepiece", "tiktoken", "char", "char_bpe", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "json_byte_fallback_optimized", "python_programming", "sinewave", "whisper_mel_csv"],
                        default="tiktoken", help="Tokenization method")
 
     # Sine wave tokenizer arguments
@@ -130,7 +131,7 @@ def main():
     args = parse_arguments()
     output_dir = None
     if args.output_tokenization_subdir:
-        if args.method == "json_byte_fallback" and args.json_tokens_file:
+        if args.method in {"json_byte_fallback", "json_byte_fallback_optimized"} and args.json_tokens_file:
             output_dir = os.path.splitext(os.path.basename(args.json_tokens_file))[0]
         elif args.method == "sentencepiece":
             output_dir = f"sp_{args.vocab_size}"
@@ -180,6 +181,8 @@ def main():
         tokenizer = CustomCharTokenizerWithByteFallback(args)
     elif args.method == "json_byte_fallback":
         tokenizer = JsonByteTokenizerWithByteFallback(args)
+    elif args.method == "json_byte_fallback_optimized":
+        tokenizer = OptimizedJsonByteTokenizerWithByteFallback(args)
     elif args.method == "python_programming":
         tokenizer = PythonProgrammingTokenizer(args)
     elif args.method == "sinewave":
