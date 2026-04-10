@@ -1,0 +1,54 @@
+# multicontext_transform_variations.yaml
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      use_abs_pos_embeddings: [false]
+
+  # Embedding Norm
+  - named_group: "rmsnorm_wte"
+    named_group_settings:
+      norm_variant_wte: ["rmsnorm"]
+
+  # MLP Activation
+  - named_group: "squared_relu"
+    named_group_settings:
+      activation_variant: ["squared_relu"]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  training_mode: ["multicontext"]
+  multicontext: [true]
+  multicontext_datasets: [["shakespeare_char", "shakespeare_char"]]
+  vocab_sizes: [[65, 65]]
+  eval_interval: [1000]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  - compile: [true]
+    named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "squared_relu"
+    multicontext_transform_variant:
+      - "none"
+      - "learned_vector_add"
+      - "random_orthonormal"
+      - "learned_orthonormal"
