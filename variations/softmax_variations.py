@@ -546,10 +546,15 @@ class ReLUMax(nn.Module):
         self.relumax = nn.ReLU()
         self.relumax_divisor = config.relumax_divisor
         self.div_by_seq_len = config.div_by_seq_len
+        offset_val = torch.tensor(config.relumax_offset)
+        if getattr(config, "relumax_use_learned_offset", False):
+            self.offset = nn.Parameter(offset_val)
+        else:
+            self.register_buffer("offset", offset_val)
 
     def forward(self, x):
 
-        result = self.relumax(x) / self.relumax_divisor
+        result = self.relumax(x + self.offset) / self.relumax_divisor
 
         # divide by sequence length
         if self.div_by_seq_len:
@@ -564,10 +569,15 @@ class ReLU2Max(nn.Module):
         self.dim = dim
         self.relu2max_divisor = config.relu2max_divisor
         self.div_by_seq_len = config.div_by_seq_len
+        offset_val = torch.tensor(config.relu2max_offset)
+        if getattr(config, "relu2max_use_learned_offset", False):
+            self.offset = nn.Parameter(offset_val)
+        else:
+            self.register_buffer("offset", offset_val)
 
     def forward(self, x):
 
-        result = torch.relu(x) ** 2 / self.relu2max_divisor
+        result = torch.relu(x + self.offset) ** 2 / self.relu2max_divisor
 
         # divide by sequence length
         if self.div_by_seq_len:
