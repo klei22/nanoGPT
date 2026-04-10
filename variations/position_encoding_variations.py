@@ -91,6 +91,27 @@ class RotaryEmbedding(nn.Module):
 
         return x_combined
 
+class CoPEPositionEmbedding(nn.Module):
+    """Complex positional embedding for CoPE using sinusoidal imaginary part."""
+    def __init__(self, config=None, size=None):
+        super().__init__()
+        self.dim = size
+        self.gamma = config.cope_gamma
+        self.theta = config.cope_theta
+        self.inv_freq = None
+
+    def _generate_inv_freq(self, device):
+        inv_freq = 1.0 / (self.theta ** (torch.arange(0, self.dim, device=device).float() / self.dim))
+        return inv_freq
+
+    def forward(self, seq_len, device):
+        if self.inv_freq is None or self.inv_freq.device != device:
+            self.inv_freq = self._generate_inv_freq(device)
+
+        pos_indices = torch.arange(0, seq_len, device=device).type_as(self.inv_freq)
+        angles = torch.einsum('i,d->id', pos_indices, self.inv_freq)
+        return self.gamma * torch.sin(angles)
+
 class SymmetricalOverlapAngularPositions(nn.Module):
     """ SOAP is a fresh and 'clean' implementation of Rotary Embeddings.
 
@@ -239,4 +260,3 @@ class FIRE(nn.Module):
         fire_bias = fire_bias.unsqueeze(0).permute(0, 3, 1, 2)
 
         return fire_bias
-
