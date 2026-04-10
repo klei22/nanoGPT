@@ -54,6 +54,7 @@ from utils.model_stats import (
 
 from sample import (
     sample_with_existing_model,
+    get_byte_fallback_checker,
     get_tokenizer_functions,
 )
 
@@ -588,6 +589,7 @@ class Trainer:
         if self.args.dataset_list is not None and self.args.multidataset_wte:
             self.encode_dict = {}
             self.decode_dict = {}
+            self.byte_fallback_checker_dict = {}
             for dataset in self.args.dataset_list:
                 meta_path = os.path.join('data', dataset, 'meta.pkl')
                 if not os.path.exists(meta_path):
@@ -597,8 +599,10 @@ class Trainer:
                 encode, decode = get_tokenizer_functions(meta)
                 self.encode_dict[dataset] = encode
                 self.decode_dict[dataset] = decode
+                self.byte_fallback_checker_dict[dataset] = get_byte_fallback_checker(meta)
             self.encode = self.encode_dict[self.args.dataset_list[0]]
             self.decode = self.decode_dict[self.args.dataset_list[0]]
+            self.byte_fallback_checker = self.byte_fallback_checker_dict[self.args.dataset_list[0]]
         else:
             meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
             if os.path.exists(meta_path):
@@ -606,6 +610,7 @@ class Trainer:
                     meta = pickle.load(f)
 
                 self.encode, self.decode = get_tokenizer_functions(meta)
+                self.byte_fallback_checker = get_byte_fallback_checker(meta)
 
                 if 'tokenizer' in meta:
                     if meta['tokenizer'] == 'sentencepiece':
@@ -640,9 +645,11 @@ class Trainer:
             if hasattr(self, 'encode_dict'):
                 encode_fn = self.encode_dict[self.args.dataset_list[i]]
                 decode_fn = self.decode_dict[self.args.dataset_list[i]]
+                byte_fallback_checker = self.byte_fallback_checker_dict[self.args.dataset_list[i]]
             else:
                 encode_fn = self.encode
                 decode_fn = self.decode
+                byte_fallback_checker = self.byte_fallback_checker
 
             start_ids = torch.tensor(encode_fn(self.args.sample_start_tokens), dtype=torch.long, device=self.device)[None, ...]
 
@@ -659,6 +666,7 @@ class Trainer:
                     top_k=self.args.top_k,
                     colorize_output=self.args.colorize_output,
                     colorize_mode=self.args.colorize_mode,
+                    byte_fallback_checker=byte_fallback_checker,
                     token_boundary=(self.args.token_boundary or None),
                     show_heatmaps=self.args.show_heatmaps,
                     sample_file=self.args.sample_file,

@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from model import GPT, GPTConfig
-from sample import get_tokenizer_functions, sample_with_existing_model
+from sample import get_byte_fallback_checker, get_tokenizer_functions, sample_with_existing_model
 from train_args import parse_args
 from train_variations.loss_variants import build_loss_function
 
@@ -166,6 +166,7 @@ def sample_and_print(
     device: torch.device,
     encode,
     decode,
+    byte_fallback_checker,
     iter_num: int,
     best_val_loss: float,
 ) -> None:
@@ -183,6 +184,7 @@ def sample_and_print(
         top_k=args.top_k,
         colorize_output=args.colorize_output,
         colorize_mode=args.colorize_mode,
+        byte_fallback_checker=byte_fallback_checker,
         token_boundary=(args.token_boundary or None),
         show_heatmaps=args.show_heatmaps,
         chart_type=args.chart_type,
@@ -238,9 +240,11 @@ def main() -> None:
     train_data, val_data = load_dataset(args.dataset, model_args["vocab_size"])
     loss_fn = build_loss_function(args)
     encode = decode = None
+    byte_fallback_checker = None
     if args.max_sample_tokens is not None:
         meta = load_meta(args.dataset, args.out_dir)
         encode, decode = get_tokenizer_functions(meta)
+        byte_fallback_checker = get_byte_fallback_checker(meta)
 
     t_start = time.time()
     while state.iter_num < args.max_iters:
@@ -288,7 +292,18 @@ def main() -> None:
                 if encode is None or decode is None:
                     meta = load_meta(args.dataset, args.out_dir)
                     encode, decode = get_tokenizer_functions(meta)
-                sample_and_print(model, args, device, encode, decode, state.iter_num, state.best_val_loss)
+                if byte_fallback_checker is None:
+                    byte_fallback_checker = get_byte_fallback_checker(meta)
+                sample_and_print(
+                    model,
+                    args,
+                    device,
+                    encode,
+                    decode,
+                    byte_fallback_checker,
+                    state.iter_num,
+                    state.best_val_loss,
+                )
 
         state.iter_num += 1
 
