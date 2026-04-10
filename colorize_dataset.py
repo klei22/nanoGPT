@@ -27,12 +27,26 @@ python colorize_dataset.py \
   --mode softmax \
   --window rolling
 ```
+
+```bash
+# analyse Gemma 270M predictions on validation slice and a custom prompt
+python colorize_dataset.py \
+  --hf_model_name google/gemma-3-270m \
+  --hf_dataset_name Helsinki-NLP/opus-100 \
+  --hf_dataset_config en-zh \
+  --hf_dataset_split "train[:10%]" \
+  --split val \
+  --hf_max_samples 4 \
+  --prompt "Translate English to Chinese:\nEnglish: The cat is on the mat.\nChinese:" \
+  --display topk \
+  --activation_view none
+```
 """
 from __future__ import annotations
 
 import argparse, io, pickle, math
 from pathlib import Path
-from typing import Callable, List, Sequence
+from typing import Callable, List, Optional, Sequence
 
 import numpy as np
 import torch, torch.nn.functional as F
@@ -140,6 +154,94 @@ def parse_args():
         default=["wte", "attn", "mlp"],
         help="Activation components to display in activation_view modes",
     )
+    p.add_argument("--hf_model_name", help="Name or path of a Hugging Face causal LM to analyze (e.g. google/gemma-3-270m)")
+    p.add_argument(
+        "--hf_attn_implementation",
+        default="eager",
+        help="Attention implementation hint passed to AutoModelForCausalLM.from_pretrained",
+    )
+    p.add_argument(
+        "--hf_dataset_name",
+        default="Helsinki-NLP/opus-100",
+        help="Dataset name to load from the Hugging Face hub when using --hf_model_name",
+    )
+    p.add_argument(
+        "--hf_dataset_config",
+        default="en-zh",
+        help="Dataset configuration to load from the Hugging Face hub",
+    )
+    p.add_argument(
+        "--hf_dataset_split",
+        default="train[:10%]",
+        help="Initial dataset slice (datasets style) before creating train/validation splits",
+    )
+    p.add_argument(
+        "--hf_eval_fraction",
+        type=float,
+        default=0.1,
+        help="Fraction of the sliced dataset reserved for validation when using --hf_model_name",
+    )
+    p.add_argument(
+        "--hf_max_samples",
+        type=int,
+        default=8,
+        help="Maximum number of samples from the chosen split to include in the analysis",
+    )
+    p.add_argument(
+        "--hf_max_length",
+        type=int,
+        default=128,
+        help="Maximum sequence length when tokenising Hugging Face datasets/prompts",
+    )
+    p.add_argument(
+        "--hf_prompt_template",
+        default="Translate English to Chinese:\nEnglish: {source}\nChinese: {target}",
+        help="Template applied to dataset rows. Use {source} and {target} placeholders",
+    )
+    p.add_argument(
+        "--hf_source_field",
+        default="en",
+        help="Field name containing the source text inside dataset examples",
+    )
+    p.add_argument(
+        "--hf_target_field",
+        default="zh",
+        help="Field name containing the target text inside dataset examples",
+    )
+    p.add_argument(
+        "--hf_use_target",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include the ground-truth target text in the formatted dataset prompt",
+    )
+    p.add_argument(
+        "--hf_add_eos_between_sequences",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Insert the tokenizer EOS token between concatenated Hugging Face samples",
+    )
+    p.add_argument(
+        "--prompt",
+        help="Free-form prompt to analyse with the Hugging Face model (generation optional)",
+    )
+    p.add_argument(
+        "--max_new_tokens",
+        type=int,
+        default=50,
+        help="Number of tokens to generate for --prompt when using a Hugging Face model",
+    )
+    p.add_argument(
+        "--generation_temperature",
+        type=float,
+        default=0.0,
+        help="Temperature for text generation when analysing --prompt (0 for greedy)",
+    )
+    p.add_argument(
+        "--generation_top_p",
+        type=float,
+        default=1.0,
+        help="Top-p nucleus sampling parameter for --prompt generation",
+    )
     return p.parse_args()
 
 
@@ -162,27 +264,139 @@ def load_tok(meta: Path):
 def main():
     args = parse_args(); console = Console()
 
-    # --- load model -----------------------------------------------------------------
-    ckpt = torch.load(Path(args.out_dir) / args.ckpt_name, map_location=args.device)
-    gptconf = GPTConfig(**ckpt["model_args"])
-    model = GPT(gptconf)
-    sd = ckpt["model"]
-    for k in list(sd):
-        if k.startswith("_orig_mod."):
-            sd[k[len("_orig_mod."):]] = sd.pop(k)
-    model.load_state_dict(sd, strict=False)
-    model.to(args.device).eval(); torch.set_grad_enabled(False)
-    if args.block_size:
-        model.update_block_size(args.block_size)
+    using_hf = args.hf_model_name is not None
 
-    # --- tokenizer ------------------------------------------------------------------
-    encode, decode = load_tok(Path("data") / args.dataset / "meta.pkl")
+    if using_hf:
+        if args.activation_view != "none":
+            raise ValueError("activation_view modes are unavailable when analysing Hugging Face models")
 
-    # --- data mm --------------------------------------------------------------------
-    dtype = np.uint32 if model.config.vocab_size == 100277 else np.uint16
-    data = np.memmap(Path("data") / args.dataset / f"{args.split}.bin", dtype=dtype, mode="r")
-    if args.offset >= len(data) - 1:
-        raise ValueError("offset beyond dataset length")
+        console.print(f"[cyan]Loading Hugging Face model {args.hf_model_name}[/cyan]")
+        from datasets import load_dataset  # type: ignore
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+
+        tokenizer = AutoTokenizer.from_pretrained(args.hf_model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        hf_kwargs = {}
+        if args.hf_attn_implementation:
+            hf_kwargs["attn_implementation"] = args.hf_attn_implementation
+        model = AutoModelForCausalLM.from_pretrained(args.hf_model_name, **hf_kwargs)
+        model.to(args.device).eval(); torch.set_grad_enabled(False)
+
+        def decode(ids: Sequence[int]) -> str:
+            return tokenizer.decode(
+                ids,
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            )
+
+        token_buffer: List[int] = []
+
+        if args.hf_max_samples != 0:
+            console.print(
+                f"[cyan]Loading dataset {args.hf_dataset_name} ({args.hf_dataset_config}) split {args.hf_dataset_split}[/cyan]"
+            )
+            dataset = load_dataset(args.hf_dataset_name, args.hf_dataset_config, split=args.hf_dataset_split)
+            if 0.0 < args.hf_eval_fraction < 1.0:
+                split_dict = dataset.train_test_split(test_size=args.hf_eval_fraction, seed=42)
+                dataset_split = split_dict["test"] if args.split == "val" else split_dict["train"]
+            else:
+                dataset_split = dataset
+
+            if args.hf_max_samples > 0:
+                max_samples = min(len(dataset_split), args.hf_max_samples)
+                dataset_split = dataset_split.select(range(max_samples))
+
+            for idx, row in enumerate(dataset_split):
+                if "translation" in row and isinstance(row["translation"], dict):
+                    translation = row["translation"]
+                    source_text = translation.get(args.hf_source_field, "")
+                    target_text = translation.get(args.hf_target_field, "")
+                else:
+                    source_text = row.get(args.hf_source_field, "")
+                    target_text = row.get(args.hf_target_field, "")
+
+                if not args.hf_use_target:
+                    target_text = ""
+
+                prompt_text = args.hf_prompt_template.format(source=source_text, target=target_text)
+                encoded = tokenizer(
+                    prompt_text,
+                    truncation=True,
+                    max_length=args.hf_max_length,
+                    padding=False,
+                    return_tensors="pt",
+                )["input_ids"][0].tolist()
+                token_buffer.extend(encoded)
+                if (
+                    args.hf_add_eos_between_sequences
+                    and tokenizer.eos_token_id is not None
+                    and (idx != len(dataset_split) - 1 or args.prompt)
+                ):
+                    token_buffer.append(int(tokenizer.eos_token_id))
+
+        generated_text: Optional[str] = None
+        if args.prompt:
+            console.print("[cyan]Running prompt inference with Gemma[/cyan]")
+            prompt_inputs = tokenizer(
+                args.prompt,
+                truncation=True,
+                max_length=args.hf_max_length,
+                padding=False,
+                return_tensors="pt",
+            ).to(args.device)
+
+            if args.max_new_tokens > 0:
+                gen_kwargs = {"max_new_tokens": args.max_new_tokens, "pad_token_id": tokenizer.eos_token_id}
+                if args.generation_temperature > 0:
+                    gen_kwargs.update(
+                        {
+                            "do_sample": True,
+                            "temperature": args.generation_temperature,
+                            "top_p": args.generation_top_p,
+                        }
+                    )
+                outputs = model.generate(**prompt_inputs, **gen_kwargs)
+                seq = outputs[0]
+            else:
+                seq = prompt_inputs["input_ids"][0]
+
+            generated_text = tokenizer.decode(
+                seq,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            token_buffer.extend(seq.tolist())
+
+        data = np.array(token_buffer, dtype=np.int64)
+        if len(data) < 2:
+            raise ValueError("Not enough tokens collected from Hugging Face inputs to analyse")
+
+        if generated_text:
+            console.print("[green]Generated text:[/green]")
+            console.print(generated_text)
+
+    else:
+        # --- load model -------------------------------------------------------------
+        ckpt = torch.load(Path(args.out_dir) / args.ckpt_name, map_location=args.device)
+        gptconf = GPTConfig(**ckpt["model_args"])
+        model = GPT(gptconf)
+        sd = ckpt["model"]
+        for k in list(sd):
+            if k.startswith("_orig_mod."):
+                sd[k[len("_orig_mod."):]] = sd.pop(k)
+        model.load_state_dict(sd, strict=False)
+        model.to(args.device).eval(); torch.set_grad_enabled(False)
+        if args.block_size and hasattr(model, "update_block_size"):
+            model.update_block_size(args.block_size)
+
+        # --- tokenizer --------------------------------------------------------------
+        encode, decode = load_tok(Path("data") / args.dataset / "meta.pkl")
+
+        # --- data mm ----------------------------------------------------------------
+        dtype = np.uint32 if model.config.vocab_size == 100277 else np.uint16
+        data = np.memmap(Path("data") / args.dataset / f"{args.split}.bin", dtype=dtype, mode="r")
 
     ptd = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
     autocast_ctx = (
@@ -190,7 +404,12 @@ def main():
         if "cuda" in args.device else torch.no_grad()
     )
 
-    block = args.block_size or model.config.block_size
+    block_size_attr = getattr(model.config, "block_size", None)
+    if block_size_attr is None:
+        block_size_attr = getattr(model.config, "max_position_embeddings", None)
+    block = args.block_size or block_size_attr or 1024
+    if args.offset >= len(data) - 1:
+        raise ValueError("offset beyond dataset length")
     pos = args.offset
     tokens_left = min(args.num_tokens, len(data) - 1 - pos)
 
@@ -239,7 +458,7 @@ def main():
 
         activations = {"t0": None, "attn": [], "mlp": [], "ar": [], "mr": []}
         handles = []
-        if args.display != "token" and args.activation_view != "none":
+        if (not using_hf) and args.display != "token" and args.activation_view != "none":
             def t0_hook(module, inp, out):
                 activations["t0"] = out[0, -1, :].detach()
 
@@ -270,7 +489,11 @@ def main():
                 handles.append(blk.mlp.register_forward_hook(make_mlp_hook(blk)))
 
         with autocast_ctx:
-            logits, _ = model(ctx_tok)
+            if using_hf:
+                outputs = model(input_ids=ctx_tok)
+                logits = outputs.logits
+            else:
+                logits, _ = model(ctx_tok)
 
         for h in handles:
             h.remove()
