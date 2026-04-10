@@ -10,7 +10,11 @@ from quantization.quant_utils import create_activation_buffers, set_variant
 from quantization.quantize import fake_quantize_act
 from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from variations.position_encoding_variations import (
-    FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
+    FIRE,
+    RotaryEmbedding,
+    SymmetricalOverlapAngularPositions,
+    FourierPositionEmbedding,
+)
 from variations.softmax_variations import softmax_dictionary
 from variations.triadic_modulation_variations import mod_fn_dict
 
@@ -141,6 +145,9 @@ class CausalSelfAttention(nn.Module):
             elif config.rope_variant == "rope":
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
+            elif config.rope_variant == "fope":
+                self.rotary_emb_q = FourierPositionEmbedding(config, size=config.n_embd // self.n_head)
+                self.rotary_emb_k = FourierPositionEmbedding(config, size=config.n_embd // self.n_head)
 
         # Sliding window size
         self.window_size = config.window_size
@@ -194,6 +201,9 @@ class CausalSelfAttention(nn.Module):
             elif config.rope_variant == "rope":
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
+            elif config.rope_variant == "fope":
+                self.rotary_emb_q = FourierPositionEmbedding(config, size=config.n_embd // self.n_head)
+                self.rotary_emb_k = FourierPositionEmbedding(config, size=config.n_embd // self.n_head)
 
         # qk norm factor
         if self.use_qk_norm_scale:
@@ -1135,6 +1145,9 @@ class InfiniteHeadAttention(nn.Module):
             elif config.rope_variant == "rope":
                 self.rotary_emb_q = RotaryEmbedding(config, size=self.n_qk_head_dim)
                 self.rotary_emb_k = RotaryEmbedding(config, size=self.n_qk_head_dim)
+            elif config.rope_variant == "fope":
+                self.rotary_emb_q = FourierPositionEmbedding(config, size=self.n_qk_head_dim)
+                self.rotary_emb_k = FourierPositionEmbedding(config, size=self.n_qk_head_dim)
 
         # qk norm factor
         if self.use_qk_norm_scale:
