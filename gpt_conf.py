@@ -383,6 +383,8 @@ class GPTConfig:
     mlp_residual_alpha_type: str = "fixed"
 
     # Layernorm Alternatives and Options
+    # available options defined in variations/norm_variations.py
+    # e.g. "layernorm", "rmsnorm", "rmsnorm_single", "simple_rmsnorm", etc.
     norm_variant_attn: str = "rmsnorm"
     norm_variant_output: str = "rmsnorm"
 
