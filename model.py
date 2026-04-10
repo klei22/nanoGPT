@@ -413,23 +413,43 @@ class GPT(nn.Module):
                 layer_outputs = [x]
 
             layer_idx = 1
-            for block in self.transformer.h:
-                x = block(x, iter_num)
+            if self.config.use_attn_res:
+                n_attn_blocks = self.config.attn_res_n_blocks
+                n_layer       = self.config.n_layer
+                S = max(1, n_layer // n_attn_blocks)
+                completed_blocks = [x]
+                partial_block    = None
+                for l_idx, block in enumerate(self.transformer.h):
+                    pos_in_attn_block = l_idx % S
+                    is_first = (pos_in_attn_block == 0)
+                    if is_first and l_idx > 0:
+                        completed_blocks.append(partial_block)
+                        partial_block = None
+                    partial_block = block.forward_attn_res(
+                        completed_blocks, partial_block, is_first, iter_num
+                    )
+                    if self.use_ln_f_input_mixer:
+                        layer_outputs.append(partial_block)
+                    layer_idx += 1
+                x = partial_block
+            else:
+                for block in self.transformer.h:
+                    x = block(x, iter_num)
 
-                # Steering logic
-                if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
-                    x = self.lsv_matrix(x)
-                if (self.config.apply_vector_at_layer_idx is not None
-                        and layer_idx == self.config.apply_vector_at_layer_idx):
-                    x = self.apply_vector_to_layer_output(x)
-                if (self.config.obtain_vector_at_layer_idx is not None
-                        and layer_idx == self.config.obtain_vector_at_layer_idx):
-                    x = self.obtain_vector_from_layer_output(x)
+                    # Steering logic
+                    if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
+                        x = self.lsv_matrix(x)
+                    if (self.config.apply_vector_at_layer_idx is not None
+                            and layer_idx == self.config.apply_vector_at_layer_idx):
+                        x = self.apply_vector_to_layer_output(x)
+                    if (self.config.obtain_vector_at_layer_idx is not None
+                            and layer_idx == self.config.obtain_vector_at_layer_idx):
+                        x = self.obtain_vector_from_layer_output(x)
 
-                if self.use_ln_f_input_mixer:
-                    layer_outputs.append(x)
+                    if self.use_ln_f_input_mixer:
+                        layer_outputs.append(x)
 
-                layer_idx += 1
+                    layer_idx += 1
 
             if self.use_ln_f_input_mixer:
                 x = self.ln_f_mixer(layer_outputs)
@@ -557,26 +577,72 @@ class GPT(nn.Module):
                 layer_outputs = [x]
 
             layer_idx = 1
-            for block in self.transformer.h:
-                # Propagate tokens through layers
-                x = block(x, iter_num)
+            if self.config.use_attn_res:
+                # ----------------------------------------------------------
+                # Block Attention Residuals path (arXiv:2603.15031, §3.2)
+                #
+                # Layers are grouped into N = attn_res_n_blocks AttnRes
+                # blocks of S = n_layer // N transformer blocks each.
+                #
+                # State:
+                #   completed_blocks  – list of finalised block tensors
+                #                       [b_0=embedding, b_1, …, b_{n-1}]
+                #   partial_block     – running intra-block partial sum
+                #                       (None at the start of each block)
+                #
+                # At each AttnRes block boundary the caller finalises the
+                # partial sum and resets it; the Block.forward_attn_res()
+                # method only sees the current partial state.
+                # ----------------------------------------------------------
+                n_attn_blocks = self.config.attn_res_n_blocks
+                n_layer       = self.config.n_layer
+                S = max(1, n_layer // n_attn_blocks)   # transformer blocks per AttnRes block
 
-                # Intercept for Learned Steering Vectors
-                if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
-                    x = self.lsv_matrix(x)
-                    # x = self.apply_learned_vector_to_layer_output(x)
+                completed_blocks = [x]   # b_0 = token + positional embedding
+                partial_block    = None  # no intra-block partial sum yet
 
-                # Intercept for Steering Vectors
-                if self.config.apply_vector_at_layer_idx is not None and layer_idx == self.config.apply_vector_at_layer_idx:
-                    x = self.apply_vector_to_layer_output(x)
-                if self.config.obtain_vector_at_layer_idx is not None and layer_idx == self.config.obtain_vector_at_layer_idx:
-                    print(layer_idx, self.config.obtain_vector_at_layer_idx)
-                    x = self.obtain_vector_from_layer_output(x)
+                for l_idx, block in enumerate(self.transformer.h):
+                    pos_in_attn_block = l_idx % S
+                    is_first = (pos_in_attn_block == 0)
 
-                if self.use_ln_f_input_mixer:
-                    layer_outputs.append(x)
+                    # Finalise previous AttnRes block when entering a new one
+                    if is_first and l_idx > 0:
+                        completed_blocks.append(partial_block)
+                        partial_block = None
 
-                layer_idx +=1
+                    partial_block = block.forward_attn_res(
+                        completed_blocks, partial_block, is_first, iter_num
+                    )
+
+                    if self.use_ln_f_input_mixer:
+                        layer_outputs.append(partial_block)
+
+                    layer_idx += 1
+
+                # The final representation is the last partial block.
+                # Each output within it was computed by attending over ALL
+                # previous block representations, so it encodes global context.
+                x = partial_block
+            else:
+                for block in self.transformer.h:
+                    # Propagate tokens through layers
+                    x = block(x, iter_num)
+
+                    # Intercept for Learned Steering Vectors
+                    if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
+                        x = self.lsv_matrix(x)
+
+                    # Intercept for Steering Vectors
+                    if self.config.apply_vector_at_layer_idx is not None and layer_idx == self.config.apply_vector_at_layer_idx:
+                        x = self.apply_vector_to_layer_output(x)
+                    if self.config.obtain_vector_at_layer_idx is not None and layer_idx == self.config.obtain_vector_at_layer_idx:
+                        print(layer_idx, self.config.obtain_vector_at_layer_idx)
+                        x = self.obtain_vector_from_layer_output(x)
+
+                    if self.use_ln_f_input_mixer:
+                        layer_outputs.append(x)
+
+                    layer_idx += 1
 
             if self.use_ln_f_input_mixer:
                 x = self.ln_f_mixer(layer_outputs)

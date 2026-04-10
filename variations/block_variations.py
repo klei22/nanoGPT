@@ -261,6 +261,55 @@ block_forward_variations = {
 
 
 # -----------------------
+# Attention Residuals (arXiv:2603.15031)
+# -----------------------
+
+class AttnResOp(nn.Module):
+    """Depth-wise softmax attention over completed block representations.
+
+    Implements the inter-block attention from Block AttnRes (§3.2).  Each
+    call attends over ``completed_blocks`` (b_0 … b_{n-1}) and, when
+    provided, the current intra-block partial sum (b_n^{i-1}).
+
+    A single d-dimensional learned pseudo-query w_l (stored as a Linear
+    layer with one output) produces the attention logits.  RMSNorm on the
+    keys prevents large-magnitude blocks from dominating the softmax.
+
+    Initialization: w_l = 0 → uniform softmax at the start of training,
+    which reduces AttnRes to an equal-weight average (training-stable).
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        # Pseudo-query: shape [1, d] → squeezed to [d] for the einsum
+        self.proj = nn.Linear(config.n_embd, 1, bias=False)
+        # Key normalisation (prevents magnitude-dominated softmax)
+        norm_cls = norm_dictionary[config.norm_variant_attn]
+        self.norm = norm_cls(config)
+        # Zero-init is critical: keeps softmax uniform at training start
+        nn.init.zeros_(self.proj.weight)
+
+    def forward(self, completed_blocks: list, partial_block=None) -> torch.Tensor:
+        """Compute softmax attention over depth sources.
+
+        Args:
+            completed_blocks: list of N tensors [B, T, d] — b_0 … b_{n-1}.
+            partial_block:    optional [B, T, d] intra-block partial sum.
+
+        Returns:
+            h: [B, T, d] weighted combination of sources.
+        """
+        sources = completed_blocks if partial_block is None else completed_blocks + [partial_block]
+        V = torch.stack(sources, dim=0)          # [N, B, T, d]
+        K = self.norm(V)                         # normalise keys
+        w = self.proj.weight.squeeze(0)          # [d]
+        logits = torch.einsum('d,nbtd->nbt', w, K)        # [N, B, T]
+        weights = logits.softmax(dim=0)                    # softmax over sources
+        h = torch.einsum('nbt,nbtd->btd', weights, V)     # [B, T, d]
+        return h
+
+
+# -----------------------
 # Normalization helpers
 # -----------------------
 
@@ -471,6 +520,13 @@ class Block(nn.Module):
         # Gradient checkpointing
         self.use_gradient_checkpointing = getattr(config, "use_gradient_checkpointing", False)
 
+        # Attention Residuals (arXiv:2603.15031)
+        # Two AttnResOp modules: one applied before ATTN, one before MLP.
+        self.use_attn_res = getattr(config, "use_attn_res", False)
+        if self.use_attn_res:
+            self.attn_res_attn_op = AttnResOp(config)
+            self.attn_res_mlp_op  = AttnResOp(config)
+
     def forward(self, x: torch.Tensor, iter_num: int):
         if self.use_gradient_checkpointing and x.requires_grad:
             return checkpoint.checkpoint(self.block_forward, x, iter_num, use_reentrant=False)
@@ -480,3 +536,76 @@ class Block(nn.Module):
         """Helper method to streamline forward block skip connections"""
         alpha = self.alpha_fns[kind](out)
         return self.resid_fns[kind](x, out, alpha, self.residual_slerp_eps)
+
+    def forward_attn_res(
+        self,
+        completed_blocks: list,
+        partial_block,
+        is_first_in_attn_block: bool,
+        iter_num: int,
+    ):
+        """Block AttnRes forward pass (replaces standard residual connections).
+
+        Each transformer block contributes its ATTN and MLP outputs to an
+        intra-block partial sum (``partial_block``).  At AttnRes block
+        boundaries the partial sum is finalised into ``completed_blocks`` by
+        the *caller* (GPT.forward), so this method only sees the current
+        partial state.
+
+        The input representation ``h`` for each sub-layer is produced by
+        ``AttnResOp``: depth-wise softmax attention over all completed block
+        representations plus (for non-first layers) the current partial sum.
+
+        Args:
+            completed_blocks:       list of [B, T, d] tensors b_0 … b_{n-1}.
+            partial_block:          [B, T, d] intra-block partial sum, or
+                                    None when starting a new AttnRes block.
+            is_first_in_attn_block: True for the first transformer block in
+                                    an AttnRes block (partial_block is None
+                                    or being reset).
+            iter_num:               training iteration (passed to ATTN/MLP).
+
+        Returns:
+            partial_block: updated [B, T, d] intra-block partial sum.
+        """
+        # ---- Pre-ATTN depth aggregation --------------------------------
+        # First layer in each AttnRes block: only completed blocks (no partial).
+        # Subsequent layers: include the running partial sum as an extra source.
+        if is_first_in_attn_block:
+            h = self.attn_res_attn_op(completed_blocks, None)
+        else:
+            h = self.attn_res_attn_op(completed_blocks, partial_block)
+
+        # ---- Attention -------------------------------------------------
+        h_attn_in = h
+        if self.use_pre_ln_attn:
+            h_attn_in = self.pre_ln_attn(h_attn_in)
+
+        attn_out = self.attn(h_attn_in, iter_num)
+
+        if self.use_peri_ln_attn:
+            attn_out = self.peri_ln_attn(attn_out)
+        if self.attn_resid_scaler is not None:
+            attn_out = self.attn_resid_scaler(attn_out)
+
+        # Accumulate: reset at block start, add otherwise
+        partial_block = attn_out if (partial_block is None or is_first_in_attn_block) else partial_block + attn_out
+
+        # ---- Pre-MLP depth aggregation ---------------------------------
+        h = self.attn_res_mlp_op(completed_blocks, partial_block)
+
+        # ---- MLP -------------------------------------------------------
+        h_mlp_in = h
+        if self.use_pre_ln_mlp:
+            h_mlp_in = self.pre_ln_mlp(h_mlp_in)
+
+        mlp_out = self.mlp(h_mlp_in, iter_num)
+
+        if self.use_peri_ln_mlp:
+            mlp_out = self.peri_ln_mlp(mlp_out)
+        if self.mlp_resid_scaler is not None:
+            mlp_out = self.mlp_resid_scaler(mlp_out)
+
+        partial_block = partial_block + mlp_out
+
+        return partial_block

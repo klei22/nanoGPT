@@ -382,6 +382,13 @@ class GPTConfig:
     attn_residual_alpha_type: str = "fixed"
     mlp_residual_alpha_type: str = "fixed"
 
+    # Attention Residuals (arXiv:2603.15031)
+    # Replaces fixed residual accumulation with learned softmax attention over depth.
+    # use_attn_res: enable Block AttnRes (replaces standard residual connections)
+    # attn_res_n_blocks: number of AttnRes blocks N (paper uses ~8; more blocks ≈ Full AttnRes)
+    use_attn_res: bool = False
+    attn_res_n_blocks: int = 8
+
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
     norm_variant_output: str = "rmsnorm"

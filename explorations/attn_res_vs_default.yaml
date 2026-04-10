@@ -1,0 +1,99 @@
+# explorations/attn_res_vs_default.yaml
+#
+# Compare Block Attention Residuals (arXiv:2603.15031) against the standard
+# additive residual baseline.  All other hyperparameters are held fixed so
+# that any loss difference is attributable to the residual mechanism alone.
+#
+# Variants tested
+# ---------------
+# 1. default          – standard PreNorm + additive residuals (baseline)
+# 2. attn_res_n8      – Block AttnRes, N=8 blocks  (paper's recommended N)
+# 3. attn_res_n4      – Block AttnRes, N=4 blocks  (coarser grouping)
+# 4. attn_res_n12     – Block AttnRes, N=12 blocks (finer grouping; n_layer=12→S=1 = Full AttnRes)
+#
+# Architecture notes
+# ------------------
+# n_layer=12, attn_res_n_blocks=12 → S=1 → each transformer block is its own
+# AttnRes block, equivalent to Full AttnRes (every layer output is a source).
+#
+# Block boundary logic:
+#   S = n_layer // attn_res_n_blocks   (transformer blocks per AttnRes block)
+#   boundary fires every S blocks; completed_blocks grows by 1 per boundary.
+#   With N=8 and n_layer=12: S=1 (12//8=1), so N effectively equals n_layer.
+#   Use n_layer=16 or 24 to get cleaner S=2 or S=3 groupings with N=8.
+#
+# Quick scan settings: minipile dataset, 5000 iters, small model.
+# Increase max_iters and model size for scaling-law quality results.
+---
+
+named_static_groups:
+  # Standard architecture choices shared across all runs
+  - named_group: "arch_base"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+    use_pre_ln: [true]
+    use_peri_ln: [false]
+    use_post_ln: [false]
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+    norm_variant_wte: ["rmsnorm"]
+    activation_variant: ["squared_relu"]
+
+  # Baseline: standard additive residuals (no AttnRes)
+  - named_group: "default_residuals"
+    use_attn_res: [false]
+    attn_residual_combination: ["add"]
+    mlp_residual_combination: ["add"]
+
+  # Block AttnRes – N=8 (paper's recommended setting)
+  - named_group: "attn_res_n8"
+    use_attn_res: [true]
+    attn_res_n_blocks: [8]
+
+  # Block AttnRes – N=4 (coarser; larger S means more layers share one block rep)
+  - named_group: "attn_res_n4"
+    use_attn_res: [true]
+    attn_res_n_blocks: [4]
+
+  # Block AttnRes – N=12 (S=1 for n_layer=12: every layer is its own block)
+  # Equivalent to Full AttnRes (each individual layer output is a source).
+  - named_group: "attn_res_n12"
+    use_attn_res: [true]
+    attn_res_n_blocks: [12]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [1000]
+  max_iters: [5000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  # Model size: small but meaningful for residual mechanism comparison
+  n_layer: [12]
+  n_head: [6]
+  n_embd: [384]
+  block_size: [256]
+  dtype: ["bfloat16"]
+  device: ["cuda"]
+  # Activation statistics to observe output magnitude (paper Fig. 5b)
+  compute_model_stats: [true]
+
+parameter_groups:
+  # 1. Standard additive residuals (baseline)
+  - named_group_static:
+      - "arch_base"
+      - "default_residuals"
+
+  # 2. Block AttnRes N=8 (recommended by paper; S=1 for n_layer=12)
+  - named_group_static:
+      - "arch_base"
+      - "attn_res_n8"
+
+  # 3. Block AttnRes N=4 (S=3 for n_layer=12; 3 transformer blocks per AttnRes block)
+  - named_group_static:
+      - "arch_base"
+      - "attn_res_n4"
+
+  # 4. Block AttnRes N=12 / Full AttnRes (S=1; one block per transformer layer)
+  - named_group_static:
+      - "arch_base"
+      - "attn_res_n12"
