@@ -29,6 +29,11 @@ from train_variations.distillation_loss_variants import build_distillation_loss
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated, max_memory_reserved
 
+try:
+    from zeus.monitor import ZeusMonitor
+except ImportError:
+    ZeusMonitor = None
+
 from utils.model_info import (
     print_summary,
     print_module_structure,
@@ -103,6 +108,14 @@ class Trainer:
         self.peak_torch_allocated = 0.0
         self.peak_torch_reserved = 0.0
         self.peak_process_gpu_usage = 0.0
+        self.zeus_monitor = None
+        self.zeus_enabled = False
+        self.zeus_total_energy_j = 0.0
+        self.zeus_total_time_s = 0.0
+        self.zeus_train_step_energy_j = 0.0
+        self.zeus_train_energy_j_total = 0.0
+        self.zeus_best_train_step_energy_j = 0.0
+        self.zeus_last_step_energy_j = 0.0
         self.total_training_time_ms: float = 0.0   # total run-time from start of training
         self.time_remaining_ms: float= 0.0
         self.total_time_est_ms: float= 0.0
@@ -244,7 +257,30 @@ class Trainer:
 
         self.device_type = 'cuda' if 'cuda' in self.args.device else 'cpu'
         if self.device_type == 'cuda':
+            if not self.ddp:
+                torch.cuda.set_device(self.device)
             reset_peak_memory_stats(self.device)
+
+        if self.args.zeus_log:
+            if self.device_type != 'cuda':
+                raise ValueError("Zeus energy logging requires a CUDA device.")
+            if ZeusMonitor is None:
+                raise ImportError(
+                    "Zeus is not installed. Install it with `pip install zeus` "
+                    "or rerun with `--no-zeus_log`."
+                )
+            if self.ddp:
+                gpu_indices = [self.ddp_local_rank]
+            else:
+                gpu_indices = [torch.device(self.device).index or torch.cuda.current_device()]
+            self.zeus_monitor = ZeusMonitor(
+                gpu_indices=gpu_indices,
+                cpu_indices=[],
+                approx_instant_energy=self.args.zeus_approx_instant_energy,
+                log_file=self.args.zeus_log_file,
+                sync_execution_with="torch",
+            )
+            self.zeus_enabled = True
 
         self.ptdtype = {"bfloat16" : torch.bfloat16, "float16" : torch.float16, "float32" : torch.float32}[self.args.dtype]
         self.ctx = nullcontext() if self.device_type == 'cpu' else torch.amp.autocast(device_type=self.device_type, dtype=self.ptdtype)
@@ -1457,6 +1493,7 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
 
+            self._log_zeus_tensorboard(target_dataset, tokens_trained)
             self._log_bit_metrics(target_dataset, tokens_trained)
 
 
@@ -1557,6 +1594,7 @@ class Trainer:
                 self.writer.add_scalar(f"{target_dataset}/gns_iters", self.gns, self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/gns_tokens", self.gns, tokens_trained)
 
+            self._log_zeus_tensorboard(target_dataset, tokens_trained)
             self._log_bit_metrics(target_dataset, tokens_trained)
 
     def write_to_csv(self, *args, prefix=""):
@@ -1594,7 +1632,49 @@ class Trainer:
             if self.args.gns_type is not None:
                 args.append(self.gns)
             args.append(self.iter_latency_avg)
+            if self.zeus_enabled:
+                args.append(self.zeus_train_energy_j_total)
+                args.append(self.zeus_last_step_energy_j)
             writer.writerow(args)
+
+    def _write_zeus_summary(self):
+        if not self.zeus_enabled or not self.master_process:
+            return
+        total_tokens = self.tokens_trained if self.tokens_trained else self.best_tokens
+        summary = {
+            "dataset": self.args.dataset,
+            "iter_num": self.iter_num,
+            "best_iter": self.best_iter,
+            "best_tokens": self.best_tokens,
+            "num_params": int(self.model.num_param),
+            "peak_torch_allocated_mb": self.peak_torch_allocated / (1024 ** 2),
+            "peak_torch_reserved_mb": self.peak_torch_reserved / (1024 ** 2),
+            "peak_process_gpu_mb": self.peak_process_gpu_usage / (1024 ** 2),
+            "iter_latency_avg_ms": self.iter_latency_avg,
+            "zeus_total_energy_j": self.zeus_total_energy_j,
+            "zeus_total_time_s": self.zeus_total_time_s,
+            "zeus_avg_power_w": (
+                self.zeus_total_energy_j / self.zeus_total_time_s
+                if self.zeus_total_time_s > 0
+                else 0.0
+            ),
+            "zeus_train_step_energy_j": self.zeus_train_step_energy_j,
+            "zeus_train_energy_j_total": self.zeus_train_energy_j_total,
+            "zeus_best_train_step_energy_j": self.zeus_best_train_step_energy_j,
+            "zeus_energy_per_token_j": (
+                self.zeus_total_energy_j / total_tokens
+                if total_tokens > 0
+                else 0.0
+            ),
+            "zeus_energy_train_per_token_j": (
+                self.zeus_train_energy_j_total / total_tokens
+                if total_tokens > 0
+                else 0.0
+            ),
+        }
+        summary_path = os.path.join(self.args.out_dir, "zeus_summary.json")
+        with open(summary_path, "w", encoding="utf-8") as summary_file:
+            json.dump(summary, summary_file, indent=2, sort_keys=True)
 
 
     def log_gamma_beta(self, gamma, beta, layer_num, head_num=None):
@@ -1661,6 +1741,31 @@ class Trainer:
         if torch.is_tensor(value):
             return value.item()
         return float(value)
+
+    def _log_zeus_tensorboard(self, target_dataset: str, tokens_trained: float) -> None:
+        if not self.zeus_enabled or not self.args.tensorboard_log:
+            return
+        self.writer.add_scalar(
+            f"{target_dataset}/zeus_train_step_energy_j",
+            self.zeus_train_step_energy_j,
+            self.iter_num,
+        )
+        self.writer.add_scalar(
+            f"{target_dataset}/zeus_last_step_energy_j",
+            self.zeus_last_step_energy_j,
+            self.iter_num,
+        )
+        self.writer.add_scalar(
+            f"{target_dataset}/zeus_train_energy_j_total",
+            self.zeus_train_energy_j_total,
+            self.iter_num,
+        )
+        if tokens_trained > 0:
+            self.writer.add_scalar(
+                f"{target_dataset}/zeus_energy_train_per_token_j",
+                self.zeus_train_energy_j_total / tokens_trained,
+                self.iter_num,
+            )
 
     def underscore_abbr(self, dataset_name):
         """ Transforms long dataset name to abbreviation
@@ -1791,6 +1896,8 @@ class Trainer:
                 self.best_val_loss = losses['val']
                 self.best_iter = self.iter_num
                 self.best_tokens = self.tokens_trained
+                if self.zeus_enabled:
+                    self.zeus_best_train_step_energy_j = self.zeus_last_step_energy_j
                 peak_torch_allocated_mb = self.peak_torch_allocated / (1024 ** 2)
                 peak_torch_reserved_mb = self.peak_torch_reserved / (1024 ** 2)
                 peak_process_gpu_mb = self.peak_process_gpu_usage / (1024 ** 2)
@@ -1807,6 +1914,7 @@ class Trainer:
                             f"{peak_torch_reserved_mb:.1f}",
                             f"{peak_process_gpu_mb:.1f}",
                             f"{self.iter_latency_avg:.1f}",
+                            f"{self.zeus_best_train_step_energy_j:.3f}" if self.zeus_enabled else "",
                             f"{self.latest_top1_prob:.6f}",
                             f"{self.latest_top1_correct:.6f}",
                             f"{self.latest_target_rank:.2f}",
@@ -1989,6 +2097,8 @@ class Trainer:
                     lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
                     )
 
+            if self.zeus_enabled:
+                self.zeus_monitor.begin_window("entire_training")
             while True:
                 if self.scheduler is not None:
                     self.lr = self.get_lr(self.iter_num)
@@ -2010,6 +2120,8 @@ class Trainer:
                 if self.args.eval_only:
                     break
 
+                if self.zeus_enabled:
+                    self.zeus_monitor.begin_window("train_step")
 
                 for micro_step in range(self.args.gradient_accumulation_steps):
                     if self.ddp:
@@ -2135,6 +2247,12 @@ class Trainer:
                 t0 = t1
                 self.total_training_time_ms = (t1 - t_start) * 1000.0
 
+                if self.zeus_enabled:
+                    zeus_step_measurement = self.zeus_monitor.end_window("train_step")
+                    self.zeus_last_step_energy_j = zeus_step_measurement.total_energy
+                    self.zeus_train_step_energy_j = self.zeus_last_step_energy_j
+                    self.zeus_train_energy_j_total += self.zeus_last_step_energy_j
+
                 # Estimate ETA
                 eta_update: ETAUpdate = self.eta.update(
                         iter_num=self.iter_num,
@@ -2211,6 +2329,21 @@ class Trainer:
 
             if self.args.plot_statistics:
                 plot_statistics(self.args, self.stats, graph_y_labels)
+
+            if self.zeus_enabled:
+                zeus_total_measurement = self.zeus_monitor.end_window("entire_training")
+                self.zeus_total_energy_j = zeus_total_measurement.total_energy
+                self.zeus_total_time_s = zeus_total_measurement.time
+                if self.args.tensorboard_log:
+                    avg_power_w = (
+                        self.zeus_total_energy_j / self.zeus_total_time_s
+                        if self.zeus_total_time_s > 0
+                        else 0.0
+                    )
+                    self.writer.add_scalar("zeus/total_energy_j", self.zeus_total_energy_j, self.iter_num)
+                    self.writer.add_scalar("zeus/total_time_s", self.zeus_total_time_s, self.iter_num)
+                    self.writer.add_scalar("zeus/avg_power_w", avg_power_w, self.iter_num)
+                self._write_zeus_summary()
 
             if self.args.tensorboard_log:
                 self.writer.flush()
