@@ -1,5 +1,76 @@
 import torch
 
+
+def _validate_grad_quant_bits(exponent_bits, mantissa_bits):
+    if exponent_bits is None and mantissa_bits is None:
+        return False
+    if exponent_bits is None or mantissa_bits is None:
+        raise ValueError(
+            "Both grad_exponent_bits and grad_mantissa_bits must be specified to enable gradient fake quantization."
+        )
+    if exponent_bits < 1:
+        raise ValueError("grad_exponent_bits must be greater than or equal to 1.")
+    if mantissa_bits < 0:
+        raise ValueError("grad_mantissa_bits must be greater than or equal to 0.")
+    return True
+
+
+def fake_quantize_gradients(tensor, exponent_bits, mantissa_bits):
+    """Fake-quantize gradients using a floating-point format with configurable exponent and mantissa bits."""
+    if not _validate_grad_quant_bits(exponent_bits, mantissa_bits):
+        return tensor
+
+    if not tensor.is_floating_point():
+        raise TypeError("Gradient fake quantization expects a floating point tensor.")
+
+    original_dtype = tensor.dtype
+    grad = tensor.to(torch.float32)
+
+    sign = grad.sign()
+    abs_grad = grad.abs()
+    nonzero_mask = abs_grad != 0
+
+    quantized_abs = torch.zeros_like(abs_grad)
+    if nonzero_mask.any():
+        abs_nonzero = abs_grad[nonzero_mask]
+
+        mantissa, exponent = torch.frexp(abs_nonzero)
+        exponent_unbiased = exponent - 1
+
+        bias = (1 << (exponent_bits - 1)) - 1
+        max_exponent = bias
+        min_exponent = 1 - bias
+
+        scale = float(1 << mantissa_bits)
+        normalized = mantissa * 2 - 1
+        normalized_q = torch.round(normalized * scale) / scale
+        max_normalized = 0.0 if mantissa_bits == 0 else (scale - 1.0) / scale
+        normalized_q = torch.clamp(normalized_q, 0.0, max_normalized)
+
+        exponent_clamped = torch.clamp(exponent_unbiased, min=min_exponent, max=max_exponent)
+        quantized_nonzero = torch.ldexp(1 + normalized_q, exponent_clamped)
+
+        too_small_mask = exponent_unbiased < min_exponent
+        quantized_nonzero = torch.where(
+            too_small_mask,
+            torch.zeros_like(quantized_nonzero),
+            quantized_nonzero,
+        )
+
+        too_large_mask = exponent_unbiased > max_exponent
+        if too_large_mask.any():
+            max_mantissa = 1.0 if mantissa_bits == 0 else 2.0 - 2.0 ** (-mantissa_bits)
+            max_value = torch.ldexp(
+                torch.full_like(quantized_nonzero, max_mantissa),
+                torch.full_like(exponent_clamped, max_exponent),
+            )
+            quantized_nonzero = torch.where(too_large_mask, max_value, quantized_nonzero)
+
+        quantized_abs[nonzero_mask] = quantized_nonzero
+
+    quantized_grad = sign * quantized_abs
+    return quantized_grad.to(original_dtype)
+
 def set_dtype(bits):
     if bits > 16:
         return torch.int32
@@ -161,7 +232,20 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input, training, quant_scheduler, start_quant_level, full_quant_iter, eval_interval, steps, bits=7, quantization_method="affine_quant"):
+    def forward(
+        ctx,
+        input,
+        training,
+        quant_scheduler,
+        start_quant_level,
+        full_quant_iter,
+        eval_interval,
+        steps,
+        bits=7,
+        quantization_method="affine_quant",
+        grad_exponent_bits=None,
+        grad_mantissa_bits=None,
+    ):
         """
         Forward pass
         :param ctx: Context object to store information for the backward pass (not used in this case)
@@ -174,6 +258,8 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
         # Dequantize the quantized values using the dequantize function.
         # Return the dequantized tensor, which approximates the input tensor but includes the quantization error.
         zero_point, norm, quantized_weight = quantize_dictionary[quantization_method](input, bits)
+        ctx.grad_exponent_bits = grad_exponent_bits
+        ctx.grad_mantissa_bits = grad_mantissa_bits
         # If scheduler is set, then we need to calculate the current quantization level
         dequantized = dequantize(zero_point, norm, quantized_weight)
         if quant_scheduler != None:
@@ -186,10 +272,16 @@ class FakeLinearQuantizationFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        # Straight-Through Estimator (STE): passes grad_output through as the gradient with respect to the input
-        # gradient is approximated by simply passing the gradient from the output directly to the input, 
-        # ignoring the quantization operation
-        return grad_output, None, None, None, None, None, None, None, None
+        # Straight-Through Estimator (STE) with optional gradient fake quantization
+        grad_input = grad_output
+        if ctx.grad_exponent_bits is not None or ctx.grad_mantissa_bits is not None:
+            grad_input = fake_quantize_gradients(
+                grad_output,
+                ctx.grad_exponent_bits,
+                ctx.grad_mantissa_bits,
+            )
+
+        return grad_input, None, None, None, None, None, None, None, None, None, None
 
 quantize_dictionary = {
     "ternary_quant": ternary_quantize,
