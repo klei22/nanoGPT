@@ -47,9 +47,34 @@ named_static_groups:
     activation_variant: ["silu"]
     mlp_size: [2048]
 
+  - named_group: "dual_path_swiglu"
+    mlp_variant: ["dual_path_swiglu"]
+    mlp_size: [1536]
+
+  - named_group: "dual_path"
+    mlp_variant: ["dual_path"]
+    mlp_size: [2048]
+
+  - named_group: "regular_swiglu_relu2"
+    mlp_variant: ["swiglu"]
+    activation_variant: ["squared_relu"]
+    mlp_size: [2048]
+
   - named_group: "regular_swiglu_2gate_pre_act"
     mlp_variant: ["swiglu_2gate_pre_act"]
     activation_variant: ["silu"]
+    # 4*n_embd*mlp_size ~= 3*n_embd*2048 -> mlp_size ~= 1536 for similar projection count.
+    mlp_size: [1536]
+
+  - named_group: "regular_swiglu_2gate_pre_act_identity"
+    mlp_variant: ["swiglu_2gate_pre_act"]
+    activation_variant: ["identity"]
+    # 4*n_embd*mlp_size ~= 3*n_embd*2048 -> mlp_size ~= 1536 for similar projection count.
+    mlp_size: [1536]
+
+  - named_group: "regular_swiglu_2gate_pre_act_relu2"
+    mlp_variant: ["swiglu_2gate_pre_act"]
+    activation_variant: ["squared_relu"]
     # 4*n_embd*mlp_size ~= 3*n_embd*2048 -> mlp_size ~= 1536 for similar projection count.
     mlp_size: [1536]
 
@@ -81,28 +106,67 @@ named_static_groups:
 
 common_group:
   dataset: ["minipile"]
-  eval_interval: [2500]
+  eval_interval: [2000]
   max_iters: [10000]
   never_save_checkpoint: [true]
   compile: [true]
-  log_rankme: [true]
-  log_areq: [true]
+  use_gradient_checkpointing: [true]
+  log_rankme: [false]
+  log_areq: [false]
+  dtype: ["bfloat16"]
 
 parameter_groups:
   - named_group_static:
       - "qk_norm"
       - "peri_ln"
       - "rotary"
-      - "relu2max"
       - "infinite"
-      - "mqa"
       - "hd_150"
+      - "mqa"
       - "n_head_6"
     named_group_alternates:
       - "regular_swiglu"
       - "regular_swiglu_2gate_pre_act"
+      - "regular_swiglu_relu2"
+      - "regular_swiglu_2gate_pre_act_relu2"
+      - "regular_swiglu_2gate_pre_act_identity"
       - "equal_param_mlp_squared_relu"
       - "equal_param_mlp_gelu"
       - "equal_param_mlp_mish"
       - "equal_param_mlp_silu"
       - "equal_param_mlp_identity"
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "hd_150"
+      - "mqa"
+      - "n_head_6"
+    named_group_alternates:
+      - "regular_swiglu"
+      - "regular_swiglu_2gate_pre_act"
+      - "regular_swiglu_relu2"
+      - "regular_swiglu_2gate_pre_act_relu2"
+      - "regular_swiglu_2gate_pre_act_identity"
+      - "equal_param_mlp_squared_relu"
+      - "equal_param_mlp_gelu"
+      - "equal_param_mlp_mish"
+      - "equal_param_mlp_silu"
+      - "equal_param_mlp_identity"
+    n_embd: [192]
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "hd_150"
+      - "mqa"
+      - "n_head_6"
+    named_group_alternates:
+      - "dual_path"
+      - "dual_path_swiglu"
+    n_embd: [384, 192]
+    mlp_x_offset: [0.0, 0.1, 0.2, 0.3]
+    learn_mlp_x_offset: [false, true]
+    activation_variant: ["silu", "gelu", "squared_relu"]
