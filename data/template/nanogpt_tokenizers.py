@@ -1,4 +1,10 @@
-# tokenizers.py
+# nanogpt_tokenizers.py
+#
+# NOTE: this module is deliberately NOT named `tokenizers.py`. An earlier
+# revision was, which shadowed the third-party HuggingFace `tokenizers`
+# package on `sys.path` (because `data/*/prepare.py` are symlinks to
+# `data/template/prepare.py`, so Python's `sys.path[0]` resolves to this
+# directory) and broke `from transformers import AutoTokenizer`.
 import os
 import pickle
 import tempfile
@@ -234,13 +240,15 @@ class TiktokenTokenizer(Tokenizer):
 class HuggingFaceTokenizer(Tokenizer):
     """Wrap any HuggingFace tokenizer via `transformers.AutoTokenizer`.
 
-    Note: we intentionally go through `transformers.AutoTokenizer` instead of
-    importing the `tokenizers` Python package directly, because this file is
-    itself named ``tokenizers.py`` and would shadow the HF package on import.
     `AutoTokenizer` is a unified entry point that transparently loads both
     fast (Rust `tokenizers`-backed) and slow (Python) variants, from either a
     Hub name (e.g. ``"gpt2"``) or a local directory saved via
     ``save_pretrained``.
+
+    This module is intentionally named ``nanogpt_tokenizers.py`` rather than
+    ``tokenizers.py`` so that it cannot shadow the third-party
+    ``tokenizers`` package that ``transformers`` imports internally (via
+    ``from tokenizers import decoders, normalizers, ...``).
     """
 
     def __init__(self, args):

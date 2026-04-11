@@ -3,7 +3,7 @@ import json
 import os
 import argparse
 import numpy as np
-from tokenizers import (
+from nanogpt_tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
     HuggingFaceTokenizer,

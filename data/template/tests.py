@@ -6,7 +6,7 @@ import sys
 import pickle
 import json
 import prepare
-from tokenizers import (
+from nanogpt_tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
     HuggingFaceTokenizer,
