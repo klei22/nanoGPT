@@ -1364,7 +1364,7 @@ def parse_args():
     training_group.add_argument('--gradient_accumulation_steps', default=1, type=int)
 
     # System args
-    training_group.add_argument('--device', default='cuda', type=str)
+    training_group.add_argument('--device', default='cuda:0', type=str)
     training_group.add_argument("--dtype", type=str, default="float16", choices=["bfloat16", "float16", "float32"], help="torch data type for inference, e.g. 'int8'")
     training_group.add_argument('--compile', default=False, action=argparse.BooleanOptionalAction)
 

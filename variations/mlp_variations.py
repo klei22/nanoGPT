@@ -340,6 +340,7 @@ class DualPathMLP(nn.Module):
         self.l2_norm_mlp_down = config.l2_norm_mlp_down
         self.l2_norm_mlp_up_dim = config.l2_norm_mlp_up_dim
         self.l2_norm_mlp_down_dim = config.l2_norm_mlp_down_dim
+        self.l2_norm_print_dims = config.l2_norm_print_dims
 
         # Dual path specific parameters
         if config.learn_mlp_x_offset:
