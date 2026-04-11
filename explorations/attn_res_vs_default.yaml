@@ -41,24 +41,24 @@ named_static_groups:
 
   # Baseline: standard additive residuals (no AttnRes)
   - named_group: "default_residuals"
-    use_attn_res: [false]
+    use_attn_residuals: [false]
     attn_residual_combination: ["add"]
     mlp_residual_combination: ["add"]
 
   # Block AttnRes – N=8 (paper's recommended setting)
   - named_group: "attn_res_n8"
-    use_attn_res: [true]
+    use_attn_residuals: [true]
     attn_res_n_blocks: [8]
 
   # Block AttnRes – N=4 (coarser; larger S means more layers share one block rep)
   - named_group: "attn_res_n4"
-    use_attn_res: [true]
+    use_attn_residuals: [true]
     attn_res_n_blocks: [4]
 
   # Block AttnRes – N=12 (S=1 for n_layer=12: every layer is its own block)
   # Equivalent to Full AttnRes (each individual layer output is a source).
   - named_group: "attn_res_n12"
-    use_attn_res: [true]
+    use_attn_residuals: [true]
     attn_res_n_blocks: [12]
 
 common_group:

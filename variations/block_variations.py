@@ -522,7 +522,7 @@ class Block(nn.Module):
 
         # Attention Residuals (arXiv:2603.15031)
         # Two AttnResOp modules: one applied before ATTN, one before MLP.
-        self.use_attn_res = getattr(config, "use_attn_res", False)
+        self.use_attn_res = getattr(config, "use_attn_residuals", False)
         if self.use_attn_res:
             self.attn_res_attn_op = AttnResOp(config)
             self.attn_res_mlp_op  = AttnResOp(config)

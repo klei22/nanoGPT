@@ -413,7 +413,7 @@ class GPT(nn.Module):
                 layer_outputs = [x]
 
             layer_idx = 1
-            if self.config.use_attn_res:
+            if self.config.use_attn_residuals:
                 n_attn_blocks = self.config.attn_res_n_blocks
                 n_layer       = self.config.n_layer
                 S = max(1, n_layer // n_attn_blocks)
@@ -577,7 +577,7 @@ class GPT(nn.Module):
                 layer_outputs = [x]
 
             layer_idx = 1
-            if self.config.use_attn_res:
+            if self.config.use_attn_residuals:
                 # ----------------------------------------------------------
                 # Block Attention Residuals path (arXiv:2603.15031, §3.2)
                 #

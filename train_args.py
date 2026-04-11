@@ -756,6 +756,21 @@ def parse_args():
         choices=['fixed', 'learned', 'rezero', 'dot'],
         help='Alpha mode for MLP residual combination'
     )
+    # Attention Residuals (arXiv:2603.15031)
+    model_group.add_argument(
+        '--use_attn_residuals',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Enable Block Attention Residuals: replace fixed residual accumulation '
+             'with learned depth-wise softmax attention over block representations'
+    )
+    model_group.add_argument(
+        '--attn_res_n_blocks',
+        type=int,
+        default=8,
+        help='Number of AttnRes blocks N for Block AttnRes (paper recommends ~8; '
+             'N=n_layer gives Full AttnRes where every layer output is a source)'
+    )
 
 
     # NORM VARIATIONS
