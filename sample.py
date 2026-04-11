@@ -1161,6 +1161,46 @@ def get_tokenizer_functions(meta):
         decode = lambda l: enc.decode(l)
         return encode, decode
 
+    if meta['tokenizer'] == 'huggingface':
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise ImportError(
+                "Loading a 'huggingface' tokenizer from meta.pkl requires the "
+                "`transformers` package. Install with `pip install transformers`."
+            ) from exc
+
+        hf_name = meta.get('hf_tokenizer_name')
+        hf_local_path = meta.get('hf_tokenizer_path')
+        trust_remote_code = bool(meta.get('hf_trust_remote_code', False))
+        use_fast = meta.get('hf_use_fast', True)
+
+        # Prefer the local snapshot written at prepare-time so we work offline.
+        load_target = None
+        if hf_local_path and os.path.isdir(hf_local_path):
+            load_target = hf_local_path
+        elif hf_name:
+            load_target = hf_name
+        else:
+            raise ValueError(
+                "meta.pkl is missing 'hf_tokenizer_name' / 'hf_tokenizer_path' "
+                "for huggingface tokenizer."
+            )
+
+        hf_tok = AutoTokenizer.from_pretrained(
+            load_target,
+            trust_remote_code=trust_remote_code,
+            use_fast=bool(use_fast),
+        )
+
+        def encode(s):
+            return hf_tok.encode(s, add_special_tokens=False)
+
+        def decode(ids):
+            return hf_tok.decode(list(ids), skip_special_tokens=False)
+
+        return encode, decode
+
     if meta['tokenizer'] == 'byte':
         return byte_encode, byte_decode
 

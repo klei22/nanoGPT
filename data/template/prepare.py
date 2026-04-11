@@ -6,6 +6,7 @@ import numpy as np
 from tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
+    HuggingFaceTokenizer,
     CustomTokenizer,
     ByteTokenizer,
     CharTokenizer,
@@ -31,8 +32,17 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "char_bpe", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave", "whisper_mel_csv"],
+                       choices=["sentencepiece", "tiktoken", "huggingface", "char", "char_bpe", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave", "whisper_mel_csv"],
                        default="tiktoken", help="Tokenization method")
+
+    # HuggingFace tokenizer arguments
+    parser.add_argument("--hf_tokenizer_name", type=str, default=None,
+                        help="HuggingFace tokenizer name (Hub id like 'gpt2') or local path "
+                             "(for the huggingface method)")
+    parser.add_argument("--hf_trust_remote_code", action="store_true",
+                        help="Trust remote code when loading a HuggingFace tokenizer")
+    parser.add_argument("--hf_use_fast", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use the fast (Rust-based) HuggingFace tokenizer variant if available")
 
     # Sine wave tokenizer arguments
     parser.add_argument("--sine_period", type=float, default=1.0,
@@ -134,6 +144,9 @@ def main():
             output_dir = os.path.splitext(os.path.basename(args.json_tokens_file))[0]
         elif args.method == "sentencepiece":
             output_dir = f"sp_{args.vocab_size}"
+        elif args.method == "huggingface" and args.hf_tokenizer_name:
+            sanitized = args.hf_tokenizer_name.replace("/", "_").replace(os.sep, "_")
+            output_dir = f"hf_{sanitized}"
         else:
             output_dir = args.method
         if args.output_subdir_suffix:
@@ -168,6 +181,8 @@ def main():
         tokenizer = SentencePieceTokenizer(args, input_files=args.train_input)
     elif args.method == "tiktoken":
         tokenizer = TiktokenTokenizer(args)
+    elif args.method == "huggingface":
+        tokenizer = HuggingFaceTokenizer(args)
     elif args.method == "custom":
         tokenizer = CustomTokenizer(args)
     elif args.method == "byte":
@@ -194,8 +209,8 @@ def main():
         train_ids = tokenizer.tokenize(args.train_input)
     else:
         train_ids = tokenizer.tokenize(train_data)
-    if args.method == "tiktoken":
-        print(f"[tiktoken] Total train tokens: {tokenizer.last_token_count:,}")
+    if args.method in ("tiktoken", "huggingface"):
+        print(f"[{args.method}] Total train tokens: {tokenizer.last_token_count:,}")
     if args.method == "whisper_mel_csv" and args.val_input is None:
         split_point = int(len(train_ids) * args.percentage_train)
         val_ids = train_ids[split_point:]
@@ -209,8 +224,8 @@ def main():
             val_ids = tokenizer.tokenize(args.val_input)
         else:
             val_ids = tokenizer.tokenize(val_data)
-        if args.method == "tiktoken":
-            print(f"[tiktoken] Total val tokens: {tokenizer.last_token_count:,}")
+        if args.method in ("tiktoken", "huggingface"):
+            print(f"[{args.method}] Total val tokens: {tokenizer.last_token_count:,}")
     else:
         val_ids = None
 

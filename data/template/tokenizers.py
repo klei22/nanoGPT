@@ -231,6 +231,109 @@ class TiktokenTokenizer(Tokenizer):
         return ''.join(result)
 
 
+class HuggingFaceTokenizer(Tokenizer):
+    """Wrap any HuggingFace tokenizer via `transformers.AutoTokenizer`.
+
+    Note: we intentionally go through `transformers.AutoTokenizer` instead of
+    importing the `tokenizers` Python package directly, because this file is
+    itself named ``tokenizers.py`` and would shadow the HF package on import.
+    `AutoTokenizer` is a unified entry point that transparently loads both
+    fast (Rust `tokenizers`-backed) and slow (Python) variants, from either a
+    Hub name (e.g. ``"gpt2"``) or a local directory saved via
+    ``save_pretrained``.
+    """
+
+    def __init__(self, args):
+        super().__init__(args)
+        try:
+            from transformers import AutoTokenizer  # lazy import
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "HuggingFaceTokenizer requires the `transformers` package. "
+                "Install with `pip install transformers`."
+            ) from exc
+
+        self.hf_tokenizer_name = getattr(args, "hf_tokenizer_name", None)
+        if not self.hf_tokenizer_name:
+            raise ValueError(
+                "--hf_tokenizer_name must be provided for the huggingface method "
+                "(accepts a Hub id like 'gpt2' or a local path)."
+            )
+
+        trust_remote_code = bool(getattr(args, "hf_trust_remote_code", False))
+        use_fast = getattr(args, "hf_use_fast", True)
+        if use_fast is None:
+            use_fast = True
+
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.hf_tokenizer_name,
+            trust_remote_code=trust_remote_code,
+            use_fast=bool(use_fast),
+        )
+
+        # Where to cache a local snapshot of the tokenizer so `sample.py` /
+        # `train.py` can reload it even without network access.
+        meta_output_path = getattr(args, "meta_output_path", "meta.pkl")
+        output_dir = os.path.dirname(meta_output_path) or "."
+        self.hf_local_dir = os.path.join(output_dir, "hf_tokenizer")
+        self.last_token_count = 0
+
+    def _build_vocab_maps(self):
+        try:
+            stoi = dict(self.tokenizer.get_vocab())
+        except Exception:
+            stoi = {}
+        itos = {int(v): k for k, v in stoi.items()}
+        return stoi, itos
+
+    def _effective_vocab_size(self):
+        # `len(tokenizer)` includes added/special tokens. Fall back gracefully.
+        try:
+            return len(self.tokenizer)
+        except Exception:
+            return int(getattr(self.tokenizer, "vocab_size", 0))
+
+    def tokenize(self, data):
+        # Encode without special tokens to match the behavior of our other
+        # subword tokenizers (tiktoken/sentencepiece) so that text resumes
+        # cleanly across chunks.
+        ids = self.tokenizer.encode(data, add_special_tokens=False)
+
+        for token_id in ids:
+            self.record_token(token_id)
+
+        stoi, itos = self._build_vocab_maps()
+
+        # Save a local snapshot of the tokenizer next to meta.pkl so it can
+        # be reloaded offline during sampling / training.
+        hf_saved_path = None
+        try:
+            os.makedirs(self.hf_local_dir, exist_ok=True)
+            self.tokenizer.save_pretrained(self.hf_local_dir)
+            hf_saved_path = self.hf_local_dir
+        except Exception as exc:  # pragma: no cover - best effort
+            print(f"[huggingface] Warning: could not save tokenizer snapshot to "
+                  f"{self.hf_local_dir}: {exc}")
+
+        meta = {
+            "vocab_size": self._effective_vocab_size(),
+            "tokenizer": "huggingface",
+            "hf_tokenizer_name": self.hf_tokenizer_name,
+            "hf_tokenizer_path": hf_saved_path,
+            "hf_use_fast": bool(getattr(self.args, "hf_use_fast", True)),
+            "hf_trust_remote_code": bool(getattr(self.args, "hf_trust_remote_code", False)),
+            "stoi": stoi,
+            "itos": itos,
+        }
+        self.finalize_meta(meta)
+
+        self.last_token_count = len(ids)
+        return ids
+
+    def detokenize(self, ids):
+        return self.tokenizer.decode(list(ids), skip_special_tokens=False)
+
+
 class CustomTokenizer(Tokenizer):
     def __init__(self, args):
         super().__init__(args)
