@@ -1174,11 +1174,16 @@ def get_tokenizer_functions(meta):
         hf_local_path = meta.get('hf_tokenizer_path')
         trust_remote_code = bool(meta.get('hf_trust_remote_code', False))
         use_fast = meta.get('hf_use_fast', True)
+        hf_revision = meta.get('hf_resolved_commit') or meta.get('hf_revision')
+        hf_subfolder = meta.get('hf_subfolder')
 
-        # Prefer the local snapshot written at prepare-time so we work offline.
+        # Prefer the local snapshot written at prepare-time so we work offline
+        # and avoid re-authenticating against the Hub for gated repos.
         load_target = None
+        loading_local = False
         if hf_local_path and os.path.isdir(hf_local_path):
             load_target = hf_local_path
+            loading_local = True
         elif hf_name:
             load_target = hf_name
         else:
@@ -1187,11 +1192,18 @@ def get_tokenizer_functions(meta):
                 "for huggingface tokenizer."
             )
 
-        hf_tok = AutoTokenizer.from_pretrained(
-            load_target,
-            trust_remote_code=trust_remote_code,
-            use_fast=bool(use_fast),
-        )
+        from_pretrained_kwargs = {
+            "trust_remote_code": trust_remote_code,
+            "use_fast": bool(use_fast),
+        }
+        # Revision/subfolder only apply when re-fetching from the Hub.
+        if not loading_local:
+            if hf_revision:
+                from_pretrained_kwargs["revision"] = hf_revision
+            if hf_subfolder:
+                from_pretrained_kwargs["subfolder"] = hf_subfolder
+
+        hf_tok = AutoTokenizer.from_pretrained(load_target, **from_pretrained_kwargs)
 
         def encode(s):
             return hf_tok.encode(s, add_special_tokens=False)

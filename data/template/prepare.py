@@ -37,12 +37,30 @@ def parse_arguments():
 
     # HuggingFace tokenizer arguments
     parser.add_argument("--hf_tokenizer_name", type=str, default=None,
-                        help="HuggingFace tokenizer name (Hub id like 'gpt2') or local path "
-                             "(for the huggingface method)")
+                        help="HuggingFace tokenizer: a Hub repo id (e.g. 'gpt2', "
+                             "'google/gemma-3-270m', 'meta-llama/Llama-3.2-1B') or a "
+                             "local directory previously written by save_pretrained. "
+                             "Hub repos are downloaded and cached automatically.")
     parser.add_argument("--hf_trust_remote_code", action="store_true",
-                        help="Trust remote code when loading a HuggingFace tokenizer")
+                        help="Trust remote code when loading a HuggingFace tokenizer "
+                             "(needed for some custom tokenizer classes shipped in repos)")
     parser.add_argument("--hf_use_fast", action=argparse.BooleanOptionalAction, default=True,
                         help="Use the fast (Rust-based) HuggingFace tokenizer variant if available")
+    parser.add_argument("--hf_revision", type=str, default=None,
+                        help="Pin the HuggingFace repo to a specific commit SHA, branch, or tag "
+                             "for reproducibility (forwarded to from_pretrained as `revision=`)")
+    parser.add_argument("--hf_subfolder", type=str, default=None,
+                        help="Subfolder inside the HuggingFace repo that holds the tokenizer files "
+                             "(forwarded to from_pretrained as `subfolder=`)")
+    parser.add_argument("--hf_cache_dir", type=str, default=None,
+                        help="Override the HuggingFace download cache directory "
+                             "(forwarded to from_pretrained as `cache_dir=`). Default honors "
+                             "HF_HOME / HF_HUB_CACHE / ~/.cache/huggingface/hub.")
+    parser.add_argument("--hf_token", type=str, default=None,
+                        help="HuggingFace auth token for gated repos (e.g. Gemma, Llama). "
+                             "Alternatively run `huggingface-cli login` once, or set the "
+                             "HF_TOKEN environment variable. You must also accept the model's "
+                             "license at https://huggingface.co/<repo> while logged in.")
 
     # Sine wave tokenizer arguments
     parser.add_argument("--sine_period", type=float, default=1.0,
