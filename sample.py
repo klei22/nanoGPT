@@ -240,8 +240,8 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
         # Normalize the chosen values (probabilities or logits) to [0..1]
         norm_values = (values - values.min()) / (values.max() - values.min() + 1e-6)
 
-    for i, token_id in enumerate(tokens):
-        token_str = decode([token_id])
+    segments = _token_segments(tokens, decode)
+    for i, token_str in enumerate(segments):
         color_val = norm_values[i].item()  # 0..1
         r = int((1 - color_val) * 255)
         g = int(color_val * 255)
@@ -251,6 +251,27 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
 def _escape_ws(text: str) -> str:
     return text.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
+def _token_segments(tokens: List[int], decode: Callable) -> List[str]:
+    """Return per-token text segments via incremental prefix decoding.
+
+    Some tokenizers (notably HuggingFace byte-level BPE) apply cleanup or
+    joining logic that makes ``decode([single_id])`` differ from the
+    corresponding slice of ``decode(full_sequence)``.  Incremental prefix
+    decoding avoids this: the text contributed by token *i* is defined as
+    ``decode(tokens[:i+1])[len(decode(tokens[:i])):]``, which exactly
+    partitions ``decode(tokens)`` into per-token segments.
+    """
+    if not tokens:
+        return []
+    segments: List[str] = []
+    prev = decode([])  # baseline: empty sequence → ""
+    for i in range(len(tokens)):
+        cur = decode(list(tokens[: i + 1]))
+        segments.append(cur[len(prev):])
+        prev = cur
+    return segments
 
 
 def _topk_table(
@@ -466,10 +487,9 @@ def _colorize_rank(
     """
     text = Text()
     max_rank = max(k or 0, 2)      # guarantees divisor ≥ 1
+    segments = _token_segments(list(token_ids), decode)
 
-    for tid, rnk in zip(token_ids, ranks):
-        token_str = decode([tid])
-
+    for token_str, rnk in zip(segments, ranks):
         if rnk == 1:
             # best-rank token: leave unstyled
             text.append(token_str)
