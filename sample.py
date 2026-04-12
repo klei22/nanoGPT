@@ -930,8 +930,15 @@ def load_validation_data(block_size, eval_dataset):
     # Load validation data similar to how train data is handled
     val_path = os.path.join('data', eval_dataset, 'val.bin')
     assert os.path.exists(val_path), f"Validation data file {val_path} not found."
-    # Assuming validation data is similar in format to train data
-    val_data = np.memmap(val_path, dtype=np.uint16, mode='r')
+    meta_path = os.path.join('data', eval_dataset, 'meta.pkl')
+    dtype = np.uint16
+    if os.path.exists(meta_path):
+        with open(meta_path, 'rb') as f:
+            meta = pickle.load(f)
+        vocab_size = meta.get('vocab_size')
+        if vocab_size is not None and int(vocab_size) > np.iinfo(np.uint16).max:
+            dtype = np.uint32
+    val_data = np.memmap(val_path, dtype=dtype, mode='r')
     return val_data
 
 def get_batch(data, block_size, device):
