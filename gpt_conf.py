@@ -178,6 +178,8 @@ class GPTConfig:
     attention_variant: str = "causal"
     attn_cproj_scale: float = 1.0
     attn_post_act_l2_norm: bool = False
+    msa_topk: int = 64
+    msa_min_tokens: int = 32
 
     # QK Norm Options
     use_qk_norm: bool = False
