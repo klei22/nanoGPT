@@ -667,6 +667,14 @@ def parse_args():
             ]
 
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--use_block_operation_sequence', default=False, action=argparse.BooleanOptionalAction,
+                             help='Enable custom in-block operation sequence using attention/MLP steps')
+    model_group.add_argument('--block_operation_sequence', nargs='+', default=['attn', 'mlp'], choices=['attn', 'mlp'],
+                             help='Ordered operations when --use_block_operation_sequence is enabled (e.g. attn attn mlp mlp)')
+    model_group.add_argument('--block_sequence_use_intermediate_skips', default=True, action=argparse.BooleanOptionalAction,
+                             help='Apply residual skip connection after each operation in block sequence')
+    model_group.add_argument('--block_sequence_share_modules', default=True, action=argparse.BooleanOptionalAction,
+                             help='Reuse the same attention/MLP modules for all repeated operations in the sequence')
     model_group.add_argument("--mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
     model_group.add_argument("--mlp_expansion_factor", type=int, default=4, help="If MLP like variant is used, set the expansion factor for the linear transformations, default is 4.")
     model_group.add_argument("--mlp_size", type=int, default=None, help="If not None, is used instead of mlp_expansion_factor")
