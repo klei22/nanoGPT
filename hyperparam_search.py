@@ -419,8 +419,6 @@ def main():
                 seed0 = int(cfg_template.get("seed", 1337))
                 if args.randomize_seed:
                     seed0 = random.randint(0, 2**31 - 1)
-                else:
-                    seed0 = int(cfg_template.get("seed", 1337))
                 seed_runs: List[Dict[str, Any]] = []
                 scores: List[float] = []
 
