@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Read / Activate / Write with Quantization</title>
+  <title>Read / Activate / Write with Solid Angles</title>
   <style>
     :root {
       --bg: #1b1b2f;
@@ -25,7 +25,13 @@
     }
 
     * { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
     body { overflow: hidden; }
 
     #app {
@@ -39,61 +45,166 @@
     #scene { width: 100%; height: 100%; display: block; }
 
     .overlay-top {
-      position: absolute; left: 20px; top: 18px; right: 20px; pointer-events: none;
+      position: absolute;
+      left: 20px;
+      top: 18px;
+      right: 20px;
+      pointer-events: none;
     }
 
     .title-card {
-      max-width: 1080px; background: rgba(0,0,0,0.18); border: 1px solid var(--border);
-      border-radius: 20px; padding: 16px 18px; backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+      max-width: 1080px;
+      background: rgba(0,0,0,0.18);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 16px 18px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.18);
     }
 
-    h1 { margin: 0; font-size: 30px; line-height: 1.1; letter-spacing: -0.03em; }
-    .subtitle { margin-top: 8px; color: var(--muted); font-size: 15px; line-height: 1.55; }
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.55;
+    }
 
     .overlay-bottom {
-      position: absolute; left: 18px; bottom: 18px; background: rgba(0,0,0,0.28); border: 1px solid var(--border);
-      border-radius: 16px; padding: 10px 12px; color: rgba(255,255,255,0.85); font-size: 13px; backdrop-filter: blur(8px);
-      pointer-events: none; max-width: 430px;
+      position: absolute;
+      left: 18px;
+      bottom: 18px;
+      background: rgba(0,0,0,0.28);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 10px 12px;
+      color: rgba(255,255,255,0.85);
+      font-size: 13px;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+      max-width: 520px;
     }
 
     #sidebar {
-      border-left: 1px solid var(--border); background: rgba(255,255,255,0.03); overflow: auto; padding: 18px;
+      border-left: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      overflow: auto;
+      padding: 18px;
     }
 
     .panel {
-      background: var(--panel); border: 1px solid var(--border); border-radius: 20px; padding: 16px; margin-bottom: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 16px;
+      margin-bottom: 16px;
       box-shadow: 0 10px 30px rgba(0,0,0,0.12);
     }
 
     .panel h2 {
-      margin: 0 0 12px 0; font-size: 12px; text-transform: uppercase; letter-spacing: 0.18em; color: rgba(255,255,255,0.58); font-weight: 700;
+      margin: 0 0 12px 0;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: rgba(255,255,255,0.58);
+      font-weight: 700;
     }
 
-    .stage-name { font-size: 18px; font-weight: 600; margin-bottom: 10px; }
-    .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stage-name {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    .button-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
 
     button, select {
-      appearance: none; border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
-      border-radius: 16px; padding: 11px 12px; font-size: 14px; cursor: pointer;
-      transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease; width: 100%;
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 16px;
+      padding: 11px 12px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+      width: 100%;
     }
 
-    button:hover, select:hover { transform: translateY(-1px); background: rgba(255,255,255,0.12); }
-    button.active { border-color: rgba(255,255,255,0.28); background: rgba(255,255,255,0.16); }
+    button:hover, select:hover {
+      transform: translateY(-1px);
+      background: rgba(255,255,255,0.12);
+    }
 
-    .controls-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+    button.active {
+      border-color: rgba(255,255,255,0.28);
+      background: rgba(255,255,255,0.16);
+    }
+
+    .controls-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
     .range-wrap { margin-top: 14px; }
-    .range-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-    input[type="range"] { width: 100%; accent-color: #7dd3fc; }
+
+    .range-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #7dd3fc;
+    }
 
     .toggle, .stack-row {
-      display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; font-size: 14px; color: rgba(255,255,255,0.9);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+      font-size: 14px;
+      color: rgba(255,255,255,0.9);
     }
-    .stack { display: flex; flex-direction: column; gap: 10px; }
 
-    .help { font-size: 14px; line-height: 1.65; color: var(--muted); }
-    .vector-grid { display: grid; grid-template-columns: 1fr; gap: 8px; font-size: 13px; }
-    .vector-item { display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 4px; gap: 12px; }
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .vector-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .vector-item {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      padding-bottom: 4px;
+      gap: 12px;
+    }
+
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .small { font-size: 12px; color: var(--muted); }
 
@@ -110,14 +221,17 @@
       <canvas id="scene"></canvas>
       <div class="overlay-top">
         <div class="title-card">
-          <h1>Read → Activate → Write, then Quantize → Read → Activate → Write</h1>
+          <h1>Read → Activate → Write, with Solid-Angle Sectors</h1>
           <div class="subtitle">
-            Two separate vector banks are initialized: a read bank and a write bank. The read bank produces coefficients from dot products with the incoming vector.
-            Those coefficients are transferred to the write bank by shared index, then used to scale, sum, and normalize. A second pass rotates both banks to the nearest quantized sphere directions and repeats the same pipeline.
+            This alternative keeps the same two-bank read/write pipeline, quantized second pass, stage controls, and comparison panel.
+            The difference is visual: every directional vector is now shown as an arrow centered inside a transparent solid-angle sector.
+            Use the aperture slider to widen or narrow those sectors without changing the underlying math.
           </div>
         </div>
       </div>
-      <div class="overlay-bottom">Drag to rotate • Scroll to zoom • Right-drag to pan • Coefficients transfer from read bank to write bank by shared slot index i</div>
+      <div class="overlay-bottom">
+        Drag to rotate • Scroll to zoom • Right-drag to pan • Coefficients transfer from read bank to write bank by shared slot index i • Use the solid-angle slider to change sector size
+      </div>
     </div>
 
     <aside id="sidebar">
@@ -186,6 +300,14 @@
               <option value="16">16</option>
             </select>
           </div>
+          <div class="range-wrap" style="margin-top:0;">
+            <div class="range-row">
+              <span>Solid angle aperture</span>
+              <span id="solidAngleLabel">16° half-angle</span>
+            </div>
+            <input id="solidAngleSlider" type="range" min="4" max="40" value="16" />
+            <div class="small" style="margin-top:8px;">Changes the width of every transparent sector while keeping the same center direction.</div>
+          </div>
           <label class="toggle"><span>Auto-rotate scene</span><input id="autoRotate" type="checkbox" /></label>
           <label class="toggle"><span>Show coefficient labels</span><input id="showLabels" type="checkbox" checked /></label>
           <label class="toggle"><span>Show quantization dots</span><input id="showQuantDots" type="checkbox" checked /></label>
@@ -226,10 +348,10 @@
     const READ = '#c77dff';
     const QUANT = '#58c4dd';
     const SPHERE_RADIUS = 2;
-    const AXIS_LEN = 5.8;
     const STAGE_SECONDS = 1.2;
     const READ_CENTER = new THREE.Vector3(-2.8, 0, 0);
     const WRITE_CENTER = new THREE.Vector3(2.8, 0, 0);
+    const UP = new THREE.Vector3(0, 1, 0);
 
     function clamp01(x) { return Math.max(0, Math.min(1, x)); }
     function smoothstep01(x) { const t = clamp01(x); return t * t * (3 - 2 * t); }
@@ -261,27 +383,27 @@
     function applyActivation(mode, x) { return mode === 'relu2' ? relu2(x) : relu(x); }
 
     function stageLabel(stage) {
-      return [
-        'Read Vectors',
-        `Activation (${activationName(state.activation)})`,
-        'Write Vectors',
-        'Scale',
-        'Sum',
-        'Normalize',
-        `Rotate Banks to ${state.quantMode === 'ternary' ? 'TERNARY (1.58bit)' : 'INT3'} Sphere Grid`,
-        'Quantized Read Vectors',
-        `Quantized Activation (${activationName(state.activation)})`,
-        'Quantized Write Vectors',
-        'Quantized Scale',
-        'Quantized Sum',
-        'Quantized Normalize',
-        'Compare Final Directions',
-      ][stage] || 'Read Vectors';
+      return ({
+        0: 'Read Vectors',
+        1: `Activation (${activationName(state.activation)})`,
+        2: 'Write Vectors',
+        3: 'Scale',
+        4: 'Sum',
+        5: 'Normalize',
+        6: `Rotate Banks to ${state.quantMode === 'ternary' ? 'TERNARY (1.58bit)' : 'INT3'} Sphere Grid`,
+        7: 'Quantized Read Vectors',
+        8: `Quantized Activation (${activationName(state.activation)})`,
+        9: 'Quantized Write Vectors',
+        10: 'Compare Final Directions',
+        11: 'Quantized Sum',
+        12: 'Quantized Normalize',
+        13: 'Quantized Scale',
+      })[stage] || 'Read Vectors';
     }
 
     function quantRange(mode) {
-      if (mode === 'int3') return [-4,-3,-2,-1,0,1,2,3];
-      return [-1,0,1];
+      if (mode === 'int3') return [-4, -3, -2, -1, 0, 1, 2, 3];
+      return [-1, 0, 1];
     }
 
     function buildQuantDirs(mode) {
@@ -324,51 +446,156 @@
       return { readUnitVecs, writeUnitVecs, incomingVec };
     }
 
-    class Arrow3DObject {
+    const UNIT_CONE_GEOMETRY = (() => {
+      const g = new THREE.ConeGeometry(1, 1, 30, 1, true);
+      g.rotateZ(Math.PI);
+      g.translate(0, 0.5, 0);
+      return g;
+    })();
+
+    let sharedSolidAngleCapGeometry = null;
+    let sharedSolidAngleRimGeometry = null;
+
+    function buildSolidAngleSharedGeometries(halfAngleDeg) {
+      const oldCap = sharedSolidAngleCapGeometry;
+      const oldRim = sharedSolidAngleRimGeometry;
+      const alpha = THREE.MathUtils.degToRad(halfAngleDeg);
+      sharedSolidAngleCapGeometry = new THREE.SphereGeometry(1, 28, 16, 0, Math.PI * 2, 0, alpha);
+      const rimPts = [];
+      const r = Math.sin(alpha);
+      const y = Math.cos(alpha);
+      const segs = 64;
+      for (let i = 0; i <= segs; i++) {
+        const phi = (i / segs) * Math.PI * 2;
+        rimPts.push(new THREE.Vector3(Math.cos(phi) * r, y, Math.sin(phi) * r));
+      }
+      sharedSolidAngleRimGeometry = new THREE.BufferGeometry().setFromPoints(rimPts);
+      return { oldCap, oldRim };
+    }
+
+    class DirectionGlyph {
       constructor(color, opacity = 1, dashed = false) {
         this.group = new THREE.Group();
-        this.lineMaterial = new THREE.LineBasicMaterial({ color, transparent: true, opacity });
-        this.lineGeometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,1,0)]);
-        this.line = new THREE.Line(this.lineGeometry, this.lineMaterial);
-        this.group.add(this.line);
-        this.coneGeometry = new THREE.ConeGeometry(0.05, 0.18, 18);
-        this.coneMaterial = new THREE.MeshStandardMaterial({ color, transparent: true, opacity, metalness: 0.05, roughness: 0.55 });
-        this.cone = new THREE.Mesh(this.coneGeometry, this.coneMaterial);
-        this.group.add(this.cone);
         this.dashed = dashed;
-        if (dashed) {
-          this.lineMaterial.dispose();
-          this.lineMaterial = new THREE.LineDashedMaterial({ color, transparent: true, opacity, dashSize: 0.12, gapSize: 0.08 });
-          this.line.material = this.lineMaterial;
-        }
+
+        this.sectorSideMaterial = new THREE.MeshStandardMaterial({
+          color,
+          transparent: true,
+          opacity: Math.min(0.22, opacity * 0.16),
+          metalness: 0.02,
+          roughness: 0.85,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        this.sectorSide = new THREE.Mesh(UNIT_CONE_GEOMETRY, this.sectorSideMaterial);
+        this.sectorSide.renderOrder = 0;
+        this.group.add(this.sectorSide);
+
+        this.sectorCapMaterial = new THREE.MeshStandardMaterial({
+          color,
+          transparent: true,
+          opacity: Math.min(0.16, opacity * 0.09),
+          metalness: 0.02,
+          roughness: 0.85,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        this.sectorCap = new THREE.Mesh(sharedSolidAngleCapGeometry, this.sectorCapMaterial);
+        this.sectorCap.renderOrder = 0;
+        this.group.add(this.sectorCap);
+
+        this.sectorRimMaterial = new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity: Math.min(0.3, opacity * 0.22),
+          depthWrite: false,
+        });
+        this.sectorRim = new THREE.Line(sharedSolidAngleRimGeometry, this.sectorRimMaterial);
+        this.sectorRim.renderOrder = 1;
+        this.group.add(this.sectorRim);
+
+        this.linePositions = new Float32Array([0, 0, 0, 0, 1, 0]);
+        this.lineGeometry = new THREE.BufferGeometry();
+        this.lineGeometry.setAttribute('position', new THREE.BufferAttribute(this.linePositions, 3));
+        this.lineMaterial = dashed
+          ? new THREE.LineDashedMaterial({ color, transparent: true, opacity, dashSize: 0.12, gapSize: 0.08 })
+          : new THREE.LineBasicMaterial({ color, transparent: true, opacity });
+        this.line = new THREE.Line(this.lineGeometry, this.lineMaterial);
+        this.line.renderOrder = 2;
+        this.group.add(this.line);
+
+        this.coneGeometry = new THREE.ConeGeometry(0.05, 0.18, 18);
+        this.coneMaterial = new THREE.MeshStandardMaterial({
+          color,
+          transparent: true,
+          opacity,
+          metalness: 0.05,
+          roughness: 0.55,
+          depthWrite: false,
+        });
+        this.cone = new THREE.Mesh(this.coneGeometry, this.coneMaterial);
+        this.cone.renderOrder = 2;
+        this.group.add(this.cone);
       }
-      set(start, end, color, opacity = 1) {
+
+      set(start, end, color, opacity = 1, sectorScale = 1) {
         const dir = end.clone().sub(start);
         const len = dir.length();
         this.group.visible = len > 1e-6 && opacity > 0.001;
         if (!this.group.visible) return;
+
+        this.group.position.copy(start);
+        this.group.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
+
+        if (this.sectorCap.geometry !== sharedSolidAngleCapGeometry) this.sectorCap.geometry = sharedSolidAngleCapGeometry;
+        if (this.sectorRim.geometry !== sharedSolidAngleRimGeometry) this.sectorRim.geometry = sharedSolidAngleRimGeometry;
+
+        const alpha = THREE.MathUtils.degToRad(state.solidAngleDeg * sectorScale);
+        const coneHeight = Math.max(0.001, len * Math.cos(alpha));
+        const baseRadius = Math.max(0.001, len * Math.sin(alpha));
+
+        this.sectorSide.scale.set(baseRadius, coneHeight, baseRadius);
+        this.sectorCap.scale.set(len, len, len);
+        this.sectorRim.scale.set(len, len, len);
+
+        this.sectorSideMaterial.color.set(color);
+        this.sectorCapMaterial.color.set(color);
+        this.sectorRimMaterial.color.set(color);
+        this.sectorSideMaterial.opacity = opacity * 0.16;
+        this.sectorCapMaterial.opacity = opacity * 0.08;
+        this.sectorRimMaterial.opacity = opacity * 0.24;
+
         const headLen = Math.min(0.24, Math.max(0.12, len * 0.18));
         const shaftLen = Math.max(0.001, len - headLen);
         const headRadius = Math.min(0.06, Math.max(0.035, len * 0.06));
-        const shaftEnd = start.clone().add(dir.clone().setLength(shaftLen));
-        this.line.geometry.dispose();
-        this.line.geometry = new THREE.BufferGeometry().setFromPoints([start, shaftEnd]);
+
+        this.linePositions[0] = 0;
+        this.linePositions[1] = 0;
+        this.linePositions[2] = 0;
+        this.linePositions[3] = 0;
+        this.linePositions[4] = shaftLen;
+        this.linePositions[5] = 0;
+        this.lineGeometry.attributes.position.needsUpdate = true;
+        this.lineGeometry.computeBoundingSphere();
         if (this.dashed) this.line.computeLineDistances();
-        this.line.material.color.set(color);
-        this.line.material.opacity = opacity;
-        this.cone.material.color.set(color);
-        this.cone.material.opacity = opacity;
+
+        this.lineMaterial.color.set(color);
+        this.lineMaterial.opacity = opacity;
+        this.coneMaterial.color.set(color);
+        this.coneMaterial.opacity = opacity;
         this.cone.scale.set(headRadius / 0.05, headLen / 0.18, headRadius / 0.05);
-        const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-        this.cone.quaternion.copy(q);
-        const center = end.clone().sub(dir.clone().normalize().multiplyScalar(headLen / 2));
-        this.cone.position.copy(center);
+        this.cone.position.set(0, len - headLen / 2, 0);
+        this.cone.quaternion.identity();
       }
+
       dispose() {
-        this.line.geometry.dispose();
-        this.line.material.dispose();
-        this.cone.geometry.dispose();
-        this.cone.material.dispose();
+        this.lineGeometry.dispose();
+        this.lineMaterial.dispose();
+        this.coneGeometry.dispose();
+        this.coneMaterial.dispose();
+        this.sectorSideMaterial.dispose();
+        this.sectorCapMaterial.dispose();
+        this.sectorRimMaterial.dispose();
       }
     }
 
@@ -381,14 +608,18 @@
     function makeTextSprite(text, color = '#ffffff', width = 256, height = 96, fontSize = 34) {
       const c = document.createElement('canvas');
       const ctx = c.getContext('2d');
-      c.width = width; c.height = height;
+      c.width = width;
+      c.height = height;
       ctx.font = `bold ${fontSize}px Inter, Arial, sans-serif`;
-      ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = color;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
       ctx.fillText(text, c.width / 2, c.height / 2);
       const tex = new THREE.CanvasTexture(c);
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
       const sprite = new THREE.Sprite(mat);
       sprite.scale.set(0.9, 0.3, 1);
+      sprite.renderOrder = 4;
       sprite.userData = { canvas: c, ctx, texture: tex, fontSize };
       return sprite;
     }
@@ -409,9 +640,10 @@
       canvas.width = 980;
       canvas.height = 620;
       const texture = new THREE.CanvasTexture(canvas);
-      const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.98, side: THREE.DoubleSide });
+      const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.98, side: THREE.DoubleSide, depthWrite: false });
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(4.1, 2.6), material);
       mesh.position.set(0, 0, 2.8);
+      mesh.renderOrder = 10;
       mesh.userData = { canvas, ctx: canvas.getContext('2d'), texture };
       return mesh;
     }
@@ -425,14 +657,17 @@
       ctx.fillStyle = 'rgba(0,0,0,0.34)';
       ctx.strokeStyle = 'rgba(255,255,255,0.12)';
       ctx.lineWidth = 2;
-      const pad = 28, r = 26;
+      const pad = 28;
+      const r = 26;
       ctx.beginPath();
       ctx.moveTo(pad + r, pad);
       ctx.arcTo(canvas.width - pad, pad, canvas.width - pad, canvas.height - pad, r);
       ctx.arcTo(canvas.width - pad, canvas.height - pad, pad, canvas.height - pad, r);
       ctx.arcTo(pad, canvas.height - pad, pad, pad, r);
       ctx.arcTo(pad, pad, canvas.width - pad, pad, r);
-      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
 
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 34px Inter, Arial';
@@ -517,23 +752,46 @@
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setClearColor(BG, 1);
-    const scene = new THREE.Scene(); scene.background = new THREE.Color(BG);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(BG);
+
     const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 100);
     const INITIAL_CAMERA_POS = new THREE.Vector3(0, 4.2, 9.6);
     camera.position.copy(INITIAL_CAMERA_POS);
-    const controls = new OrbitControls(camera, canvas); controls.enableDamping = true; controls.enablePan = true; controls.target.set(0, 0, 0); controls.update();
-    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-    const dir1 = new THREE.DirectionalLight(0xffffff, 1.2); dir1.position.set(4, 5, 6); scene.add(dir1);
-    const dir2 = new THREE.DirectionalLight(0xffffff, 0.45); dir2.position.set(-5, -3, -4); scene.add(dir2);
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.enablePan = true;
+    controls.target.set(0, 0, 0);
+    controls.update();
 
-    const world = new THREE.Group(); scene.add(world);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+    const dir1 = new THREE.DirectionalLight(0xffffff, 1.2);
+    dir1.position.set(4, 5, 6);
+    scene.add(dir1);
+    const dir2 = new THREE.DirectionalLight(0xffffff, 0.45);
+    dir2.position.set(-5, -3, -4);
+    scene.add(dir2);
+
+    const world = new THREE.Group();
+    scene.add(world);
 
     const sphereGeometry = new THREE.SphereGeometry(SPHERE_RADIUS, 32, 22);
     const sphereMaterial = new THREE.MeshBasicMaterial({ color: WHITE, wireframe: true, transparent: true, opacity: 0.08 });
-    const readSphere = new THREE.Mesh(sphereGeometry, sphereMaterial.clone()); readSphere.position.copy(READ_CENTER); world.add(readSphere);
-    const writeSphere = new THREE.Mesh(sphereGeometry, sphereMaterial.clone()); writeSphere.position.copy(WRITE_CENTER); world.add(writeSphere);
-    const readSphereLabel = makeTextSprite('Read Sphere', WHITE, 320, 90, 30); readSphereLabel.position.copy(READ_CENTER.clone().add(new THREE.Vector3(0, 2.45, 0))); world.add(readSphereLabel);
-    const writeSphereLabel = makeTextSprite('Write Sphere', WHITE, 320, 90, 30); writeSphereLabel.position.copy(WRITE_CENTER.clone().add(new THREE.Vector3(0, 2.45, 0))); world.add(writeSphereLabel);
+    const readSphere = new THREE.Mesh(sphereGeometry, sphereMaterial.clone());
+    readSphere.position.copy(READ_CENTER);
+    world.add(readSphere);
+    const writeSphere = new THREE.Mesh(sphereGeometry, sphereMaterial.clone());
+    writeSphere.position.copy(WRITE_CENTER);
+    world.add(writeSphere);
+
+    const readSphereLabel = makeTextSprite('Read Sphere', WHITE, 320, 90, 30);
+    readSphereLabel.position.copy(READ_CENTER.clone().add(new THREE.Vector3(0, 2.45, 0)));
+    world.add(readSphereLabel);
+    const writeSphereLabel = makeTextSprite('Write Sphere', WHITE, 320, 90, 30);
+    writeSphereLabel.position.copy(WRITE_CENTER.clone().add(new THREE.Vector3(0, 2.45, 0)));
+    world.add(writeSphereLabel);
 
     function makeLocalAxes(center) {
       const g = new THREE.Group();
@@ -549,21 +807,6 @@
     world.add(readLocalAxes);
     world.add(writeLocalAxes);
 
-    const incomingArrow = new Arrow3DObject(INCOMING, 1, false); world.add(incomingArrow.group);
-    const incomingArrowQ = new Arrow3DObject(INCOMING, 1, true); world.add(incomingArrowQ.group);
-    const sumArrow = new Arrow3DObject(SUM, 0.25, true); world.add(sumArrow.group);
-    const qSumArrow = new Arrow3DObject(FINALQ, 0.25, true); world.add(qSumArrow.group);
-    const finalArrow = new Arrow3DObject(FINAL, 1, false); world.add(finalArrow.group);
-    const qFinalArrow = new Arrow3DObject(FINALQ, 1, false); world.add(qFinalArrow.group);
-    const compareGhost = new Arrow3DObject(FINAL, 0.55, false); world.add(compareGhost.group);
-    
-    const normalizedLabel = makeTextSprite('continuous', FINAL, 300, 90, 30); normalizedLabel.visible = false; world.add(normalizedLabel);
-    const qNormalizedLabel = makeTextSprite('quantized', FINALQ, 300, 90, 30); qNormalizedLabel.visible = false; world.add(qNormalizedLabel);
-    const activationPanel = makePanel(); activationPanel.visible = false; scene.add(activationPanel);
-    const qActivationPanel = makePanel(); qActivationPanel.visible = false; scene.add(qActivationPanel);
-    const readQuantDotsGroup = new THREE.Group(); readQuantDotsGroup.position.copy(READ_CENTER); world.add(readQuantDotsGroup);
-    const writeQuantDotsGroup = new THREE.Group(); writeQuantDotsGroup.position.copy(WRITE_CENTER); world.add(writeQuantDotsGroup);
-
     const state = {
       forceOverview: true,
       stage: 0,
@@ -575,8 +818,26 @@
       activation: 'relu',
       quantMode: 'ternary',
       vectorCount: 8,
+      solidAngleDeg: 16,
       stageStartedAt: performance.now(),
     };
+
+    buildSolidAngleSharedGeometries(state.solidAngleDeg);
+
+    const incomingArrow = new DirectionGlyph(INCOMING, 1, false); world.add(incomingArrow.group);
+    const incomingArrowQ = new DirectionGlyph(INCOMING, 1, true); world.add(incomingArrowQ.group);
+    const sumArrow = new DirectionGlyph(SUM, 0.25, true); world.add(sumArrow.group);
+    const qSumArrow = new DirectionGlyph(FINALQ, 0.25, true); world.add(qSumArrow.group);
+    const finalArrow = new DirectionGlyph(FINAL, 1, false); world.add(finalArrow.group);
+    const qFinalArrow = new DirectionGlyph(FINALQ, 1, false); world.add(qFinalArrow.group);
+    const compareGhost = new DirectionGlyph(FINAL, 0.55, false); world.add(compareGhost.group);
+
+    const normalizedLabel = makeTextSprite('continuous', FINAL, 300, 90, 30); normalizedLabel.visible = false; world.add(normalizedLabel);
+    const qNormalizedLabel = makeTextSprite('quantized', FINALQ, 300, 90, 30); qNormalizedLabel.visible = false; world.add(qNormalizedLabel);
+    const activationPanel = makePanel(); activationPanel.visible = false; scene.add(activationPanel);
+    const qActivationPanel = makePanel(); qActivationPanel.visible = false; scene.add(qActivationPanel);
+    const readQuantDotsGroup = new THREE.Group(); readQuantDotsGroup.position.copy(READ_CENTER); world.add(readQuantDotsGroup);
+    const writeQuantDotsGroup = new THREE.Group(); writeQuantDotsGroup.position.copy(WRITE_CENTER); world.add(writeQuantDotsGroup);
 
     let datasetSeed = 11;
     let data = makeDataset(datasetSeed, state.vectorCount);
@@ -599,6 +860,34 @@
       qCoeffLabels: [],
       transferLines: [],
     };
+
+
+    function syncGlyphSectorGeometry(glyph) {
+      if (!glyph) return;
+      glyph.sectorCap.geometry = sharedSolidAngleCapGeometry;
+      glyph.sectorRim.geometry = sharedSolidAngleRimGeometry;
+    }
+
+    function syncAllGlyphSectorGeometries() {
+      const allGlyphs = [
+        incomingArrow,
+        incomingArrowQ,
+        sumArrow,
+        qSumArrow,
+        finalArrow,
+        qFinalArrow,
+        compareGhost,
+        ...dyn.contReadArrows,
+        ...dyn.quantReadArrows,
+        ...dyn.contWriteArrows,
+        ...dyn.quantWriteArrows,
+        ...dyn.scaledArrows,
+        ...dyn.qScaledArrows,
+        ...dyn.chainArrows,
+        ...dyn.qChainArrows,
+      ];
+      allGlyphs.forEach(syncGlyphSectorGeometry);
+    }
 
     function clearGroupChildren(group) {
       while (group.children.length) {
@@ -639,20 +928,14 @@
         };
         addDashed(dyn.dotLines, READ);
         addDashed(dyn.qDotLines, QUANT);
+        addDashed(dyn.transferLines, FINAL);
 
         const dotLabel = makeTextSprite('0.00', READ, 220, 84, 30); dotLabel.visible = false; dyn.dotLabels.push(dotLabel); world.add(dotLabel);
         const qDotLabel = makeTextSprite('0.00', QUANT, 220, 84, 30); qDotLabel.visible = false; dyn.qDotLabels.push(qDotLabel); world.add(qDotLabel);
         const coeffLabel = makeTextSprite('0.00', WHITE, 220, 84, 30); coeffLabel.visible = false; dyn.coeffLabels.push(coeffLabel); world.add(coeffLabel);
         const qCoeffLabel = makeTextSprite('0.00', WHITE, 220, 84, 30); qCoeffLabel.visible = false; dyn.qCoeffLabels.push(qCoeffLabel); world.add(qCoeffLabel);
 
-        const tg = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-        const tm = new THREE.LineDashedMaterial({ color: FINAL, transparent: true, opacity: 0.0, dashSize: 0.09, gapSize: 0.06 });
-        const tl = new THREE.Line(tg, tm);
-        tl.visible = false;
-        dyn.transferLines.push(tl);
-        world.add(tl);
-
-        const arGroups = [
+        const glyphGroups = [
           ['contReadArrows', BASE],
           ['quantReadArrows', QUANT],
           ['contWriteArrows', BASE],
@@ -662,8 +945,8 @@
           ['chainArrows', SUM],
           ['qChainArrows', FINALQ],
         ];
-        for (const [name, color] of arGroups) {
-          const a = new Arrow3DObject(color, 1, false);
+        for (const [name, color] of glyphGroups) {
+          const a = new DirectionGlyph(color, 1, false);
           dyn[name].push(a);
           world.add(a.group);
         }
@@ -769,6 +1052,8 @@
     const activationSelectEl = document.getElementById('activationSelect');
     const quantSelectEl = document.getElementById('quantSelect');
     const vectorCountSelectEl = document.getElementById('vectorCountSelect');
+    const solidAngleSliderEl = document.getElementById('solidAngleSlider');
+    const solidAngleLabelEl = document.getElementById('solidAngleLabel');
     const showQuantDotsEl = document.getElementById('showQuantDots');
     const stageButtons = [...document.querySelectorAll('[data-stage]')];
     const readVectorGrid = document.getElementById('readVectorGrid');
@@ -808,6 +1093,8 @@
       progressSliderEl.value = String(Math.round(state.progress * 1000));
       playPauseBtn.textContent = state.playing ? 'Pause' : 'Play';
       vectorCountSelectEl.value = String(state.vectorCount);
+      solidAngleSliderEl.value = String(state.solidAngleDeg);
+      solidAngleLabelEl.textContent = `${state.solidAngleDeg}° half-angle`;
       stageButtons.forEach(btn => btn.classList.toggle('active', Number(btn.dataset.stage) === state.stage));
       populateVectorGrid(readVectorGrid, derived.readVec, 'r');
       populateVectorGrid(qReadVectorGrid, derived.qReadVec, 'q');
@@ -845,27 +1132,58 @@
       controls.update();
       refreshUi();
     });
-    progressSliderEl.addEventListener('input', e => { state.progress = Number(e.target.value) / 1000; state.playing = false; refreshUi(); });
+    progressSliderEl.addEventListener('input', e => {
+      state.progress = Number(e.target.value) / 1000;
+      state.playing = false;
+      refreshUi();
+    });
     autoRotateEl.addEventListener('change', e => { state.autoRotate = e.target.checked; });
     showLabelsEl.addEventListener('change', e => { state.showLabels = e.target.checked; });
-    activationSelectEl.addEventListener('change', e => { state.activation = e.target.value; derived = computeDerived(); rebuildQuantDots(); refreshUi(); });
-    quantSelectEl.addEventListener('change', e => { state.quantMode = e.target.value; derived = computeDerived(); rebuildQuantDots(); refreshUi(); });
-    vectorCountSelectEl.addEventListener('change', e => { state.vectorCount = Number(e.target.value); rebuildAll(); });
+    activationSelectEl.addEventListener('change', e => {
+      state.activation = e.target.value;
+      derived = computeDerived();
+      rebuildQuantDots();
+      refreshUi();
+    });
+    quantSelectEl.addEventListener('change', e => {
+      state.quantMode = e.target.value;
+      derived = computeDerived();
+      rebuildQuantDots();
+      refreshUi();
+    });
+    vectorCountSelectEl.addEventListener('change', e => {
+      state.vectorCount = Number(e.target.value);
+      rebuildAll();
+    });
+    solidAngleSliderEl.addEventListener('input', e => {
+      state.solidAngleDeg = Number(e.target.value);
+      const { oldCap, oldRim } = buildSolidAngleSharedGeometries(state.solidAngleDeg);
+      syncAllGlyphSectorGeometries();
+      oldCap?.dispose();
+      oldRim?.dispose();
+      refreshUi();
+    });
     showQuantDotsEl.addEventListener('change', e => { state.showQuantDots = e.target.checked; });
 
     function resize() {
-      const w = canvas.clientWidth, h = canvas.clientHeight;
-      renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
     }
-    window.addEventListener('resize', resize); resize(); refreshUi();
+    window.addEventListener('resize', resize);
+    resize();
+    refreshUi();
 
-    function setDashedLine(line, a, b, opacity) {
+    function setDashedLine(line, a, b, opacity, color = null) {
       line.visible = opacity > 0.001;
       if (!line.visible) return;
       line.geometry.dispose();
       line.geometry = new THREE.BufferGeometry().setFromPoints([a, b]);
       line.computeLineDistances();
       line.material.opacity = opacity;
+      if (color) line.material.color.set(color);
     }
 
     function hideAllExtras() {
@@ -879,7 +1197,7 @@
       sumArrow.group.visible = false;
       qSumArrow.group.visible = false;
       incomingArrowQ.group.visible = false;
-            readQuantDotsGroup.visible = state.showQuantDots && state.stage >= 6;
+      readQuantDotsGroup.visible = state.showQuantDots && state.stage >= 6;
       writeQuantDotsGroup.visible = state.showQuantDots && state.stage >= 6;
     }
 
@@ -891,15 +1209,9 @@
     }
 
     function sideOpacities(stage) {
-      if (state.forceOverview) {
-        return { read: 1.0, write: 1.0 };
-      }
-      if (stage === 0 || stage === 1 || stage === 7 || stage === 8) {
-        return { read: 1.0, write: 0.08 };
-      }
-      if (stage === 2 || stage === 3 || stage === 4 || stage === 5 || stage === 9 || stage === 11 || stage === 12 || stage === 13) {
-        return { read: 0.08, write: 1.0 };
-      }
+      if (state.forceOverview) return { read: 1.0, write: 1.0 };
+      if (stage === 0 || stage === 1 || stage === 7 || stage === 8) return { read: 1.0, write: 0.08 };
+      if (stage === 2 || stage === 3 || stage === 4 || stage === 5 || stage === 9 || stage === 10 || stage === 11 || stage === 12 || stage === 13) return { read: 0.08, write: 1.0 };
       return { read: 1.0, write: 1.0 };
     }
 
@@ -917,8 +1229,8 @@
       }
       readSphere.material.opacity = 0.08 * side.read;
       writeSphere.material.opacity = 0.08 * side.write;
-      readLocalAxes.children.forEach((c) => { c.material.opacity = 0.75 * side.read; });
-      writeLocalAxes.children.forEach((c) => { c.material.opacity = 0.75 * side.write; });
+      readLocalAxes.children.forEach(c => { c.material.opacity = 0.75 * side.read; });
+      writeLocalAxes.children.forEach(c => { c.material.opacity = 0.75 * side.write; });
       readSphereLabel.material.opacity = side.read;
       writeSphereLabel.material.opacity = side.write;
     }
@@ -930,7 +1242,9 @@
       const side = sideOpacities(s);
 
       incomingArrow.set(READ_CENTER, READ_CENTER.clone().add(data.incomingVec), INCOMING, (s <= 6 ? 1 : 0.2) * side.read);
-      for (const arr of [dyn.scaledArrows, dyn.qScaledArrows, dyn.chainArrows, dyn.qChainArrows]) for (const a of arr) a.group.visible = false;
+      for (const arr of [dyn.scaledArrows, dyn.qScaledArrows, dyn.chainArrows, dyn.qChainArrows]) {
+        for (const a of arr) a.group.visible = false;
+      }
       for (const l of [...dyn.dotLines, ...dyn.qDotLines, ...dyn.transferLines]) l.visible = false;
       for (const l of [...dyn.dotLabels, ...dyn.qDotLabels, ...dyn.coeffLabels, ...dyn.qCoeffLabels]) l.visible = false;
 
@@ -948,8 +1262,8 @@
         }
         readSphere.material.opacity = 0.08;
         writeSphere.material.opacity = 0.08;
-        readLocalAxes.children.forEach((c) => { c.material.opacity = 0.75; });
-        writeLocalAxes.children.forEach((c) => { c.material.opacity = 0.75; });
+        readLocalAxes.children.forEach(c => { c.material.opacity = 0.75; });
+        writeLocalAxes.children.forEach(c => { c.material.opacity = 0.75; });
         readSphereLabel.material.opacity = 1.0;
         writeSphereLabel.material.opacity = 1.0;
       } else {
@@ -960,7 +1274,7 @@
         for (let i = 0; i < state.vectorCount; i++) {
           const end = READ_CENTER.clone().add(data.readUnitVecs[i].clone().multiplyScalar(SPHERE_RADIUS));
           const localT = clamp01(t * (state.vectorCount + 0.2) - i);
-          setDashedLine(dyn.dotLines[i], READ_CENTER.clone().add(data.incomingVec), end, localT * 0.55 * side.read);
+          setDashedLine(dyn.dotLines[i], READ_CENTER.clone().add(data.incomingVec), end, localT * 0.55 * side.read, READ);
           updateTextSprite(dyn.dotLabels[i], derived.readVec[i].toFixed(2), READ);
           dyn.dotLabels[i].position.copy(lerpVec(READ_CENTER.clone().add(data.incomingVec), end, 0.55).add(new THREE.Vector3(0.08, 0.08, 0.08)));
           dyn.dotLabels[i].visible = state.showLabels && localT > 0.05;
@@ -997,21 +1311,17 @@
         );
         activationPanel.lookAt(camera.position);
 
-        const activeIdx = Math.min(state.vectorCount - 1, Math.floor(t * state.vectorCount));
-        let sweepY = WRITE_CENTER.y;
-
         for (let i = 0; i < state.vectorCount; i++) {
+          const readEnd = READ_CENTER.clone().add(data.readUnitVecs[i].clone().multiplyScalar(SPHERE_RADIUS));
           const baseEnd = WRITE_CENTER.clone().add(data.writeUnitVecs[i].clone().multiplyScalar(SPHERE_RADIUS));
           const localT = smoothstep01(t * state.vectorCount - i);
           dyn.contWriteArrows[i].set(WRITE_CENTER, baseEnd, BASE, side.write);
+          setDashedLine(dyn.transferLines[i], readEnd, baseEnd, 0.35 * localT, FINAL);
           updateTextSprite(dyn.coeffLabels[i], `${i}:${derived.postVec[i].toFixed(2)}`, WHITE);
           dyn.coeffLabels[i].position.copy(baseEnd.clone().add(new THREE.Vector3(0.14, 0.12, 0.12)));
           dyn.coeffLabels[i].visible = state.showLabels && side.write > 0.5 && localT > 0.02;
           dyn.coeffLabels[i].material.opacity = localT;
-          if (i === activeIdx) sweepY = dyn.coeffLabels[i].position.y;
         }
-
-        
       }
 
       if (s === 3) {
@@ -1034,7 +1344,12 @@
           if (s === 4) {
             const seg = derived.chain[i];
             const localT = clamp01(t * (state.vectorCount + 0.2) - i);
-            dyn.chainArrows[i].set(WRITE_CENTER.clone().add(seg.start), WRITE_CENTER.clone().add(lerpVec(seg.start, seg.end, smoothstep01(localT))), SUM, localT > 0 ? side.write : 0);
+            dyn.chainArrows[i].set(
+              WRITE_CENTER.clone().add(seg.start),
+              WRITE_CENTER.clone().add(lerpVec(seg.start, seg.end, smoothstep01(localT))),
+              SUM,
+              localT > 0 ? side.write : 0
+            );
           } else {
             const seg = derived.chain[i];
             dyn.chainArrows[i].set(WRITE_CENTER.clone().add(seg.start), WRITE_CENTER.clone().add(seg.end), SUM, side.write);
@@ -1054,7 +1369,7 @@
         for (let i = 0; i < state.vectorCount; i++) {
           const end = READ_CENTER.clone().add(derived.quantReadVecs[i].clone().multiplyScalar(SPHERE_RADIUS));
           const localT = clamp01(t * (state.vectorCount + 0.2) - i);
-          setDashedLine(dyn.qDotLines[i], READ_CENTER.clone().add(data.incomingVec), end, localT * 0.55 * side.read);
+          setDashedLine(dyn.qDotLines[i], READ_CENTER.clone().add(data.incomingVec), end, localT * 0.55 * side.read, QUANT);
           updateTextSprite(dyn.qDotLabels[i], derived.qReadVec[i].toFixed(2), QUANT);
           dyn.qDotLabels[i].position.copy(lerpVec(READ_CENTER.clone().add(data.incomingVec), end, 0.55).add(new THREE.Vector3(0.08, 0.08, 0.08)));
           dyn.qDotLabels[i].visible = state.showLabels && localT > 0.05;
@@ -1084,9 +1399,11 @@
         qActivationPanel.lookAt(camera.position);
 
         for (let i = 0; i < state.vectorCount; i++) {
+          const qReadEnd = READ_CENTER.clone().add(derived.quantReadVecs[i].clone().multiplyScalar(SPHERE_RADIUS));
           const qWriteEnd = WRITE_CENTER.clone().add(derived.quantWriteVecs[i].clone().multiplyScalar(SPHERE_RADIUS));
           const localT = smoothstep01(t * state.vectorCount - i);
           dyn.quantWriteArrows[i].set(WRITE_CENTER, qWriteEnd, QUANT, side.write);
+          setDashedLine(dyn.transferLines[i], qReadEnd, qWriteEnd, 0.35 * localT, QUANT);
           updateTextSprite(dyn.qCoeffLabels[i], `${i}:${derived.qPostVec[i].toFixed(2)}`, WHITE);
           dyn.qCoeffLabels[i].position.copy(qWriteEnd.clone().add(new THREE.Vector3(0.14, 0.12, 0.12)));
           dyn.qCoeffLabels[i].visible = state.showLabels && side.write > 0.5 && localT > 0.02;
@@ -1115,7 +1432,12 @@
             const seg = derived.qChain[i];
             const localT = clamp01(t * (state.vectorCount + 0.2) - i);
             const chainT = smoothstep01(Math.min(1, localT * 1.15));
-            dyn.qChainArrows[i].set(WRITE_CENTER.clone().add(seg.start), WRITE_CENTER.clone().add(lerpVec(seg.start, seg.end, chainT)), FINALQ, localT > 0 ? side.write : 0);
+            dyn.qChainArrows[i].set(
+              WRITE_CENTER.clone().add(seg.start),
+              WRITE_CENTER.clone().add(lerpVec(seg.start, seg.end, chainT)),
+              FINALQ,
+              localT > 0 ? side.write : 0
+            );
           } else {
             const seg = derived.qChain[i];
             dyn.qChainArrows[i].set(WRITE_CENTER.clone().add(seg.start), WRITE_CENTER.clone().add(seg.end), FINALQ, side.write);
@@ -1128,8 +1450,7 @@
       }
 
       if (s === 12) {
-        const projT = smoothstep01(t);
-        qFinalArrow.set(WRITE_CENTER, WRITE_CENTER.clone().add(lerpVec(derived.qSumVec, derived.qFinalVec, projT)), FINALQ, side.write);
+        qFinalArrow.set(WRITE_CENTER, WRITE_CENTER.clone().add(lerpVec(derived.qSumVec, derived.qFinalVec, smoothstep01(t))), FINALQ, side.write);
         qNormalizedLabel.position.copy(WRITE_CENTER.clone().add(derived.qFinalVec).add(new THREE.Vector3(0.24, -0.18, 0.12)));
         qNormalizedLabel.visible = state.showLabels;
       }
@@ -1188,4 +1509,3 @@
   </script>
 </body>
 </html>
-
