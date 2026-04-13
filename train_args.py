@@ -1164,6 +1164,26 @@ def parse_args():
     model_group.add_argument("--rope_variant", type=str, default="rope", choices=["rope", "soap"])
     model_group.add_argument("--rope_length", type=int, default=None, help="Defaults to all embeddings (if set to None), else must be even.")
     model_group.add_argument('--use_abs_pos_embeddings', default=True, action=argparse.BooleanOptionalAction)
+    model_group.add_argument(
+        "--absolute_pos_embedding_variant",
+        type=str,
+        default="learned",
+        choices=["learned", "cyclic"],
+        help="Absolute position embedding style: standard learned table or cyclic multi-table sum.",
+    )
+    model_group.add_argument(
+        "--cyclic_abs_pos_cycle_lengths",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Cycle lengths for cyclic absolute embeddings (e.g. --cyclic_abs_pos_cycle_lengths 2 3 5).",
+    )
+    model_group.add_argument(
+        "--cyclic_abs_pos_randomize_starts",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="If enabled, each cyclic embedding list starts from a random offset during training.",
+    )
     model_group.add_argument('--use_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--shared_fire_embeddings', default=False, action=argparse.BooleanOptionalAction)
 
