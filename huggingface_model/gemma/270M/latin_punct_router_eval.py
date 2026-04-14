@@ -131,10 +131,11 @@ def _router_scores(
     ordered_names: Sequence[str],
     route_scales: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    mat = torch.stack([prototypes[name] for name in ordered_names], dim=0)
+    mat = torch.stack([prototypes[name] for name in ordered_names], dim=0).to(dtype=torch.float32)
     if route_scales is not None:
-        mat = mat * route_scales.unsqueeze(-1)
-    return torch.matmul(hidden_last, mat.T)
+        mat = mat * route_scales.to(dtype=torch.float32).unsqueeze(-1)
+    hidden = hidden_last.to(dtype=torch.float32)
+    return torch.matmul(hidden, mat.T)
 
 
 def _build_route_groups(base_groups: Dict[str, Sequence[int]], route_mode: str) -> Dict[str, List[int]]:
