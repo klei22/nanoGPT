@@ -9,6 +9,7 @@ Routing modes:
 - three_way: latin vs punct vs other.
 - latin_punct_vs_other: (latin U punct) vs other.
 - latin_vs_punct_only: latin vs punct (never routes to other).
+- latin_punct_only: only score within (latin U punct), no routing decision.
 """
 from __future__ import annotations
 
@@ -155,6 +156,11 @@ def _build_route_groups(base_groups: Dict[str, Sequence[int]], route_mode: str) 
             "latin": list(base_groups["latin"]),
             "punct": list(base_groups["punct"]),
         }
+    if route_mode == "latin_punct_only":
+        latin_punct = sorted(set(base_groups["latin"]) | set(base_groups["punct"]))
+        return {
+            "latin_punct_only": latin_punct,
+        }
     raise ValueError(f"Unknown route_mode: {route_mode}")
 
 
@@ -213,8 +219,11 @@ def _evaluate_router(
             with torch.no_grad():
                 out = model(running, output_hidden_states=True, use_cache=False)
             hidden_last = out.hidden_states[-1][:, -1, :]  # post-final layernorm state
-            route = _router_scores(hidden_last, prototypes, route_names, route_scales).argmax(dim=-1).item()
-            chosen = route_names[route]
+            if len(route_names) == 1:
+                chosen = route_names[0]
+            else:
+                route = _router_scores(hidden_last, prototypes, route_names, route_scales).argmax(dim=-1).item()
+                chosen = route_names[route]
             stats.route_counts[chosen] += 1
 
             candidate_ids_list = list(route_groups[chosen])
@@ -261,8 +270,11 @@ def _next_token_id(
         logits_full = torch.matmul(hidden_norm, lm_head_weight.T)
         return torch.argmax(logits_full, dim=-1).item()
 
-    route = _router_scores(hidden_last, prototypes, route_names, route_scales).argmax(dim=-1).item()
-    chosen = route_names[route]
+    if len(route_names) == 1:
+        chosen = route_names[0]
+    else:
+        route = _router_scores(hidden_last, prototypes, route_names, route_scales).argmax(dim=-1).item()
+        chosen = route_names[route]
     candidate_ids_list = list(route_groups[chosen])
     if byte_fallback and chosen != "other":
         candidate_ids_list = sorted(set(candidate_ids_list) | byte_set)
@@ -459,10 +471,10 @@ def main() -> None:
         "--route_mode",
         type=str,
         default="three_way",
-        choices=["three_way", "latin_punct_vs_other", "latin_vs_punct_only"],
+        choices=["three_way", "latin_punct_vs_other", "latin_vs_punct_only", "latin_punct_only"],
         help=(
             "Routing mode: 3-way (latin/punct/other), 2-way ((latin+punct)/other), "
-            "or latin vs punct only (never route to other)."
+            "latin vs punct only (never route to other), or latin+punct only (no routing)."
         ),
     )
     parser.add_argument(

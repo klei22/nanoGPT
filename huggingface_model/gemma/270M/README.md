@@ -125,6 +125,14 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --byte_fallback
 ```
 
+Single-bucket latin+punct mode (no routing decision; only score in latin+punct section):
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --route_mode latin_punct_only \
+  --byte_fallback
+```
+
 Train only the three route scalars (model frozen) for `three_way` mode:
 
 ```bash
