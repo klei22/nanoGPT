@@ -903,6 +903,8 @@ def parse_args():
         help="Which attention variant to use for the Transformer blocks."
     )
 
+    model_group.add_argument("--use_no_diag_mask", default=False, action=argparse.BooleanOptionalAction, help="Exclude the diagonal from the causal attention mask (tokens cannot attend to themselves)")
+
     ## MLA Variations
     # ── inside   model_group = parser.add_argument_group('model_group')  … ──
     model_group.add_argument(
