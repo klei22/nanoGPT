@@ -82,6 +82,7 @@ It then:
 - and performs next-token scoring only within the routed token subset.
 - reports side-by-side teacher-forced token accuracy with and without routing.
 - prints validation-set example translations before (full LM head) and after (routed LM head).
+- color-highlights the actually generated continuation segment (excluding the fixed multi-shot prompt context).
 - uses a fixed 3-shot English→Spanish prompt template before each evaluated/generated example.
 - can optionally freeze the model and train 3 route scalars (initialized to 1.0) for the 3 prototypes on OPUS-100 `en-es`.
 
@@ -153,3 +154,5 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --route_mode three_way \
   --example_max_new_tokens 64
 ```
+
+In chat mode, user input is color-highlighted and generated continuations are also highlighted in the printed full outputs.

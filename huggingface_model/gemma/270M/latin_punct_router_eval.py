@@ -37,6 +37,9 @@ FEW_SHOT_EXAMPLES = [
     ("Where is the train station?", "¿Dónde está la estación de tren?"),
     ("I would like a glass of water.", "Me gustaría un vaso de agua."),
 ]
+ANSI_RESET = "\033[0m"
+ANSI_GEN = "\033[92m"
+ANSI_USER = "\033[96m"
 
 
 @dataclass
@@ -288,6 +291,12 @@ def _next_token_id(
     return candidate_ids[pred_local].item()
 
 
+def _highlight_generated(full_text: str, prompt: str, color: str = ANSI_GEN) -> str:
+    if full_text.startswith(prompt):
+        return f"{prompt}{color}{full_text[len(prompt):]}{ANSI_RESET}"
+    return f"{color}{full_text}{ANSI_RESET}"
+
+
 def _generate_translation(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -300,7 +309,7 @@ def _generate_translation(
     byte_fallback: bool,
     device: torch.device,
     route_scales: torch.Tensor | None = None,
-) -> str:
+) -> tuple[str, str]:
     prompt = _build_3shot_prompt(english_text)
     running = tokenizer(prompt, add_special_tokens=True, return_tensors="pt").input_ids.to(device)
 
@@ -332,8 +341,10 @@ def _generate_translation(
 
     full_text = tokenizer.decode(running[0], skip_special_tokens=True)
     if "Spanish:" in full_text:
-        return full_text.split("Spanish:", 1)[1].strip()
-    return full_text.strip()
+        generated = full_text.split("Spanish:", 1)[1].strip()
+    else:
+        generated = full_text.strip()
+    return generated, _highlight_generated(full_text, prompt)
 
 
 def _print_validation_examples(
@@ -358,7 +369,7 @@ def _print_validation_examples(
     for idx, ex in enumerate(ds.select(range(count)), start=1):
         en = ex["translation"]["en"]
         es_ref = ex["translation"]["es"]
-        pred_full = _generate_translation(
+        pred_full, pred_full_colored = _generate_translation(
             model=model,
             tokenizer=tokenizer,
             english_text=en,
@@ -371,7 +382,7 @@ def _print_validation_examples(
             device=device,
             route_scales=route_scales,
         )
-        pred_routed = _generate_translation(
+        pred_routed, pred_routed_colored = _generate_translation(
             model=model,
             tokenizer=tokenizer,
             english_text=en,
@@ -389,6 +400,8 @@ def _print_validation_examples(
         print(f"REF: {es_ref}")
         print(f"Before (full): {pred_full}")
         print(f"After  (routed): {pred_routed}")
+        print(f"Before (full, generated highlighted): {pred_full_colored}")
+        print(f"After  (routed, generated highlighted): {pred_routed_colored}")
 
 
 def _run_chat_mode(
@@ -406,7 +419,7 @@ def _run_chat_mode(
     print("Type 'exit' or 'quit' to stop.")
     while True:
         try:
-            user_text = input("\nEN> ").strip()
+            user_text = input(f"\n{ANSI_USER}EN>{ANSI_RESET} ").strip()
         except EOFError:
             break
         if not user_text:
@@ -414,7 +427,7 @@ def _run_chat_mode(
         if user_text.lower() in {"exit", "quit"}:
             break
 
-        pred_full = _generate_translation(
+        pred_full, pred_full_colored = _generate_translation(
             model=model,
             tokenizer=tokenizer,
             english_text=user_text,
@@ -427,7 +440,7 @@ def _run_chat_mode(
             device=device,
             route_scales=route_scales,
         )
-        pred_routed = _generate_translation(
+        pred_routed, pred_routed_colored = _generate_translation(
             model=model,
             tokenizer=tokenizer,
             english_text=user_text,
@@ -440,8 +453,11 @@ def _run_chat_mode(
             device=device,
             route_scales=route_scales,
         )
+        print(f"{ANSI_USER}EN input:{ANSI_RESET} {ANSI_USER}{user_text}{ANSI_RESET}")
         print(f"ES (full):   {pred_full}")
         print(f"ES (routed): {pred_routed}")
+        print(f"ES (full, generated highlighted):   {pred_full_colored}")
+        print(f"ES (routed, generated highlighted): {pred_routed_colored}")
 
 
 def _train_route_scales(
