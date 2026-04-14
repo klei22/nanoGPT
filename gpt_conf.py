@@ -176,6 +176,7 @@ class GPTConfig:
 
     # Attention Options
     attention_variant: str = "causal"
+    use_no_diag_mask: bool = False
     attn_cproj_scale: float = 1.0
     attn_post_act_l2_norm: bool = False
 
