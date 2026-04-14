@@ -391,6 +391,59 @@ def _print_validation_examples(
         print(f"After  (routed): {pred_routed}")
 
 
+def _run_chat_mode(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    route_groups: Dict[str, Sequence[int]],
+    prototypes: Dict[str, torch.Tensor],
+    byte_ids: Sequence[int],
+    example_max_new_tokens: int,
+    byte_fallback: bool,
+    device: torch.device,
+    route_scales: torch.Tensor | None = None,
+) -> None:
+    print("\nChat mode: enter English text and get Spanish translations.")
+    print("Type 'exit' or 'quit' to stop.")
+    while True:
+        try:
+            user_text = input("\nEN> ").strip()
+        except EOFError:
+            break
+        if not user_text:
+            continue
+        if user_text.lower() in {"exit", "quit"}:
+            break
+
+        pred_full = _generate_translation(
+            model=model,
+            tokenizer=tokenizer,
+            english_text=user_text,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=byte_ids,
+            max_new_tokens=example_max_new_tokens,
+            routed=False,
+            byte_fallback=byte_fallback,
+            device=device,
+            route_scales=route_scales,
+        )
+        pred_routed = _generate_translation(
+            model=model,
+            tokenizer=tokenizer,
+            english_text=user_text,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=byte_ids,
+            max_new_tokens=example_max_new_tokens,
+            routed=True,
+            byte_fallback=byte_fallback,
+            device=device,
+            route_scales=route_scales,
+        )
+        print(f"ES (full):   {pred_full}")
+        print(f"ES (routed): {pred_routed}")
+
+
 def _train_route_scales(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -486,6 +539,7 @@ def main() -> None:
     parser.add_argument("--example_split", type=str, default="validation[:20]")
     parser.add_argument("--num_examples", type=int, default=3)
     parser.add_argument("--example_max_new_tokens", type=int, default=64)
+    parser.add_argument("--chat_mode", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--train_route_scales", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--train_split", type=str, default="train[:1%]")
     parser.add_argument("--train_max_samples", type=int, default=100)
@@ -567,6 +621,18 @@ def main() -> None:
         device=device,
         route_scales=learned_scales,
     )
+    if args.chat_mode:
+        _run_chat_mode(
+            model=model,
+            tokenizer=tokenizer,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=base_groups["byte"],
+            example_max_new_tokens=args.example_max_new_tokens,
+            byte_fallback=args.byte_fallback,
+            device=device,
+            route_scales=learned_scales,
+        )
 
 
 if __name__ == "__main__":

@@ -144,3 +144,12 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --train_epochs 1 \
   --train_lr 1e-2
 ```
+
+Interactive chat mode (type your own English sentence and compare full vs routed translation):
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --chat_mode \
+  --route_mode three_way \
+  --example_max_new_tokens 64
+```
