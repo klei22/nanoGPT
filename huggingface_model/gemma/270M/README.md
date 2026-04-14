@@ -64,3 +64,75 @@ python huggingface_model/gemma/270M/jl_head_eval.py \
   --annotate_stats true \
   --output_dir jl_eval_outputs
 ```
+
+## Latin/punctuation/other manual router (OPUS-100 en-es)
+
+`latin_punct_router_eval.py` builds three token groups from the Gemma vocabulary:
+
+1. Tokens whose decoded UTF text contains at least one Latin-script codepoint.
+2. Tokens that are punctuation-only (Unicode punctuation plus common English/Spanish punctuation symbols).
+3. Everything else (including byte/special tokens).
+
+It then:
+
+- prints a raw-count and percentage table for all three groups,
+- computes one average LM-head vector per group,
+- L2-normalizes those three vectors into unit routing prototypes,
+- routes each decoding step by dot product of final-layer hidden state with the 3 prototypes,
+- and performs next-token scoring only within the routed token subset.
+- reports side-by-side teacher-forced token accuracy with and without routing.
+- prints validation-set example translations before (full LM head) and after (routed LM head).
+- uses a fixed 3-shot English→Spanish prompt template before each evaluated/generated example.
+- can optionally freeze the model and train 3 route scalars (initialized to 1.0) for the 3 prototypes on OPUS-100 `en-es`.
+
+Example:
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --model_name google/gemma-3-270m-it \
+  --split "train[:1%]" \
+  --max_samples 100 \
+  --max_target_tokens 64 \
+  --example_split "validation[:20]" \
+  --num_examples 3 \
+  --example_max_new_tokens 64 \
+  --route_mode three_way \
+  --byte_fallback \
+  --device cuda
+```
+
+Notes:
+
+- Evaluation is teacher-forced next-token prediction over OPUS-100 `en-es` translation targets.
+- The script uses cosine-style scoring (unit-normalized hidden state and LM-head rows) for both routing and routed token selection.
+
+
+Alternative 2-way routing (latin+punct vs other):
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --route_mode latin_punct_vs_other \
+  --byte_fallback
+```
+
+Use `--no-byte_fallback` to disable unioning byte tokens into non-`other` candidate sets.
+
+Alternative 2-way routing that never selects `other` (latin vs punct only):
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --route_mode latin_vs_punct_only \
+  --byte_fallback
+```
+
+Train only the three route scalars (model frozen) for `three_way` mode:
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --route_mode three_way \
+  --train_route_scales \
+  --train_split "train[:1%]" \
+  --train_max_samples 100 \
+  --train_epochs 1 \
+  --train_lr 1e-2
+```
