@@ -89,6 +89,8 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --split "train[:1%]" \
   --max_samples 100 \
   --max_target_tokens 64 \
+  --route_mode three_way \
+  --byte_fallback \
   --device cuda
 ```
 
@@ -96,3 +98,14 @@ Notes:
 
 - Evaluation is teacher-forced next-token prediction over OPUS-100 `en-es` translation targets.
 - The script uses cosine-style scoring (unit-normalized hidden state and LM-head rows) for both routing and routed token selection.
+
+
+Alternative 2-way routing (latin+punct vs other):
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --route_mode latin_punct_vs_other \
+  --byte_fallback
+```
+
+Use `--no-byte_fallback` to disable unioning byte tokens into non-`other` candidate sets.

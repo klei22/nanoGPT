@@ -1,15 +1,21 @@
-"""Build a 3-way manual LM-head router for Gemma 270M and evaluate on OPUS-100 en-es.
+"""Build a manual LM-head router for Gemma 270M and evaluate on OPUS-100 en-es.
 
-Groups:
-1) Tokens containing Latin script characters.
-2) Punctuation-only tokens (Unicode punctuation / common ES-EN punctuation symbols).
-3) Everything else (including byte/special tokens).
+Base groups:
+1) latin: tokens containing Latin-script characters.
+2) punct: punctuation-only tokens (Unicode punctuation + common ES/EN punctuation).
+3) other: everything else (including byte/special tokens).
+
+Routing modes:
+- three_way: latin vs punct vs other.
+- latin_punct_vs_other: (latin U punct) vs other.
 """
 from __future__ import annotations
 
 import argparse
+import re
 import unicodedata
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
 
 import torch
@@ -22,15 +28,14 @@ COMMON_ES_EN_PUNCT = {
     "¡", "¿", "…", "«", "»", "‹", "›", "`", "´", "/", "\\", "|", "@", "#", "&", "*", "%",
     "_",
 }
+BYTE_TOKEN_RE = re.compile(r"^<0x[0-9A-Fa-f]{2}>$")
 
 
 @dataclass
 class EvalStats:
     total_target_tokens: int = 0
     top1_correct: int = 0
-    route_latin: int = 0
-    route_punct: int = 0
-    route_other: int = 0
+    route_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
 
 def _normalize_rows(x: torch.Tensor) -> torch.Tensor:
@@ -50,8 +55,7 @@ def _is_latin_char(ch: str) -> bool:
 def _is_common_punctuation(ch: str) -> bool:
     if ch in COMMON_ES_EN_PUNCT:
         return True
-    cat = unicodedata.category(ch)
-    return cat.startswith("P")
+    return unicodedata.category(ch).startswith("P")
 
 
 def _is_punctuation_only_text(text: str) -> bool:
@@ -62,9 +66,13 @@ def _is_punctuation_only_text(text: str) -> bool:
 
 
 def _build_token_groups(tokenizer: AutoTokenizer, vocab_size: int) -> Dict[str, List[int]]:
-    groups = {"latin": [], "punct": [], "other": []}
-    for token_id in range(vocab_size):
+    groups = {"latin": [], "punct": [], "other": [], "byte": []}
+    raw_tokens = tokenizer.convert_ids_to_tokens(list(range(vocab_size)))
+
+    for token_id, raw_token in enumerate(raw_tokens):
         decoded = tokenizer.decode([token_id], skip_special_tokens=False)
+        if BYTE_TOKEN_RE.match(raw_token or ""):
+            groups["byte"].append(token_id)
         if any(_is_latin_char(c) for c in decoded):
             groups["latin"].append(token_id)
         elif _is_punctuation_only_text(decoded):
@@ -77,8 +85,9 @@ def _build_token_groups(tokenizer: AutoTokenizer, vocab_size: int) -> Dict[str, 
 def _print_group_table(groups: Dict[str, Sequence[int]], vocab_size: int) -> None:
     headers = ["Group", "Raw token count", "% of vocab"]
     rows = []
-    for key in ("latin", "punct", "other"):
-        count = len(groups[key])
+    for key in ("latin", "punct", "other", "byte (subset of other)"):
+        src_key = "byte" if key.startswith("byte") else key
+        count = len(groups[src_key])
         pct = 100.0 * count / vocab_size
         rows.append((key, count, f"{pct:.2f}%"))
 
@@ -95,40 +104,61 @@ def _print_group_table(groups: Dict[str, Sequence[int]], vocab_size: int) -> Non
 
 def _compute_group_prototypes(
     lm_head_weight: torch.Tensor,
-    groups: Dict[str, Sequence[int]],
+    route_groups: Dict[str, Sequence[int]],
     device: torch.device,
 ) -> Dict[str, torch.Tensor]:
     out = {}
-    for key in ("latin", "punct", "other"):
-        ids = torch.tensor(groups[key], dtype=torch.long, device=lm_head_weight.device)
+    for key, id_list in route_groups.items():
+        if not id_list:
+            raise ValueError(f"Routing group '{key}' is empty; cannot compute average prototype.")
+        ids = torch.tensor(id_list, dtype=torch.long, device=lm_head_weight.device)
         avg = lm_head_weight.index_select(0, ids).mean(dim=0)
         out[key] = torch.nn.functional.normalize(avg, dim=0).to(device)
     return out
 
 
-def _router_scores(hidden_last: torch.Tensor, prototypes: Dict[str, torch.Tensor]) -> torch.Tensor:
-    mat = torch.stack([prototypes["latin"], prototypes["punct"], prototypes["other"]], dim=0)
+def _router_scores(hidden_last: torch.Tensor, prototypes: Dict[str, torch.Tensor], ordered_names: Sequence[str]) -> torch.Tensor:
+    mat = torch.stack([prototypes[name] for name in ordered_names], dim=0)
     return torch.matmul(hidden_last, mat.T)
+
+
+def _build_route_groups(base_groups: Dict[str, Sequence[int]], route_mode: str) -> Dict[str, List[int]]:
+    if route_mode == "three_way":
+        return {
+            "latin": list(base_groups["latin"]),
+            "punct": list(base_groups["punct"]),
+            "other": list(base_groups["other"]),
+        }
+    if route_mode == "latin_punct_vs_other":
+        latin_punct = sorted(set(base_groups["latin"]) | set(base_groups["punct"]))
+        return {
+            "latin_punct": latin_punct,
+            "other": list(base_groups["other"]),
+        }
+    raise ValueError(f"Unknown route_mode: {route_mode}")
 
 
 def _evaluate_router(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
-    groups: Dict[str, Sequence[int]],
+    route_groups: Dict[str, Sequence[int]],
+    byte_ids: Sequence[int],
     prototypes: Dict[str, torch.Tensor],
     split: str,
     max_samples: int,
     max_target_tokens: int,
     device: torch.device,
+    byte_fallback: bool,
 ) -> EvalStats:
     stats = EvalStats()
     ds = load_dataset("Helsinki-NLP/opus-100", "en-es", split=split)
     lm_head_weight = _normalize_rows(model.lm_head.weight.detach())
 
-    group_names = ["latin", "punct", "other"]
+    route_names = list(route_groups.keys())
+    byte_set = set(byte_ids)
     group_ids = {
         k: torch.tensor(v, dtype=torch.long, device=device)
-        for k, v in groups.items()
+        for k, v in route_groups.items()
     }
 
     for ex in ds.select(range(min(max_samples, len(ds)))):
@@ -148,16 +178,17 @@ def _evaluate_router(
             with torch.no_grad():
                 out = model(running, output_hidden_states=True, use_cache=False)
             hidden_last = out.hidden_states[-1][:, -1, :]  # post-final layernorm state
-            route = _router_scores(hidden_last, prototypes).argmax(dim=-1).item()
-            chosen = group_names[route]
-            if chosen == "latin":
-                stats.route_latin += 1
-            elif chosen == "punct":
-                stats.route_punct += 1
-            else:
-                stats.route_other += 1
+            route = _router_scores(hidden_last, prototypes, route_names).argmax(dim=-1).item()
+            chosen = route_names[route]
+            stats.route_counts[chosen] += 1
 
-            candidate_ids = group_ids[chosen]
+            candidate_ids_list = list(route_groups[chosen])
+            if byte_fallback and chosen != "other":
+                candidate_ids_list = sorted(set(candidate_ids_list) | byte_set)
+            if not candidate_ids_list:
+                candidate_ids_list = list(byte_set)
+            candidate_ids = torch.tensor(candidate_ids_list, dtype=torch.long, device=device)
+
             candidate_weight = lm_head_weight.index_select(0, candidate_ids)
             logits = torch.matmul(torch.nn.functional.normalize(hidden_last, dim=-1), candidate_weight.T)
             pred_local = torch.argmax(logits, dim=-1)
@@ -175,11 +206,24 @@ def _evaluate_router(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Manual 3-way Gemma 270M token router eval (OPUS-100 en-es).")
+    parser = argparse.ArgumentParser(description="Manual Gemma 270M token router eval (OPUS-100 en-es).")
     parser.add_argument("--model_name", type=str, default="google/gemma-3-270m")
     parser.add_argument("--split", type=str, default="train[:1%]")
     parser.add_argument("--max_samples", type=int, default=100)
     parser.add_argument("--max_target_tokens", type=int, default=64)
+    parser.add_argument(
+        "--route_mode",
+        type=str,
+        default="three_way",
+        choices=["three_way", "latin_punct_vs_other"],
+        help="Routing mode: 3-way (latin/punct/other) or 2-way ((latin+punct)/other).",
+    )
+    parser.add_argument(
+        "--byte_fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include byte tokens in non-other candidate sets as fallback.",
+    )
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -190,33 +234,35 @@ def main() -> None:
     model.eval()
 
     vocab_size = tokenizer.vocab_size
-    groups = _build_token_groups(tokenizer, vocab_size)
-    _print_group_table(groups, vocab_size)
+    base_groups = _build_token_groups(tokenizer, vocab_size)
+    _print_group_table(base_groups, vocab_size)
 
-    prototypes = _compute_group_prototypes(model.lm_head.weight.detach(), groups, device)
+    route_groups = _build_route_groups(base_groups, args.route_mode)
+    prototypes = _compute_group_prototypes(model.lm_head.weight.detach(), route_groups, device)
     stats = _evaluate_router(
         model=model,
         tokenizer=tokenizer,
-        groups=groups,
+        route_groups=route_groups,
+        byte_ids=base_groups["byte"],
         prototypes=prototypes,
         split=args.split,
         max_samples=args.max_samples,
         max_target_tokens=args.max_target_tokens,
         device=device,
+        byte_fallback=args.byte_fallback,
     )
 
     acc = 100.0 * stats.top1_correct / max(1, stats.total_target_tokens)
-    total_routes = max(1, stats.route_latin + stats.route_punct + stats.route_other)
     print("\nRouter evaluation (teacher-forced next-token prediction)")
+    print(f"- Routing mode: {args.route_mode}")
+    print(f"- Byte fallback: {args.byte_fallback}")
     print(f"- Evaluated tokens: {stats.total_target_tokens}")
     print(f"- Top-1 accuracy with routed LM head: {acc:.2f}%")
-    print(
-        "- Route distribution: latin={:.2f}% punct={:.2f}% other={:.2f}%".format(
-            100.0 * stats.route_latin / total_routes,
-            100.0 * stats.route_punct / total_routes,
-            100.0 * stats.route_other / total_routes,
-        )
+    route_total = max(1, sum(stats.route_counts.values()))
+    route_summary = " ".join(
+        f"{name}={100.0 * count / route_total:.2f}%" for name, count in stats.route_counts.items()
     )
+    print(f"- Route distribution: {route_summary}")
 
 
 if __name__ == "__main__":
