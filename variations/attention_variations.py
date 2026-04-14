@@ -447,10 +447,12 @@ class CausalSelfAttention(nn.Module):
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         # Exclusive Self Attention (XSA): remove projection of y onto self value vector
+        # Uses Eq. 2: zi = yi - (yi^T vi / ||vi||^2) * vi
         if self.use_exclusive_self_attention:
             v_xsa = self._expand_kv(v)
-            Vn = F.normalize(v_xsa, dim=-1)
-            y = y - (y * Vn).sum(dim=-1, keepdim=True) * Vn
+            dot_yv = (y * v_xsa).sum(dim=-1, keepdim=True)
+            dot_vv = (v_xsa * v_xsa).sum(dim=-1, keepdim=True).clamp(min=1e-8)
+            y = y - (dot_yv / dot_vv) * v_xsa
 
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]
@@ -1284,10 +1286,12 @@ class InfiniteHeadAttention(nn.Module):
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         # Exclusive Self Attention (XSA): remove projection of y onto self value vector
+        # Uses Eq. 2: zi = yi - (yi^T vi / ||vi||^2) * vi
         if self.use_exclusive_self_attention:
             v_xsa = self._expand_kv(v)
-            Vn = F.normalize(v_xsa, dim=-1)
-            y = y - (y * Vn).sum(dim=-1, keepdim=True) * Vn
+            dot_yv = (y * v_xsa).sum(dim=-1, keepdim=True)
+            dot_vv = (v_xsa * v_xsa).sum(dim=-1, keepdim=True).clamp(min=1e-8)
+            y = y - (dot_yv / dot_vv) * v_xsa
 
         if self.post_act_l2_norm:
             y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
