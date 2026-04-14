@@ -64,3 +64,35 @@ python huggingface_model/gemma/270M/jl_head_eval.py \
   --annotate_stats true \
   --output_dir jl_eval_outputs
 ```
+
+## Latin/punctuation/other manual router (OPUS-100 en-es)
+
+`latin_punct_router_eval.py` builds three token groups from the Gemma vocabulary:
+
+1. Tokens whose decoded UTF text contains at least one Latin-script codepoint.
+2. Tokens that are punctuation-only (Unicode punctuation plus common English/Spanish punctuation symbols).
+3. Everything else (including byte/special tokens).
+
+It then:
+
+- prints a raw-count and percentage table for all three groups,
+- computes one average LM-head vector per group,
+- L2-normalizes those three vectors into unit routing prototypes,
+- routes each decoding step by dot product of final-layer hidden state with the 3 prototypes,
+- and performs next-token scoring only within the routed token subset.
+
+Example:
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --model_name google/gemma-3-270m \
+  --split "train[:1%]" \
+  --max_samples 100 \
+  --max_target_tokens 64 \
+  --device cuda
+```
+
+Notes:
+
+- Evaluation is teacher-forced next-token prediction over OPUS-100 `en-es` translation targets.
+- The script uses cosine-style scoring (unit-normalized hidden state and LM-head rows) for both routing and routed token selection.
