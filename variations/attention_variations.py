@@ -168,6 +168,9 @@ class CausalSelfAttention(nn.Module):
         # Using flex attention
         self.use_flex_attn = config.use_flex_attn
 
+        # Exclusive Self Attention (XSA)
+        self.use_exclusive_self_attention = config.use_exclusive_self_attention
+
         # Gating
         self.gate = config.gate
 
@@ -442,6 +445,12 @@ class CausalSelfAttention(nn.Module):
 
             v_attn = self._expand_kv(v)
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+
+        # Exclusive Self Attention (XSA): remove projection of y onto self value vector
+        if self.use_exclusive_self_attention:
+            v_xsa = self._expand_kv(v)
+            Vn = F.normalize(v_xsa, dim=-1)
+            y = y - (y * Vn).sum(dim=-1, keepdim=True) * Vn
 
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]
@@ -1110,6 +1119,9 @@ class InfiniteHeadAttention(nn.Module):
         # option to turn off flash attention
         self.disable_flash_attention = config.disable_flash_attention
 
+        # Exclusive Self Attention (XSA)
+        self.use_exclusive_self_attention = config.use_exclusive_self_attention
+
         # Regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
@@ -1270,6 +1282,12 @@ class InfiniteHeadAttention(nn.Module):
             att = self.attn_dropout(att)
 
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+
+        # Exclusive Self Attention (XSA): remove projection of y onto self value vector
+        if self.use_exclusive_self_attention:
+            v_xsa = self._expand_kv(v)
+            Vn = F.normalize(v_xsa, dim=-1)
+            y = y - (y * Vn).sum(dim=-1, keepdim=True) * Vn
 
         if self.post_act_l2_norm:
             y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)

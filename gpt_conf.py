@@ -184,6 +184,9 @@ class GPTConfig:
     use_qk_norm_scale: bool = False
     use_v_norm: bool = False
 
+    # Exclusive Self Attention (XSA)
+    use_exclusive_self_attention: bool = False
+
     ## SSM - Attention Varient (same as Hymba)
     ssm_mamba_expand: int = 2
     ssm_conv_kernel_size: int = 3
