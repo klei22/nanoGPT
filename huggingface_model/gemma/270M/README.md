@@ -115,3 +115,11 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
 ```
 
 Use `--no-byte_fallback` to disable unioning byte tokens into non-`other` candidate sets.
+
+Alternative 2-way routing that never selects `other` (latin vs punct only):
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --route_mode latin_vs_punct_only \
+  --byte_fallback
+```

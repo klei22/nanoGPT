@@ -8,6 +8,7 @@ Base groups:
 Routing modes:
 - three_way: latin vs punct vs other.
 - latin_punct_vs_other: (latin U punct) vs other.
+- latin_vs_punct_only: latin vs punct (never routes to other).
 """
 from __future__ import annotations
 
@@ -140,6 +141,11 @@ def _build_route_groups(base_groups: Dict[str, Sequence[int]], route_mode: str) 
         return {
             "latin_punct": latin_punct,
             "other": list(base_groups["other"]),
+        }
+    if route_mode == "latin_vs_punct_only":
+        return {
+            "latin": list(base_groups["latin"]),
+            "punct": list(base_groups["punct"]),
         }
     raise ValueError(f"Unknown route_mode: {route_mode}")
 
@@ -368,8 +374,11 @@ def main() -> None:
         "--route_mode",
         type=str,
         default="three_way",
-        choices=["three_way", "latin_punct_vs_other"],
-        help="Routing mode: 3-way (latin/punct/other) or 2-way ((latin+punct)/other).",
+        choices=["three_way", "latin_punct_vs_other", "latin_vs_punct_only"],
+        help=(
+            "Routing mode: 3-way (latin/punct/other), 2-way ((latin+punct)/other), "
+            "or latin vs punct only (never route to other)."
+        ),
     )
     parser.add_argument(
         "--byte_fallback",
