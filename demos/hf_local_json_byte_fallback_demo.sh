@@ -36,6 +36,14 @@ if [ ! -d "${DATA_DIR}" ]; then
   exit 1
 fi
 
+# Absolute path for the tokenizer directory. prepare.py stamps this value
+# into meta.pkl as `hf_tokenizer_name`, and train.py/sample.py later re-resolve
+# it from the repo root. A relative path like "./hf_local_tok" would be
+# interpreted as a Hub repo id at train time and blow up the regex validator
+# (see HuggingFaceTokenizer.__init__ + sample.py:get_tokenizer_functions).
+mkdir -p "${TOK_DIR}"
+TOK_DIR_ABS="$(cd "${TOK_DIR}" && pwd)"
+
 # ---------------------------------------------------------------------------
 # 1) Obtain dataset
 # ---------------------------------------------------------------------------
@@ -118,10 +126,9 @@ JSON
 #    tokens reserved for raw-byte fallback, Metaspace-style whitespace handling,
 #    ByteFallback decoder that stitches <0xNN> pieces back into UTF-8.
 # ---------------------------------------------------------------------------
-echo -e "${CYAN}=== [3/5] Building local HF tokenizer directory -> ${TOK_DIR} ===${RESET}"
-mkdir -p "${TOK_DIR}"
+echo -e "${CYAN}=== [3/5] Building local HF tokenizer directory -> ${TOK_DIR_ABS} ===${RESET}"
 
-python3 - "$JSON_VOCAB" "$TOK_DIR" <<'PY'
+python3 - "$JSON_VOCAB" "$TOK_DIR_ABS" <<'PY'
 import json
 import os
 import sys
@@ -204,16 +211,33 @@ PY
 # ---------------------------------------------------------------------------
 echo -e "${CYAN}=== [4/5] Tokenizing dialogsum via --method huggingface ===${RESET}"
 pushd "${DATA_DIR}" > /dev/null
+
+# Detect stale artifacts: if meta.pkl was produced with a different
+# hf_tokenizer_name (e.g. a relative path from a previous run) we MUST
+# re-tokenize so the stored path matches TOK_DIR_ABS.
+need_tokenize=0
 if [ ! -f "train.bin" ] || [ ! -f "val.bin" ] || [ ! -f "meta.pkl" ]; then
-  echo -e "${GREEN}[TOKENIZE]${RESET} prepare.py --method huggingface --hf_tokenizer_name ./hf_local_tok"
+  need_tokenize=1
+else
+  stored_name="$(python3 -c "import pickle,sys; m=pickle.load(open('meta.pkl','rb')); print(m.get('hf_tokenizer_name',''))" 2>/dev/null || true)"
+  if [ "${stored_name}" != "${TOK_DIR_ABS}" ]; then
+    echo -e "${YELLOW}[STALE]${RESET} meta.pkl stored hf_tokenizer_name='${stored_name}', expected '${TOK_DIR_ABS}'. Re-tokenizing."
+    rm -f train.bin val.bin meta.pkl
+    rm -rf hf_tokenizer
+    need_tokenize=1
+  fi
+fi
+
+if [ "${need_tokenize}" -eq 1 ]; then
+  echo -e "${GREEN}[TOKENIZE]${RESET} prepare.py --method huggingface --hf_tokenizer_name ${TOK_DIR_ABS}"
   python3 prepare.py \
     -t input.txt \
     --method huggingface \
-    --hf_tokenizer_name "./hf_local_tok" \
+    --hf_tokenizer_name "${TOK_DIR_ABS}" \
     --hf_use_fast \
     -T
 else
-  echo -e "${YELLOW}[SKIP]${RESET} train.bin/val.bin/meta.pkl already exist"
+  echo -e "${YELLOW}[SKIP]${RESET} train.bin/val.bin/meta.pkl already up to date"
 fi
 popd > /dev/null
 
