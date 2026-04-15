@@ -7,6 +7,14 @@ experimenting with LM head acceleration using Johnson-Lindenstrauss (JL) project
 
 `finetune.py` now supports the exact experiment structure below.
 
+If you want a single runnable walkthrough, use:
+
+```bash
+bash huggingface_model/gemma/270M/demo_gradual_blend_en_es.sh
+```
+
+That demo runs the gradual blend path and prints commented commands for the two baselines.
+
 ### A) Gradual blend recipe (Softmax → ReLUMax/ReLU2Max + output norm blending)
 
 1. obtain checkpoint
