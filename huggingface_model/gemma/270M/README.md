@@ -156,3 +156,28 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
 ```
 
 In chat mode, user input is color-highlighted and generated continuations are also highlighted in the printed full outputs.
+
+Latin-trim sweep report mode (trim longest UTF-8 latin tokens from 0%..80% in 10% steps, emit report + graph):
+
+```bash
+bash huggingface_model/gemma/270M/demo_latin_trim_sweep.sh
+```
+
+Direct CLI equivalent:
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --route_mode three_way \
+  --latin_trim_sweep \
+  --latin_trim_sweep_max 80 \
+  --latin_trim_sweep_step 10 \
+  --report_dir latin_trim_reports
+```
+
+This writes:
+
+- `latin_trim_reports/latin_trim_sweep.csv`
+- `latin_trim_reports/latin_trim_sweep_accuracy.png`
+- `latin_trim_reports/latin_trim_sweep_report.txt`
+
+You can also run a single trim without sweep via `--latin_trim_percent <pct>`.
