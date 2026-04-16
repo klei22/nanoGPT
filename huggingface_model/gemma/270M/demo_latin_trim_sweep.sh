@@ -13,7 +13,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --max_samples 100 \
   --max_target_tokens 64 \
   --example_split "validation[:20]" \
-  --sweep_examples 2 \
+  --sweep_examples 10 \
   --example_max_new_tokens 64 \
   --report_dir latin_trim_reports_longest_bytes \
   --byte_fallback
@@ -30,7 +30,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --max_samples 100 \
   --max_target_tokens 64 \
   --example_split "validation[:20]" \
-  --sweep_examples 2 \
+  --sweep_examples 10 \
   --example_max_new_tokens 64 \
   --report_dir latin_trim_reports_highest_id \
   --byte_fallback
