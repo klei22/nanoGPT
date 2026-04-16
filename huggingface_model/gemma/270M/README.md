@@ -163,6 +163,10 @@ Latin-trim sweep report mode (trim longest UTF-8 latin tokens from 0%..80% in 10
 bash huggingface_model/gemma/270M/demo_latin_trim_sweep.sh
 ```
 
+The demo runs both trim strategies (`longest_bytes`, `highest_id`) and then writes a combined comparison plot:
+
+- `latin_trim_reports_combined_accuracy.png` (full LM head + both routed strategies).
+
 Direct CLI equivalent:
 
 ```bash
