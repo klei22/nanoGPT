@@ -169,6 +169,7 @@ Direct CLI equivalent:
 python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --route_mode latin_punct_only \
   --latin_trim_sweep \
+  --latin_trim_strategy longest_bytes \
   --latin_trim_sweep_max 80 \
   --latin_trim_sweep_step 10 \
   --report_dir latin_trim_reports
@@ -185,3 +186,8 @@ This writes:
 The sweep also computes an additional score: average ASCII-string difference (via sequence ratio) between prediction and reference before the first newline.
 
 You can also run a single trim without sweep via `--latin_trim_percent <pct>`.
+
+Trimming strategy can be selected with `--latin_trim_strategy`:
+
+- `longest_bytes` (default): trim by largest UTF-8 token byte length first.
+- `highest_id`: trim by highest token id first.

@@ -110,21 +110,27 @@ def _trim_latin_token_ids(
     tokenizer: AutoTokenizer,
     latin_ids: Sequence[int],
     trim_percent: float,
+    trim_strategy: str = "longest_bytes",
 ) -> List[int]:
     if trim_percent <= 0:
         return list(latin_ids)
     if trim_percent >= 100:
         return []
 
-    scored = []
-    for token_id in latin_ids:
-        decoded = tokenizer.decode([token_id], skip_special_tokens=False)
-        byte_len = len(decoded.encode("utf-8"))
-        scored.append((byte_len, token_id))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    trim_count = int(len(scored) * (trim_percent / 100.0))
-    keep = [token_id for _, token_id in scored[trim_count:]]
+    trim_count = int(len(latin_ids) * (trim_percent / 100.0))
+    if trim_strategy == "longest_bytes":
+        scored = []
+        for token_id in latin_ids:
+            decoded = tokenizer.decode([token_id], skip_special_tokens=False)
+            byte_len = len(decoded.encode("utf-8"))
+            scored.append((byte_len, token_id))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        keep = [token_id for _, token_id in scored[trim_count:]]
+    elif trim_strategy == "highest_id":
+        sorted_ids = sorted(latin_ids, reverse=True)
+        keep = sorted_ids[trim_count:]
+    else:
+        raise ValueError(f"Unknown trim_strategy: {trim_strategy}")
     return keep
 
 
@@ -181,12 +187,13 @@ def _build_route_groups(
     route_mode: str,
     tokenizer: AutoTokenizer | None = None,
     latin_trim_percent: float = 0.0,
+    latin_trim_strategy: str = "longest_bytes",
 ) -> Dict[str, List[int]]:
     latin_ids = list(base_groups["latin"])
     if latin_trim_percent > 0:
         if tokenizer is None:
             raise ValueError("tokenizer is required when latin_trim_percent > 0")
-        latin_ids = _trim_latin_token_ids(tokenizer, latin_ids, latin_trim_percent)
+        latin_ids = _trim_latin_token_ids(tokenizer, latin_ids, latin_trim_percent, latin_trim_strategy)
 
     if route_mode == "three_way":
         return {
@@ -601,6 +608,7 @@ def _run_latin_trim_sweep(
     report_dir: str,
     sweep_max_percent: int,
     sweep_step_percent: int,
+    latin_trim_strategy: str,
 ) -> None:
     os.makedirs(report_dir, exist_ok=True)
     percents = list(range(0, sweep_max_percent + 1, sweep_step_percent))
@@ -610,12 +618,15 @@ def _run_latin_trim_sweep(
     print("\nLatin trim sweep report")
     print(f"- percents: {percents}")
     for pct in percents:
-        trimmed_latin_ids = _trim_latin_token_ids(tokenizer, base_groups["latin"], float(pct))
+        trimmed_latin_ids = _trim_latin_token_ids(
+            tokenizer, base_groups["latin"], float(pct), trim_strategy=latin_trim_strategy
+        )
         route_groups = _build_route_groups(
             base_groups=base_groups,
             route_mode=route_mode,
             tokenizer=tokenizer,
             latin_trim_percent=float(pct),
+            latin_trim_strategy=latin_trim_strategy,
         )
         prototypes = _compute_group_prototypes(model.lm_head.weight.detach(), route_groups, device)
         stats = _evaluate_router(
@@ -844,6 +855,13 @@ def main() -> None:
     parser.add_argument("--train_epochs", type=int, default=1)
     parser.add_argument("--train_lr", type=float, default=1e-2)
     parser.add_argument("--latin_trim_percent", type=float, default=0.0)
+    parser.add_argument(
+        "--latin_trim_strategy",
+        type=str,
+        default="longest_bytes",
+        choices=["longest_bytes", "highest_id"],
+        help="Trim latin tokens by descending UTF-8 byte length or descending token id.",
+    )
     parser.add_argument("--latin_trim_sweep", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--latin_trim_sweep_max", type=int, default=80)
     parser.add_argument("--latin_trim_sweep_step", type=int, default=10)
@@ -867,6 +885,7 @@ def main() -> None:
         route_mode=args.route_mode,
         tokenizer=tokenizer,
         latin_trim_percent=args.latin_trim_percent,
+        latin_trim_strategy=args.latin_trim_strategy,
     )
     prototypes = _compute_group_prototypes(model.lm_head.weight.detach(), route_groups, device)
     learned_scales = None
@@ -947,6 +966,7 @@ def main() -> None:
             report_dir=args.report_dir,
             sweep_max_percent=args.latin_trim_sweep_max,
             sweep_step_percent=args.latin_trim_sweep_step,
+            latin_trim_strategy=args.latin_trim_strategy,
         )
     if args.chat_mode:
         _run_chat_mode(
