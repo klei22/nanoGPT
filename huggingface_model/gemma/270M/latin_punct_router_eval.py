@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import os
 import re
 import unicodedata
@@ -56,6 +57,7 @@ class EvalStats:
 @dataclass
 class ExamplePair:
     english: str
+    reference: str
     full_output: str
     routed_output: str
 
@@ -523,6 +525,7 @@ def _collect_example_pairs(
     count = min(num_examples, len(ds))
     for ex in ds.select(range(count)):
         en = ex["translation"]["en"]
+        ref = ex["translation"]["es"]
         pred_full, _ = _generate_translation(
             model=model,
             tokenizer=tokenizer,
@@ -549,8 +552,20 @@ def _collect_example_pairs(
             device=device,
             route_scales=route_scales,
         )
-        pairs.append(ExamplePair(english=en, full_output=pred_full, routed_output=pred_routed))
+        pairs.append(ExamplePair(english=en, reference=ref, full_output=pred_full, routed_output=pred_routed))
     return pairs
+
+
+def _ascii_prefix_before_newline(text: str) -> str:
+    return text.split("\n", 1)[0].encode("ascii", errors="ignore").decode("ascii")
+
+
+def _ascii_diff_score(pred: str, reference: str) -> float:
+    pred_ascii = _ascii_prefix_before_newline(pred)
+    ref_ascii = _ascii_prefix_before_newline(reference)
+    if not pred_ascii and not ref_ascii:
+        return 0.0
+    return 1.0 - difflib.SequenceMatcher(a=pred_ascii, b=ref_ascii).ratio()
 
 
 def _run_latin_trim_sweep(
@@ -615,12 +630,55 @@ def _run_latin_trim_sweep(
             device=device,
             route_scales=None,
         )
+        ascii_full = []
+        ascii_routed = []
+        for ex in examples_by_percent[pct]:
+            ascii_full.append(_ascii_diff_score(ex.full_output, ex.reference))
+            ascii_routed.append(_ascii_diff_score(ex.routed_output, ex.reference))
+        avg_ascii_diff_full = sum(ascii_full) / max(1, len(ascii_full))
+        avg_ascii_diff_routed = sum(ascii_routed) / max(1, len(ascii_routed))
+        rows[-1] = (
+            rows[-1][0],
+            rows[-1][1],
+            rows[-1][2],
+            rows[-1][3],
+            rows[-1][4],
+            avg_ascii_diff_full,
+            avg_ascii_diff_routed,
+        )
         print(f"- trim={pct}% full_acc={acc_full:.2f}% routed_acc={acc_routed:.2f}% tokens={stats.total_target_tokens}")
+        percent_path = os.path.join(report_dir, f"latin_trim_{pct:02d}.txt")
+        with open(percent_path, "w", encoding="utf-8") as pf:
+            pf.write(
+                f"trim={pct}% | full_top1={acc_full:.2f}% | routed_top1={acc_routed:.2f}% | "
+                f"eval_tokens={stats.total_target_tokens} | latin_vocab_count={len(route_groups.get('latin', []))}\n"
+            )
+            pf.write(
+                f"avg_ascii_diff_before_newline_full={avg_ascii_diff_full:.4f} | "
+                f"avg_ascii_diff_before_newline_routed={avg_ascii_diff_routed:.4f}\n\n"
+            )
+            for ex in examples_by_percent[pct]:
+                pf.write(f"EN: {ex.english}\n")
+                pf.write(f"REF: {ex.reference}\n")
+                pf.write(f"ES(full): {ex.full_output}\n")
+                pf.write(f"ES(routed): {ex.routed_output}\n")
+                pf.write("\n")
+        print(f"  wrote per-percent details: {percent_path}")
 
     csv_path = os.path.join(report_dir, "latin_trim_sweep.csv")
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["latin_trim_percent", "top1_full_percent", "top1_routed_percent", "eval_tokens", "latin_vocab_count"])
+        writer.writerow(
+            [
+                "latin_trim_percent",
+                "top1_full_percent",
+                "top1_routed_percent",
+                "eval_tokens",
+                "latin_vocab_count",
+                "avg_ascii_diff_before_newline_full",
+                "avg_ascii_diff_before_newline_routed",
+            ]
+        )
         writer.writerows(rows)
 
     fig_path = os.path.join(report_dir, "latin_trim_sweep_accuracy.png")
@@ -643,13 +701,15 @@ def _run_latin_trim_sweep(
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("Latin trim sweep final report\n")
         f.write("============================\n\n")
-        for pct, acc_full, acc_routed, tok_count, latin_count in rows:
+        for pct, acc_full, acc_routed, tok_count, latin_count, ascii_full, ascii_routed in rows:
             f.write(
                 f"trim={pct}% | full_top1={acc_full:.2f}% | routed_top1={acc_routed:.2f}% | "
-                f"eval_tokens={tok_count} | latin_vocab_count={latin_count}\n"
+                f"eval_tokens={tok_count} | latin_vocab_count={latin_count} | "
+                f"ascii_diff_full={ascii_full:.4f} | ascii_diff_routed={ascii_routed:.4f}\n"
             )
             for ex in examples_by_percent[pct]:
                 f.write(f"  EN: {ex.english}\n")
+                f.write(f"  REF: {ex.reference}\n")
                 f.write(f"  ES(full): {ex.full_output}\n")
                 f.write(f"  ES(routed): {ex.routed_output}\n")
             f.write("\n")

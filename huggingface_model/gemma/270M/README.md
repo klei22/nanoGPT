@@ -167,7 +167,7 @@ Direct CLI equivalent:
 
 ```bash
 python huggingface_model/gemma/270M/latin_punct_router_eval.py \
-  --route_mode three_way \
+  --route_mode latin_punct_only \
   --latin_trim_sweep \
   --latin_trim_sweep_max 80 \
   --latin_trim_sweep_step 10 \
@@ -179,5 +179,8 @@ This writes:
 - `latin_trim_reports/latin_trim_sweep.csv`
 - `latin_trim_reports/latin_trim_sweep_accuracy.png`
 - `latin_trim_reports/latin_trim_sweep_report.txt`
+- `latin_trim_reports/latin_trim_00.txt`, `latin_trim_reports/latin_trim_10.txt`, ... per-percent details
+
+The sweep also computes an additional score: average ASCII-string difference (via sequence ratio) between prediction and reference before the first newline.
 
 You can also run a single trim without sweep via `--latin_trim_percent <pct>`.
