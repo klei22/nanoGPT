@@ -9,6 +9,7 @@ import pickle
 import shutil
 import sys
 import time
+import yaml
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -84,6 +85,9 @@ from torch.utils.tensorboard import SummaryWriter
 from variations.model_variations import model_variation_dictionary
 
 from model import GPT, GPTConfig
+from colorize_dataset import _ansi as colorize_ansi
+from colorize_dataset import _colour as colorize_text
+from colorize_dataset import build_colorized_token_rows
 
 # Inference related imports
 import tiktoken
@@ -152,6 +156,8 @@ class Trainer:
             'min': 0.0,
             'abs_max': 0.0,
         }
+        self.colorized_passage_history = []
+        self.colorized_passage_yaml_path = None
 
         # whether to show all model stats
         self.compute_model_stats = self.args.compute_model_stats
@@ -174,6 +180,15 @@ class Trainer:
             sample_dir = os.path.dirname(self.args.sample_file)
             if sample_dir and not os.path.exists(sample_dir):
                 os.makedirs(sample_dir, exist_ok=True)
+
+        if getattr(self.args, "colorize_val_passage", False):
+            color_yaml = os.path.expanduser(self.args.colorize_val_yaml)
+            if not os.path.isabs(color_yaml):
+                color_yaml = os.path.join(self.args.out_dir, color_yaml)
+            color_yaml_dir = os.path.dirname(color_yaml)
+            if color_yaml_dir and not os.path.exists(color_yaml_dir):
+                os.makedirs(color_yaml_dir, exist_ok=True)
+            self.colorized_passage_yaml_path = color_yaml
 
         # calculation on end time via eval cycle
         self.eval_cycle_window = deque(maxlen=self.args.eval_cycle_window)
@@ -737,6 +752,73 @@ class Trainer:
                     self.writer.add_scalar(f"dataset_benchmarks/{mk}", mv, self.iter_num)
         except Exception as e:
             print(f"Error running dataset benchmarks: {e}")
+
+    def _get_colorize_val_data_and_decode(self, dataset_name=None):
+        if self.args.training_mode == 'multicontext':
+            target_dataset = dataset_name or self.args.multicontext_datasets[0]
+            val_data = self.val_data_dict[target_dataset]
+            decode_fn = self.decode_dict[target_dataset] if hasattr(self, 'decode_dict') else self.decode
+            return target_dataset, val_data, decode_fn
+        if self.args.training_mode == 'multidataset':
+            if dataset_name is None:
+                target_dataset = self.args.dataset_list[0]
+            else:
+                target_dataset = dataset_name
+            val_data = self.val_data_dict[target_dataset]
+            decode_fn = self.decode_dict[target_dataset] if hasattr(self, 'decode_dict') else self.decode
+            return target_dataset, val_data, decode_fn
+        return self.args.dataset, self.val_data, self.decode
+
+    @torch.no_grad()
+    def save_colorized_validation_passage(self, losses, dataset_name=None):
+        if not self.args.colorize_val_passage or self.colorized_passage_yaml_path is None:
+            return
+
+        target_dataset, val_data, decode_fn = self._get_colorize_val_data_and_decode(dataset_name)
+        if len(val_data) <= 2:
+            return
+
+        num_tokens = max(int(self.args.colorize_val_tokens), 1)
+        max_tokens = min(num_tokens, len(val_data) - 2)
+        if max_tokens <= 0:
+            return
+
+        block_size = self.args.block_size
+        max_start = max(0, len(val_data) - max_tokens - 1)
+        start = min(max(int(self.args.colorize_val_offset), 0), max_start)
+
+        ids = []
+        scalars = []
+        for relative_idx in range(max_tokens):
+            pos = start + relative_idx
+            ctx_start = max(0, pos - block_size + 1)
+            ctx = torch.from_numpy(val_data[ctx_start:pos + 1].astype(np.int64))[None, :].to(self.device)
+            with self.ctx:
+                logits, _ = self.model(ctx)
+            logits_last = logits[0, -1, :]
+            target_token = int(val_data[pos + 1])
+            if self.args.colorize_val_mode == "softmax":
+                scalar = float(F.softmax(logits_last, dim=-1)[target_token].item())
+            else:
+                scalar = float(logits_last[target_token].item())
+            ids.append(target_token)
+            scalars.append(scalar)
+
+        colorized_text = colorize_text(ids, scalars, decode_fn, escape_ws=True)
+        record = {
+            "iter_num": int(self.iter_num),
+            "dataset": target_dataset,
+            "val_loss": float(losses["val"]),
+            "offset": int(start),
+            "num_tokens": int(max_tokens),
+            "mode": self.args.colorize_val_mode,
+            "ansi": colorize_ansi(colorized_text),
+            "tokens": build_colorized_token_rows(ids, scalars, decode_fn, escape_ws=True),
+        }
+        self.colorized_passage_history.append(record)
+
+        with open(self.colorized_passage_yaml_path, "w", encoding="utf-8") as fout:
+            yaml.safe_dump(self.colorized_passage_history, fout, sort_keys=False, allow_unicode=True)
 
     def load_data(self):
         def _dataset_bin_dtype(dataset_name):
@@ -1873,6 +1955,8 @@ class Trainer:
             with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
                 print("Exiting with nan")
                 file.write(str(self.iter_num))
+
+        self.save_colorized_validation_passage(losses, current_dataset)
 
         if (not self.args.never_save_checkpoint and
             self.args.save_major_ckpt_interval is not None):
