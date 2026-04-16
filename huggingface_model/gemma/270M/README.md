@@ -180,6 +180,7 @@ This writes:
 - `latin_trim_reports/latin_trim_sweep_accuracy.png`
 - `latin_trim_reports/latin_trim_sweep_report.txt`
 - `latin_trim_reports/latin_trim_00.txt`, `latin_trim_reports/latin_trim_10.txt`, ... per-percent details
+- `latin_trim_reports/latin_trim_00_latin_tokens.json`, `latin_trim_reports/latin_trim_10_latin_tokens.json`, ... per-percent latin token arrays (`id`, `token`, `length_bytes`, sorted by descending `length_bytes`)
 
 The sweep also computes an additional score: average ASCII-string difference (via sequence ratio) between prediction and reference before the first newline.
 

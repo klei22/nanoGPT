@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import difflib
+import json
 import os
 import re
 import unicodedata
@@ -568,6 +569,21 @@ def _ascii_diff_score(pred: str, reference: str) -> float:
     return 1.0 - difflib.SequenceMatcher(a=pred_ascii, b=ref_ascii).ratio()
 
 
+def _latin_token_json_records(tokenizer: AutoTokenizer, latin_ids: Sequence[int]) -> List[dict]:
+    records = []
+    for token_id in latin_ids:
+        decoded = tokenizer.decode([token_id], skip_special_tokens=False)
+        records.append(
+            {
+                "id": int(token_id),
+                "token": decoded,
+                "length_bytes": len(decoded.encode("utf-8")),
+            }
+        )
+    records.sort(key=lambda x: x["length_bytes"], reverse=True)
+    return records
+
+
 def _run_latin_trim_sweep(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -594,6 +610,7 @@ def _run_latin_trim_sweep(
     print("\nLatin trim sweep report")
     print(f"- percents: {percents}")
     for pct in percents:
+        trimmed_latin_ids = _trim_latin_token_ids(tokenizer, base_groups["latin"], float(pct))
         route_groups = _build_route_groups(
             base_groups=base_groups,
             route_mode=route_mode,
@@ -616,7 +633,7 @@ def _run_latin_trim_sweep(
         )
         acc_routed = 100.0 * stats.top1_correct_routed / max(1, stats.total_target_tokens)
         acc_full = 100.0 * stats.top1_correct_full / max(1, stats.total_target_tokens)
-        rows.append((pct, acc_full, acc_routed, stats.total_target_tokens, len(route_groups.get("latin", []))))
+        rows.append((pct, acc_full, acc_routed, stats.total_target_tokens, len(trimmed_latin_ids)))
         examples_by_percent[pct] = _collect_example_pairs(
             model=model,
             tokenizer=tokenizer,
@@ -651,7 +668,7 @@ def _run_latin_trim_sweep(
         with open(percent_path, "w", encoding="utf-8") as pf:
             pf.write(
                 f"trim={pct}% | full_top1={acc_full:.2f}% | routed_top1={acc_routed:.2f}% | "
-                f"eval_tokens={stats.total_target_tokens} | latin_vocab_count={len(route_groups.get('latin', []))}\n"
+                f"eval_tokens={stats.total_target_tokens} | latin_vocab_count={len(trimmed_latin_ids)}\n"
             )
             pf.write(
                 f"avg_ascii_diff_before_newline_full={avg_ascii_diff_full:.4f} | "
@@ -664,6 +681,11 @@ def _run_latin_trim_sweep(
                 pf.write(f"ES(routed): {ex.routed_output}\n")
                 pf.write("\n")
         print(f"  wrote per-percent details: {percent_path}")
+        latin_json_path = os.path.join(report_dir, f"latin_trim_{pct:02d}_latin_tokens.json")
+        latin_records = _latin_token_json_records(tokenizer, trimmed_latin_ids)
+        with open(latin_json_path, "w", encoding="utf-8") as jf:
+            json.dump(latin_records, jf, ensure_ascii=False, indent=2)
+        print(f"  wrote per-percent latin token json: {latin_json_path}")
 
     csv_path = os.path.join(report_dir, "latin_trim_sweep.csv")
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
