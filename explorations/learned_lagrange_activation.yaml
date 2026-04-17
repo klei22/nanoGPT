@@ -1,0 +1,29 @@
+---
+parameter_groups:
+  - activation_variant: ["gelu", "learned_lagrange"]
+  - activation_variant: ["learned_lagrange"]
+    lagrange_act_num_nodes: [6, 8, 12]
+    lagrange_act_init: ["gelu", "identity"]
+
+# Training
+compile: [true]
+never_save_checkpoint: [true]
+dataset: ["minipile"]
+max_iters: [6000]
+eval_interval: [1000]
+eta_variant: ["iteration"]
+block_size: [1024]
+batch_size: [8]
+
+# Architecture
+n_layer: [12]
+n_embd: [768]
+n_head: [12]
+
+# Position embeddings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# Keep interpolation domain fixed for this sweep
+lagrange_act_left_bound: [-3.0]
+lagrange_act_right_bound: [3.0]
