@@ -1,0 +1,78 @@
+# cproj_scale_learned_vs_prenorm_relu2max.yaml
+---
+# Explore learned c_proj scale against pre-norm settings with
+# relu2max / softmax attention variants, squared ReLU activation,
+# and optional MLP post-activation L2 normalization.
+
+parameter_groups:
+  # Baseline pre-norm + softmax
+  - use_pre_ln: [true]
+    use_post_ln: [false]
+    softmax_variant_attn: ["softmax"]
+    activation_variant: ["squared_relu"]
+    mlp_post_act_l2_norm: [false, true]
+    attn_cproj_scale_learning: [false]
+    mlp_cproj_scale_learning: [false]
+
+  # Pre-norm + relu2max sweep
+  - use_pre_ln: [true]
+    use_post_ln: [false]
+    softmax_variant_attn: ["relu2max"]
+    relu2max_divisor: [16.0, 64.0, 256.0]
+    activation_variant: ["squared_relu"]
+    mlp_post_act_l2_norm: [false, true]
+    attn_cproj_scale_learning: [false]
+    mlp_cproj_scale_learning: [false]
+
+  # Learned c_proj scales + pre-norm (softmax/relu2max)
+  - use_pre_ln: [true]
+    use_post_ln: [false]
+    softmax_variant_attn: ["softmax", "relu2max"]
+    relu2max_divisor: [256.0]
+    activation_variant: ["squared_relu"]
+    mlp_post_act_l2_norm: [false, true]
+    attn_cproj_scale_learning: [true]
+    attn_cproj_scale: [1.0]
+    attn_cproj_scale_init_learning_scale: [1.0, 2.0]
+    mlp_cproj_scale_learning: [true]
+    mlp_cproj_scale: [1.0]
+    mlp_cproj_scale_init_learning_scale: [1.0, 2.0]
+
+  # Contrast with non-pre-norm architecture
+  - use_pre_ln: [false]
+    use_post_ln: [true]
+    softmax_variant_attn: ["softmax", "relu2max"]
+    relu2max_divisor: [256.0]
+    activation_variant: ["squared_relu"]
+    mlp_post_act_l2_norm: [false, true]
+    attn_cproj_scale_learning: [true]
+    mlp_cproj_scale_learning: [true]
+
+# Base training/model settings
+n_layer: [12]
+n_head: [12]
+n_embd: [768]
+block_size: [1024]
+dataset: ["minipile"]
+batch_size: [16]
+max_iters: [30000]
+lr_decay_iters: [30000]
+warmup_iters: [3000]
+learning_rate: ["6e-4"]
+min_lr: ["6e-5"]
+beta1: [0.9]
+beta2: [0.95]
+decay_lr: [true]
+
+device: ["cuda"]
+dtype: ["bfloat16"]
+compile: [true]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+norm_variant_attn: ["rmsnorm"]
+norm_variant_output: ["rmsnorm"]
+
+# NOTE: "softrmax_variants_attn" in request maps to --softmax_variant_attn in current CLI.
+tensorboard_run_name: ["cproj_scale_learned_vs_prenorm_relu2max"]
