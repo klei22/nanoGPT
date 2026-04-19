@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -37,8 +38,12 @@ def parse_args() -> argparse.Namespace:
         default=-1,
         help="Limit vocab size for analysis (-1 for full vocab)",
     )
-    parser.add_argument("--chunk-size", type=int, default=1024, help="Block size for similarity scan")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--chunk-size", type=int, default=512, help="Block size for similarity scan")
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Computation device for similarity scan (default cpu to stay RAM-safe)",
+    )
     parser.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32")
     parser.add_argument("--output-dir", default="./gemma_vocab_angle_groups")
     parser.add_argument(
@@ -49,6 +54,34 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+class UnionFind:
+    def __init__(self, n: int) -> None:
+        self.parent = np.arange(n, dtype=np.int32)
+        self.rank = np.zeros(n, dtype=np.int8)
+
+    def find(self, x: int) -> int:
+        parent = self.parent
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = int(parent[x])
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra = self.find(a)
+        rb = self.find(b)
+        if ra == rb:
+            return
+        rank = self.rank
+        parent = self.parent
+        if rank[ra] < rank[rb]:
+            parent[ra] = rb
+        elif rank[ra] > rank[rb]:
+            parent[rb] = ra
+        else:
+            parent[rb] = ra
+            rank[ra] += 1
+
+
 def _torch_dtype(name: str) -> torch.dtype:
     return {
         "float32": torch.float32,
@@ -57,31 +90,50 @@ def _torch_dtype(name: str) -> torch.dtype:
     }[name]
 
 
-def _decode_tokens(tokenizer: AutoTokenizer, vocab_size: int) -> list[str]:
-    tokens = [""] * vocab_size
-    for idx in range(vocab_size):
-        tokens[idx] = tokenizer.convert_ids_to_tokens(idx)
-    return tokens
-
-
-def _digit_token_map(tokens: list[str]) -> dict[str, list[int]]:
+def _digit_token_map(tokenizer: AutoTokenizer, vocab_size: int) -> tuple[dict[str, list[int]], dict[int, str]]:
     digit_map: dict[str, list[int]] = {str(d): [] for d in range(10)}
-    for idx, tok in enumerate(tokens):
+    token_text: dict[int, str] = {}
+    for idx in range(vocab_size):
+        tok = tokenizer.convert_ids_to_tokens(idx)
         cleaned = tok.replace("▁", "").strip()
         if len(cleaned) == 1 and cleaned.isdigit():
             digit_map[cleaned].append(idx)
-    return digit_map
+            token_text[idx] = tok
+    return digit_map, token_text
+
+
+def _render_progress(
+    processed: int,
+    total: int,
+    start_time: float,
+    edges: int,
+) -> None:
+    elapsed = max(time.time() - start_time, 1e-6)
+    rate = processed / elapsed
+    remaining = total - processed
+    eta_sec = remaining / max(rate, 1e-9)
+    pct = (processed / max(total, 1)) * 100.0
+    print(
+        f"\rBlocks: {processed}/{total} ({pct:5.1f}%) | "
+        f"Edges: {edges:,} | ETA: {eta_sec:7.1f}s",
+        end="",
+        flush=True,
+    )
 
 
 def _compute_edges(
     emb: torch.Tensor,
     cosine_threshold: float,
     chunk_size: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[UnionFind, np.ndarray, int]:
     n = emb.size(0)
-    src_all: list[np.ndarray] = []
-    dst_all: list[np.ndarray] = []
     degrees = np.zeros(n, dtype=np.int64)
+    uf = UnionFind(n)
+    edge_count = 0
+    num_blocks = math.ceil(n / chunk_size)
+    total_block_pairs = num_blocks * (num_blocks + 1) // 2
+    processed_pairs = 0
+    started = time.time()
 
     for i0 in range(0, n, chunk_size):
         i1 = min(i0 + chunk_size, n)
@@ -97,22 +149,25 @@ def _compute_edges(
 
             pairs = mask.nonzero(as_tuple=False)
             if pairs.numel() == 0:
+                processed_pairs += 1
+                if processed_pairs % 10 == 0 or processed_pairs == total_block_pairs:
+                    _render_progress(processed_pairs, total_block_pairs, started, edge_count)
                 continue
 
             src = (pairs[:, 0] + i0).cpu().numpy().astype(np.int32)
             dst = (pairs[:, 1] + j0).cpu().numpy().astype(np.int32)
-            src_all.append(src)
-            dst_all.append(dst)
+            edge_count += int(src.shape[0])
             degrees += np.bincount(src, minlength=n)
             degrees += np.bincount(dst, minlength=n)
+            for s, d in zip(src, dst):
+                uf.union(int(s), int(d))
 
-    if src_all:
-        src_cat = np.concatenate(src_all)
-        dst_cat = np.concatenate(dst_all)
-    else:
-        src_cat = np.empty((0,), dtype=np.int32)
-        dst_cat = np.empty((0,), dtype=np.int32)
-    return src_cat, dst_cat, degrees
+            processed_pairs += 1
+            if processed_pairs % 10 == 0 or processed_pairs == total_block_pairs:
+                _render_progress(processed_pairs, total_block_pairs, started, edge_count)
+
+    print()
+    return uf, degrees, edge_count
 
 
 def _write_component_summary(
@@ -131,10 +186,10 @@ def _write_component_summary(
 def _write_digit_reports(
     output_dir: Path,
     digit_map: dict[str, list[int]],
+    digit_token_text: dict[int, str],
     component_ids: np.ndarray,
     component_sizes: np.ndarray,
     degrees: np.ndarray,
-    tokens: list[str],
 ) -> None:
     rows: list[tuple[str, int, str, int, int, str]] = []
     for d in range(10):
@@ -149,7 +204,7 @@ def _write_digit_reports(
                 (
                     digit,
                     len(ids),
-                    tokens[token_id],
+                    digit_token_text.get(token_id, ""),
                     comp,
                     int(component_sizes[comp]),
                     str(int(degrees[token_id])),
@@ -230,32 +285,14 @@ def main() -> None:
     emb = emb / emb.norm(dim=-1, keepdim=True).clamp_min(1e-12)
 
     cosine_threshold = math.cos(math.radians(args.angle_threshold_deg))
-    src, dst, degrees = _compute_edges(emb, cosine_threshold=cosine_threshold, chunk_size=args.chunk_size)
+    uf, degrees, edge_count = _compute_edges(emb, cosine_threshold=cosine_threshold, chunk_size=args.chunk_size)
 
     n = emb.size(0)
-    if src.size == 0:
-        component_ids = np.arange(n, dtype=np.int32)
-        component_sizes = np.ones(n, dtype=np.int32)
-    else:
-        try:
-            from scipy.sparse import coo_matrix
-            from scipy.sparse.csgraph import connected_components
-
-            data = np.ones(src.shape[0] * 2, dtype=np.uint8)
-            row = np.concatenate([src, dst])
-            col = np.concatenate([dst, src])
-            graph = coo_matrix((data, (row, col)), shape=(n, n)).tocsr()
-            num_components, labels = connected_components(graph, directed=False, return_labels=True)
-            component_ids = labels.astype(np.int32)
-            component_sizes = np.bincount(component_ids, minlength=num_components).astype(np.int32)
-        except ImportError as err:
-            raise RuntimeError(
-                "scipy is required to compute connected components when edges are present. "
-                "Install scipy or rerun with a stricter angle threshold."
-            ) from err
-
-    tokens = _decode_tokens(tokenizer, n)
-    digit_map = _digit_token_map(tokens)
+    roots = np.array([uf.find(i) for i in range(n)], dtype=np.int32)
+    _, component_ids = np.unique(roots, return_inverse=True)
+    component_ids = component_ids.astype(np.int32)
+    component_sizes = np.bincount(component_ids).astype(np.int32)
+    digit_map, digit_token_text = _digit_token_map(tokenizer, n)
 
     with (output_dir / "analysis_summary.txt").open("w", encoding="utf-8") as f:
         f.write(f"model={args.model}\n")
@@ -263,19 +300,19 @@ def main() -> None:
         f.write(f"vocab_size_analyzed={n}\n")
         f.write(f"angle_threshold_deg={args.angle_threshold_deg}\n")
         f.write(f"cosine_threshold={cosine_threshold:.8f}\n")
-        f.write(f"num_edges={int(src.size)}\n")
+        f.write(f"num_edges={int(edge_count)}\n")
         f.write(f"num_components={int(component_sizes.shape[0])}\n")
         f.write(f"largest_component={int(component_sizes.max())}\n")
         f.write(f"isolated_tokens={(degrees == 0).sum()}\n")
 
     _write_component_summary(output_dir, component_ids, component_sizes)
-    _write_digit_reports(output_dir, digit_map, component_ids, component_sizes, degrees, tokens)
+    _write_digit_reports(output_dir, digit_map, digit_token_text, component_ids, component_sizes, degrees)
 
     if args.write_token_assignments:
         with (output_dir / "token_component_assignments.csv").open("w", encoding="utf-8") as f:
             f.write("token_id,token,component_id,component_size,degree\n")
             for token_id in range(n):
-                token = tokens[token_id].replace("\n", "\\n")
+                token = tokenizer.convert_ids_to_tokens(token_id).replace("\n", "\\n")
                 cid = int(component_ids[token_id])
                 f.write(f"{token_id},{token},{cid},{int(component_sizes[cid])},{int(degrees[token_id])}\n")
 
