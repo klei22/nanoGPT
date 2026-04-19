@@ -22,25 +22,25 @@ named_static_groups:
     attention_variant: ["infinite"]
     use_concat_heads: [true]
 
-  # Equal-parameter family around quad_path_magnitude_swiglu mlp_size=1536.
+  # Equal-parameter family around quad_path_magnitude_swiglu mlp_size=768.
   # Relative projection multipliers:
   #   mlp=2x, swiglu=3x, dual_path=3x, quad_path_magnitude_swiglu=6x.
   # Match total MLP params by scaling hidden sizes accordingly.
   - named_group: "mlp_equal_params"
     mlp_variant: ["mlp"]
-    mlp_size: [4608]
+    mlp_size: [2304]
 
   - named_group: "swiglu_equal_params"
     mlp_variant: ["swiglu"]
-    mlp_size: [3072]
+    mlp_size: [1536]
 
   - named_group: "dual_path_equal_params"
     mlp_variant: ["dual_path"]
-    mlp_size: [3072]
+    mlp_size: [1536]
 
   - named_group: "quad_path_equal_params"
     mlp_variant: ["quad_path_magnitude_swiglu"]
-    mlp_size: [1536]
+    mlp_size: [768]
 
 common_group:
   dataset: ["minipile"]
@@ -50,10 +50,10 @@ common_group:
   compile: [true]
   log_rankme: [true]
   log_areq: [true]
-  n_layer: [12]
-  n_head: [12]
-  n_kv_group: [12]
-  n_embd: [768]
+  n_layer: [6]
+  n_head: [3]
+  n_kv_group: [3]
+  n_embd: [384]
   n_qk_head_dim: [100]
   n_v_head_dim: [100]
 

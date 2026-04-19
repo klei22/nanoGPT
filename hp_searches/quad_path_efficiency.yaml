@@ -34,10 +34,10 @@ mlp_variant: "quad_path_magnitude_swiglu"
 activation_variant: "silu"
 
 # searchable starting point
-n_layer: 1
-n_head: 2
-n_kv_group: 2
-n_embd: 128
-mlp_size: 512
+n_layer: 6
+n_head: 3
+n_kv_group: 3
+n_embd: 384
+mlp_size: 768
 n_qk_head_dim: 64
 n_v_head_dim: 64
