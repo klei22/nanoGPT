@@ -63,6 +63,12 @@ class ExamplePair:
     routed_output: str
 
 
+@dataclass
+class QuantConfig:
+    bits: int
+    mode: str  # vector_symmetric | vector_asymmetric | group32_symmetric | group32_asymmetric
+
+
 def _normalize_rows(x: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.normalize(x, dim=-1)
 
@@ -752,6 +758,151 @@ def _run_latin_trim_sweep(
     print(f"- wrote report: {report_path}")
 
 
+def _quantize_tensor(x: torch.Tensor, bits: int, symmetric: bool) -> torch.Tensor:
+    qmin = 0
+    qmax = (1 << bits) - 1
+    if symmetric:
+        max_abs = x.abs().amax(dim=-1, keepdim=True).clamp_min(1e-8)
+        scale = max_abs / float((1 << (bits - 1)) - 1)
+        q = torch.round(x / scale).clamp(-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
+        return q * scale
+
+    xmin = x.amin(dim=-1, keepdim=True)
+    xmax = x.amax(dim=-1, keepdim=True)
+    scale = ((xmax - xmin) / float(qmax - qmin)).clamp_min(1e-8)
+    zero_point = torch.round(qmin - xmin / scale).clamp(qmin, qmax)
+    q = torch.round(x / scale + zero_point).clamp(qmin, qmax)
+    return (q - zero_point) * scale
+
+
+def _quantize_weights(weight: torch.Tensor, cfg: QuantConfig, group_size: int) -> torch.Tensor:
+    mode = cfg.mode
+    if mode == "vector_symmetric":
+        return _quantize_tensor(weight, cfg.bits, symmetric=True)
+    if mode == "vector_asymmetric":
+        return _quantize_tensor(weight, cfg.bits, symmetric=False)
+    if mode in {"group32_symmetric", "group32_asymmetric"}:
+        symmetric = mode.endswith("symmetric")
+        chunks = []
+        for start in range(0, weight.size(1), group_size):
+            chunk = weight[:, start : start + group_size]
+            chunks.append(_quantize_tensor(chunk, cfg.bits, symmetric=symmetric))
+        return torch.cat(chunks, dim=-1)
+    raise ValueError(f"Unknown quantization mode: {mode}")
+
+
+def _evaluate_candidate_weight_top1(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    candidate_ids: torch.Tensor,
+    candidate_weight_normalized: torch.Tensor,
+    split: str,
+    max_samples: int,
+    max_target_tokens: int,
+    device: torch.device,
+) -> float:
+    ds = load_dataset("Helsinki-NLP/opus-100", "en-es", split=split)
+    correct = 0
+    total = 0
+    for ex in ds.select(range(min(max_samples, len(ds)))):
+        en = ex["translation"]["en"]
+        es = ex["translation"]["es"]
+        prompt = _build_3shot_prompt(en)
+        running = tokenizer(prompt, add_special_tokens=True, return_tensors="pt").input_ids.to(device)
+        target_ids = tokenizer(es, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
+        if target_ids.numel() == 0:
+            continue
+        steps = min(max_target_tokens, target_ids.size(1))
+        for idx in range(steps):
+            with torch.no_grad():
+                out = model(running, output_hidden_states=True, use_cache=False)
+            hidden_last = torch.nn.functional.normalize(out.hidden_states[-1][:, -1, :], dim=-1)
+            logits = torch.matmul(hidden_last, candidate_weight_normalized.T)
+            pred_local = torch.argmax(logits, dim=-1)
+            pred_id = candidate_ids[pred_local].item()
+            gold_id = target_ids[0, idx].item()
+            if pred_id == gold_id:
+                correct += 1
+            total += 1
+            running = torch.cat([running, target_ids[:, idx : idx + 1]], dim=1)
+    return 100.0 * correct / max(1, total)
+
+
+def _run_quantization_sweep(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    base_groups: Dict[str, Sequence[int]],
+    split: str,
+    max_samples: int,
+    max_target_tokens: int,
+    group_size: int,
+    report_dir: str,
+    device: torch.device,
+) -> None:
+    os.makedirs(report_dir, exist_ok=True)
+    candidate_list = sorted(set(base_groups["latin"]) | set(base_groups["punct"]) | set(base_groups["byte"]))
+    candidate_ids = torch.tensor(candidate_list, dtype=torch.long, device=device)
+    base_weight = model.lm_head.weight.detach().to(device)
+    base_candidate_weight = base_weight.index_select(0, candidate_ids)
+
+    configs = [
+        QuantConfig(bits=b, mode=m)
+        for b in [8, 6, 5, 4, 3]
+        for m in ["vector_symmetric", "vector_asymmetric", "group32_symmetric", "group32_asymmetric"]
+    ]
+
+    rows = []
+    fp_weight_norm = torch.nn.functional.normalize(base_candidate_weight, dim=-1)
+    fp_acc = _evaluate_candidate_weight_top1(
+        model=model,
+        tokenizer=tokenizer,
+        candidate_ids=candidate_ids,
+        candidate_weight_normalized=fp_weight_norm,
+        split=split,
+        max_samples=max_samples,
+        max_target_tokens=max_target_tokens,
+        device=device,
+    )
+    rows.append(("none", "none", 0, fp_acc))
+    print(f"\nQuantization sweep (latin+punct+byte candidate set): baseline={fp_acc:.2f}%")
+
+    for cfg in configs:
+        quant_w = _quantize_weights(base_candidate_weight, cfg, group_size=group_size)
+        quant_w_norm = torch.nn.functional.normalize(quant_w, dim=-1)
+        acc = _evaluate_candidate_weight_top1(
+            model=model,
+            tokenizer=tokenizer,
+            candidate_ids=candidate_ids,
+            candidate_weight_normalized=quant_w_norm,
+            split=split,
+            max_samples=max_samples,
+            max_target_tokens=max_target_tokens,
+            device=device,
+        )
+        rows.append((cfg.mode, "group32" if cfg.mode.startswith("group32") else "vector", cfg.bits, acc))
+        print(f"- {cfg.mode} @ {cfg.bits}-bit: {acc:.2f}%")
+
+    csv_path = os.path.join(report_dir, "quantization_sweep.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["mode", "granularity", "bits", "top1_percent"])
+        writer.writerows(rows)
+
+    fig_path = os.path.join(report_dir, "quantization_sweep_accuracy.png")
+    labels = [f"{m}-{b}" if b > 0 else "baseline" for m, _, b, _ in rows]
+    vals = [acc for _, _, _, acc in rows]
+    plt.figure(figsize=(14, 5))
+    plt.bar(range(len(labels)), vals)
+    plt.xticks(range(len(labels)), labels, rotation=70, ha="right")
+    plt.ylabel("Top-1 accuracy (%)")
+    plt.title("Quantization sweep on latin+punct+byte candidate set")
+    plt.tight_layout()
+    plt.savefig(fig_path, dpi=180)
+    plt.close()
+    print(f"- wrote quantization CSV: {csv_path}")
+    print(f"- wrote quantization graph: {fig_path}")
+
+
 def _train_route_scales(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -867,6 +1018,9 @@ def main() -> None:
     parser.add_argument("--latin_trim_sweep_step", type=int, default=10)
     parser.add_argument("--sweep_examples", type=int, default=2)
     parser.add_argument("--report_dir", type=str, default="latin_trim_reports")
+    parser.add_argument("--quantization_sweep", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--quant_group_size", type=int, default=32)
+    parser.add_argument("--quant_report_dir", type=str, default="quantization_reports")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -967,6 +1121,18 @@ def main() -> None:
             sweep_max_percent=args.latin_trim_sweep_max,
             sweep_step_percent=args.latin_trim_sweep_step,
             latin_trim_strategy=args.latin_trim_strategy,
+        )
+    if args.quantization_sweep:
+        _run_quantization_sweep(
+            model=model,
+            tokenizer=tokenizer,
+            base_groups=base_groups,
+            split=args.split,
+            max_samples=args.max_samples,
+            max_target_tokens=args.max_target_tokens,
+            group_size=args.quant_group_size,
+            report_dir=args.quant_report_dir,
+            device=device,
         )
     if args.chat_mode:
         _run_chat_mode(

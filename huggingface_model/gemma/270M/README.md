@@ -166,6 +166,7 @@ bash huggingface_model/gemma/270M/demo_latin_trim_sweep.sh
 The demo runs both trim strategies (`longest_bytes`, `highest_id`) and then writes a combined comparison plot:
 
 - `latin_trim_reports_combined_accuracy.png` (full LM head + both routed strategies).
+- The same demo also runs a quantization sweep (8/6/5/4/3 bits; vector/group32; symmetric/asymmetric) on the 100% latin+punct(+byte) candidate set and includes it in the combined plot.
 
 Direct CLI equivalent:
 
@@ -195,3 +196,13 @@ Trimming strategy can be selected with `--latin_trim_strategy`:
 
 - `longest_bytes` (default): trim by largest UTF-8 token byte length first.
 - `highest_id`: trim by highest token id first.
+
+Standalone quantization sweep:
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --route_mode latin_punct_only \
+  --quantization_sweep \
+  --quant_group_size 32 \
+  --quant_report_dir quantization_reports
+```
