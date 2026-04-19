@@ -1,0 +1,43 @@
+# hp_searches/quad_path_efficiency.yaml
+# Efficiency-targeted search baseline for quad-path magnitude SwiGLU.
+# Derived from efficiency_targets_demo.yaml with default_inf-style core settings,
+# using softmax infinite attention (no relu2max, no mqa).
+
+# dataset
+# keep small for quick search iterations
+dataset: "minipile"
+
+# position embeddings
+use_rotary_embeddings: true
+use_abs_pos_embeddings: false
+never_save_checkpoint: true
+
+# norm settings (default_inf-inspired)
+use_qk_norm: true
+use_qk_norm_scale: true
+use_peri_ln: true
+
+# attention settings (default_inf-inspired, minus relu2max + mqa)
+attention_variant: "infinite"
+softmax_variant_attn: "softmax"
+use_concat_heads: true
+
+# training settings
+eta_variant: "iteration"
+max_iters: 500
+eval_interval: 500
+compile: true
+batch_size: 32
+
+# model family under search
+mlp_variant: "quad_path_magnitude_swiglu"
+activation_variant: "silu"
+
+# searchable starting point
+n_layer: 1
+n_head: 2
+n_kv_group: 2
+n_embd: 128
+mlp_size: 512
+n_qk_head_dim: 64
+n_v_head_dim: 64

@@ -1,0 +1,97 @@
+# quad_path_equal_param_default_inf.yaml
+---
+
+named_static_groups:
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  # Equal-parameter family around quad_path_magnitude_swiglu mlp_size=1536.
+  # Relative projection multipliers:
+  #   mlp=2x, swiglu=3x, dual_path=3x, quad_path_magnitude_swiglu=6x.
+  # Match total MLP params by scaling hidden sizes accordingly.
+  - named_group: "mlp_equal_params"
+    mlp_variant: ["mlp"]
+    mlp_size: [4608]
+
+  - named_group: "swiglu_equal_params"
+    mlp_variant: ["swiglu"]
+    mlp_size: [3072]
+
+  - named_group: "dual_path_equal_params"
+    mlp_variant: ["dual_path"]
+    mlp_size: [3072]
+
+  - named_group: "quad_path_equal_params"
+    mlp_variant: ["quad_path_magnitude_swiglu"]
+    mlp_size: [1536]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  n_layer: [12]
+  n_head: [12]
+  n_kv_group: [12]
+  n_embd: [768]
+  n_qk_head_dim: [100]
+  n_v_head_dim: [100]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "mlp_equal_params"
+    activation_variant: ["gelu", "silu", "squared_relu"]
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "swiglu_equal_params"
+    activation_variant: ["gelu", "silu", "squared_relu"]
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "dual_path_equal_params"
+    activation_variant: ["gelu", "silu", "squared_relu"]
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "quad_path_equal_params"
+    activation_variant: ["gelu", "silu", "squared_relu"]
+
+tensorboard_run_name: ["quad_path_equal_param_default_inf_no_relu2max_no_mqa"]
