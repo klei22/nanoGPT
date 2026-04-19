@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import math
 import time
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -96,9 +97,20 @@ def _digit_token_map(tokenizer: AutoTokenizer, vocab_size: int) -> tuple[dict[st
     for idx in range(vocab_size):
         tok = tokenizer.convert_ids_to_tokens(idx)
         cleaned = tok.replace("▁", "").strip()
-        if len(cleaned) == 1 and cleaned.isdigit():
-            digit_map[cleaned].append(idx)
-            token_text[idx] = tok
+        if len(cleaned) != 1:
+            continue
+        if cleaned in digit_map:
+            digit_key = cleaned
+        else:
+            try:
+                numeric_value = unicodedata.digit(cleaned)
+                digit_key = str(int(numeric_value))
+            except (TypeError, ValueError):
+                continue
+            if digit_key not in digit_map:
+                continue
+        digit_map[digit_key].append(idx)
+        token_text[idx] = tok
     return digit_map, token_text
 
 
