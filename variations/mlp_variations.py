@@ -859,6 +859,177 @@ class DualPathSwiglu(nn.Module):
 
         return x
 
+class QuadPathMagnitudeSwiglu(nn.Module):
+    """SwiGLU-style two up projections with 4-way sign routing to separate c_proj heads."""
+    def __init__(self, config):
+        super().__init__()
+
+        self.full_quant_iteration = config.full_quant_iteration
+        self.eval_interval = config.eval_interval
+
+        self.activation_variant = activation_dictionary[config.activation_variant](config=config)
+
+        self.l2_norm_mlp_up = config.l2_norm_mlp_up
+        self.l2_norm_mlp_down = config.l2_norm_mlp_down
+        self.l2_norm_mlp_up_dim = config.l2_norm_mlp_up_dim
+        self.l2_norm_mlp_down_dim = config.l2_norm_mlp_down_dim
+
+        if config.learn_mlp_x_offset:
+            self.activation_x_offset = nn.Parameter(torch.tensor(config.mlp_x_offset))
+        else:
+            self.register_buffer("activation_x_offset", torch.tensor(config.mlp_x_offset))
+
+        if config.learn_mlp_y_offset:
+            self.activation_y_offset = nn.Parameter(torch.tensor(config.mlp_y_offset))
+        else:
+            self.register_buffer("activation_y_offset", torch.tensor(config.mlp_y_offset))
+
+        self.linear_variant_mlp_up = linear_dictionary[set_variant(config.linear_variant_mlp_up, config.linear_variant_mlp)]
+        self.linear_variant_mlp_down = linear_dictionary[set_variant(config.linear_variant_mlp_down, config.linear_variant_mlp)]
+
+        self.quantization_mlp_dict = {}
+        self.quantization_mlp_dict["activations_quant_method"] = config.activations_quant_method
+
+        for arg, val in vars(config).items():
+            if arg.startswith("quantize_") and "mlp_act" in arg and arg.endswith("_bits"):
+                self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_mlp_act_bits)
+            elif arg.startswith("quantize_") and "mlp_act" in arg:
+                self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_mlp_act)
+                if config.store_activations and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
+                    create_activation_buffers(self, arg)
+            elif arg.startswith("quantize_") and "linear_mlp" in arg and arg.endswith("_bits"):
+                self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_bits)
+            elif arg.startswith("quantize_") and "linear_mlp" in arg and arg.endswith("_method"):
+                self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_method)
+
+        mlp_expansion_size = config.mlp_size if config.mlp_size is not None else config.mlp_expansion_factor * config.n_embd
+
+        use_up_bias = config.mlp_up_bias if config.mlp_up_bias is not None else config.bias
+        use_down_bias = config.mlp_down_bias if config.mlp_down_bias is not None else config.bias
+
+        self.c_fc_in1 = self.linear_variant_mlp_up(
+            config.n_embd,
+            mlp_expansion_size,
+            config,
+            self.quantization_mlp_dict["quantize_linear_mlp_up_method"],
+            self.quantization_mlp_dict["quantize_linear_mlp_up_bits"],
+            bias=use_up_bias
+        )
+        self.c_fc_in2 = self.linear_variant_mlp_up(
+            config.n_embd,
+            mlp_expansion_size,
+            config,
+            self.quantization_mlp_dict["quantize_linear_mlp_up_method"],
+            self.quantization_mlp_dict["quantize_linear_mlp_up_bits"],
+            bias=use_up_bias
+        )
+
+        self.c_proj_pos_neg = self.linear_variant_mlp_down(
+            mlp_expansion_size,
+            config.n_embd,
+            config,
+            self.quantization_mlp_dict["quantize_linear_mlp_down_method"],
+            self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
+            bias=use_down_bias
+        )
+        self.c_proj_neg_neg = self.linear_variant_mlp_down(
+            mlp_expansion_size,
+            config.n_embd,
+            config,
+            self.quantization_mlp_dict["quantize_linear_mlp_down_method"],
+            self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
+            bias=use_down_bias
+        )
+        self.c_proj_pos_pos = self.linear_variant_mlp_down(
+            mlp_expansion_size,
+            config.n_embd,
+            config,
+            self.quantization_mlp_dict["quantize_linear_mlp_down_method"],
+            self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
+            bias=use_down_bias
+        )
+        self.c_proj_neg_pos = self.linear_variant_mlp_down(
+            mlp_expansion_size,
+            config.n_embd,
+            config,
+            self.quantization_mlp_dict["quantize_linear_mlp_down_method"],
+            self.quantization_mlp_dict["quantize_linear_mlp_down_bits"],
+            bias=use_down_bias
+        )
+
+        self.post_act_l2_norm = config.mlp_post_act_l2_norm
+        self.cproj_scale = config.mlp_cproj_scale
+        self.dropout = nn.Dropout(config.dropout)
+
+    def _up_project(self, x, layer):
+        if self.l2_norm_mlp_up:
+            up_dim = 1 if self.l2_norm_mlp_up_dim == 'embed' else 0
+            weight = F.normalize(layer.weight, p=2, dim=up_dim)
+            return F.linear(x, weight, layer.bias)
+        return layer(x)
+
+    def _down_project(self, x, layer):
+        if self.l2_norm_mlp_down:
+            down_dim = 0 if self.l2_norm_mlp_down_dim == 'embed' else 1
+            weight = F.normalize(layer.weight, p=2, dim=down_dim)
+            return F.linear(x, weight, layer.bias)
+        return layer(x)
+
+    def forward(self, x, iter_num=None):
+        if self.quantization_mlp_dict["quantize_mlp_act_input"]:
+            num_bits = self.quantization_mlp_dict["quantize_mlp_act_input_bits"]
+            quant_method = self.quantization_mlp_dict["activations_quant_method"]
+            x = fake_quantize_act(self, "mlp_act_input", x, num_bits, quant_method, iter_num)
+
+        up1 = self._up_project(x, self.c_fc_in1)
+        up2 = self._up_project(x, self.c_fc_in2)
+
+        if self.quantization_mlp_dict["quantize_mlp_act_activation_input"]:
+            num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_input_bits"]
+            quant_method = self.quantization_mlp_dict["activations_quant_method"]
+            up1 = fake_quantize_act(self, "mlp_act_activation_input", up1, num_bits, quant_method, iter_num)
+            up2 = fake_quantize_act(self, "mlp_act_activation_input", up2, num_bits, quant_method, iter_num)
+
+        swiglu_gate = self.activation_variant(up1 - self.activation_x_offset) - self.activation_y_offset
+        swiglu_out = swiglu_gate * up2
+
+        magnitude = torch.abs(swiglu_out)
+        routed = self.activation_variant(magnitude - self.activation_x_offset) - self.activation_y_offset
+
+        if self.post_act_l2_norm:
+            routed = routed / routed.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            routed = routed / self.cproj_scale
+
+        pos_up1 = up1 >= 0
+        pos_up2 = up2 >= 0
+        mask_pos_neg = (pos_up1 & ~pos_up2).to(routed.dtype)
+        mask_neg_neg = (~pos_up1 & ~pos_up2).to(routed.dtype)
+        mask_pos_pos = (pos_up1 & pos_up2).to(routed.dtype)
+        mask_neg_pos = (~pos_up1 & pos_up2).to(routed.dtype)
+
+        x = (
+            self._down_project(routed * mask_pos_neg, self.c_proj_pos_neg)
+            + self._down_project(routed * mask_neg_neg, self.c_proj_neg_neg)
+            + self._down_project(routed * mask_pos_pos, self.c_proj_pos_pos)
+            + self._down_project(routed * mask_neg_pos, self.c_proj_neg_pos)
+        )
+
+        if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
+            num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
+            quant_method = self.quantization_mlp_dict["activations_quant_method"]
+            x = fake_quantize_act(self, "mlp_act_activation_output", x, num_bits, quant_method, iter_num)
+
+        x = self.dropout(x)
+
+        if self.quantization_mlp_dict["quantize_mlp_act_output"]:
+            num_bits = self.quantization_mlp_dict["quantize_mlp_act_output_bits"]
+            quant_method = self.quantization_mlp_dict["activations_quant_method"]
+            x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
+
+        return x
+
 
 class KanMLP(nn.Module):
     def __init__(self, config):
@@ -890,7 +1061,8 @@ mlp_dictionary = {
     "identity": MLP_Identity,
     "kan": KanMLP,
     "dual_path": DualPathMLP,
-    "dual_path_swiglu": DualPathSwiglu
+    "dual_path_swiglu": DualPathSwiglu,
+    "quad_path_magnitude_swiglu": QuadPathMagnitudeSwiglu,
     }
 
 def get_mlp_instance(config):
@@ -899,4 +1071,3 @@ def get_mlp_instance(config):
     if mlp_class is None:
         raise ValueError(f"Unsupported MLP variant: {mlp_type}")
     return mlp_class(config)
-
