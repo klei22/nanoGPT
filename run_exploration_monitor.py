@@ -208,6 +208,8 @@ class MonitorApp(App):
             "zeus_avg_power_w",
             "zeus_train_step_energy_j",
             "zeus_energy_per_token_j",
+            "run_total_time_s",
+            "run_completed_at",
         ] + self.param_keys
         self.all_columns = base_cols.copy()
         self.columns = base_cols.copy()
