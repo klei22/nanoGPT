@@ -7,12 +7,33 @@ from torch.nn import functional as F
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from quantization.quantize import fake_quantize_act
-from quantization.quant_utils import set_variant, create_activation_buffers
+from quantization.quant_utils import (
+    compute_activation_kurtosis,
+    create_activation_buffers,
+    create_activation_clip_parameters,
+    set_variant,
+)
 
 
 def _maybe_print_l2_norm(name: str, weight: torch.Tensor, dim: int, enabled: bool, should_print: bool):
     if enabled and should_print:
         print(f"L2-normalizing {name} over dim {dim} (size {weight.size(dim)})")
+
+
+def _init_activation_qat_and_kurtosis(module, config):
+    module.use_activation_qat = config.activation_qat
+    module.activation_kurtosis_reg = config.activation_kurtosis_reg
+    module.activation_kurtosis_eps = config.activation_kurtosis_eps
+    module.kurtosis_loss = None
+
+
+def _maybe_update_kurtosis(module, tensor):
+    if module.activation_kurtosis_reg > 0:
+        module.kurtosis_loss = module.activation_kurtosis_reg * compute_activation_kurtosis(
+            tensor, eps=module.activation_kurtosis_eps
+        )
+    else:
+        module.kurtosis_loss = None
 
 class OriginalMLP(nn.Module):
     def __init__(self, config):
@@ -53,6 +74,7 @@ class OriginalMLP(nn.Module):
 
         self.quantization_mlp_dict = {}
         self.quantization_mlp_dict["activations_quant_method"] = config.activations_quant_method
+        _init_activation_qat_and_kurtosis(self, config)
 
         # Set quantization parameters for MLP
         for arg, val in vars(config).items():
@@ -63,6 +85,8 @@ class OriginalMLP(nn.Module):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_mlp_act)
                 if config.store_activations and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
                     create_activation_buffers(self, arg)
+                if config.activation_qat and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
+                    create_activation_clip_parameters(self, arg, config.activation_qat_clip_init)
             # Set MLP Linear Weight precision and quantization method
             elif arg.startswith("quantize_") and "linear_mlp" in arg and arg.endswith("_bits"):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_bits)
@@ -163,6 +187,7 @@ class OriginalMLP(nn.Module):
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
+        _maybe_update_kurtosis(self, x)
         return x
 
 class EdgeLLMASICMLP(nn.Module):
@@ -212,6 +237,7 @@ class EdgeLLMASICMLP(nn.Module):
 
         self.quantization_mlp_dict = {}
         self.quantization_mlp_dict["activations_quant_method"] = config.activations_quant_method
+        _init_activation_qat_and_kurtosis(self, config)
 
         # Set quantization parameters for MLP
         for arg, val in vars(config).items():
@@ -222,6 +248,8 @@ class EdgeLLMASICMLP(nn.Module):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_mlp_act)
                 if config.store_activations and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
                     create_activation_buffers(self, arg)
+                if config.activation_qat and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
+                    create_activation_clip_parameters(self, arg, config.activation_qat_clip_init)
             # Set MLP Linear Weight precision and quantization method
             elif arg.startswith("quantize_") and "linear_mlp" in arg and arg.endswith("_bits"):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_bits)
@@ -323,6 +351,7 @@ class EdgeLLMASICMLP(nn.Module):
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
+        _maybe_update_kurtosis(self, x)
         return x
 
 class DualPathMLP(nn.Module):
@@ -358,6 +387,7 @@ class DualPathMLP(nn.Module):
 
         self.quantization_mlp_dict = {}
         self.quantization_mlp_dict["activations_quant_method"] = config.activations_quant_method
+        _init_activation_qat_and_kurtosis(self, config)
 
         # Set quantization parameters for MLP
         for arg, val in vars(config).items():
@@ -368,6 +398,8 @@ class DualPathMLP(nn.Module):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_mlp_act)
                 if config.store_activations and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
                     create_activation_buffers(self, arg)
+                if config.activation_qat and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
+                    create_activation_clip_parameters(self, arg, config.activation_qat_clip_init)
             # Set MLP Linear Weight precision and quantization method
             elif arg.startswith("quantize_") and "linear_mlp" in arg and arg.endswith("_bits"):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_bits)
@@ -491,6 +523,7 @@ class DualPathMLP(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
 
+        _maybe_update_kurtosis(self, x)
         return x
 
 class Swiglu(nn.Module):
@@ -530,6 +563,7 @@ class Swiglu(nn.Module):
 
         self.quantization_mlp_dict = {}
         self.quantization_mlp_dict["activations_quant_method"] = config.activations_quant_method
+        _init_activation_qat_and_kurtosis(self, config)
 
         # Set quantization parameters for MLP
         for arg, val in vars(config).items():
@@ -540,6 +574,8 @@ class Swiglu(nn.Module):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_mlp_act)
                 if config.store_activations and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
                     create_activation_buffers(self, arg)
+                if config.activation_qat and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
+                    create_activation_clip_parameters(self, arg, config.activation_qat_clip_init)
             # Set MLP Linear Weight precision and quantization method
             elif arg.startswith("quantize_") and "linear_mlp" in arg and arg.endswith("_bits"):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_bits)
@@ -654,6 +690,7 @@ class Swiglu(nn.Module):
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_output_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
+        _maybe_update_kurtosis(self, x)
         return x
 
 class DualPathSwiglu(nn.Module):
@@ -689,6 +726,7 @@ class DualPathSwiglu(nn.Module):
 
         self.quantization_mlp_dict = {}
         self.quantization_mlp_dict["activations_quant_method"] = config.activations_quant_method
+        _init_activation_qat_and_kurtosis(self, config)
 
         # Set quantization parameters for MLP
         for arg, val in vars(config).items():
@@ -699,6 +737,8 @@ class DualPathSwiglu(nn.Module):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_mlp_act)
                 if config.store_activations and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
                     create_activation_buffers(self, arg)
+                if config.activation_qat and arg != "quantize_mlp_act" and self.quantization_mlp_dict[arg]:
+                    create_activation_clip_parameters(self, arg, config.activation_qat_clip_init)
             # Set MLP Linear Weight precision and quantization method
             elif arg.startswith("quantize_") and "linear_mlp" in arg and arg.endswith("_bits"):
                 self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_bits)
@@ -857,6 +897,7 @@ class DualPathSwiglu(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
 
+        _maybe_update_kurtosis(self, x)
         return x
 
 
@@ -899,4 +940,3 @@ def get_mlp_instance(config):
     if mlp_class is None:
         raise ValueError(f"Unsupported MLP variant: {mlp_type}")
     return mlp_class(config)
-

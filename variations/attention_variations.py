@@ -6,7 +6,12 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from quantization.quant_utils import create_activation_buffers, set_variant
+from quantization.quant_utils import (
+    compute_activation_kurtosis,
+    create_activation_buffers,
+    create_activation_clip_parameters,
+    set_variant,
+)
 from quantization.quantize import fake_quantize_act
 from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from variations.position_encoding_variations import (
@@ -49,6 +54,10 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
 
         self.attn_logit_softcapping = config.attn_logit_softcapping
+        self.use_activation_qat = config.activation_qat
+        self.activation_kurtosis_reg = config.activation_kurtosis_reg
+        self.activation_kurtosis_eps = config.activation_kurtosis_eps
+        self.kurtosis_loss = None
 
         self.full_quant_iteration = config.full_quant_iteration
         self.eval_interval = config.eval_interval
@@ -68,6 +77,8 @@ class CausalSelfAttention(nn.Module):
                 self.quantization_attn_dict[arg] = set_variant(val, config.quantize_attn_act)
                 if config.store_activations and arg != "quantize_attn_act" and self.quantization_attn_dict[arg]:
                     create_activation_buffers(self, arg)
+                if config.activation_qat and arg != "quantize_attn_act" and self.quantization_attn_dict[arg]:
+                    create_activation_clip_parameters(self, arg, config.activation_qat_clip_init)
             # Set each attention Linear precision and method
             elif arg.startswith("quantize_") and "linear_attn" in arg and arg.endswith("_bits"):
                 self.quantization_attn_dict[arg] = set_variant(val, config.quantize_linear_bits)
@@ -280,6 +291,8 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        if self.activation_kurtosis_reg > 0:
+            self.kurtosis_loss = torch.zeros((), device=x.device)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_input_bits"]
@@ -457,6 +470,11 @@ class CausalSelfAttention(nn.Module):
             num_bits = self.quantization_attn_dict["quantize_attn_act_output_bits"]
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method, iter_num)
+
+        if self.activation_kurtosis_reg > 0:
+            self.kurtosis_loss = self.activation_kurtosis_reg * compute_activation_kurtosis(
+                y, eps=self.activation_kurtosis_eps
+            )
 
         return y
 
