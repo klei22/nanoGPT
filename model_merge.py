@@ -35,6 +35,16 @@ def parse_args() -> argparse.Namespace:
         help="Directory to write the merged checkpoint (defaults to <ckpt_dir_a>_merge)",
     )
     parser.add_argument(
+        "--merge_mode",
+        type=str,
+        choices=("l2", "simple"),
+        default="l2",
+        help=(
+            "Merge mode to use. 'l2' matches the original behavior, "
+            "'simple' averages tensors."
+        ),
+    )
+    parser.add_argument(
         "--skip_final_norm_wte_lm_head",
         action="store_true",
         help="Skip the final L2 normalization for wte/lm_head weights",
@@ -83,6 +93,27 @@ def load_checkpoint(ckpt_dir: str) -> Dict[str, Any]:
     return torch.load(ckpt_path, map_location="cpu", weights_only=True)
 
 
+def merge_l2(
+    tensor_a: torch.Tensor,
+    tensor_b: torch.Tensor,
+    skip_final_norm: bool = False,
+) -> torch.Tensor:
+    norm_a = l2_normalize(tensor_a)
+    norm_b = l2_normalize(tensor_b)
+    merged = norm_a + norm_b
+    if skip_final_norm:
+        return merged
+    return l2_normalize(merged)
+
+
+def merge_simple(
+    tensor_a: torch.Tensor,
+    tensor_b: torch.Tensor,
+    divisor: float,
+) -> torch.Tensor:
+    return (tensor_a + tensor_b) / divisor
+
+
 def main() -> None:
     args = parse_args()
 
@@ -115,19 +146,25 @@ def main() -> None:
                 f"Shape mismatch for {key}: {tensor_a.shape} vs {tensor_b.shape}"
             )
 
+        merge_mode = args.merge_mode
         if args.no_l2_normalize:
-            merged = (tensor_a + tensor_b) / args.simple_divisor
-            merged_state_dict[key] = merged
+            merge_mode = "simple"
+
+        if merge_mode == "simple":
+            merged_state_dict[key] = merge_simple(
+                tensor_a,
+                tensor_b,
+                args.simple_divisor,
+            )
             continue
 
-        norm_a = l2_normalize(tensor_a)
-        norm_b = l2_normalize(tensor_b)
-        merged = norm_a + norm_b
-
-        if args.skip_final_norm_wte_lm_head and is_wte_or_lm_head(key):
-            merged_state_dict[key] = merged
-        else:
-            merged_state_dict[key] = l2_normalize(merged)
+        merged_state_dict[key] = merge_l2(
+            tensor_a,
+            tensor_b,
+            skip_final_norm=(
+                args.skip_final_norm_wte_lm_head and is_wte_or_lm_head(key)
+            ),
+        )
 
     if isinstance(checkpoint_a, dict) and "model" in checkpoint_a:
         checkpoint_a["model"] = merged_state_dict
