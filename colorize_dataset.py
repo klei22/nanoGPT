@@ -204,6 +204,8 @@ def main():
         table.add_column("target", no_wrap=True)
         table.add_column("xent", justify="right", no_wrap=True)
         table.add_column("rank", justify="right", no_wrap=True)
+        table.add_column("cos", justify="right", no_wrap=True)
+        table.add_column("angle", justify="right", no_wrap=True)
         table.add_column("p_tgt", justify="right", no_wrap=True)
         table.add_column("p_left", justify="right", no_wrap=True)
         if args.activation_view != "none":
@@ -239,6 +241,14 @@ def main():
 
         activations = {"t0": None, "attn": [], "mlp": [], "ar": [], "mr": []}
         handles = []
+        ln_f_vec: torch.Tensor | None = None
+        if args.display != "token":
+            def ln_f_hook(module, inp, out):
+                nonlocal ln_f_vec
+                ln_f_vec = out[0, -1, :].detach()
+
+            handles.append(model.transformer.ln_f.register_forward_hook(ln_f_hook))
+
         if args.display != "token" and args.activation_view != "none":
             def t0_hook(module, inp, out):
                 activations["t0"] = out[0, -1, :].detach()
@@ -387,6 +397,18 @@ def main():
             r = int((1 - rank_norm) * 255); g = int(rank_norm * 255)
             rank_text = Text(str(rank), style=f"bold #{r:02x}{g:02x}00")
 
+            ln_f_norm = F.normalize(ln_f_vec, dim=0) if ln_f_vec is not None else None
+            embed_norm = F.normalize(model.lm_head.weight[tgt_token], dim=0)
+            cos_sim = torch.dot(ln_f_norm, embed_norm).item() if ln_f_norm is not None else 0.0
+            cos_val = max(cos_sim, 0.0)
+            r = int((1 - cos_val) * 255); g = int(cos_val * 255)
+            cos_text = Text(f"{cos_sim:.4f}", style=f"bold #{r:02x}{g:02x}00")
+
+            angle = torch.rad2deg(torch.acos(torch.clamp(torch.tensor(cos_sim), -1.0, 1.0))).item()
+            ang_norm = 1 - min(abs(angle), 90) / 90
+            r = int((1 - ang_norm) * 255); g = int(ang_norm * 255)
+            angle_text = Text(f"{abs(angle):.2f}", style=f"bold #{r:02x}{g:02x}00")
+
             v = tgt_prob
             r = int((1 - v) * 255); g = int(v * 255)
             p_tgt_text = Text(f"{tgt_prob:.4f}", style=f"bold #{r:02x}{g:02x}00")
@@ -407,7 +429,15 @@ def main():
             if args.bold_target:
                 target_style = f"bold {target_style}" if target_style else "bold"
 
-            row = [Text(target_word, style=target_style), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text] + layer_texts + words
+            row = [
+                Text(target_word, style=target_style),
+                f"{ce:.4f}",
+                rank_text,
+                cos_text,
+                angle_text,
+                p_tgt_text,
+                p_left_text,
+            ] + layer_texts + words
             table.add_row(*row)
 
         # advance
