@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NanoGPT Benchmark</string>
+    <string name="hint_prompt">Enter your prompt…</string>
+    <string name="default_prompt">Once upon a time in a land far away,</string>
+    <string name="run_benchmark">Run Benchmark</string>
+</resources>
