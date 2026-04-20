@@ -211,6 +211,23 @@ class IdentityNorm(nn.Module):
         return self.identity(x)
 
 
+class UnitNorm(nn.Module):
+    """Simple L2 normalisation to unit length.
+
+    This layer is used by the normalized Transformer (nGPT) where all
+    activations and weight vectors live on the surface of the unit
+    hypersphere.  Unlike ``RMSNorm`` or ``LayerNorm`` no learnable scale or
+    bias is applied; the output merely has unit L2 norm along the last
+    dimension.
+    """
+
+    def __init__(self, config=None):  # pragma: no cover - config unused
+        super().__init__()
+
+    def forward(self, x):
+        return x / (x.norm(p=2, dim=-1, keepdim=True) + 1e-8)
+
+
 norm_dictionary = {
     "layernorm": LayerNorm,
     "rmsnorm": RMSNorm,
@@ -219,4 +236,5 @@ norm_dictionary = {
     "hyperspherenorm": HyperSphereNorm,
     "dact": DynamicActivation,
     "identity": IdentityNorm,
+    "unitnorm": UnitNorm,
 }
