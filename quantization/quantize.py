@@ -114,6 +114,22 @@ def stochastic_quantize(tensor, bits):
 
     return torch.tensor([0], device=tensor.device), norm, sign_xi_array
 
+def kurtail_quantize(tensor, bits, num_iters=100):
+    """Quantization with KurTail rotation.
+
+    This function learns an orthogonal rotation that minimizes the
+    activation kurtosis before applying symmetric quantization.  It
+    implements a lightweight approximation of the KurTail method
+    described in the paper and returns the quantized tensor along with
+    the learned rotation matrix.
+    """
+    from .kurtail import learn_kurtail_rotation
+
+    R = learn_kurtail_rotation(tensor, num_iters=num_iters)
+    rotated = tensor @ R
+    zero_point, scale, qt = symmetric_quantize(rotated, bits)
+    return zero_point, scale, qt
+
 def dequantize(zero_point, scale, tensor, causal_mask=False):
     """
     Dequantize the quantizated tensor
@@ -195,7 +211,8 @@ quantize_dictionary = {
     "ternary_quant": ternary_quantize,
     "symmetric_quant": symmetric_quantize,
     "affine_quant": affine_quantize,
-    "stochastic_quant": stochastic_quantize
+    "stochastic_quant": stochastic_quantize,
+    "kurtail_quant": kurtail_quantize
 }
 
 _fake_quantize = FakeLinearQuantizationFunction.apply
