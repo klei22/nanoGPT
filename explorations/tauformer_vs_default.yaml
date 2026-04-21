@@ -1,0 +1,26 @@
+# tauformer_vs_default.yaml
+---
+
+# Base hyper-params that stay the same for every run
+block_size: [512]
+n_layer: [12]
+n_head: [12]
+n_embd: [768]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["bfloat16"]
+max_iters: [10000]
+eval_interval: [10000]
+compile: [true]
+
+# Compare default dot-product attention vs tau distance attention
+parameter_groups:
+  - attention_variant: ["causal"]
+    attn_score_variant: ["dot"]
+
+  - attention_variant: ["tau"]
+    attn_score_variant: ["tau"]
+    tau_laplacian_init: ["identity"]
+    tau_temperature: [1.0]
+    tau_bounding_tau: [1.0]
+    tau_distance_variant: ["abs"]
