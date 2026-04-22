@@ -64,3 +64,27 @@ python huggingface_model/gemma/270M/jl_head_eval.py \
   --annotate_stats true \
   --output_dir jl_eval_outputs
 ```
+
+## Token-angle dashboard + island exports
+
+`vocab_angle_token_dashboard.py` adds an interactive Plotly dashboard for selected
+tokens and exports connected-component island files for the full vocab graph at a
+chosen angle threshold.
+
+Highlights:
+
+* `--tokens`: comma-separated tokens to inspect (e.g., digits, months, weekdays).
+* `selected_token_dashboard.html`: interactive histogram + token-id scatter of
+  selected-token angles to the rest of the vocab.
+* `selected_token_reports/*.csv`: per-selected-token nearest-angle lists.
+* `islands/*.txt`: one uniquely named file per connected island (`uuid` suffix),
+  with token id, token string, and graph degree.
+
+Demo scripts:
+
+```bash
+bash huggingface_model/gemma/270M/demo_angle_dashboard_digits.sh
+bash huggingface_model/gemma/270M/demo_angle_dashboard_months.sh
+bash huggingface_model/gemma/270M/demo_angle_dashboard_weekdays.sh
+bash huggingface_model/gemma/270M/demo_islands_20deg.sh
+```
