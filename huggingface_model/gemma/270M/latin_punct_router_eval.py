@@ -14,6 +14,10 @@ Routing modes:
 from __future__ import annotations
 
 import argparse
+import csv
+import difflib
+import json
+import os
 import re
 import unicodedata
 from collections import defaultdict
@@ -23,6 +27,7 @@ from typing import Dict, List, Sequence
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset
+import matplotlib.pyplot as plt
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -37,6 +42,9 @@ FEW_SHOT_EXAMPLES = [
     ("Where is the train station?", "¿Dónde está la estación de tren?"),
     ("I would like a glass of water.", "Me gustaría un vaso de agua."),
 ]
+ANSI_RESET = "\033[0m"
+ANSI_GEN = "\033[92m"
+ANSI_USER = "\033[96m"
 
 
 @dataclass
@@ -45,6 +53,20 @@ class EvalStats:
     top1_correct_routed: int = 0
     top1_correct_full: int = 0
     route_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+
+
+@dataclass
+class ExamplePair:
+    english: str
+    reference: str
+    full_output: str
+    routed_output: str
+
+
+@dataclass
+class QuantConfig:
+    bits: int
+    mode: str  # vector_symmetric | vector_asymmetric | group32_symmetric | group32_asymmetric
 
 
 def _normalize_rows(x: torch.Tensor) -> torch.Tensor:
@@ -88,6 +110,34 @@ def _build_token_groups(tokenizer: AutoTokenizer, vocab_size: int) -> Dict[str, 
         else:
             groups["other"].append(token_id)
     return groups
+
+
+def _trim_latin_token_ids(
+    tokenizer: AutoTokenizer,
+    latin_ids: Sequence[int],
+    trim_percent: float,
+    trim_strategy: str = "longest_bytes",
+) -> List[int]:
+    if trim_percent <= 0:
+        return list(latin_ids)
+    if trim_percent >= 100:
+        return []
+
+    trim_count = int(len(latin_ids) * (trim_percent / 100.0))
+    if trim_strategy == "longest_bytes":
+        scored = []
+        for token_id in latin_ids:
+            decoded = tokenizer.decode([token_id], skip_special_tokens=False)
+            byte_len = len(decoded.encode("utf-8"))
+            scored.append((byte_len, token_id))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        keep = [token_id for _, token_id in scored[trim_count:]]
+    elif trim_strategy == "highest_id":
+        sorted_ids = sorted(latin_ids, reverse=True)
+        keep = sorted_ids[trim_count:]
+    else:
+        raise ValueError(f"Unknown trim_strategy: {trim_strategy}")
+    return keep
 
 
 def _print_group_table(groups: Dict[str, Sequence[int]], vocab_size: int) -> None:
@@ -138,26 +188,38 @@ def _router_scores(
     return torch.matmul(hidden, mat.T)
 
 
-def _build_route_groups(base_groups: Dict[str, Sequence[int]], route_mode: str) -> Dict[str, List[int]]:
+def _build_route_groups(
+    base_groups: Dict[str, Sequence[int]],
+    route_mode: str,
+    tokenizer: AutoTokenizer | None = None,
+    latin_trim_percent: float = 0.0,
+    latin_trim_strategy: str = "longest_bytes",
+) -> Dict[str, List[int]]:
+    latin_ids = list(base_groups["latin"])
+    if latin_trim_percent > 0:
+        if tokenizer is None:
+            raise ValueError("tokenizer is required when latin_trim_percent > 0")
+        latin_ids = _trim_latin_token_ids(tokenizer, latin_ids, latin_trim_percent, latin_trim_strategy)
+
     if route_mode == "three_way":
         return {
-            "latin": list(base_groups["latin"]),
+            "latin": latin_ids,
             "punct": list(base_groups["punct"]),
             "other": list(base_groups["other"]),
         }
     if route_mode == "latin_punct_vs_other":
-        latin_punct = sorted(set(base_groups["latin"]) | set(base_groups["punct"]))
+        latin_punct = sorted(set(latin_ids) | set(base_groups["punct"]))
         return {
             "latin_punct": latin_punct,
             "other": list(base_groups["other"]),
         }
     if route_mode == "latin_vs_punct_only":
         return {
-            "latin": list(base_groups["latin"]),
+            "latin": latin_ids,
             "punct": list(base_groups["punct"]),
         }
     if route_mode == "latin_punct_only":
-        latin_punct = sorted(set(base_groups["latin"]) | set(base_groups["punct"]))
+        latin_punct = sorted(set(latin_ids) | set(base_groups["punct"]))
         return {
             "latin_punct_only": latin_punct,
         }
@@ -288,6 +350,12 @@ def _next_token_id(
     return candidate_ids[pred_local].item()
 
 
+def _highlight_generated(full_text: str, prompt: str, color: str = ANSI_GEN) -> str:
+    if full_text.startswith(prompt):
+        return f"{prompt}{color}{full_text[len(prompt):]}{ANSI_RESET}"
+    return f"{color}{full_text}{ANSI_RESET}"
+
+
 def _generate_translation(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -300,7 +368,7 @@ def _generate_translation(
     byte_fallback: bool,
     device: torch.device,
     route_scales: torch.Tensor | None = None,
-) -> str:
+) -> tuple[str, str]:
     prompt = _build_3shot_prompt(english_text)
     running = tokenizer(prompt, add_special_tokens=True, return_tensors="pt").input_ids.to(device)
 
@@ -332,8 +400,10 @@ def _generate_translation(
 
     full_text = tokenizer.decode(running[0], skip_special_tokens=True)
     if "Spanish:" in full_text:
-        return full_text.split("Spanish:", 1)[1].strip()
-    return full_text.strip()
+        generated = full_text.split("Spanish:", 1)[1].strip()
+    else:
+        generated = full_text.strip()
+    return generated, _highlight_generated(full_text, prompt)
 
 
 def _print_validation_examples(
@@ -358,7 +428,7 @@ def _print_validation_examples(
     for idx, ex in enumerate(ds.select(range(count)), start=1):
         en = ex["translation"]["en"]
         es_ref = ex["translation"]["es"]
-        pred_full = _generate_translation(
+        pred_full, pred_full_colored = _generate_translation(
             model=model,
             tokenizer=tokenizer,
             english_text=en,
@@ -371,7 +441,7 @@ def _print_validation_examples(
             device=device,
             route_scales=route_scales,
         )
-        pred_routed = _generate_translation(
+        pred_routed, pred_routed_colored = _generate_translation(
             model=model,
             tokenizer=tokenizer,
             english_text=en,
@@ -389,6 +459,448 @@ def _print_validation_examples(
         print(f"REF: {es_ref}")
         print(f"Before (full): {pred_full}")
         print(f"After  (routed): {pred_routed}")
+        print(f"Before (full, generated highlighted): {pred_full_colored}")
+        print(f"After  (routed, generated highlighted): {pred_routed_colored}")
+
+
+def _run_chat_mode(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    route_groups: Dict[str, Sequence[int]],
+    prototypes: Dict[str, torch.Tensor],
+    byte_ids: Sequence[int],
+    example_max_new_tokens: int,
+    byte_fallback: bool,
+    device: torch.device,
+    route_scales: torch.Tensor | None = None,
+) -> None:
+    print("\nChat mode: enter English text and get Spanish translations.")
+    print("Type 'exit' or 'quit' to stop.")
+    while True:
+        try:
+            user_text = input(f"\n{ANSI_USER}EN>{ANSI_RESET} ").strip()
+        except EOFError:
+            break
+        if not user_text:
+            continue
+        if user_text.lower() in {"exit", "quit"}:
+            break
+
+        pred_full, pred_full_colored = _generate_translation(
+            model=model,
+            tokenizer=tokenizer,
+            english_text=user_text,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=byte_ids,
+            max_new_tokens=example_max_new_tokens,
+            routed=False,
+            byte_fallback=byte_fallback,
+            device=device,
+            route_scales=route_scales,
+        )
+        pred_routed, pred_routed_colored = _generate_translation(
+            model=model,
+            tokenizer=tokenizer,
+            english_text=user_text,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=byte_ids,
+            max_new_tokens=example_max_new_tokens,
+            routed=True,
+            byte_fallback=byte_fallback,
+            device=device,
+            route_scales=route_scales,
+        )
+        print(f"{ANSI_USER}EN input:{ANSI_RESET} {ANSI_USER}{user_text}{ANSI_RESET}")
+        print(f"ES (full):   {pred_full}")
+        print(f"ES (routed): {pred_routed}")
+        print(f"ES (full, generated highlighted):   {pred_full_colored}")
+        print(f"ES (routed, generated highlighted): {pred_routed_colored}")
+
+
+def _collect_example_pairs(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    route_groups: Dict[str, Sequence[int]],
+    prototypes: Dict[str, torch.Tensor],
+    byte_ids: Sequence[int],
+    example_split: str,
+    num_examples: int,
+    max_new_tokens: int,
+    byte_fallback: bool,
+    device: torch.device,
+    route_scales: torch.Tensor | None = None,
+) -> List[ExamplePair]:
+    pairs: List[ExamplePair] = []
+    if num_examples <= 0:
+        return pairs
+    ds = load_dataset("Helsinki-NLP/opus-100", "en-es", split=example_split)
+    count = min(num_examples, len(ds))
+    for ex in ds.select(range(count)):
+        en = ex["translation"]["en"]
+        ref = ex["translation"]["es"]
+        pred_full, _ = _generate_translation(
+            model=model,
+            tokenizer=tokenizer,
+            english_text=en,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=byte_ids,
+            max_new_tokens=max_new_tokens,
+            routed=False,
+            byte_fallback=byte_fallback,
+            device=device,
+            route_scales=route_scales,
+        )
+        pred_routed, _ = _generate_translation(
+            model=model,
+            tokenizer=tokenizer,
+            english_text=en,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=byte_ids,
+            max_new_tokens=max_new_tokens,
+            routed=True,
+            byte_fallback=byte_fallback,
+            device=device,
+            route_scales=route_scales,
+        )
+        pairs.append(ExamplePair(english=en, reference=ref, full_output=pred_full, routed_output=pred_routed))
+    return pairs
+
+
+def _ascii_prefix_before_newline(text: str) -> str:
+    return text.split("\n", 1)[0].encode("ascii", errors="ignore").decode("ascii")
+
+
+def _ascii_diff_score(pred: str, reference: str) -> float:
+    pred_ascii = _ascii_prefix_before_newline(pred)
+    ref_ascii = _ascii_prefix_before_newline(reference)
+    if not pred_ascii and not ref_ascii:
+        return 0.0
+    return 1.0 - difflib.SequenceMatcher(a=pred_ascii, b=ref_ascii).ratio()
+
+
+def _latin_token_json_records(tokenizer: AutoTokenizer, latin_ids: Sequence[int]) -> List[dict]:
+    records = []
+    for token_id in latin_ids:
+        decoded = tokenizer.decode([token_id], skip_special_tokens=False)
+        records.append(
+            {
+                "id": int(token_id),
+                "token": decoded,
+                "length_bytes": len(decoded.encode("utf-8")),
+            }
+        )
+    records.sort(key=lambda x: x["length_bytes"], reverse=True)
+    return records
+
+
+def _run_latin_trim_sweep(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    base_groups: Dict[str, Sequence[int]],
+    route_mode: str,
+    byte_ids: Sequence[int],
+    split: str,
+    max_samples: int,
+    max_target_tokens: int,
+    example_split: str,
+    sweep_examples: int,
+    example_max_new_tokens: int,
+    byte_fallback: bool,
+    device: torch.device,
+    report_dir: str,
+    sweep_max_percent: int,
+    sweep_step_percent: int,
+    latin_trim_strategy: str,
+) -> None:
+    os.makedirs(report_dir, exist_ok=True)
+    percents = list(range(0, sweep_max_percent + 1, sweep_step_percent))
+    rows = []
+    examples_by_percent: Dict[int, List[ExamplePair]] = {}
+
+    print("\nLatin trim sweep report")
+    print(f"- percents: {percents}")
+    for pct in percents:
+        trimmed_latin_ids = _trim_latin_token_ids(
+            tokenizer, base_groups["latin"], float(pct), trim_strategy=latin_trim_strategy
+        )
+        route_groups = _build_route_groups(
+            base_groups=base_groups,
+            route_mode=route_mode,
+            tokenizer=tokenizer,
+            latin_trim_percent=float(pct),
+            latin_trim_strategy=latin_trim_strategy,
+        )
+        prototypes = _compute_group_prototypes(model.lm_head.weight.detach(), route_groups, device)
+        stats = _evaluate_router(
+            model=model,
+            tokenizer=tokenizer,
+            route_groups=route_groups,
+            byte_ids=byte_ids,
+            prototypes=prototypes,
+            split=split,
+            max_samples=max_samples,
+            max_target_tokens=max_target_tokens,
+            device=device,
+            byte_fallback=byte_fallback,
+            route_scales=None,
+        )
+        acc_routed = 100.0 * stats.top1_correct_routed / max(1, stats.total_target_tokens)
+        acc_full = 100.0 * stats.top1_correct_full / max(1, stats.total_target_tokens)
+        rows.append((pct, acc_full, acc_routed, stats.total_target_tokens, len(trimmed_latin_ids)))
+        examples_by_percent[pct] = _collect_example_pairs(
+            model=model,
+            tokenizer=tokenizer,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=byte_ids,
+            example_split=example_split,
+            num_examples=sweep_examples,
+            max_new_tokens=example_max_new_tokens,
+            byte_fallback=byte_fallback,
+            device=device,
+            route_scales=None,
+        )
+        ascii_full = []
+        ascii_routed = []
+        for ex in examples_by_percent[pct]:
+            ascii_full.append(_ascii_diff_score(ex.full_output, ex.reference))
+            ascii_routed.append(_ascii_diff_score(ex.routed_output, ex.reference))
+        avg_ascii_diff_full = sum(ascii_full) / max(1, len(ascii_full))
+        avg_ascii_diff_routed = sum(ascii_routed) / max(1, len(ascii_routed))
+        rows[-1] = (
+            rows[-1][0],
+            rows[-1][1],
+            rows[-1][2],
+            rows[-1][3],
+            rows[-1][4],
+            avg_ascii_diff_full,
+            avg_ascii_diff_routed,
+        )
+        print(f"- trim={pct}% full_acc={acc_full:.2f}% routed_acc={acc_routed:.2f}% tokens={stats.total_target_tokens}")
+        percent_path = os.path.join(report_dir, f"latin_trim_{pct:02d}.txt")
+        with open(percent_path, "w", encoding="utf-8") as pf:
+            pf.write(
+                f"trim={pct}% | full_top1={acc_full:.2f}% | routed_top1={acc_routed:.2f}% | "
+                f"eval_tokens={stats.total_target_tokens} | latin_vocab_count={len(trimmed_latin_ids)}\n"
+            )
+            pf.write(
+                f"avg_ascii_diff_before_newline_full={avg_ascii_diff_full:.4f} | "
+                f"avg_ascii_diff_before_newline_routed={avg_ascii_diff_routed:.4f}\n\n"
+            )
+            for ex in examples_by_percent[pct]:
+                pf.write(f"EN: {ex.english}\n")
+                pf.write(f"REF: {ex.reference}\n")
+                pf.write(f"ES(full): {ex.full_output}\n")
+                pf.write(f"ES(routed): {ex.routed_output}\n")
+                pf.write("\n")
+        print(f"  wrote per-percent details: {percent_path}")
+        latin_json_path = os.path.join(report_dir, f"latin_trim_{pct:02d}_latin_tokens.json")
+        latin_records = _latin_token_json_records(tokenizer, trimmed_latin_ids)
+        with open(latin_json_path, "w", encoding="utf-8") as jf:
+            json.dump(latin_records, jf, ensure_ascii=False, indent=2)
+        print(f"  wrote per-percent latin token json: {latin_json_path}")
+
+    csv_path = os.path.join(report_dir, "latin_trim_sweep.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "latin_trim_percent",
+                "top1_full_percent",
+                "top1_routed_percent",
+                "eval_tokens",
+                "latin_vocab_count",
+                "avg_ascii_diff_before_newline_full",
+                "avg_ascii_diff_before_newline_routed",
+            ]
+        )
+        writer.writerows(rows)
+
+    fig_path = os.path.join(report_dir, "latin_trim_sweep_accuracy.png")
+    x = [r[0] for r in rows]
+    y_full = [r[1] for r in rows]
+    y_routed = [r[2] for r in rows]
+    plt.figure(figsize=(8, 5))
+    plt.plot(x, y_full, marker="o", label="Full LM head")
+    plt.plot(x, y_routed, marker="o", label="Routed")
+    plt.xlabel("Latin trim percent (longest UTF-8 tokens removed)")
+    plt.ylabel("Top-1 accuracy (%)")
+    plt.title("Latin trim sweep: top-1 accuracy")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(fig_path, dpi=180)
+    plt.close()
+
+    report_path = os.path.join(report_dir, "latin_trim_sweep_report.txt")
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("Latin trim sweep final report\n")
+        f.write("============================\n\n")
+        for pct, acc_full, acc_routed, tok_count, latin_count, ascii_full, ascii_routed in rows:
+            f.write(
+                f"trim={pct}% | full_top1={acc_full:.2f}% | routed_top1={acc_routed:.2f}% | "
+                f"eval_tokens={tok_count} | latin_vocab_count={latin_count} | "
+                f"ascii_diff_full={ascii_full:.4f} | ascii_diff_routed={ascii_routed:.4f}\n"
+            )
+            for ex in examples_by_percent[pct]:
+                f.write(f"  EN: {ex.english}\n")
+                f.write(f"  REF: {ex.reference}\n")
+                f.write(f"  ES(full): {ex.full_output}\n")
+                f.write(f"  ES(routed): {ex.routed_output}\n")
+            f.write("\n")
+
+    print(f"- wrote CSV: {csv_path}")
+    print(f"- wrote graph: {fig_path}")
+    print(f"- wrote report: {report_path}")
+
+
+def _quantize_tensor(x: torch.Tensor, bits: int, symmetric: bool) -> torch.Tensor:
+    qmin = 0
+    qmax = (1 << bits) - 1
+    if symmetric:
+        max_abs = x.abs().amax(dim=-1, keepdim=True).clamp_min(1e-8)
+        scale = max_abs / float((1 << (bits - 1)) - 1)
+        q = torch.round(x / scale).clamp(-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
+        return q * scale
+
+    xmin = x.amin(dim=-1, keepdim=True)
+    xmax = x.amax(dim=-1, keepdim=True)
+    scale = ((xmax - xmin) / float(qmax - qmin)).clamp_min(1e-8)
+    zero_point = torch.round(qmin - xmin / scale).clamp(qmin, qmax)
+    q = torch.round(x / scale + zero_point).clamp(qmin, qmax)
+    return (q - zero_point) * scale
+
+
+def _quantize_weights(weight: torch.Tensor, cfg: QuantConfig, group_size: int) -> torch.Tensor:
+    mode = cfg.mode
+    if mode == "vector_symmetric":
+        return _quantize_tensor(weight, cfg.bits, symmetric=True)
+    if mode == "vector_asymmetric":
+        return _quantize_tensor(weight, cfg.bits, symmetric=False)
+    if mode in {"group32_symmetric", "group32_asymmetric"}:
+        symmetric = mode.endswith("symmetric")
+        chunks = []
+        for start in range(0, weight.size(1), group_size):
+            chunk = weight[:, start : start + group_size]
+            chunks.append(_quantize_tensor(chunk, cfg.bits, symmetric=symmetric))
+        return torch.cat(chunks, dim=-1)
+    raise ValueError(f"Unknown quantization mode: {mode}")
+
+
+def _evaluate_candidate_weight_top1(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    candidate_ids: torch.Tensor,
+    candidate_weight_normalized: torch.Tensor,
+    split: str,
+    max_samples: int,
+    max_target_tokens: int,
+    device: torch.device,
+) -> float:
+    ds = load_dataset("Helsinki-NLP/opus-100", "en-es", split=split)
+    correct = 0
+    total = 0
+    for ex in ds.select(range(min(max_samples, len(ds)))):
+        en = ex["translation"]["en"]
+        es = ex["translation"]["es"]
+        prompt = _build_3shot_prompt(en)
+        running = tokenizer(prompt, add_special_tokens=True, return_tensors="pt").input_ids.to(device)
+        target_ids = tokenizer(es, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
+        if target_ids.numel() == 0:
+            continue
+        steps = min(max_target_tokens, target_ids.size(1))
+        for idx in range(steps):
+            with torch.no_grad():
+                out = model(running, output_hidden_states=True, use_cache=False)
+            hidden_last = torch.nn.functional.normalize(out.hidden_states[-1][:, -1, :], dim=-1)
+            logits = torch.matmul(hidden_last, candidate_weight_normalized.T)
+            pred_local = torch.argmax(logits, dim=-1)
+            pred_id = candidate_ids[pred_local].item()
+            gold_id = target_ids[0, idx].item()
+            if pred_id == gold_id:
+                correct += 1
+            total += 1
+            running = torch.cat([running, target_ids[:, idx : idx + 1]], dim=1)
+    return 100.0 * correct / max(1, total)
+
+
+def _run_quantization_sweep(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    base_groups: Dict[str, Sequence[int]],
+    split: str,
+    max_samples: int,
+    max_target_tokens: int,
+    group_size: int,
+    report_dir: str,
+    device: torch.device,
+) -> None:
+    os.makedirs(report_dir, exist_ok=True)
+    candidate_list = sorted(set(base_groups["latin"]) | set(base_groups["punct"]) | set(base_groups["byte"]))
+    candidate_ids = torch.tensor(candidate_list, dtype=torch.long, device=device)
+    base_weight = model.lm_head.weight.detach().to(device)
+    base_candidate_weight = base_weight.index_select(0, candidate_ids)
+
+    configs = [
+        QuantConfig(bits=b, mode=m)
+        for b in [8, 6, 5, 4, 3]
+        for m in ["vector_symmetric", "vector_asymmetric", "group32_symmetric", "group32_asymmetric"]
+    ]
+
+    rows = []
+    fp_weight_norm = torch.nn.functional.normalize(base_candidate_weight, dim=-1)
+    fp_acc = _evaluate_candidate_weight_top1(
+        model=model,
+        tokenizer=tokenizer,
+        candidate_ids=candidate_ids,
+        candidate_weight_normalized=fp_weight_norm,
+        split=split,
+        max_samples=max_samples,
+        max_target_tokens=max_target_tokens,
+        device=device,
+    )
+    rows.append(("none", "none", 0, fp_acc))
+    print(f"\nQuantization sweep (latin+punct+byte candidate set): baseline={fp_acc:.2f}%")
+
+    for cfg in configs:
+        quant_w = _quantize_weights(base_candidate_weight, cfg, group_size=group_size)
+        quant_w_norm = torch.nn.functional.normalize(quant_w, dim=-1)
+        acc = _evaluate_candidate_weight_top1(
+            model=model,
+            tokenizer=tokenizer,
+            candidate_ids=candidate_ids,
+            candidate_weight_normalized=quant_w_norm,
+            split=split,
+            max_samples=max_samples,
+            max_target_tokens=max_target_tokens,
+            device=device,
+        )
+        rows.append((cfg.mode, "group32" if cfg.mode.startswith("group32") else "vector", cfg.bits, acc))
+        print(f"- {cfg.mode} @ {cfg.bits}-bit: {acc:.2f}%")
+
+    csv_path = os.path.join(report_dir, "quantization_sweep.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["mode", "granularity", "bits", "top1_percent"])
+        writer.writerows(rows)
+
+    fig_path = os.path.join(report_dir, "quantization_sweep_accuracy.png")
+    labels = [f"{m}-{b}" if b > 0 else "baseline" for m, _, b, _ in rows]
+    vals = [acc for _, _, _, acc in rows]
+    plt.figure(figsize=(14, 5))
+    plt.bar(range(len(labels)), vals)
+    plt.xticks(range(len(labels)), labels, rotation=70, ha="right")
+    plt.ylabel("Top-1 accuracy (%)")
+    plt.title("Quantization sweep on latin+punct+byte candidate set")
+    plt.tight_layout()
+    plt.savefig(fig_path, dpi=180)
+    plt.close()
+    print(f"- wrote quantization CSV: {csv_path}")
+    print(f"- wrote quantization graph: {fig_path}")
 
 
 def _train_route_scales(
@@ -486,12 +998,29 @@ def main() -> None:
     parser.add_argument("--example_split", type=str, default="validation[:20]")
     parser.add_argument("--num_examples", type=int, default=3)
     parser.add_argument("--example_max_new_tokens", type=int, default=64)
+    parser.add_argument("--chat_mode", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--train_route_scales", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--train_split", type=str, default="train[:1%]")
     parser.add_argument("--train_max_samples", type=int, default=100)
     parser.add_argument("--train_max_target_tokens", type=int, default=64)
     parser.add_argument("--train_epochs", type=int, default=1)
     parser.add_argument("--train_lr", type=float, default=1e-2)
+    parser.add_argument("--latin_trim_percent", type=float, default=0.0)
+    parser.add_argument(
+        "--latin_trim_strategy",
+        type=str,
+        default="longest_bytes",
+        choices=["longest_bytes", "highest_id"],
+        help="Trim latin tokens by descending UTF-8 byte length or descending token id.",
+    )
+    parser.add_argument("--latin_trim_sweep", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--latin_trim_sweep_max", type=int, default=80)
+    parser.add_argument("--latin_trim_sweep_step", type=int, default=10)
+    parser.add_argument("--sweep_examples", type=int, default=2)
+    parser.add_argument("--report_dir", type=str, default="latin_trim_reports")
+    parser.add_argument("--quantization_sweep", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--quant_group_size", type=int, default=32)
+    parser.add_argument("--quant_report_dir", type=str, default="quantization_reports")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -505,7 +1034,13 @@ def main() -> None:
     base_groups = _build_token_groups(tokenizer, vocab_size)
     _print_group_table(base_groups, vocab_size)
 
-    route_groups = _build_route_groups(base_groups, args.route_mode)
+    route_groups = _build_route_groups(
+        base_groups=base_groups,
+        route_mode=args.route_mode,
+        tokenizer=tokenizer,
+        latin_trim_percent=args.latin_trim_percent,
+        latin_trim_strategy=args.latin_trim_strategy,
+    )
     prototypes = _compute_group_prototypes(model.lm_head.weight.detach(), route_groups, device)
     learned_scales = None
     if args.train_route_scales:
@@ -567,6 +1102,50 @@ def main() -> None:
         device=device,
         route_scales=learned_scales,
     )
+    if args.latin_trim_sweep:
+        _run_latin_trim_sweep(
+            model=model,
+            tokenizer=tokenizer,
+            base_groups=base_groups,
+            route_mode=args.route_mode,
+            byte_ids=base_groups["byte"],
+            split=args.split,
+            max_samples=args.max_samples,
+            max_target_tokens=args.max_target_tokens,
+            example_split=args.example_split,
+            sweep_examples=args.sweep_examples,
+            example_max_new_tokens=args.example_max_new_tokens,
+            byte_fallback=args.byte_fallback,
+            device=device,
+            report_dir=args.report_dir,
+            sweep_max_percent=args.latin_trim_sweep_max,
+            sweep_step_percent=args.latin_trim_sweep_step,
+            latin_trim_strategy=args.latin_trim_strategy,
+        )
+    if args.quantization_sweep:
+        _run_quantization_sweep(
+            model=model,
+            tokenizer=tokenizer,
+            base_groups=base_groups,
+            split=args.split,
+            max_samples=args.max_samples,
+            max_target_tokens=args.max_target_tokens,
+            group_size=args.quant_group_size,
+            report_dir=args.quant_report_dir,
+            device=device,
+        )
+    if args.chat_mode:
+        _run_chat_mode(
+            model=model,
+            tokenizer=tokenizer,
+            route_groups=route_groups,
+            prototypes=prototypes,
+            byte_ids=base_groups["byte"],
+            example_max_new_tokens=args.example_max_new_tokens,
+            byte_fallback=args.byte_fallback,
+            device=device,
+            route_scales=learned_scales,
+        )
 
 
 if __name__ == "__main__":
