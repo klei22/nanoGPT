@@ -1,0 +1,92 @@
+# hyperbolic_vs_baseline_default_inf.yaml
+# Based on explorations/default_inf.yaml:
+# - both arms use softmax attention
+# - both arms use n_head=3 and n_kv_group=3
+# - only difference is LM-head manifold (hyperbolic vs euclidean)
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Attention type
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  # Head dimensions (from default_inf)
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+
+  - named_group: "hd_150"
+    n_qk_head_dim: [150]
+    n_v_head_dim: [150]
+
+  - named_group: "hd_200"
+    n_qk_head_dim: [200]
+    n_v_head_dim: [200]
+
+  # Attention softmax variant (shared by both arms)
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  # Fixed head and KV grouping for both comparison arms
+  - named_group: "h3_kv3"
+    n_head: [3]
+    n_kv_group: [3]
+
+  # LM-head manifolds
+  - named_group: "lm_head_hyperbolic"
+    lm_head_manifold: ["hyperbolic"]
+    hyperbolic_curvature: [1.0]
+    hyperbolic_logit_scale: [1.0]
+
+  - named_group: "lm_head_euclidean"
+    lm_head_manifold: ["euclidean"]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  tensorboard_run_name: ["hyperbolic_vs_baseline_default_inf"]
+
+parameter_groups:
+  # Hyperbolic arm
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "softmax"
+      - "h3_kv3"
+      - "lm_head_hyperbolic"
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+
+  # Regular (Euclidean) arm
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "h3_kv3"
+      - "lm_head_euclidean"
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
