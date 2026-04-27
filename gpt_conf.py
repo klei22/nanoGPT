@@ -101,6 +101,9 @@ class GPTConfig:
     # Softcapping params
     attn_logit_softcapping: float | None = None
     final_logit_softcapping: float | None = None
+    lm_head_geometry: str = "euclidean"  # euclidean | hyperspherical | hyperbolic
+    lm_head_logit_scale: float = 1.0
+    lm_head_hyperbolic_c: float = 1.0
 
     # Final ln_f input mixing
     use_ln_f_input_mixer: bool = False
