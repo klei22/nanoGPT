@@ -18,10 +18,7 @@ named_static_groups:
     use_rotary_embeddings: [true]
     use_abs_pos_embeddings: [false]
 
-  # Attention Softmax variants
-  - named_group: "relu2max"
-    softmax_variant_attn: ["relu2max"]
-
+  # Attention Softmax
   - named_group: "softmax"
     softmax_variant_attn: ["softmax"]
 
@@ -74,7 +71,7 @@ parameter_groups:
       - "qk_norm"
       - "peri_ln"
       - "rotary"
-      - "relu2max"
+      - "softmax"
       - "infinite"
       - "mqa"
     n_head:
