@@ -150,6 +150,8 @@ class GPT(nn.Module):
             self.transformer['post_embedding_norm'] = self.build_norm_from_variant(config, "norm_variant_wte", "norm_wte")
         if self.config.norm_variant_abs is not None:
             self.transformer['post_abs_norm'] = self.build_norm_from_variant(config, "norm_variant_abs", "norm_abs")
+        if self.config.norm_variant_lm_head is not None:
+            self.transformer['lm_head_norm'] = self.build_norm_from_variant(config, "norm_variant_lm_head", "norm_lm_head")
 
         if self.config.use_abs_pos_embeddings:
             self.transformer['wpe'] = absolute_position_embedding_dict[config.absolute_pos_embedding_variant](config)
@@ -244,6 +246,15 @@ class GPT(nn.Module):
             if getattr(norm_config, src, None) is not None:
                 setattr(norm_config, f"hsnorm_{attr}", getattr(norm_config, src))
         return norm_dictionary[getattr(config, variant_key)](norm_config)
+
+    def apply_lm_head_norm(self, lm_head_weight):
+        if self.config.norm_variant_lm_head is None:
+            return lm_head_weight
+        return self.transformer.lm_head_norm(lm_head_weight)
+
+    def compute_lm_head_logits(self, x, lm_head_module):
+        weight = self.apply_lm_head_norm(lm_head_module.weight)
+        return F.linear(x, weight, lm_head_module.bias)
 
     def _init_weights(self, module):
         """
@@ -500,7 +511,7 @@ class GPT(nn.Module):
                     logits = [pred[:, [-1], :] for pred in logits]
                     losses = None
             else:
-                logits = [self.transformer[f'lm_head_{i}'](x) for i in range(len(token_list))]
+                logits = [self.compute_lm_head_logits(x, self.transformer[f'lm_head_{i}']) for i in range(len(token_list))]
 
                 # Soft‑cap **each** logits tensor (training & inference)
                 if self.config.final_logit_softcapping is not None:
@@ -606,9 +617,9 @@ class GPT(nn.Module):
             if targets is not None:
                 # if we are given some desired targets also calculate the loss
                 if self.config.multidataset_wte and dataset_idx is not None:
-                    logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+                    logits = self.compute_lm_head_logits(x, self.transformer[f'lm_head_{dataset_idx}'])
                 else:
-                    logits = self.lm_head(x)
+                    logits = self.compute_lm_head_logits(x, self.lm_head)
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -622,9 +633,9 @@ class GPT(nn.Module):
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
                 if self.config.multidataset_wte and dataset_idx is not None:
-                    logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
+                    logits = self.compute_lm_head_logits(x[:, [-1], :], self.transformer[f'lm_head_{dataset_idx}'])
                 else:
-                    logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+                    logits = self.compute_lm_head_logits(x[:, [-1], :], self.lm_head) # note: using list [-1] to preserve the time dim
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -707,9 +718,9 @@ class GPT(nn.Module):
             x = F.linear(x, self.transformer.scale_down.weight.t())
 
         if self.config.multidataset_wte and dataset_idx is not None:
-            logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+            logits = self.compute_lm_head_logits(x, self.transformer[f'lm_head_{dataset_idx}'])
         else:
-            logits = self.lm_head(x)
+            logits = self.compute_lm_head_logits(x, self.lm_head)
         if self.final_logit_softcapping is not None:
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping
