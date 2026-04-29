@@ -86,8 +86,8 @@ def parse_args():
     # Visualizations
     parser.add_argument('--show_heatmaps', default=False, action=argparse.BooleanOptionalAction, help="Show heatmaps of top-k choices for each token")
     parser.add_argument('--show_minmax_chart', default=False, action=argparse.BooleanOptionalAction, help="Output a line chart of the chosen-token logits used for minmax colorization")
-    parser.add_argument('--sampling_activation', type=str, default='softmax', choices=['softmax', 'relu2'],
-                        help='Activation used to convert logits to sampling probabilities.')
+    parser.add_argument('--sampling_activation', type=str, default='auto', choices=['auto', 'softmax', 'relu2'],
+                        help='Activation used to convert logits to sampling probabilities. auto uses checkpoint softmax_variant_output when available.')
     parser.add_argument(
         '--softmax_threshold',
         type=float,
@@ -213,6 +213,16 @@ def compute_sampling_probs(logits: torch.Tensor, activation: str = "softmax") ->
     return F.softmax(logits, dim=-1)
 
 
+
+
+def resolve_sampling_activation(requested: str, model) -> str:
+    """Resolve sampling activation using CLI choice and model config."""
+    if requested != "auto":
+        return requested
+    variant = getattr(model.config, "softmax_variant_output", "softmax")
+    if variant == "relu2max":
+        return "relu2"
+    return "softmax"
 def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
     """
@@ -1420,6 +1430,9 @@ def main():
     if args.init_from == 'resume' and args.multicontext is None:
         args.multicontext = bool(getattr(model.config, "multicontext", False))
 
+    args.sampling_activation = resolve_sampling_activation(args.sampling_activation, model)
+    print(f"Sampling activation: {args.sampling_activation}")
+
     if (
         args.init_from == 'resume'
         and args.multicontext
@@ -1696,7 +1709,7 @@ def main():
                                 v, _ = torch.topk(cur_logits, k)
                                 cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
 
-                            probs = F.softmax(cur_logits, dim=-1)
+                            probs = compute_sampling_probs(cur_logits, args.sampling_activation)
                             idx_next = torch.multinomial(probs, num_samples=1)
 
                         token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
