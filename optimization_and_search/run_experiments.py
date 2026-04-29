@@ -1,7 +1,8 @@
 import json
 import subprocess
+import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import product
 import argparse
 import os
@@ -753,15 +754,14 @@ def run_experiment(
     # Build and run
     cmd = build_command(combo)
     print(f"Running: {' '.join(cmd)}")
-    run_started_at = datetime.now()
+    run_started_at = time.perf_counter()
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
         print(f"[red]Process exited with error for run:[/] {run_name}")
-    run_finished_at = datetime.now()
-    run_total_time_s = (run_finished_at - run_started_at).total_seconds()
-    run_completed_at = run_finished_at.strftime("%Y-%m-%d %H:%M:%S")
-
+    run_total_time_s = time.perf_counter() - run_started_at
+    run_completed_at = datetime.now(timezone.utc).isoformat()
+    
     # Read metrics (use existing or nan on failure)
     try:
         metrics = read_metrics(str(combo['out_dir']))
@@ -789,7 +789,7 @@ def main():
         all_combos.extend(list(generate_combinations(cfg)))
 
     total = len(all_combos)
-    start_time = datetime.now()
+    start_time_monotonic = time.perf_counter()
     progress_log = LOG_DIR / f"{base}_progress.log"
     for idx, (combo, common_keys) in enumerate(all_combos, 1):
         configs_left = total - idx + 1
@@ -802,13 +802,12 @@ def main():
             print(f"[green]{message}[/]")
             append_progress(progress_log, message)
         else:
-            now = datetime.now()
-            elapsed = (now - start_time).total_seconds()
+            elapsed = time.perf_counter() - start_time_monotonic
             avg = elapsed / (idx - 1)
             eta_seconds = int(avg * configs_left)
             eta = timedelta(seconds=eta_seconds)
-            finish_time = now + timedelta(seconds=eta_seconds)
-            finish_formatted = finish_time.strftime("%Y-%m-%d %H:%M:%S")
+            finish_time = datetime.now(timezone.utc) + timedelta(seconds=eta_seconds)
+            finish_formatted = finish_time.strftime("%Y-%m-%d %H:%M:%S UTC")
             message = (
                 "Starting config "
                 f"{idx}/{total} ({configs_left} configs left). "
