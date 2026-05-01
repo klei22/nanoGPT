@@ -102,6 +102,11 @@ class GPTConfig:
     attn_logit_softcapping: float | None = None
     final_logit_softcapping: float | None = None
 
+    # LM head variants
+    lm_head_variant: str = "linear"
+    lm_head_cluster_size: int = 256
+    lm_head_inference_top_clusters: int = 1
+
     # Final ln_f input mixing
     use_ln_f_input_mixer: bool = False
     ln_f_input_mixer_variant: str = "linear"
