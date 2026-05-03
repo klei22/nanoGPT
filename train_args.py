@@ -940,6 +940,13 @@ def parse_args():
     model_group.add_argument("--attention_variant_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--use_rotary_embeddings_layerlist", nargs='+', action=LayerListAction, default=None, help="Override use_rotary_embeddings per layer, cycling through the list.")
     model_group.add_argument("--window_size_layerlist", nargs='+', action=LayerListAction, default=None, help="Override window_size per layer, cycling through the list.")
+    model_group.add_argument("--block_module_order_layerlist", nargs='+', action=LayerListAction, default=None, help="Override custom block module order per layer/group, e.g. attention,linear,mlp")
+    model_group.add_argument("--block_single_residual_layerlist", nargs='+', action=LayerListAction, default=None, help="Override custom block single-residual mode per layer/group.")
+
+    # Custom module block composition
+    model_group.add_argument("--use_custom_module_block", type=bool, default=False, action=argparse.BooleanOptionalAction, help="Enable custom ordered module assembly inside each block.")
+    model_group.add_argument("--block_module_order", type=str, default="attention,mlp", help="Comma-separated module order from: attention, mlp, linear, router_linear.")
+    model_group.add_argument("--block_single_residual", type=bool, default=False, action=argparse.BooleanOptionalAction, help="Use one block-level residual (input->output) instead of per-module residuals.")
 
     ## Infinite Attention variation
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
