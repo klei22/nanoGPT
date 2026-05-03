@@ -79,7 +79,8 @@ class ClusteredLMHead(nn.Module):
         top_clusters = coarse.topk(top_k, dim=-1).indices
         mask = self.cluster_ids.to(flat.device).unsqueeze(0) == top_clusters.unsqueeze(-1)
         token_mask = mask.any(dim=1)
-        logits = flat.new_full((flat.size(0), self.vocab_size), float('-inf'))
+        neg_inf = torch.finfo(flat.dtype).min
+        logits = flat.new_full((flat.size(0), self.vocab_size), neg_inf)
         for row in range(flat.size(0)):
             active = token_mask[row]
             scores = flat[row] @ self.token_embeddings[active].t()
