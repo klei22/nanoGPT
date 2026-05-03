@@ -86,7 +86,7 @@ class ClusteredLMHead(nn.Module):
             scores = flat[row] @ self.token_embeddings[active].t()
             if self.bias is not None:
                 scores = scores + self.bias[active]
-            logits[row, active] = scores
+            logits[row, active] = scores.to(dtype=logits.dtype)
         return logits.view(*x.shape[:-1], self.vocab_size)
 
 class GPT(nn.Module):
