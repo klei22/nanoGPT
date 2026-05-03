@@ -1024,6 +1024,11 @@ class InfiniteHeadAttention(nn.Module):
         # Concat Heads
         self.use_concat_heads = config.use_concat_heads
         self.n_cproj         = config.n_cproj
+        if self.n_cproj is None:
+            # Default to one projection per attention head when no explicit
+            # c_proj count is provided.
+            self.n_cproj = self.n_head
+
 
         # QK Norm
         self.use_qk_norm        = config.use_qk_norm
