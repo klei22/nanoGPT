@@ -1,42 +1,40 @@
 # Example derived from default_inf.yaml style, without relu2max.
----
-configs:
-  - name: "custom_block_layerlist_demo"
-    dataset: "minipile"
-    max_iters: 10000
-    eval_interval: 2500
-    compile: true
-    never_save_checkpoint: true
+- name: "custom_block_layerlist_demo"
+  dataset: "minipile"
+  max_iters: 10000
+  eval_interval: 2500
+  compile: true
+  never_save_checkpoint: true
 
-    # Keep the same baseline style as default_inf (infinite + softmax + rotary)
-    attention_variant: "infinite"
-    softmax_variant_attn: "softmax"
-    use_qk_norm: true
-    use_qk_norm_scale: true
-    use_pre_ln: true
-    use_peri_ln: true
-    use_post_ln: false
-    use_rotary_embeddings: true
-    use_abs_pos_embeddings: false
-    n_kv_group: 1
+  # Keep the same baseline style as default_inf (infinite + softmax + rotary)
+  attention_variant: "infinite"
+  softmax_variant_attn: "softmax"
+  use_qk_norm: true
+  use_qk_norm_scale: true
+  use_pre_ln: true
+  use_peri_ln: true
+  use_post_ln: false
+  use_rotary_embeddings: true
+  use_abs_pos_embeddings: false
+  n_kv_group: 1
 
-    # Enable new custom block assembly.
-    use_custom_module_block: true
+  # Enable new custom block assembly.
+  use_custom_module_block: true
 
-    # Per-block overrides (cycled if shorter than n_layer):
-    # block 0: attention -> mlp
-    # block 1: attention -> linear -> mlp
-    # block 2: attention -> router_linear -> mlp -> linear
-    block_module_order_layerlist:
-      - "attention,mlp"
-      - "attention,linear,mlp"
-      - "attention,router_linear,mlp,linear"
+  # Per-block overrides (cycled if shorter than n_layer):
+  # block 0: attention -> mlp
+  # block 1: attention -> linear -> mlp
+  # block 2: attention -> router_linear -> mlp -> linear
+  block_module_order_layerlist:
+    - "attention,mlp"
+    - "attention,linear,mlp"
+    - "attention,router_linear,mlp,linear"
 
-    # false => skip after each module, true => one skip from block input to block output
-    block_single_residual_layerlist: [false, true, false]
+  # false => skip after each module, true => one skip from block input to block output
+  block_single_residual_layerlist: [false, true, false]
 
-    # Optional normal layer lists can still be mixed in freely
-    n_head_layerlist: [4, 8, 12]
-    n_qk_head_dim_layerlist: [100, 150, 200]
-    n_v_head_dim_layerlist: [100, 150, 200]
-    mlp_size_layerlist: [768, 1024, 1536]
+  # Optional normal layer lists can still be mixed in freely
+  n_head_layerlist: [4, 8, 12]
+  n_qk_head_dim_layerlist: [100, 150, 200]
+  n_v_head_dim_layerlist: [100, 150, 200]
+  mlp_size_layerlist: [768, 1024, 1536]

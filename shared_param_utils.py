@@ -45,7 +45,119 @@ class SharedParamGroupCreator:
         if config.shared_fire_embeddings:
             self.fire_pos_enc = FIRE(config, num_heads=config.n_head)
 
+    def create_shared_param_group(self, layer_type):
+        """
+        Creates a shared list of layer blocks (either MLP or Attn), optionally
+        reusing blocks every 'shared_size' layers and reflecting them symmetrically
+        if 'shared_sym' is True.
 
+        For attention layers, we can cycle through multiple attention variants
+        if config.attention_list is not empty.
+
+        Args:
+            layer_type (str): "mlp" or "attn"
+
+        Returns:
+            list of layer_blocks
+        """
+
+        if layer_type == "mlp":
+            shared_size = self.config.shared_mlp_size
+            shared_sym  = self.config.shared_mlp_sym
+            seq_len     = self.config.shared_mlp_seq
+
+        elif layer_type == "attn":
+            shared_size = self.config.shared_attn_size
+            shared_sym = self.config.shared_attn_sym
+            seq_len     = self.config.shared_attn_seq
+        else:
+            sys.exit(f"{layer_type} not supported. Use 'mlp' or 'attn' only.")
+
+        shared_group = []
+        layer_block = None
+
+        # For cycling multiple attention variants
+        attn_variant_index = 0
+
+        # ────────────────────────────────
+        # Cyclic-sequence sharing pool
+        # ────────────────────────────────
+        if seq_len < 1:
+            raise ValueError("shared_*_seq must be ≥ 1")
+        seq_pool: list[nn.Module | None] = [None] * seq_len
+
+        # If we'll mirror, build only the *first half plus centre* for odd n.
+        if shared_sym:
+            num_physical = (self.config.n_layer + 1) // 2   # ceil(n/2)
+        else:
+            num_physical = self.config.n_layer
+
+        for i in range(num_physical):
+            # ------------------------------------------------------------------
+            # Build a per-layer clone of the config and apply any *layerlist
+            # overrides.  Example:  --mlp_size_layerlist 100 200 300
+            # → layer 0→100, 1→200, 2→300, 3→100, 4→200, ...
+            # ------------------------------------------------------------------
+            group_idx = i // shared_size
+            layer_config = apply_layerlists_to_config(self.config, layer_idx=i, group_idx=group_idx)
+
+            # Decide which sharing mode we are in
+            if seq_len > 1:
+                # ---------------------------------------------
+                # combined: sequence + size
+                # group_idx  = i // size      ← which full block we’re in
+                # seq_idx    = group_idx % k  ← which letter A/B/C…
+                # ---------------------------------------------
+                seq_idx  = (i // shared_size) % seq_len if shared_size > 1 else i % seq_len
+                layer_block = seq_pool[seq_idx]
+                if layer_block is None:
+                    layer_block = _build_block(layer_type, layer_config, self.fire_pos_enc)
+
+                    seq_pool[seq_idx] = layer_block
+            else:
+                # create a new block only every k layers,
+                # otherwise keep re-using the last one
+                if i % shared_size == 0 or layer_block is None:
+                    layer_block = _build_block(layer_type, layer_config, self.fire_pos_enc)
+
+            # Add this (possibly reused) block for *every* logical layer
+            shared_group.append(layer_block)
+
+        # ────────────────────────────────
+        # Optional symmetry mirroring
+        # ────────────────────────────────
+        if shared_sym:
+            # exclude centre element for odd n to avoid duplication
+            mirror = list(reversed(shared_group[:-1])) if self.config.n_layer % 2 else list(reversed(shared_group))
+            shared_group.extend(mirror)
+
+        # ── pretty debug print ──────────────────────────────
+        letters = _label_sequence(shared_group)
+        if layer_type == "mlp":
+            mlp_sizes = [getattr(blk, "_debug_size", "?") for blk in shared_group]
+
+        tbl = Table(
+            title=f"{layer_type.upper()} sharing",
+            header_style="bold magenta",
+            show_lines=False,
+            pad_edge=False,
+        )
+        tbl.add_column("Layer")
+        tbl.add_column("Type")
+        if layer_type == "mlp":
+            tbl.add_column("mlp_size")
+
+        for i, letter in enumerate(letters):
+            row_letter = Text(letter, style="cyan" if layer_type == "mlp" else "green")
+            if layer_type == "mlp":
+                size_cell = Text(str(mlp_sizes[i]), style="yellow")
+                tbl.add_row(str(i), row_letter, size_cell)
+            else:
+                tbl.add_row(str(i), row_letter)
+
+        _console.print(tbl)
+
+        return shared_group
 
 
 def apply_layerlists_to_config(base_config, layer_idx: int, group_idx: int | None = None):
@@ -112,120 +224,6 @@ def apply_layerlists_to_config(base_config, layer_idx: int, group_idx: int | Non
 
         setattr(layer_config, core_attr, raw_val)
     return layer_config
-    def create_shared_param_group(self, layer_type):
-        """
-        Creates a shared list of layer blocks (either MLP or Attn), optionally
-        reusing blocks every 'shared_size' layers and reflecting them symmetrically
-        if 'shared_sym' is True.
-
-        For attention layers, we can cycle through multiple attention variants
-        if config.attention_list is not empty.
-
-        Args:
-            layer_type (str): "mlp" or "attn"
-
-        Returns:
-            list of layer_blocks
-        """
-
-        if layer_type == "mlp":
-            shared_size = self.config.shared_mlp_size
-            shared_sym  = self.config.shared_mlp_sym
-            seq_len     = self.config.shared_mlp_seq
-
-        elif layer_type == "attn":
-            shared_size = self.config.shared_attn_size
-            shared_sym = self.config.shared_attn_sym
-            seq_len     = self.config.shared_attn_seq
-        else:
-            sys.exit(f"{layer_type} not supported. Use 'mlp' or 'attn' only.")
-
-        shared_group = []
-        layer_block = None
-
-        # For cycling multiple attention variants
-        attn_variant_index = 0
-
-        # ────────────────────────────────
-        # Cyclic-sequence sharing pool
-        # ────────────────────────────────
-        if seq_len < 1:
-            raise ValueError("shared_*_seq must be ≥ 1")
-        seq_pool: list[nn.Module | None] = [None] * seq_len
-
-        # If we'll mirror, build only the *first half plus centre* for odd n.
-        if shared_sym:
-            num_physical = (self.config.n_layer + 1) // 2   # ceil(n/2)
-        else:
-            num_physical = self.config.n_layer
-
-        for i in range(num_physical):
-
-
-            # ------------------------------------------------------------------
-            # Build a per-layer clone of the config and apply any *layerlist
-            # overrides.  Example:  --mlp_size_layerlist 100 200 300
-            # → layer 0→100, 1→200, 2→300, 3→100, 4→200, ...
-            # ------------------------------------------------------------------
-            group_idx = i // shared_size
-            layer_config = apply_layerlists_to_config(self.config, layer_idx=i, group_idx=group_idx)
-
-            # Decide which sharing mode we are in
-            if seq_len > 1:
-                # ---------------------------------------------
-                # combined: sequence + size
-                # group_idx  = i // size      ← which full block we’re in
-                # seq_idx    = group_idx % k  ← which letter A/B/C…
-                # ---------------------------------------------
-                seq_idx  = (i // shared_size) % seq_len if shared_size > 1 else i % seq_len
-                layer_block = seq_pool[seq_idx]
-                if layer_block is None:
-                    layer_block = _build_block(layer_type, layer_config, self.fire_pos_enc)
-
-                    seq_pool[seq_idx] = layer_block
-            else:
-                # create a new block only every k layers,
-                # otherwise keep re-using the last one
-                if i % shared_size == 0 or layer_block is None:
-                    layer_block = _build_block(layer_type, layer_config, self.fire_pos_enc)
-
-            # Add this (possibly reused) block for *every* logical layer
-            shared_group.append(layer_block)
-
-        # ────────────────────────────────
-        # Optional symmetry mirroring
-        # ────────────────────────────────
-        if shared_sym:
-            # exclude centre element for odd n to avoid duplication
-            mirror = list(reversed(shared_group[:-1])) if self.config.n_layer % 2 else list(reversed(shared_group))
-            shared_group.extend(mirror)
-
-        # ── pretty debug print ──────────────────────────────
-        letters = _label_sequence(shared_group)
-        if layer_type == "mlp":
-            mlp_sizes = [getattr(blk, "_debug_size", "?") for blk in shared_group]
-
-        tbl = Table(
-            title=f"{layer_type.upper()} sharing",
-            header_style="bold magenta",
-            show_lines=False,
-            pad_edge=False,
-        )
-        tbl.add_column("Layer")
-        tbl.add_column("Type")
-        if layer_type == "mlp":
-            tbl.add_column("mlp_size")
-
-        for i, letter in enumerate(letters):
-            row_letter = Text(letter, style="cyan" if layer_type == "mlp" else "green")
-            if layer_type == "mlp":
-                tbl.add_row(str(i), row_letter, str(mlp_sizes[i]))
-            else:
-                tbl.add_row(str(i), row_letter)
-
-        _console.print(tbl)
-
-        return shared_group
 
 # ─────────────────────────────────────────────────────────────
 # Helper to move logic out of the main loop
