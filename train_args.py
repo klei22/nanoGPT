@@ -938,8 +938,10 @@ def parse_args():
     model_group.add_argument("--n_cproj_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--n_kv_group_layerlist", nargs='+', action=LayerListAction, default=None)
     model_group.add_argument("--attention_variant_layerlist", nargs='+', action=LayerListAction, default=None)
+    model_group.add_argument("--block_component_variant_layerlist", nargs='+', action=LayerListAction, default=None, help="Override block_component_variant per layer, cycling through the list.")
     model_group.add_argument("--use_rotary_embeddings_layerlist", nargs='+', action=LayerListAction, default=None, help="Override use_rotary_embeddings per layer, cycling through the list.")
     model_group.add_argument("--window_size_layerlist", nargs='+', action=LayerListAction, default=None, help="Override window_size per layer, cycling through the list.")
+    model_group.add_argument("--block_component_variant", type=str, default="attn_mlp", choices=["attn_mlp", "attn_only", "mlp_only", "linear_only", "router_linear"], help="Select which compute path each block uses.")
 
     ## Infinite Attention variation
     model_group.add_argument('--n_qk_head_dim', default=None, type=int)
