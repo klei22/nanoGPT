@@ -671,13 +671,22 @@ def append_progress(log_file: Path, message: str) -> None:
 def build_command(combo: dict) -> list[str]:
     """
     Construct the command-line invocation for train.py.
+
+    Notes:
+      * `train.py` does not expose `--name`, so we ignore that metadata key.
+      * Some `*_layerlist` arguments expect explicit values (including booleans)
+        and do not support `--no-...` style flags.
     """
     cmd = ['python3', 'train.py']
     for k, v in combo.items():
-        if k.startswith('_'):
+        if k.startswith('_') or k == 'name':
             continue
+
         if isinstance(v, bool):
-            cmd.append(f"--{'' if v else 'no-'}{k}")
+            if k.endswith('_layerlist'):
+                cmd += [f"--{k}", str(v)]
+            else:
+                cmd.append(f"--{'' if v else 'no-'}{k}")
         elif isinstance(v, list):
             if v:
                 cmd.append(f"--{k}")
