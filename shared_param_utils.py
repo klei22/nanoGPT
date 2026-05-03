@@ -46,6 +46,72 @@ class SharedParamGroupCreator:
             self.fire_pos_enc = FIRE(config, num_heads=config.n_head)
 
 
+
+
+def apply_layerlists_to_config(base_config, layer_idx: int, group_idx: int | None = None):
+    """Return a deepcopy of ``base_config`` with any ``*_layerlist`` overrides applied."""
+    layer_config = copy.deepcopy(base_config)
+    layer_config.layer_idx = layer_idx
+    if group_idx is None:
+        group_idx = layer_idx
+
+    _SENTINEL_NONE = {"", "none", "null"}
+
+    def _is_none(txt) -> bool:
+        return str(txt).strip().lower() in _SENTINEL_NONE
+
+    def _as_bool(txt):
+        if _is_none(txt):
+            return None
+        truthy_values = {"1", "true", "yes", "y", "on"}
+        falsy_values = {"0", "false", "no", "n", "off"}
+        txt_lower = str(txt).strip().lower()
+        if txt_lower in truthy_values:
+            return True
+        if txt_lower in falsy_values:
+            return False
+        raise ValueError(f"Invalid boolean value: {txt}")
+
+    for attr in dir(base_config):
+        if not attr.endswith("_layerlist"):
+            continue
+        lst = getattr(base_config, attr)
+        if not lst:
+            continue
+        core_attr = attr[:-10]
+        raw_val = lst[group_idx % len(lst)]
+
+        if hasattr(base_config, core_attr):
+            ref_val = getattr(base_config, core_attr)
+            if ref_val is not None:
+                if isinstance(ref_val, bool):
+                    raw_val = _as_bool(raw_val)
+                elif isinstance(ref_val, int):
+                    raw_val = int(raw_val)
+                elif isinstance(ref_val, float):
+                    raw_val = float(raw_val)
+            else:
+                anno = type(base_config).__annotations__.get(core_attr)
+                hinted = str
+                if anno:
+                    origin = get_origin(anno)
+                    args = get_args(anno)
+                    if origin is None:
+                        hinted = anno
+                    elif len(args) == 2 and type(None) in args:
+                        hinted = next(a for a in args if a is not type(None))
+
+                if _is_none(raw_val):
+                    raw_val = None
+                elif hinted is bool:
+                    raw_val = _as_bool(raw_val)
+                elif hinted is int:
+                    raw_val = int(raw_val)
+                elif hinted is float:
+                    raw_val = float(raw_val)
+
+        setattr(layer_config, core_attr, raw_val)
+    return layer_config
     def create_shared_param_group(self, layer_type):
         """
         Creates a shared list of layer blocks (either MLP or Attn), optionally
@@ -101,73 +167,8 @@ class SharedParamGroupCreator:
             # overrides.  Example:  --mlp_size_layerlist 100 200 300
             # → layer 0→100, 1→200, 2→300, 3→100, 4→200, ...
             # ------------------------------------------------------------------
-            layer_config = copy.deepcopy(self.config)
-            layer_config.layer_idx = i
             group_idx = i // shared_size
-
-            for attr in dir(self.config):
-                if attr.endswith("_layerlist"):
-                    lst = getattr(self.config, attr)
-                    if not lst:          # [], None, or empty → ignore
-                        continue
-                    core_attr = attr[:-10]         # strip "_layerlist"
-                    # raw_val   = lst[i % len(lst)]  # cyclic selection
-                    raw_val = lst[group_idx % len(lst)]    # cyclic selection with group_idx
-
-
-                    if hasattr(self.config, core_attr):
-                        ref_val = getattr(self.config, core_attr)
-
-
-                        _SENTINEL_NONE = {"", "none", "null"}
-
-                        def _is_none(txt) -> bool:
-                            return str(txt).strip().lower() in _SENTINEL_NONE
-
-                        def _as_bool(txt):
-                            if _is_none(txt):
-                                return None
-                            truthy_values = {"1", "true", "yes", "y", "on"}
-                            falsy_values = {"0", "false", "no", "n", "off"}
-                            txt_lower = str(txt).strip().lower()
-                            if txt_lower in truthy_values:
-                                return True
-                            elif txt_lower in falsy_values:
-                                return False
-                            else:
-                                raise ValueError(f"Invalid boolean value: {txt}")
-                        # a) If the runtime value is *not* None we can
-                        #    rely on its actual Python type.
-                        if ref_val is not None:
-                            if isinstance(ref_val, bool):
-                                raw_val = _as_bool(raw_val)
-                            elif isinstance(ref_val, int):
-                                raw_val = int(raw_val)
-                            elif isinstance(ref_val, float):
-                                raw_val = float(raw_val)
-                        # b) Otherwise, fall back to the dataclass annotation
-                        #    to guess the intended type (handles `T | None`).
-                        else:
-                            anno = type(self.config).__annotations__.get(core_attr)
-                            hinted = str  # default: leave string as-is
-                            if anno:
-                                origin = get_origin(anno)
-                                args   = get_args(anno)
-                                if origin is None:
-                                    hinted = anno
-                                elif len(args) == 2 and type(None) in args:
-                                    hinted = next(a for a in args if a is not type(None))
-
-                            if _is_none(raw_val):
-                                raw_val = None
-                            elif hinted is bool:
-                                raw_val = _as_bool(raw_val)
-                            elif hinted is int:
-                                raw_val = int(raw_val)
-                            elif hinted is float:
-                                raw_val = float(raw_val)
-
-                    setattr(layer_config, core_attr, raw_val)
+            layer_config = apply_layerlists_to_config(self.config, layer_idx=i, group_idx=group_idx)
 
             # Decide which sharing mode we are in
             if seq_len > 1:
