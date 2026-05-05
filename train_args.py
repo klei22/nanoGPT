@@ -321,6 +321,12 @@ def parse_args():
                                     help="Enable multi-context training on multiple simultaneous datasets")
     model_group.add_argument('--multidataset_wte', default=False, action=argparse.BooleanOptionalAction,
                                     help='Use separate token embeddings and lm heads per dataset when training_mode is multidataset')
+    model_group.add_argument('--lm_head_variant', default='linear', type=str, choices=['linear', 'clustered'],
+                                    help="LM head type: standard full projection or clustered coarse-to-fine.")
+    model_group.add_argument('--lm_head_cluster_size', default=256, type=int,
+                                    help="Cluster size for clustered lm head (tokens per leaf cluster).")
+    model_group.add_argument('--lm_head_inference_top_clusters', default=1, type=int,
+                                    help="How many top clusters to refine during inference for clustered lm head.")
     training_group.add_argument('--multicontext_datasets', default=None, nargs='+', type=str,
                                     help="List of datasets to train on in multi-context mode (e.g., --multicontext_datasets shakespeare wikitext103 openwebtext)")
     model_group.add_argument('--vocab_sizes', default=None, nargs='+', type=int,
