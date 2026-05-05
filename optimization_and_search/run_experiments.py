@@ -45,6 +45,8 @@ METRIC_KEYS = [
     "zeus_avg_power_w",
     "zeus_train_step_energy_j",
     "zeus_energy_per_token_j",
+    "run_total_time_s",
+    "run_completed_at",
 ]
 
 
@@ -652,11 +654,24 @@ def completed_runs(log_file: Path) -> set[str]:
     return runs
 
 
-def append_log(log_file: Path, name: str, combo: dict, metrics: dict) -> None:
+def append_log(
+    log_file: Path,
+    name: str,
+    combo: dict,
+    metrics: dict,
+    run_total_time_s: float,
+    run_completed_at: str,
+) -> None:
     """
     Append a YAML entry with run details and metrics.
     """
-    entry = {'formatted_name': name, 'config': combo, **metrics}
+    entry = {
+        'formatted_name': name,
+        'config': combo,
+        **metrics,
+        'run_total_time_s': run_total_time_s,
+        'run_completed_at': run_completed_at,
+    }
     with log_file.open('a') as f:
         yaml.safe_dump(entry, f, explicit_start=True)
 
@@ -738,10 +753,14 @@ def run_experiment(
     # Build and run
     cmd = build_command(combo)
     print(f"Running: {' '.join(cmd)}")
+    run_started_at = datetime.now()
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
         print(f"[red]Process exited with error for run:[/] {run_name}")
+    run_finished_at = datetime.now()
+    run_total_time_s = (run_finished_at - run_started_at).total_seconds()
+    run_completed_at = run_finished_at.strftime("%Y-%m-%d %H:%M:%S")
 
     # Read metrics (use existing or nan on failure)
     try:
@@ -749,7 +768,14 @@ def run_experiment(
     except Exception:
         metrics = {k: float("nan") for k in METRIC_KEYS}
 
-    append_log(log_file, run_name, combo, metrics)
+    append_log(
+        log_file,
+        run_name,
+        combo,
+        metrics,
+        run_total_time_s=run_total_time_s,
+        run_completed_at=run_completed_at,
+    )
 
 
 def main():
