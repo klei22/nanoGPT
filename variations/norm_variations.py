@@ -210,6 +210,38 @@ class IdentityNorm(nn.Module):
     def forward(self, x):
         return self.identity(x)
 
+class ProjectOutL2Norm(nn.Module):
+    """Project out a learned direction from activations, then L2-normalize."""
+
+    def __init__(self, config):
+        super().__init__()
+        ndim = config.n_embd
+        self.eps = config.proj_out_norm_eps
+        self.learn_scale = config.proj_out_norm_learn_scale
+
+        # Learned direction to project out (v in docs).
+        self.direction = nn.Parameter(torch.randn(ndim))
+
+        if self.learn_scale:
+            self.log_scale = nn.Parameter(torch.tensor(math.log(config.proj_out_norm_init_scale)))
+        else:
+            self.register_buffer(
+                "fixed_scale",
+                torch.tensor(float(config.proj_out_norm_init_scale)),
+                persistent=False,
+            )
+
+    def forward(self, x):
+        # u = v / ||v||
+        u = F.normalize(self.direction, p=2, dim=0, eps=self.eps)
+        # z = x - <x, u>u
+        coeff = (x * u).sum(dim=-1, keepdim=True)
+        z = x - coeff * u
+        # y = z / ||z||
+        y = F.normalize(z, p=2, dim=-1, eps=self.eps)
+        scale = self.log_scale.exp() if self.learn_scale else self.fixed_scale
+        return scale * y
+
 
 norm_dictionary = {
     "layernorm": LayerNorm,
@@ -219,4 +251,5 @@ norm_dictionary = {
     "hyperspherenorm": HyperSphereNorm,
     "dact": DynamicActivation,
     "identity": IdentityNorm,
+    "projectout_l2norm": ProjectOutL2Norm,
 }

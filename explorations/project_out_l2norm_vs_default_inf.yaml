@@ -1,0 +1,83 @@
+# Compare ProjectOutL2Norm variants against the default infinite-attention baseline.
+---
+
+named_static_groups:
+  # Baseline (mirrors explorations/default_inf.yaml defaults)
+  - named_group: "baseline_norms"
+    norm_variant_attn: ["rmsnorm"]
+    norm_variant_output: ["rmsnorm"]
+
+  # New norm variation from this change
+  - named_group: "projectout_attn_output"
+    norm_variant_attn: ["projectout_l2norm"]
+    norm_variant_output: ["projectout_l2norm"]
+
+  # Keep core default_inf settings aligned
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+
+  # ProjectOutL2Norm hyperparameters to explore
+  - named_group: "projout_default_scale"
+    proj_out_norm_learn_scale: [true]
+    proj_out_norm_init_scale: [1.0]
+    proj_out_norm_eps: [1.0e-8]
+
+  - named_group: "projout_sqrtd_scale"
+    proj_out_norm_learn_scale: [false]
+    proj_out_norm_init_scale: [27.7128129211]  # sqrt(768), common n_embd default
+    proj_out_norm_eps: [1.0e-8]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "mqa"
+      - "hd_100"
+      - "baseline_norms"
+    n_head: [3, 6, 9, 12]
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "mqa"
+      - "hd_100"
+      - "projectout_attn_output"
+    n_head: [3, 6, 9, 12]
+    named_group_alternates: ["projout_default_scale", "projout_sqrtd_scale"]

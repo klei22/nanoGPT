@@ -765,6 +765,7 @@ def parse_args():
             "rmsnorm",
             "layernorm",
             "hyperspherenorm",
+            "projectout_l2norm",
             "dact",
             "identity",
             ]
@@ -805,6 +806,11 @@ def parse_args():
     model_group.add_argument("--hsnorm_scale", type=float, default=1.0)
     model_group.add_argument("--hsnorm_radius", type=float, default=None)
     model_group.add_argument("--hsnorm_radius_learning", default=False, action=argparse.BooleanOptionalAction)
+
+    ## ProjectOutL2Norm
+    model_group.add_argument("--proj_out_norm_eps", type=float, default=1e-8)
+    model_group.add_argument("--proj_out_norm_learn_scale", default=True, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--proj_out_norm_init_scale", type=float, default=1.0)
 
     activation_variations = [
             "celu",
