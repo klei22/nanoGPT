@@ -44,18 +44,21 @@ named_static_groups:
   - named_group: "mqa"
     n_kv_group: [1]
 
-  # lm_head norm variants (optional)
+  # Baseline
   - named_group: "lm_head_norm_none"
-    norm_variant_lm_head: [null]
 
+  # LM Head variations
   - named_group: "lm_head_norm_hsnorm"
     norm_variant_lm_head: ["hyperspherenorm"]
-
   - named_group: "lm_head_norm_rmsnorm"
     norm_variant_lm_head: ["rmsnorm"]
-
   - named_group: "lm_head_norm_capped_hypersphere"
     norm_variant_lm_head: ["cappedhyperspherenorm"]
+
+  # input norm variations
+  - named_group: "input_norm"
+    norm_variant_wte: ["rmsnorm"]
+  - named_group: "no_input_norm"
 
 
 named_variation_groups:
@@ -63,32 +66,20 @@ named_variation_groups:
     named_group_alternates: ["hd_100", "hd_150", "hd_200"]
   - named_group: "lm_head_norm_var"
     named_group_alternates: ["lm_head_norm_none", "lm_head_norm_hsnorm", "lm_head_norm_rmsnorm", "lm_head_norm_capped_hypersphere"]
+  - named_group: "norms"
+    named_group_alternates: ["input_norm", "no_input_norm"]
 
 common_group:
-  dataset: ["minipile"]
-  eval_interval: [2500]
+  eval_interval: [250]
   max_iters: [10000]
   never_save_checkpoint: [true]
+  device: ["cuda:0"]
   compile: [true]
   log_rankme: [true]
   log_areq: [true]
 
+dataset: ["dialogsum/tiktoken", "dialogsum/char", "dialogsum/byte"]
 parameter_groups:
-  - named_group_static:
-      - "qk_norm"
-      - "peri_ln"
-      - "rotary"
-      - "softmax"
-      - "infinite"
-      - "mqa"
-    n_head:
-      range:
-        start: 1
-        end: 12
-        step: 1
-    named_group_variations:
-      - "head_dim_var"
-      - "lm_head_norm_var"
 
   - named_group_static:
       - "qk_norm"
@@ -97,11 +88,8 @@ parameter_groups:
       - "softmax"
       - "infinite"
       - "mqa"
-    n_head:
-      range:
-        start: 1
-        end: 12
-        step: 1
+    n_head: [3]
     named_group_variations:
       - "head_dim_var"
       - "lm_head_norm_var"
+      - "norms"

@@ -307,10 +307,19 @@ def parse_args():
         help="Coefficient for cosine loss term when --numerical_loss_use_cosine is enabled.",
     )
     model_group.add_argument(
-        '--norm_channel_variant',
+        "--norm_channel_variant",
         type=str,
         default=None,
-        choices=['krmsnorm', 'prmsnorm', 'rmsnorm', 'layernorm', 'hyperspherenorm', 'dact', 'identity'],
+        choices=[
+            "krmsnorm",
+            "prmsnorm",
+            "rmsnorm",
+            "layernorm",
+            "hyperspherenorm",
+            "dact",
+            "cappedhyperspherenorm",
+            "identity",
+        ],
         help="Optional post-mapping normalization applied to numerical embedding channels.",
     )
     model_group.add_argument('--norm_channel_radius', type=float, default=None)
@@ -1420,7 +1429,7 @@ def parse_args():
     training_group.add_argument('--gradient_accumulation_steps', default=1, type=int)
 
     # System args
-    training_group.add_argument('--device', default='cuda', type=str)
+    training_group.add_argument('--device', default='cuda:0', type=str)
     training_group.add_argument("--dtype", type=str, default="float16", choices=["bfloat16", "float16", "float32"], help="torch data type for inference, e.g. 'int8'")
     training_group.add_argument('--compile', default=False, action=argparse.BooleanOptionalAction)
 
