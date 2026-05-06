@@ -1,0 +1,71 @@
+# XSA ablation based on default_inf.yaml
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Infinite attention setup
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  # Causal attention setup
+  - named_group: "causal"
+    attention_variant: ["causal"]
+
+  # MQA
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+  # Head Dimension
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  # Infinite attention: default vs XSA under both softmax variants
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "mqa"
+      - "hd_100"
+    n_head: [8]
+    softmax_variant_attn: ["softmax", "relu2max"]
+    use_exclusive_self_attention: [false, true]
+
+  # Causal attention: default vs XSA under both softmax variants
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "causal"
+      - "mqa"
+      - "hd_100"
+    n_head: [8]
+    softmax_variant_attn: ["softmax", "relu2max"]
+    use_exclusive_self_attention: [false, true]
