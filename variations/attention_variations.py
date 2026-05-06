@@ -11,6 +11,7 @@ from quantization.quantize import fake_quantize_act
 from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from variations.position_encoding_variations import (
     FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
+from variations.activation_variations import activation_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.triadic_modulation_variations import mod_fn_dict
 
@@ -978,6 +979,29 @@ class AttnIdentity(nn.Identity):
         x = super().forward(x)
         return x
 
+
+class _SpecialHeadMLP(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden_dim, activation):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, hidden_dim)
+        self.act = activation
+        self.fc2 = nn.Linear(hidden_dim, out_dim)
+
+    def forward(self, x):
+        return self.fc2(self.act(self.fc1(x)))
+
+
+class _SpecialHeadSwiGLU(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden_dim, activation):
+        super().__init__()
+        self.in_proj = nn.Linear(in_dim, hidden_dim)
+        self.gate_proj = nn.Linear(in_dim, hidden_dim)
+        self.act = activation
+        self.out_proj = nn.Linear(hidden_dim, out_dim)
+
+    def forward(self, x):
+        return self.out_proj(self.in_proj(x) * self.act(self.gate_proj(x)))
+
 class InfiniteHeadAttention(nn.Module):
     """Instead of concatenating heads, utilizing higher capacity, we assume the
     vector features are independent of each other, and simply add the values.
@@ -1019,6 +1043,7 @@ class InfiniteHeadAttention(nn.Module):
         self.n_embd = config.n_embd
         self.n_qk_head_dim = config.n_qk_head_dim
         self.n_v_head_dim = config.n_v_head_dim
+        self.special_head_idx = 0
 
 
         # Concat Heads
@@ -1070,6 +1095,36 @@ class InfiniteHeadAttention(nn.Module):
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
 
+        self.n_q_special_variant = getattr(config, "n_q_special_variant", "linear")
+        self.n_k_special_variant = getattr(config, "n_k_special_variant", "linear")
+        self.n_v_special_variant = getattr(config, "n_v_special_variant", "linear")
+        self.n_attn_cproj_special_variant = getattr(config, "n_attn_cproj_special_variant", "linear")
+
+        self.q_special_proj = self._build_special_head_module(
+            self.n_q_special_variant,
+            self.n_embd,
+            self.n_qk_head_dim,
+            getattr(config, "n_q_hidden", None),
+            getattr(config, "n_q_activation", "squared_relu"),
+            default_hidden=self.n_qk_head_dim * 4,
+        )
+        self.k_special_proj = self._build_special_head_module(
+            self.n_k_special_variant,
+            self.n_embd,
+            self.n_qk_head_dim,
+            getattr(config, "n_k_hidden", None),
+            getattr(config, "n_k_activation", "squared_relu"),
+            default_hidden=self.n_qk_head_dim * 4,
+        )
+        self.v_special_proj = self._build_special_head_module(
+            self.n_v_special_variant,
+            self.n_embd,
+            self.n_v_head_dim,
+            getattr(config, "n_v_hidden", None),
+            getattr(config, "n_v_activation", "squared_relu"),
+            default_hidden=self.n_v_head_dim * 4,
+        )
+
         self.q_norm_dim = 1 if self.l2_norm_attn_q_dim == "embed" else 0
         self.k_norm_dim = 1 if self.l2_norm_attn_k_dim == "embed" else 0
         self.v_norm_dim = 1 if self.l2_norm_attn_v_dim == "embed" else 0
@@ -1092,6 +1147,25 @@ class InfiniteHeadAttention(nn.Module):
                     for _ in range(self.n_cproj)
                 ]
             )
+
+        n_attn_cproj_hidden = getattr(config, "n_attn_cproj_hidden", None)
+        if n_attn_cproj_hidden is None:
+            n_attn_cproj_hidden = (
+                getattr(config, "n_v_hidden", None)
+                or getattr(config, "n_k_hidden", None)
+                or getattr(config, "n_q_hidden", None)
+            )
+
+        self.attn_cproj_special = self._build_special_head_module(
+            self.n_attn_cproj_special_variant,
+            self.n_v_head_dim,
+            self.n_embd,
+            n_attn_cproj_hidden,
+            getattr(config, "n_attn_cproj_activation", "squared_relu"),
+            default_hidden=max(self.n_embd, self.n_v_head_dim * 4),
+        )
+        if self.attn_cproj_special is not None and self.n_cproj != 1:
+            raise ValueError("n_attn_cproj_special_variant currently supports n_cproj == 1 only.")
 
         if self.l2_norm_print_dims:
             if self.l2_norm_attn_q:
@@ -1162,6 +1236,23 @@ class InfiniteHeadAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
+    def _build_special_head_module(self, variant, in_dim, out_dim, hidden_dim, activation_name, default_hidden):
+        if variant == "linear":
+            return None
+        if hidden_dim is None:
+            hidden_dim = default_hidden
+        activation = activation_dictionary[activation_name](config=None)
+        if variant == "mlp":
+            return _SpecialHeadMLP(in_dim, out_dim, hidden_dim, activation)
+        if variant == "swiglu":
+            return _SpecialHeadSwiGLU(in_dim, out_dim, hidden_dim, activation)
+        raise ValueError(f"Unsupported special head variant: {variant}")
+
+    def _replace_first_head_chunk(self, full_projection, special_head_projection):
+        if special_head_projection is None:
+            return full_projection
+        return torch.cat([special_head_projection, full_projection[..., special_head_projection.size(-1):]], dim=-1)
+
     def forward(self, x, iter_num):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -1170,18 +1261,21 @@ class InfiniteHeadAttention(nn.Module):
             q = F.linear(x, q_weight, self.c_attn_q.bias)
         else:
             q = self.c_attn_q(x)
+        q = self._replace_first_head_chunk(q, self.q_special_proj(x) if self.q_special_proj is not None else None)
 
         if self.l2_norm_attn_k:
             k_weight = F.normalize(self.c_attn_k.weight, p=2, dim=self.k_norm_dim)
             k = F.linear(x, k_weight, self.c_attn_k.bias)
         else:
             k = self.c_attn_k(x)
+        k = self._replace_first_head_chunk(k, self.k_special_proj(x) if self.k_special_proj is not None else None)
 
         if self.l2_norm_attn_v:
             v_weight = F.normalize(self.c_attn_v.weight, p=2, dim=self.v_norm_dim)
             v = F.linear(x, v_weight, self.c_attn_v.bias)
         else:
             v = self.c_attn_v(x)
+        v = self._replace_first_head_chunk(v, self.v_special_proj(x) if self.v_special_proj is not None else None)
 
         q = q.view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2) # (B, n_h, T, hs)
         k = k.view(B, T, self.n_kv_group, self.n_qk_head_dim).transpose(1, 2) # (B, n_kv, T, hs)
@@ -1289,12 +1383,24 @@ class InfiniteHeadAttention(nn.Module):
                 y = self.c_proj(y)
         elif self.n_cproj == 1:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
-            y = y.sum(dim=1)
-            if self.l2_norm_attn_cproj:
-                cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
-                y = F.linear(y, cproj_weight, self.c_proj.bias)
+            if self.attn_cproj_special is not None:
+                special_head = y[:, self.special_head_idx, :, :]
+                if self.n_head > 1:
+                    y_rest = y[:, 1:, :, :].sum(dim=1)
+                else:
+                    y_rest = torch.zeros_like(special_head)
+                if self.l2_norm_attn_cproj:
+                    cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
+                    y = F.linear(y_rest, cproj_weight, self.c_proj.bias) + self.attn_cproj_special(special_head)
+                else:
+                    y = self.c_proj(y_rest) + self.attn_cproj_special(special_head)
             else:
-                y = self.c_proj(y)
+                y = y.sum(dim=1)
+                if self.l2_norm_attn_cproj:
+                    cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
+                    y = F.linear(y, cproj_weight, self.c_proj.bias)
+                else:
+                    y = self.c_proj(y)
         else:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y_sum = y.sum(dim=1)

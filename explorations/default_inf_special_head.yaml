@@ -1,0 +1,93 @@
+# Compare default infinite attention against special-head variants.
+---
+
+named_static_groups:
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [false]
+    n_cproj: [1]
+
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+  - named_group: "default_inf"
+    n_q_special_variant: ["linear"]
+    n_k_special_variant: ["linear"]
+    n_v_special_variant: ["linear"]
+    n_attn_cproj_special_variant: ["linear"]
+
+  - named_group: "special_head_mlp"
+    n_v_special_variant: ["mlp"]
+    n_v_hidden: [512]
+    n_v_activation: ["squared_relu"]
+
+  - named_group: "special_head_swiglu_parallel"
+    n_q_special_variant: ["swiglu"]
+    n_k_special_variant: ["swiglu"]
+    n_v_special_variant: ["swiglu"]
+    n_attn_cproj_special_variant: ["swiglu"]
+    n_q_hidden: [512]
+    n_k_hidden: [512]
+    n_v_hidden: [512]
+    n_attn_cproj_activation: ["squared_relu"]
+    n_q_activation: ["squared_relu"]
+    n_k_activation: ["squared_relu"]
+    n_v_activation: ["squared_relu"]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "mqa"
+      - "default_inf"
+    n_head: [8]
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "mqa"
+      - "special_head_mlp"
+    n_head: [8]
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "mqa"
+      - "special_head_swiglu_parallel"
+    n_head: [8]
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
