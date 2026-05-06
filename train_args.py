@@ -667,6 +667,13 @@ def parse_args():
             ]
 
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--use_sequential_ops', default=False, action=argparse.BooleanOptionalAction, help='Use configurable sequence of attn/mlp operations inside each block')
+    model_group.add_argument('--block_operation_sequence', nargs='+', default=[], help="Explicit op sequence for each block, e.g. --block_operation_sequence attn attn mlp mlp")
+    model_group.add_argument('--block_attn_repeat', type=int, default=1, help='If block_operation_sequence is empty, number of attention ops in sequence')
+    model_group.add_argument('--block_mlp_repeat', type=int, default=1, help='If block_operation_sequence is empty, number of MLP ops in sequence')
+    model_group.add_argument('--sequence_intermediate_skip_connections', default=True, action=argparse.BooleanOptionalAction, help='Enable residual skip at each op in sequential block mode')
+    model_group.add_argument('--sequence_final_skip_connection', default=True, action=argparse.BooleanOptionalAction, help='When intermediate skips are disabled, apply one final residual skip over full sequence')
+    model_group.add_argument('--match_sequential_mlp_param_budget', default=False, action=argparse.BooleanOptionalAction, help='Split MLP hidden size across repeated MLP ops to approximately match baseline MLP parameter count')
     model_group.add_argument("--mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
     model_group.add_argument("--mlp_expansion_factor", type=int, default=4, help="If MLP like variant is used, set the expansion factor for the linear transformations, default is 4.")
     model_group.add_argument("--mlp_size", type=int, default=None, help="If not None, is used instead of mlp_expansion_factor")
