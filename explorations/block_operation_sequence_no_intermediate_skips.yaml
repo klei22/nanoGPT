@@ -1,0 +1,44 @@
+# Explore repeated attention/MLP operations with only one residual skip around full sequence.
+---
+
+max_iters: [20000]
+
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["bfloat16"]
+compile: [true]
+
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+
+common_static:
+  use_block_operation_sequence: [true]
+  block_sequence_use_intermediate_skips: [false]
+  block_sequence_share_modules: [false]
+  use_pre_ln: [true]
+  use_peri_ln: [false]
+  use_post_ln: [false]
+
+named_static_groups:
+  baseline_attn_mlp_outer_skip:
+    block_operation_sequence: [["attn", "mlp"]]
+    mlp_expansion_factor: [4]
+  attn2_mlp2_outer_skip:
+    block_operation_sequence: [["attn", "attn", "mlp", "mlp"]]
+    mlp_expansion_factor: [2]
+  staggered_attn_mlp_outer_skip:
+    block_operation_sequence: [["attn", "mlp", "mlp", "mlp", "attn", "mlp", "mlp", "mlp"]]
+    mlp_expansion_factor: [1]
+    mlp_size: [384]
+
+parameter_groups:
+  - group_name: compare_sequences_outer_skip
+    params:
+      named_group: [baseline_attn_mlp_outer_skip, attn2_mlp2_outer_skip, staggered_attn_mlp_outer_skip]
