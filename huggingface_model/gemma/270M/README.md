@@ -83,10 +83,10 @@ Highlights:
 Demo scripts:
 
 ```bash
-bash huggingface_model/gemma/270M/demo_angle_dashboard_digits.sh
-bash huggingface_model/gemma/270M/demo_angle_dashboard_months.sh
-bash huggingface_model/gemma/270M/demo_angle_dashboard_weekdays.sh
-bash huggingface_model/gemma/270M/demo_islands_20deg.sh
+bash ./demo_angle_dashboard_digits.sh
+bash ./demo_angle_dashboard_months.sh
+bash ./demo_angle_dashboard_weekdays.sh
+bash ./demo_islands_20deg.sh
 ```
 
 ## Interactive webapp: angle-neighborhood explorer (Gemma + Gemma-IT)
@@ -112,7 +112,7 @@ Features:
 Run:
 
 ```bash
-python huggingface_model/gemma/270M/vocab_angle_explorer_app.py \
+python ./vocab_angle_explorer_app.py \
   --model-base google/gemma-3-270m \
   --model-it google/gemma-3-270m-it \
   --device cpu \
@@ -139,5 +139,5 @@ Outputs:
 Demo:
 
 ```bash
-bash huggingface_model/gemma/270M/demo_digit_quant_angles.sh
+bash ./demo_digit_quant_angles.sh
 ```

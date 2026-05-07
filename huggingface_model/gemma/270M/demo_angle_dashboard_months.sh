@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python huggingface_model/gemma/270M/vocab_angle_token_dashboard.py \
+python ./vocab_angle_token_dashboard.py \
   --model google/gemma-3-270m \
   --tokens 'January,February,March,April,May,June,July,August,September,October,November,December' \
   --angle-threshold-deg 70 \

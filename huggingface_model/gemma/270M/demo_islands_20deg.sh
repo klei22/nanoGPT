@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python huggingface_model/gemma/270M/vocab_angle_token_dashboard.py \
+python ./vocab_angle_token_dashboard.py \
   --model google/gemma-3-270m \
   --tokens '0,1,2,3,4,5,6,7,8,9' \
   --angle-threshold-deg 20 \
