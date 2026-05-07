@@ -1,0 +1,56 @@
+# default_inf_block_layerlist_example.yaml
+#
+# Based on explorations/default_inf.yaml.
+# Demonstrates per-layer block component routing using block_component_variant_layerlist.
+---
+
+named_static_groups:
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "relu2max"
+    softmax_variant_attn: ["relu2max"]
+
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "relu2max"
+      - "infinite"
+      - "mqa"
+      - "hd_100"
+    n_head: [8]
+    n_layer: [8]
+    # Repeats cyclically if n_layer is larger than this list.
+    # Valid entries: attn_mlp, attn_only, mlp_only, linear_only, router_linear
+    block_component_variant_layerlist:
+      - ["attn_only", "attn_mlp", "mlp_only", "router_linear", "linear_only", "attn_mlp", "attn_only", "router_linear"]
