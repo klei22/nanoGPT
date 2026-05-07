@@ -8,17 +8,17 @@ from token_quant_angle_comparison import run_analysis
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Digit quantization angle comparison")
+    p = argparse.ArgumentParser(description="Month quantization angle comparison")
     p.add_argument("--model", default="google/gemma-3-270m")
     p.add_argument("--embedding-source", choices=["input", "lm_head"], default="input")
     p.add_argument("--device", default="cpu")
-    p.add_argument("--output-dir", default="./gemma_digit_quant_angles")
+    p.add_argument("--output-dir", default="./gemma_month_quant_angles")
     return p.parse_args()
 
 
 def main() -> None:
     a = parse_args()
-    run_analysis("digits", a.model, a.embedding_source, a.device, Path(a.output_dir))
+    run_analysis("months", a.model, a.embedding_source, a.device, Path(a.output_dir))
 
 
 if __name__ == "__main__":

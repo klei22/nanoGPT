@@ -135,9 +135,15 @@ Outputs:
 * `digit_<d>_relative_angles.png` one plot per digit, showing baseline vs all
   quantized curves against all other digits.
 * `digit_token_ids.csv` for the resolved token IDs.
+* `tsne_structure_all_modes.png` for approximate global structure view.
+* `distortion_<token>.png` signed angular distortion per token vs fp32 baseline.
+* `relative_angles_selector.html` interactive Plotly page with token dropdown and
+  per-quantization disorder labels indicating rank-order changes vs fp32.
 
 Demo:
 
 ```bash
 bash ./demo_digit_quant_angles.sh
+bash ./demo_weekday_quant_angles.sh
+bash ./demo_month_quant_angles.sh
 ```
