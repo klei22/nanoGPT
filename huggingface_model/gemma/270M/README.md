@@ -119,3 +119,25 @@ python huggingface_model/gemma/270M/vocab_angle_explorer_app.py \
   --port 8050 \
   --output-dir ./gemma_angle_explorer_exports
 ```
+
+## Digit-only quantization angle comparison
+
+`digit_quant_angle_comparison.py` compares pairwise angles for digits `0-9`
+under full precision (`fp32`) and symmetric quantization modes:
+
+* int8, int7, int6, int5, int4, int3
+* ternary
+* binary
+
+Outputs:
+
+* `angles_<mode>.csv` angle matrix for each mode.
+* `digit_<d>_relative_angles.png` one plot per digit, showing baseline vs all
+  quantized curves against all other digits.
+* `digit_token_ids.csv` for the resolved token IDs.
+
+Demo:
+
+```bash
+bash huggingface_model/gemma/270M/demo_digit_quant_angles.sh
+```
