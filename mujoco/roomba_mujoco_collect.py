@@ -8,7 +8,7 @@ Features
 - Wanders forward, makes Gaussian-randomized turns every few seconds.
 - On wall bump: backs up, then rotates about 180 degrees with Gaussian noise.
 - Optional interactive MuJoCo viewer.
-- First-person camera mounted at the middle of the robot top.
+- First-person camera mounted at the middle of the robot top, with configurable height and pitch angle.
 - Saves annotated first-person MP4 video.
 - Saves compressed CSV/GZip dataset with 16x16 uint8 grayscale observations.
 - Multi-process episode collection for throughput.
@@ -19,6 +19,9 @@ Install
 
 Headless GPU rendering on Linux, typical NVIDIA machine:
     python roomba_mujoco_collect.py --gl egl --duration 60 --output-dir runs/roomba
+
+Example with a higher camera tilted 20 degrees downward:
+    python roomba_mujoco_collect.py --camera-height-above-top 0.06 --camera-pitch-deg 20
 
 Interactive viewer:
     python roomba_mujoco_collect.py --view --gl glfw --duration 60
@@ -104,6 +107,7 @@ class Config:
     robot_mass: float
     camera_fovy: float
     camera_height_above_top: float
+    camera_pitch_deg: float
     randomize_start: bool
 
     # Motion / controller.
@@ -196,8 +200,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Config:
     p.add_argument("--robot-radius", type=float, default=0.17, help="Roomba 500-series-like radius in meters.")
     p.add_argument("--robot-height", type=float, default=0.09)
     p.add_argument("--robot-mass", type=float, default=3.6)
-    p.add_argument("--camera-fovy", type=float, default=90.0)
-    p.add_argument("--camera-height-above-top", type=float, default=0.025)
+    p.add_argument("--camera-fovy", type=float, default=90.0, help="Vertical field of view of the first-person camera in degrees.")
+    p.add_argument(
+        "--camera-height-above-top",
+        "--camera-height",
+        dest="camera_height_above_top",
+        type=float,
+        default=0.025,
+        help="First-person camera mount height in meters above the robot top center. --camera-height is an alias.",
+    )
+    p.add_argument(
+        "--camera-pitch-deg",
+        type=float,
+        default=0.0,
+        help="First-person camera pitch in degrees. 0 looks forward horizontally; positive tilts downward; negative tilts upward.",
+    )
     p.add_argument("--fixed-start", dest="randomize_start", action="store_false", help="Start at x=y=yaw=0 instead of random pose.")
     p.set_defaults(randomize_start=True)
 
@@ -235,6 +252,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Config:
         raise SystemExit("--num-workers must be >= 1")
     if args.video_every < 1:
         raise SystemExit("--video-every must be >= 1")
+    if args.camera_height_above_top < 0:
+        raise SystemExit("--camera-height-above-top/--camera-height must be >= 0")
+    if not math.isfinite(args.camera_pitch_deg):
+        raise SystemExit("--camera-pitch-deg must be finite")
 
     output_dir = Path(args.output_dir)
     default_csv_path = output_dir / "dataset.csv.gz"
@@ -285,6 +306,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Config:
         robot_mass=args.robot_mass,
         camera_fovy=args.camera_fovy,
         camera_height_above_top=args.camera_height_above_top,
+        camera_pitch_deg=args.camera_pitch_deg,
         randomize_start=args.randomize_start,
         speed=args.speed,
         reverse_speed=args.reverse_speed,
@@ -337,6 +359,13 @@ def make_xml(cfg: Config) -> str:
     h = cfg.robot_height
     base_z = h / 2.0 + 0.01
     top_cam_z = h / 2.0 + cfg.camera_height_above_top
+    pitch_rad = math.radians(cfg.camera_pitch_deg)
+    # MuJoCo cameras look along local -Z. Keep the camera centered on top of the
+    # robot and rotate it about its local left/right axis. Positive pitch looks
+    # downward toward the floor while 0 deg looks straight along robot +X.
+    cam_xaxis = (0.0, -1.0, 0.0)
+    cam_yaxis = (math.sin(pitch_rad), 0.0, math.cos(pitch_rad))
+    cam_xyaxes = " ".join(f"{v:.9f}" for v in (*cam_xaxis, *cam_yaxis))
     wheel_r = min(0.055, h * 0.58)
     wheel_w_half = 0.018
     wheel_y = r * 0.82
@@ -390,8 +419,8 @@ def make_xml(cfg: Config) -> str:
       <geom name="left_wheel_visual" type="cylinder" pos="0 {wheel_y:.6f} {wheel_z:.6f}" euler="90 0 0" size="{wheel_r:.6f} {wheel_w_half:.6f}" contype="0" conaffinity="0" rgba="0.015 0.015 0.018 1"/>
       <geom name="right_wheel_visual" type="cylinder" pos="0 {-wheel_y:.6f} {wheel_z:.6f}" euler="90 0 0" size="{wheel_r:.6f} {wheel_w_half:.6f}" contype="0" conaffinity="0" rgba="0.015 0.015 0.018 1"/>
 
-      <!-- MuJoCo cameras look along their local -Z axis. These xyaxes make -Z point along robot +X, with image up along world/robot +Z. -->
-      <camera name="roomba_fp" mode="fixed" pos="0 0 {top_cam_z:.6f}" xyaxes="0 -1 0 0 0 1" fovy="{cfg.camera_fovy:.6f}"/>
+      <!-- MuJoCo cameras look along local -Z. At pitch=0, -Z points along robot +X; positive pitch tilts the view downward. -->
+      <camera name="roomba_fp" mode="fixed" pos="0 0 {top_cam_z:.6f}" xyaxes="{cam_xyaxes}" fovy="{cfg.camera_fovy:.6f}"/>
     </body>
   </worldbody>
 
