@@ -903,6 +903,42 @@ def _run_quantization_sweep(
     print(f"- wrote quantization graph: {fig_path}")
 
 
+def _run_two_pass_trim_sweep(
+    model: AutoModelForCausalLM, tokenizer: AutoTokenizer, base_groups: Dict[str, Sequence[int]], split: str,
+    max_samples: int, max_target_tokens: int, byte_fallback: bool, device: torch.device, report_dir: str,
+    sweep_max_percent: int, sweep_step_percent: int, latin_trim_strategy: str, first_pass_bits: int,
+    first_pass_mode: str, first_pass_group_size: int, second_pass_topn: int, second_pass_dtype: str,
+) -> None:
+    os.makedirs(report_dir, exist_ok=True)
+    percents = list(range(0, sweep_max_percent + 1, sweep_step_percent))
+    rows = []
+    base_weight = model.lm_head.weight.detach().to(device)
+    for pct in percents:
+        latin_ids = _trim_latin_token_ids(tokenizer, base_groups["latin"], float(pct), trim_strategy=latin_trim_strategy)
+        candidate = sorted(set(latin_ids) | set(base_groups["punct"]) | (set(base_groups["byte"]) if byte_fallback else set()))
+        candidate_ids = torch.tensor(candidate, dtype=torch.long, device=device)
+        fp_weight = base_weight.index_select(0, candidate_ids)
+        cfg = QuantConfig(bits=first_pass_bits, mode=first_pass_mode)
+        coarse = _quantize_weights(fp_weight, cfg, group_size=first_pass_group_size)
+        coarse_n = torch.nn.functional.normalize(coarse, dim=-1)
+        second = fp_weight.to({"float16": torch.float16, "bfloat16": torch.bfloat16}.get(second_pass_dtype, torch.float32))
+        acc = _evaluate_candidate_weight_top1(
+            model=model, tokenizer=tokenizer, candidate_ids=candidate_ids,
+            candidate_weight_normalized=torch.nn.functional.normalize(second, dim=-1),
+            split=split, max_samples=max_samples, max_target_tokens=max_target_tokens, device=device,
+        ) if second_pass_topn >= len(candidate) else _evaluate_candidate_weight_top1(
+            model=model, tokenizer=tokenizer, candidate_ids=candidate_ids,
+            candidate_weight_normalized=coarse_n, split=split, max_samples=max_samples, max_target_tokens=max_target_tokens, device=device,
+        )
+        rows.append((pct, len(candidate), acc))
+        print(f"- two-pass trim={pct}% candidates={len(candidate)} top1={acc:.2f}%")
+    csv_path = os.path.join(report_dir, "two_pass_trim_sweep.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["latin_trim_percent", "candidate_vocab_count", "top1_two_pass_percent"])
+        w.writerows(rows)
+
+
 def _train_route_scales(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -1019,6 +1055,13 @@ def main() -> None:
     parser.add_argument("--sweep_examples", type=int, default=2)
     parser.add_argument("--report_dir", type=str, default="latin_trim_reports")
     parser.add_argument("--quantization_sweep", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--two_pass_trim_sweep", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--two_pass_first_bits", type=int, default=4)
+    parser.add_argument("--two_pass_first_mode", type=str, default="group32_asymmetric")
+    parser.add_argument("--two_pass_first_group_size", type=int, default=32)
+    parser.add_argument("--two_pass_second_topn", type=int, default=1000)
+    parser.add_argument("--two_pass_second_dtype", type=str, default="float16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--two_pass_report_dir", type=str, default="two_pass_trim_reports")
     parser.add_argument("--quant_group_size", type=int, default=32)
     parser.add_argument("--quant_report_dir", type=str, default="quantization_reports")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -1133,6 +1176,26 @@ def main() -> None:
             group_size=args.quant_group_size,
             report_dir=args.quant_report_dir,
             device=device,
+        )
+    if args.two_pass_trim_sweep:
+        _run_two_pass_trim_sweep(
+            model=model,
+            tokenizer=tokenizer,
+            base_groups=base_groups,
+            split=args.split,
+            max_samples=args.max_samples,
+            max_target_tokens=args.max_target_tokens,
+            byte_fallback=args.byte_fallback,
+            device=device,
+            report_dir=args.two_pass_report_dir,
+            sweep_max_percent=args.latin_trim_sweep_max,
+            sweep_step_percent=args.latin_trim_sweep_step,
+            latin_trim_strategy=args.latin_trim_strategy,
+            first_pass_bits=args.two_pass_first_bits,
+            first_pass_mode=args.two_pass_first_mode,
+            first_pass_group_size=args.two_pass_first_group_size,
+            second_pass_topn=args.two_pass_second_topn,
+            second_pass_dtype=args.two_pass_second_dtype,
         )
     if args.chat_mode:
         _run_chat_mode(

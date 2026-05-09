@@ -47,6 +47,25 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --quant_report_dir quantization_reports \
   --byte_fallback
 
+# Run trimmed-vocab two-pass sweep:
+# first pass low-precision shortlist, second pass rerank budget (top-N settable).
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --model_name google/gemma-3-270m-it \
+  --two_pass_trim_sweep \
+  --two_pass_first_bits 4 \
+  --two_pass_first_mode group32_asymmetric \
+  --two_pass_first_group_size 32 \
+  --two_pass_second_topn 1000 \
+  --two_pass_second_dtype float16 \
+  --latin_trim_strategy longest_bytes \
+  --latin_trim_sweep_max 80 \
+  --latin_trim_sweep_step 10 \
+  --split "validation[:1%]" \
+  --max_samples 100 \
+  --max_target_tokens 64 \
+  --two_pass_report_dir two_pass_trim_reports \
+  --byte_fallback
+
 # Build combined graph: routed(longest-bytes) + routed(highest-id) + full LM head
 python - <<'PY'
 import csv
@@ -78,11 +97,19 @@ with open("quantization_reports/quantization_sweep.csv", "r", encoding="utf-8") 
         quant_labels.append(label)
         quant_vals.append(float(row["top1_percent"]))
 
+xs_tp, y_tp = [], []
+with open("two_pass_trim_reports/two_pass_trim_sweep.csv", "r", encoding="utf-8") as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        xs_tp.append(int(float(row["latin_trim_percent"])))
+        y_tp.append(float(row["top1_two_pass_percent"]))
+
 fig, axes = plt.subplots(1, 2, figsize=(16, 5))
 ax0, ax1 = axes
 ax0.plot(xs_a, full_a, marker="o", label="Full LM head")
 ax0.plot(xs_a, routed_a, marker="o", label="Routed (longest_bytes)")
 ax0.plot(xs_b, routed_b, marker="o", label="Routed (highest_id)")
+ax0.plot(xs_tp, y_tp, marker="o", label="Two-pass (int4 g32 asym -> top1000 fp16)")
 ax0.set_xlabel("Latin trim percent")
 ax0.set_ylabel("Top-1 accuracy (%)")
 ax0.set_title("Trim strategies vs Full LM head")
