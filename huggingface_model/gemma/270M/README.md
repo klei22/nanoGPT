@@ -167,7 +167,7 @@ The demo runs both trim strategies (`longest_bytes`, `highest_id`) and then writ
 
 - `latin_trim_reports_combined_accuracy.png` (full LM head + both routed strategies).
 - The same demo also runs a quantization sweep (8/6/5/4/3 bits; vector/group32; symmetric/asymmetric) on the 100% latin+punct(+byte) candidate set and includes it in the combined plot.
-- The demo now also runs a trimmed-vocab two-pass experiment: first pass uses low precision (settable, e.g. `int4 group32 asymmetric`) and second pass uses a settable rerank budget (default top-1000) in settable higher precision (`float16`/`bfloat16`/`float32`). Its curve is added to the combined plot.
+- The demo now also runs two-pass experiments: first pass uses low precision (settable, e.g. `int4 group32 asymmetric`) and second pass reranks settable shortlist sizes (e.g. top-100/top-1000/top-10000) in settable higher precision (`float16`/`bfloat16`/`float32`). Curves are included for both trimmed and untrimmed candidate variants in the combined plot.
 
 Direct CLI equivalent:
 
@@ -216,7 +216,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --two_pass_first_bits 4 \
   --two_pass_first_mode group32_asymmetric \
   --two_pass_first_group_size 32 \
-  --two_pass_second_topn 1000 \
+  --two_pass_second_topn_values 100,1000,10000 \
   --two_pass_second_dtype float16 \
   --latin_trim_strategy longest_bytes \
   --latin_trim_sweep_max 80 \

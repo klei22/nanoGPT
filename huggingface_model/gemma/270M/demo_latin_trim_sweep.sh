@@ -55,7 +55,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --two_pass_first_bits 4 \
   --two_pass_first_mode group32_asymmetric \
   --two_pass_first_group_size 32 \
-  --two_pass_second_topn 1000 \
+  --two_pass_second_topn_values 100,1000,10000 \
   --two_pass_second_dtype float16 \
   --latin_trim_strategy longest_bytes \
   --latin_trim_sweep_max 80 \
@@ -97,19 +97,22 @@ with open("quantization_reports/quantization_sweep.csv", "r", encoding="utf-8") 
         quant_labels.append(label)
         quant_vals.append(float(row["top1_percent"]))
 
-xs_tp, y_tp = [], []
+two_pass_series = {}
 with open("two_pass_trim_reports/two_pass_trim_sweep.csv", "r", encoding="utf-8") as f:
     reader = csv.DictReader(f)
     for row in reader:
-        xs_tp.append(int(float(row["latin_trim_percent"])))
-        y_tp.append(float(row["top1_two_pass_percent"]))
+        key = (row["candidate_variant"], int(row["second_pass_topn"]))
+        two_pass_series.setdefault(key, ([], []))
+        two_pass_series[key][0].append(int(float(row["latin_trim_percent"])))
+        two_pass_series[key][1].append(float(row["top1_two_pass_percent"]))
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 5))
 ax0, ax1 = axes
 ax0.plot(xs_a, full_a, marker="o", label="Full LM head")
 ax0.plot(xs_a, routed_a, marker="o", label="Routed (longest_bytes)")
 ax0.plot(xs_b, routed_b, marker="o", label="Routed (highest_id)")
-ax0.plot(xs_tp, y_tp, marker="o", label="Two-pass (int4 g32 asym -> top1000 fp16)")
+for (variant, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1])):
+    ax0.plot(xs, ys, marker="o", label=f"Two-pass {variant} (top{topn})")
 ax0.set_xlabel("Latin trim percent")
 ax0.set_ylabel("Top-1 accuracy (%)")
 ax0.set_title("Trim strategies vs Full LM head")

@@ -828,6 +828,49 @@ def _evaluate_candidate_weight_top1(
     return 100.0 * correct / max(1, total)
 
 
+def _evaluate_two_pass_candidate_weight_top1(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    candidate_ids: torch.Tensor,
+    first_pass_weight_normalized: torch.Tensor,
+    second_pass_weight: torch.Tensor,
+    second_pass_topn: int,
+    split: str,
+    max_samples: int,
+    max_target_tokens: int,
+    device: torch.device,
+) -> float:
+    ds = load_dataset("Helsinki-NLP/opus-100", "en-es", split=split)
+    correct = 0
+    total = 0
+    topn = max(1, min(second_pass_topn, candidate_ids.numel()))
+    for ex in ds.select(range(min(max_samples, len(ds)))):
+        en = ex["translation"]["en"]
+        es = ex["translation"]["es"]
+        prompt = _build_3shot_prompt(en)
+        running = tokenizer(prompt, add_special_tokens=True, return_tensors="pt").input_ids.to(device)
+        target_ids = tokenizer(es, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
+        if target_ids.numel() == 0:
+            continue
+        steps = min(max_target_tokens, target_ids.size(1))
+        for idx in range(steps):
+            with torch.no_grad():
+                out = model(running, output_hidden_states=True, use_cache=False)
+            hidden_last = torch.nn.functional.normalize(out.hidden_states[-1][:, -1, :], dim=-1)
+            coarse_logits = torch.matmul(hidden_last, first_pass_weight_normalized.T)
+            shortlist_local = torch.topk(coarse_logits, k=topn, dim=-1).indices[0]
+            shortlist_weight = second_pass_weight.index_select(0, shortlist_local)
+            rerank_logits = torch.matmul(hidden_last.to(shortlist_weight.dtype), shortlist_weight.T).to(torch.float32)
+            pred_local = shortlist_local[torch.argmax(rerank_logits, dim=-1).item()]
+            pred_id = candidate_ids[pred_local].item()
+            gold_id = target_ids[0, idx].item()
+            if pred_id == gold_id:
+                correct += 1
+            total += 1
+            running = torch.cat([running, target_ids[:, idx : idx + 1]], dim=1)
+    return 100.0 * correct / max(1, total)
+
+
 def _run_quantization_sweep(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -907,35 +950,37 @@ def _run_two_pass_trim_sweep(
     model: AutoModelForCausalLM, tokenizer: AutoTokenizer, base_groups: Dict[str, Sequence[int]], split: str,
     max_samples: int, max_target_tokens: int, byte_fallback: bool, device: torch.device, report_dir: str,
     sweep_max_percent: int, sweep_step_percent: int, latin_trim_strategy: str, first_pass_bits: int,
-    first_pass_mode: str, first_pass_group_size: int, second_pass_topn: int, second_pass_dtype: str,
+    first_pass_mode: str, first_pass_group_size: int, second_pass_topn_values: Sequence[int], second_pass_dtype: str,
 ) -> None:
     os.makedirs(report_dir, exist_ok=True)
     percents = list(range(0, sweep_max_percent + 1, sweep_step_percent))
     rows = []
     base_weight = model.lm_head.weight.detach().to(device)
+    second_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16}.get(second_pass_dtype, torch.float32)
+    untrimmed_candidate = sorted(
+        set(base_groups["latin"]) | set(base_groups["punct"]) | (set(base_groups["byte"]) if byte_fallback else set())
+    )
     for pct in percents:
-        latin_ids = _trim_latin_token_ids(tokenizer, base_groups["latin"], float(pct), trim_strategy=latin_trim_strategy)
-        candidate = sorted(set(latin_ids) | set(base_groups["punct"]) | (set(base_groups["byte"]) if byte_fallback else set()))
-        candidate_ids = torch.tensor(candidate, dtype=torch.long, device=device)
-        fp_weight = base_weight.index_select(0, candidate_ids)
-        cfg = QuantConfig(bits=first_pass_bits, mode=first_pass_mode)
-        coarse = _quantize_weights(fp_weight, cfg, group_size=first_pass_group_size)
-        coarse_n = torch.nn.functional.normalize(coarse, dim=-1)
-        second = fp_weight.to({"float16": torch.float16, "bfloat16": torch.bfloat16}.get(second_pass_dtype, torch.float32))
-        acc = _evaluate_candidate_weight_top1(
-            model=model, tokenizer=tokenizer, candidate_ids=candidate_ids,
-            candidate_weight_normalized=torch.nn.functional.normalize(second, dim=-1),
-            split=split, max_samples=max_samples, max_target_tokens=max_target_tokens, device=device,
-        ) if second_pass_topn >= len(candidate) else _evaluate_candidate_weight_top1(
-            model=model, tokenizer=tokenizer, candidate_ids=candidate_ids,
-            candidate_weight_normalized=coarse_n, split=split, max_samples=max_samples, max_target_tokens=max_target_tokens, device=device,
-        )
-        rows.append((pct, len(candidate), acc))
-        print(f"- two-pass trim={pct}% candidates={len(candidate)} top1={acc:.2f}%")
+        latin_trimmed = _trim_latin_token_ids(tokenizer, base_groups["latin"], float(pct), trim_strategy=latin_trim_strategy)
+        trimmed_candidate = sorted(set(latin_trimmed) | set(base_groups["punct"]) | (set(base_groups["byte"]) if byte_fallback else set()))
+        for variant_name, candidate in [("trimmed", trimmed_candidate), ("untrimmed", untrimmed_candidate)]:
+            candidate_ids = torch.tensor(candidate, dtype=torch.long, device=device)
+            fp_weight = base_weight.index_select(0, candidate_ids)
+            coarse = _quantize_weights(fp_weight, QuantConfig(bits=first_pass_bits, mode=first_pass_mode), group_size=first_pass_group_size)
+            coarse_norm = torch.nn.functional.normalize(coarse, dim=-1)
+            second = fp_weight.to(second_dtype)
+            for topn in second_pass_topn_values:
+                acc = _evaluate_two_pass_candidate_weight_top1(
+                    model=model, tokenizer=tokenizer, candidate_ids=candidate_ids,
+                    first_pass_weight_normalized=coarse_norm, second_pass_weight=second, second_pass_topn=topn,
+                    split=split, max_samples=max_samples, max_target_tokens=max_target_tokens, device=device,
+                )
+                rows.append((pct, variant_name, topn, len(candidate), acc))
+                print(f"- two-pass {variant_name} trim={pct}% topn={topn} candidates={len(candidate)} top1={acc:.2f}%")
     csv_path = os.path.join(report_dir, "two_pass_trim_sweep.csv")
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["latin_trim_percent", "candidate_vocab_count", "top1_two_pass_percent"])
+        w.writerow(["latin_trim_percent", "candidate_variant", "second_pass_topn", "candidate_vocab_count", "top1_two_pass_percent"])
         w.writerows(rows)
 
 
@@ -1060,6 +1105,7 @@ def main() -> None:
     parser.add_argument("--two_pass_first_mode", type=str, default="group32_asymmetric")
     parser.add_argument("--two_pass_first_group_size", type=int, default=32)
     parser.add_argument("--two_pass_second_topn", type=int, default=1000)
+    parser.add_argument("--two_pass_second_topn_values", type=str, default="100,1000,10000")
     parser.add_argument("--two_pass_second_dtype", type=str, default="float16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--two_pass_report_dir", type=str, default="two_pass_trim_reports")
     parser.add_argument("--quant_group_size", type=int, default=32)
@@ -1178,6 +1224,9 @@ def main() -> None:
             device=device,
         )
     if args.two_pass_trim_sweep:
+        second_topn_values = [int(x.strip()) for x in args.two_pass_second_topn_values.split(",") if x.strip()]
+        if not second_topn_values:
+            second_topn_values = [args.two_pass_second_topn]
         _run_two_pass_trim_sweep(
             model=model,
             tokenizer=tokenizer,
@@ -1194,7 +1243,7 @@ def main() -> None:
             first_pass_bits=args.two_pass_first_bits,
             first_pass_mode=args.two_pass_first_mode,
             first_pass_group_size=args.two_pass_first_group_size,
-            second_pass_topn=args.two_pass_second_topn,
+            second_pass_topn_values=second_topn_values,
             second_pass_dtype=args.two_pass_second_dtype,
         )
     if args.chat_mode:
