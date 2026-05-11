@@ -1,0 +1,32 @@
+# Compare clustered LM head against a baseline linear LM head.
+# Baseline uses softmax attention and no MQA (n_kv_group == n_head).
+---
+
+common_group:
+  dataset: ["minipile"]
+  out_dir: ["out-lm-head-clustered-vs-baseline"]
+  eval_interval: [1000]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+
+parameter_groups:
+  # Baseline: standard linear lm_head, softmax attention, no MQA
+  - tensorboard_run_name: ["baseline_linear_softmax_no_mqa"]
+    attention_variant: ["causal"]
+    softmax_variant_attn: ["softmax"]
+    softmax_variant_output: ["softmax"]
+    n_head: [12]
+    n_kv_group: [12]
+    lm_head_variant: ["linear"]
+
+  # Variant: clustered lm_head with coarse-to-fine inference path
+  - tensorboard_run_name: ["clustered_lm_head_softmax_no_mqa"]
+    attention_variant: ["causal"]
+    softmax_variant_attn: ["softmax"]
+    softmax_variant_output: ["softmax"]
+    n_head: [12]
+    n_kv_group: [12]
+    lm_head_variant: ["clustered"]
+    lm_head_cluster_size: [256]
+    lm_head_inference_top_clusters: [1]

@@ -48,6 +48,47 @@ from initializations.initialization_variations import init_dictionary
 from shared_param_utils import SharedParamGroupCreator
 from variations.block_variations import Block
 
+
+
+class ClusteredLMHead(nn.Module):
+    """Two-level clustered LM head for faster inference via coarse-to-fine scoring."""
+
+    def __init__(self, n_embd, vocab_size, cluster_size=256, bias=False):
+        super().__init__()
+        if cluster_size < 1:
+            raise ValueError("lm_head_cluster_size must be >= 1")
+        self.n_clusters = max(1, math.ceil(vocab_size / cluster_size))
+        self.vocab_size = vocab_size
+        self.cluster_ids = torch.arange(vocab_size) // cluster_size
+        self.cluster_prototypes = nn.Parameter(torch.empty(self.n_clusters, n_embd))
+        self.token_embeddings = nn.Parameter(torch.empty(vocab_size, n_embd))
+        nn.init.normal_(self.cluster_prototypes, mean=0.0, std=0.02)
+        nn.init.normal_(self.token_embeddings, mean=0.0, std=0.02)
+        self.bias = nn.Parameter(torch.zeros(vocab_size)) if bias else None
+
+    def forward(self, x, inference_top_clusters=1):
+        if self.training:
+            logits = x @ self.token_embeddings.t()
+            if self.bias is not None:
+                logits = logits + self.bias
+            return logits
+
+        flat = x.reshape(-1, x.size(-1))
+        coarse = flat @ self.cluster_prototypes.t()
+        top_k = min(max(1, inference_top_clusters), self.n_clusters)
+        top_clusters = coarse.topk(top_k, dim=-1).indices
+        mask = self.cluster_ids.to(flat.device).unsqueeze(0) == top_clusters.unsqueeze(-1)
+        token_mask = mask.any(dim=1)
+        neg_inf = torch.finfo(flat.dtype).min
+        logits = flat.new_full((flat.size(0), self.vocab_size), neg_inf)
+        for row in range(flat.size(0)):
+            active = token_mask[row]
+            scores = flat[row] @ self.token_embeddings[active].t()
+            if self.bias is not None:
+                scores = scores + self.bias[active]
+            logits[row, active] = scores.to(dtype=logits.dtype)
+        return logits.view(*x.shape[:-1], self.vocab_size)
+
 class GPT(nn.Module):
 
     def __init__(self, config):
@@ -58,6 +99,7 @@ class GPT(nn.Module):
         self.config = config
 
         self.uses_numerical_multicontext = bool(config.numerical_multicontext)
+        self.lm_head_variant = getattr(config, 'lm_head_variant', 'linear')
         if self.uses_numerical_multicontext:
             if not config.multicontext:
                 raise ValueError("numerical_multicontext requires multicontext mode")
@@ -167,7 +209,10 @@ class GPT(nn.Module):
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
-                self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+                if self.lm_head_variant == 'clustered':
+                    self.lm_head = ClusteredLMHead(config.n_embd, config.vocab_size, cluster_size=config.lm_head_cluster_size, bias=False)
+                else:
+                    self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # Initialize and possibly import scale_up and scale_down matrices, if factorization is set
         if self.n_embd_wte:
@@ -195,7 +240,8 @@ class GPT(nn.Module):
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
-                self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
+                if self.lm_head_variant != 'clustered':
+                    self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
 
         # import wte
         if self.config.import_wte_npy:
@@ -225,6 +271,12 @@ class GPT(nn.Module):
         if non_embedding and self.config.use_abs_pos_embeddings:
             n_params -= sum(p.numel() for p in self.transformer.wpe.parameters())
         return n_params
+
+    def _apply_lm_head(self, x):
+        if self.lm_head_variant == 'clustered':
+            top_clusters = getattr(self.config, 'lm_head_inference_top_clusters', 1)
+            return self.lm_head(x, inference_top_clusters=top_clusters)
+        return self.lm_head(x)
 
     def update_block_size(self, new_block_size):
         # Function to increase block size dynamically
@@ -608,7 +660,7 @@ class GPT(nn.Module):
                 if self.config.multidataset_wte and dataset_idx is not None:
                     logits = self.transformer[f'lm_head_{dataset_idx}'](x)
                 else:
-                    logits = self.lm_head(x)
+                    logits = self._apply_lm_head(x)
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -624,7 +676,7 @@ class GPT(nn.Module):
                 if self.config.multidataset_wte and dataset_idx is not None:
                     logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
                 else:
-                    logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+                    logits = self._apply_lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -709,7 +761,7 @@ class GPT(nn.Module):
         if self.config.multidataset_wte and dataset_idx is not None:
             logits = self.transformer[f'lm_head_{dataset_idx}'](x)
         else:
-            logits = self.lm_head(x)
+            logits = self._apply_lm_head(x)
         if self.final_logit_softcapping is not None:
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping
