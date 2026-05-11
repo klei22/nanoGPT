@@ -70,6 +70,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
 python - <<'PY'
 import csv
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 
 def read_csv(path):
     xs, full, routed = [], [], []
@@ -129,4 +130,65 @@ plt.tight_layout()
 out_path = "latin_trim_reports_combined_accuracy.png"
 plt.savefig(out_path, dpi=180)
 print(f"Wrote combined graph: {out_path}")
+
+# Write combined raw-score CSV for easier inspection/spreadsheet use.
+combined_rows = []
+for pct, full, routed in zip(xs_a, full_a, routed_a):
+    combined_rows.append({
+        "series": "full_lm_head",
+        "latin_trim_percent": pct,
+        "top1_percent": full,
+        "extra": "from longest_bytes sweep",
+    })
+    combined_rows.append({
+        "series": "routed_longest_bytes",
+        "latin_trim_percent": pct,
+        "top1_percent": routed,
+        "extra": "",
+    })
+for pct, routed in zip(xs_b, routed_b):
+    combined_rows.append({
+        "series": "routed_highest_id",
+        "latin_trim_percent": pct,
+        "top1_percent": routed,
+        "extra": "",
+    })
+for (variant, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1])):
+    for pct, score in zip(xs, ys):
+        combined_rows.append({
+            "series": f"two_pass_{variant}_top{topn}",
+            "latin_trim_percent": pct,
+            "top1_percent": score,
+            "extra": f"candidate_variant={variant};second_pass_topn={topn}",
+        })
+for label, val in zip(quant_labels, quant_vals):
+    combined_rows.append({
+        "series": "quantization_bar",
+        "latin_trim_percent": "",
+        "top1_percent": val,
+        "extra": label,
+    })
+
+combined_csv_path = "latin_trim_reports_combined_scores.csv"
+with open(combined_csv_path, "w", encoding="utf-8", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=["series", "latin_trim_percent", "top1_percent", "extra"])
+    writer.writeheader()
+    writer.writerows(combined_rows)
+print(f"Wrote combined CSV: {combined_csv_path}")
+
+# Also emit an interactive Plotly HTML view.
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=xs_a, y=full_a, mode="lines+markers", name="Full LM head"))
+fig.add_trace(go.Scatter(x=xs_a, y=routed_a, mode="lines+markers", name="Routed (longest_bytes)"))
+fig.add_trace(go.Scatter(x=xs_b, y=routed_b, mode="lines+markers", name="Routed (highest_id)"))
+for (variant, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1])):
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", name=f"Two-pass {variant} (top{topn})"))
+fig.update_layout(
+    title="Trim strategies + two-pass variants (interactive)",
+    xaxis_title="Latin trim percent",
+    yaxis_title="Top-1 accuracy (%)",
+)
+plotly_html_path = "latin_trim_reports_combined_accuracy.html"
+fig.write_html(plotly_html_path, include_plotlyjs="cdn")
+print(f"Wrote interactive HTML: {plotly_html_path}")
 PY

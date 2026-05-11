@@ -166,6 +166,8 @@ bash huggingface_model/gemma/270M/demo_latin_trim_sweep.sh
 The demo runs both trim strategies (`longest_bytes`, `highest_id`) and then writes a combined comparison plot:
 
 - `latin_trim_reports_combined_accuracy.png` (full LM head + both routed strategies).
+- `latin_trim_reports_combined_scores.csv` (raw scores from all plotted series and quantization bars).
+- `latin_trim_reports_combined_accuracy.html` (interactive Plotly version of the main trim/two-pass comparison chart).
 - The same demo also runs a quantization sweep (8/6/5/4/3 bits; vector/group32; symmetric/asymmetric) on the 100% latin+punct(+byte) candidate set and includes it in the combined plot.
 - The demo now also runs two-pass experiments: first pass uses low precision (settable, e.g. `int4 group32 asymmetric`) and second pass reranks settable shortlist sizes (e.g. top-100/top-1000/top-10000) in settable higher precision (`float16`/`bfloat16`/`float32`). Curves are included for both trimmed and untrimmed candidate variants in the combined plot.
 
