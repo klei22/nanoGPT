@@ -90,6 +90,9 @@ class GPT(nn.Module):
 
         # General weight tying
         self.wte_weight_tying = config.wte_weight_tying
+        self.dual_wte_glu_head = config.dual_wte_glu_head
+        if self.dual_wte_glu_head and (config.n_embd_wte or config.multicontext or config.multidataset_wte):
+            raise ValueError("dual_wte_glu_head currently supports only the standard single-context non-factorized embedding path")
 
         # Factorization Parameters
         self.n_embd_wte = config.n_embd_wte
@@ -139,6 +142,8 @@ class GPT(nn.Module):
                     # no factorization
                     word_embd = nn.Embedding(config.vocab_size, config.n_embd)
                     self.transformer['wte'] = word_embd
+                    if self.dual_wte_glu_head:
+                        self.transformer['wte2'] = nn.Embedding(config.vocab_size, config.n_embd)
 
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
@@ -168,6 +173,8 @@ class GPT(nn.Module):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
                 self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+                if self.dual_wte_glu_head:
+                    self.lm_head2 = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # Initialize and possibly import scale_up and scale_down matrices, if factorization is set
         if self.n_embd_wte:
@@ -196,6 +203,8 @@ class GPT(nn.Module):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
                 self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
+                if self.dual_wte_glu_head:
+                    self.lm_head2.weight = self.transformer.wte2.weight
 
         # import wte
         if self.config.import_wte_npy:
@@ -543,6 +552,8 @@ class GPT(nn.Module):
                 tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
             else:
                 tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+                if self.dual_wte_glu_head:
+                    tok_emb = tok_emb + self.transformer.wte2(idx)
             x = None
 
             tok_emb = self.add_embedding_gaussian_noise(tok_emb, iter_num=iter_num)
@@ -607,6 +618,8 @@ class GPT(nn.Module):
                 # if we are given some desired targets also calculate the loss
                 if self.config.multidataset_wte and dataset_idx is not None:
                     logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+                elif self.dual_wte_glu_head:
+                    logits = self.lm_head(x) * self.lm_head2(x)
                 else:
                     logits = self.lm_head(x)
 
@@ -623,6 +636,8 @@ class GPT(nn.Module):
                 # inference-time mini-optimization: only forward the lm_head on the very last position
                 if self.config.multidataset_wte and dataset_idx is not None:
                     logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
+                elif self.dual_wte_glu_head:
+                    logits = self.lm_head(x[:, [-1], :]) * self.lm_head2(x[:, [-1], :])
                 else:
                     logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
 
@@ -650,6 +665,8 @@ class GPT(nn.Module):
             tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
         else:
             tok_emb = self.transformer.wte(idx)
+            if self.dual_wte_glu_head:
+                tok_emb = tok_emb + self.transformer.wte2(idx)
 
         tok_emb = self.add_embedding_gaussian_noise(tok_emb, iter_num=None)
 
@@ -708,6 +725,10 @@ class GPT(nn.Module):
 
         if self.config.multidataset_wte and dataset_idx is not None:
             logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+        elif self.dual_wte_glu_head:
+            logits_1 = self.lm_head(x)
+            logits_2 = self.lm_head2(x)
+            logits = logits_1 * logits_2
         else:
             logits = self.lm_head(x)
         if self.final_logit_softcapping is not None:
