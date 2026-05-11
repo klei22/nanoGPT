@@ -1385,6 +1385,34 @@ class Trainer:
             return 0.0
         return vocab_size / math.exp(loss_value)
 
+    def _log_lm_head_vocab_magnitude_histogram(self, target_dataset: str) -> None:
+        if (
+            not self.args.tensorboard_log
+            or self.writer is None
+            or not self.args.log_lm_head_vocab_hist
+            or self.iter_num % self.args.log_lm_head_vocab_hist_interval != 0
+        ):
+            return
+
+        lm_head = getattr(self.model, "lm_head", None)
+        if self.args.training_mode == "multicontext" and hasattr(self.model, "transformer"):
+            try:
+                dataset_idx = self.args.multicontext_datasets.index(target_dataset)
+            except ValueError:
+                dataset_idx = 0
+            lm_head = self.model.transformer.get(f"lm_head_{dataset_idx}", lm_head)
+
+        if lm_head is None or not hasattr(lm_head, "weight"):
+            return
+
+        with torch.no_grad():
+            magnitudes = lm_head.weight.detach().norm(dim=1).float().cpu()
+        self.writer.add_histogram(
+            f"{target_dataset}/lm_head_vocab_vector_magnitude",
+            magnitudes,
+            self.iter_num,
+        )
+
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance):
         compute_rankme = self.args.log_rankme or self.args.log_areq
 
@@ -1485,6 +1513,7 @@ class Trainer:
 
             self._log_zeus_tensorboard(target_dataset, tokens_trained)
             self._log_bit_metrics(target_dataset, tokens_trained)
+            self._log_lm_head_vocab_magnitude_histogram(target_dataset)
 
 
         if self.args.csv_log:
@@ -1586,6 +1615,7 @@ class Trainer:
 
             self._log_zeus_tensorboard(target_dataset, tokens_trained)
             self._log_bit_metrics(target_dataset, tokens_trained)
+            self._log_lm_head_vocab_magnitude_histogram(target_dataset)
 
     def write_to_csv(self, *args, prefix=""):
         args = list(args)
