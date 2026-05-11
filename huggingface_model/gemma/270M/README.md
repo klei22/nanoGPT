@@ -213,7 +213,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
 
 - Pairwise mode: select any two vocabulary tokens and compute their angle in degrees plus each vector magnitude.
 - Single-token mode: select one token and produce a full nearest→furthest angle-sorted vocabulary list, including magnitudes.
-- Token picker supports case-insensitive substring matching across raw tokens and display-normalized variants, so typing partial strings like `refix` can match `prefix` and `Hello` can surface `hello`, `_hello`, `Hello`, etc. (depending on tokenizer vocabulary entries).
+- Token picker supports both selection by token ID and case-insensitive substring matching across raw tokens and display-normalized variants, so typing partial strings like `refix` can match `prefix` and `Hello` can surface `hello`, `_hello`, `Hello`, etc. (depending on tokenizer vocabulary entries).
 
 Run:
 

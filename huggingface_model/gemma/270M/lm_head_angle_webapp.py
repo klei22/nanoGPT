@@ -8,10 +8,8 @@ Features:
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterable
 
 import pandas as pd
 import streamlit as st
@@ -101,13 +99,42 @@ def neighborhood(weight: torch.Tensor, norms: torch.Tensor, anchor_id: int) -> p
 
 
 def token_picker(prefix: str, infos: list[TokenInfo], max_results: int = 200) -> tuple[str, int | None]:
-    query = st.text_input(f"{prefix} query", placeholder="Type token text or substring (case-insensitive)")
+    method = st.radio(
+        f"{prefix} selection method",
+        options=["Search text", "Enter token id"],
+        horizontal=True,
+        key=f"{prefix}_method",
+    )
+
+    if method == "Enter token id":
+        token_id = st.number_input(
+            f"{prefix} token id",
+            min_value=0,
+            max_value=len(infos) - 1,
+            value=0,
+            step=1,
+            key=f"{prefix}_token_id",
+        )
+        selected_id = int(token_id)
+        st.caption(f"Selected: {label(infos[selected_id])}")
+        return "", selected_id
+
+    query = st.text_input(
+        f"{prefix} query",
+        placeholder="Type token text or substring (case-insensitive)",
+        key=f"{prefix}_query",
+    )
     candidates = search_tokens(infos, query, max_results=max_results)
     if not candidates:
         st.warning("No matching tokens found.")
         return query, None
 
-    selected_label = st.selectbox(f"{prefix} matches", [label(x) for x in candidates], index=0)
+    selected_label = st.selectbox(
+        f"{prefix} matches",
+        [label(x) for x in candidates],
+        index=0,
+        key=f"{prefix}_matches",
+    )
     selected_id = int(selected_label.split("|", 1)[0])
     return query, selected_id
 
