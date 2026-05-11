@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Run sweep with longest-bytes trimming strategy
-python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+python latin_punct_router_eval.py \
   --model_name google/gemma-3-270m-it \
   --route_mode latin_punct_only \
   --latin_trim_sweep \
@@ -19,7 +19,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --byte_fallback
 
 # Run sweep with highest-id trimming strategy
-python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+python latin_punct_router_eval.py \
   --model_name google/gemma-3-270m-it \
   --route_mode latin_punct_only \
   --latin_trim_sweep \
@@ -36,7 +36,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --byte_fallback
 
 # Run quantization sweep on 100% latin+punct(+byte) candidate set
-python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+python latin_punct_router_eval.py \
   --model_name google/gemma-3-270m-it \
   --route_mode latin_punct_only \
   --quantization_sweep \
@@ -49,7 +49,7 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
 
 # Run trimmed-vocab two-pass sweep:
 # first pass low-precision shortlist, second pass rerank budget (top-N settable).
-python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+python latin_punct_router_eval.py \
   --model_name google/gemma-3-270m-it \
   --two_pass_trim_sweep \
   --two_pass_first_bits 4 \
