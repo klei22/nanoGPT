@@ -65,6 +65,87 @@ python huggingface_model/gemma/270M/jl_head_eval.py \
   --output_dir jl_eval_outputs
 ```
 
+## Token-angle dashboard + island exports
+
+`vocab_angle_token_dashboard.py` adds an interactive Plotly dashboard for selected
+tokens and exports connected-component island files for the full vocab graph at a
+chosen angle threshold.
+
+Highlights:
+
+* `--tokens`: comma-separated tokens to inspect (e.g., digits, months, weekdays).
+* `selected_token_dashboard.html`: interactive histogram + token-id scatter of
+  selected-token angles to the rest of the vocab.
+* `selected_token_reports/*.csv`: per-selected-token nearest-angle lists.
+* `islands/*.txt`: one uniquely named file per connected island (`uuid` suffix),
+  with token id, token string, and graph degree.
+
+Demo scripts:
+
+```bash
+bash ./demo_angle_dashboard_digits.sh
+bash ./demo_angle_dashboard_months.sh
+bash ./demo_angle_dashboard_weekdays.sh
+bash ./demo_islands_20deg.sh
+```
+
+## Interactive webapp: angle-neighborhood explorer (Gemma + Gemma-IT)
+
+`vocab_angle_explorer_app.py` runs a local Dash webapp that compares:
+
+* `google/gemma-3-270m`
+* `google/gemma-3-270m-it`
+
+It visualizes, per selected token, how many vocab vectors fall within angle
+bins over a configurable range (defaults `10` to `90` degrees with 10-degree
+stack bins).
+
+Features:
+
+* Presets: `digits` (default), `weekdays`, `months`, `alphabet`, `all`
+* Regex token filter
+* Sort mode: alphabetical, highest→lowest, lowest→highest
+* Stacked histogram in both models
+* Click a token bar, then export a CSV listing all tokens with:
+  token id, degree separation, dot product, normalized dot product
+
+Run:
+
+```bash
+python ./vocab_angle_explorer_app.py \
+  --model-base google/gemma-3-270m \
+  --model-it google/gemma-3-270m-it \
+  --device cpu \
+  --port 8050 \
+  --output-dir ./gemma_angle_explorer_exports
+```
+
+## Digit-only quantization angle comparison
+
+`digit_quant_angle_comparison.py` compares pairwise angles for digits `0-9`
+under full precision (`fp32`) and symmetric quantization modes:
+
+* int8, int7, int6, int5, int4, int3
+* ternary
+* binary
+
+Outputs:
+
+* `angles_<mode>.csv` angle matrix for each mode.
+* `digit_<d>_relative_angles.png` one plot per digit, showing baseline vs all
+  quantized curves against all other digits.
+* `digit_token_ids.csv` for the resolved token IDs.
+* `tsne_structure_all_modes.png` for approximate global structure view.
+* `distortion_<token>.png` signed angular distortion per token vs fp32 baseline.
+* `relative_angles_selector.html` interactive Plotly page with token dropdown and
+  per-quantization disorder labels indicating rank-order changes vs fp32.
+
+Demo:
+
+```bash
+bash ./demo_digit_quant_angles.sh
+bash ./demo_weekday_quant_angles.sh
+bash ./demo_month_quant_angles.sh
 ## Latin/punctuation/other manual router (OPUS-100 en-es)
 
 `latin_punct_router_eval.py` builds three token groups from the Gemma vocabulary:
@@ -166,7 +247,10 @@ bash huggingface_model/gemma/270M/demo_latin_trim_sweep.sh
 The demo runs both trim strategies (`longest_bytes`, `highest_id`) and then writes a combined comparison plot:
 
 - `latin_trim_reports_combined_accuracy.png` (full LM head + both routed strategies).
+- `latin_trim_reports_combined_scores.csv` (raw scores from all plotted series and quantization bars).
+- `latin_trim_reports_combined_accuracy.html` (interactive Plotly version of the main trim/two-pass comparison chart).
 - The same demo also runs a quantization sweep (8/6/5/4/3 bits; vector/group32; symmetric/asymmetric) on the 100% latin+punct(+byte) candidate set and includes it in the combined plot.
+- The demo now also runs two-pass experiments: first pass sweeps low-precision configs (`group32` and `vector` × `asymmetric`/`symmetric` × int4/int3), and second pass reranks shortlist sizes `top-1/top-10/top-100/top-1000/top-10000` in settable higher precision (`float16`/`bfloat16`/`float32`). Curves are included for both trimmed and untrimmed candidate variants in the combined plot.
 
 Direct CLI equivalent:
 
@@ -226,3 +310,17 @@ Notes:
 
 - Default model is `google/gemma-3-270m`; replace in the sidebar if you want `-it` or a local checkpoint path.
 - For very large vocab scans, CPU mode may take longer; CUDA is supported when available.
+Standalone trimmed-vocab two-pass sweep:
+
+```bash
+python huggingface_model/gemma/270M/latin_punct_router_eval.py \
+  --two_pass_trim_sweep \
+  --two_pass_first_configs group32_asymmetric:4,group32_symmetric:4,vector_asymmetric:4,vector_symmetric:4,group32_asymmetric:3,group32_symmetric:3,vector_asymmetric:3,vector_symmetric:3 \
+  --two_pass_first_group_size 32 \
+  --two_pass_second_topn_values 1,10,100,1000,10000 \
+  --two_pass_second_dtype float16 \
+  --latin_trim_strategy longest_bytes \
+  --latin_trim_sweep_max 80 \
+  --latin_trim_sweep_step 10 \
+  --two_pass_report_dir two_pass_trim_reports
+```
