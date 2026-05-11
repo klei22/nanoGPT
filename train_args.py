@@ -615,6 +615,12 @@ def parse_args():
     model_group.add_argument('--use_flex_attn', default=None,  action=argparse.BooleanOptionalAction, help="option for using flex attention for sliding windows")
     model_group.add_argument('--attn_logit_softcapping', default=None, action=argparse.BooleanOptionalAction, help="option for softcapping attention (before masking)")
     model_group.add_argument('--final_logit_softcapping', default=None, action=argparse.BooleanOptionalAction, help="option for softcapping final logits")
+    model_group.add_argument('--lm_head_geometry', type=str, default='euclidean', choices=['euclidean', 'hyperspherical', 'hyperbolic'],
+                             help='Geometry for output classifier logits.')
+    model_group.add_argument('--lm_head_logit_scale', type=float, default=1.0,
+                             help='Global scale on LM head logits (all geometries).')
+    model_group.add_argument('--lm_head_hyperbolic_c', type=float, default=1.0,
+                             help='Positive curvature parameter c for hyperbolic LM head.')
     model_group.add_argument('--use_ln_f_input_mixer', default=False, action=argparse.BooleanOptionalAction, help='blend outputs of all blocks before final layer norm')
     model_group.add_argument('--ln_f_input_mixer_variant', default='linear', type=str,
                              choices=['linear', 'router_top1', 'router_topk', 'decoder'],

@@ -40,6 +40,7 @@ from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from variations.output_vector_variants import output_vector_variant_dict
 from variations.numerical_mapping_variations import get_numerical_embedding, get_numerical_output
+from variations.lm_head_variations import lm_head_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -134,7 +135,7 @@ class GPT(nn.Module):
                     for i, vocab_size in enumerate(self.config.vocab_sizes):
                         embedding_layer = nn.Embedding(vocab_size, config.n_embd)
                         self.transformer[f'wte_{i}'] = embedding_layer
-                        self.transformer[f'lm_head_{i}'] = nn.Linear(config.n_embd, vocab_size, bias=False)
+                        self.transformer[f'lm_head_{i}'] = self.build_lm_head(config.n_embd, vocab_size)
                 else:
                     # no factorization
                     word_embd = nn.Embedding(config.vocab_size, config.n_embd)
@@ -160,14 +161,14 @@ class GPT(nn.Module):
             self.softmax_layer_output = softmax_dictionary[config.softmax_variant_output](config)
 
         if config.n_embd_wte:
-            self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
+            self.lm_head = self.build_lm_head(config.n_embd_wte, config.vocab_size)
         else:
             #TODO: currently multicontext is in own category, add support later for WTE factorization
             if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
-                self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+                self.lm_head = self.build_lm_head(config.n_embd, config.vocab_size)
 
         # Initialize and possibly import scale_up and scale_down matrices, if factorization is set
         if self.n_embd_wte:
@@ -244,6 +245,12 @@ class GPT(nn.Module):
             if getattr(norm_config, src, None) is not None:
                 setattr(norm_config, f"hsnorm_{attr}", getattr(norm_config, src))
         return norm_dictionary[getattr(config, variant_key)](norm_config)
+
+    def build_lm_head(self, in_features: int, vocab_size: int):
+        variant = getattr(self.config, "lm_head_geometry", "euclidean")
+        if variant not in lm_head_dictionary:
+            raise ValueError(f"Unsupported lm_head_geometry: {variant}")
+        return lm_head_dictionary[variant](in_features, vocab_size, self.config)
 
     def _init_weights(self, module):
         """
