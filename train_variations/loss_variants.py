@@ -105,6 +105,34 @@ class BitBalancedCrossEntropy:
         return base + self.bit_penalty * normalized
 
 
+def relu2_cross_entropy_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Cross-entropy style loss using ReLU(logits)^2-normalized probabilities."""
+
+    logits_flat = logits.view(-1, logits.size(-1))
+    targets_flat = targets.view(-1)
+    mask = targets_flat != -1
+
+    if not mask.any():
+        return logits.new_full((), 0.0)
+
+    logits_sel = logits_flat[mask]
+    targets_sel = targets_flat[mask]
+
+    relu2 = torch.relu(logits_sel).pow(2)
+    denom = relu2.sum(dim=-1, keepdim=True)
+    probs = relu2 / torch.clamp(denom, min=eps)
+
+    target_probs = probs.gather(dim=-1, index=targets_sel.unsqueeze(-1)).squeeze(-1)
+    nll = -torch.log(torch.clamp(target_probs, min=eps))
+    return nll.mean()
+
+
 def label_smoothing_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -488,6 +516,7 @@ def entropy_rank_distance_focal_loss(
 
 LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
     "cross_entropy": cross_entropy_loss,
+    "relu2_cross_entropy": relu2_cross_entropy_loss,
     "label_smoothing": label_smoothing_loss,
     "focal": focal_loss,
     "top1_focus": top1_focus_loss,
@@ -598,6 +627,7 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
 
     built_losses: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
         "cross_entropy": LOSS_VARIANTS["cross_entropy"],
+        "relu2_cross_entropy": LOSS_VARIANTS["relu2_cross_entropy"],
         "label_smoothing": lambda l, t, *, iter_num=None: LOSS_VARIANTS["label_smoothing"](
             l, t, iter_num=iter_num, smoothing=getattr(args, "label_smoothing", 0.1)
         ),

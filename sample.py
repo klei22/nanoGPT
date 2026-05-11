@@ -86,6 +86,8 @@ def parse_args():
     # Visualizations
     parser.add_argument('--show_heatmaps', default=False, action=argparse.BooleanOptionalAction, help="Show heatmaps of top-k choices for each token")
     parser.add_argument('--show_minmax_chart', default=False, action=argparse.BooleanOptionalAction, help="Output a line chart of the chosen-token logits used for minmax colorization")
+    parser.add_argument('--sampling_activation', type=str, default='auto', choices=['auto', 'softmax', 'relu2'],
+                        help='Activation used to convert logits to sampling probabilities. auto uses checkpoint softmax_variant_output when available.')
     parser.add_argument(
         '--softmax_threshold',
         type=float,
@@ -202,6 +204,25 @@ def append_to_sample_file(sample_file, output_line, start_token, k_tag, iter_num
 
         file.write(header + output_line + '\n\n')
 
+def compute_sampling_probs(logits: torch.Tensor, activation: str = "softmax") -> torch.Tensor:
+    """Convert logits to sampling probabilities using the requested activation."""
+    if activation == "relu2":
+        relu2 = torch.relu(logits).pow(2)
+        denom = relu2.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        return relu2 / denom
+    return F.softmax(logits, dim=-1)
+
+
+
+
+def resolve_sampling_activation(requested: str, model) -> str:
+    """Resolve sampling activation using CLI choice and model config."""
+    if requested != "auto":
+        return requested
+    variant = getattr(model.config, "softmax_variant_output", "softmax")
+    if variant == "relu2max":
+        return "relu2"
+    return "softmax"
 def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
     """
@@ -628,7 +649,7 @@ def sample_with_existing_model(
                         alpha = 1.0 if len(args.cosine_penalty) < 2 else args.cosine_penalty[1]
 
                         # Calculate original probabilities for comparison
-                        probs_before = F.softmax(raw_logits_row / temperature, dim=-1)
+                        probs_before = compute_sampling_probs(raw_logits_row / temperature, args.sampling_activation)
 
 
                         # Apply penalty as long as there are tokens in the context and N > 0
@@ -649,7 +670,7 @@ def sample_with_existing_model(
                             raw_logits_row = raw_logits_row - penalty
 
                             # Calculate KL divergence to measure the change
-                            probs_after = F.softmax(raw_logits_row / temperature, dim=-1)
+                            probs_after = compute_sampling_probs(raw_logits_row / temperature, args.sampling_activation)
                             # Add a small epsilon to avoid log(0)
                             kl_div = F.kl_div(torch.log(probs_after + 1e-9), probs_before, reduction='sum')
                             kl_divergences.append(kl_div.item())
@@ -662,7 +683,7 @@ def sample_with_existing_model(
                     # Apply the selected truncation logic
                     if args.softmax_threshold is not None:
                         # Calculate probabilities and find the threshold
-                        probs = F.softmax(logits, dim=-1)
+                        probs = compute_sampling_probs(logits, args.sampling_activation)
                         max_prob = torch.max(probs)
                         prob_threshold = max_prob * args.softmax_threshold
                         # Set probabilities of tokens below the threshold to 0
@@ -673,7 +694,7 @@ def sample_with_existing_model(
 
                     if args.softmax_threshold is not None:
                         # Calculate probabilities and find the threshold
-                        probs = F.softmax(logits, dim=-1)
+                        probs = compute_sampling_probs(logits, args.sampling_activation)
                         max_prob = torch.max(probs)
                         prob_threshold = max_prob * args.softmax_threshold
                         # Set probabilities of tokens below the threshold to 0
@@ -686,11 +707,11 @@ def sample_with_existing_model(
                         v, _ = torch.topk(logits, min(current_k, logits.size(-1)))
                         logits[logits < v[:, [-1]]] = -float("inf")
                         topk_row = logits[0].clone()               # post-mask
-                        probs = F.softmax(logits, dim=-1) # Re-softmax after masking
+                        probs = compute_sampling_probs(logits, args.sampling_activation) # Re-softmax after masking
                         idx_next = torch.multinomial(probs, num_samples=1)
                     else: # No truncation / default case
                         topk_row = logits[0].clone()
-                        probs = F.softmax(logits, dim=-1)
+                        probs = compute_sampling_probs(logits, args.sampling_activation)
                         idx_next = torch.multinomial(probs, num_samples=1)
 
                     x = torch.cat((x, idx_next), dim=1)
@@ -1409,6 +1430,9 @@ def main():
     if args.init_from == 'resume' and args.multicontext is None:
         args.multicontext = bool(getattr(model.config, "multicontext", False))
 
+    args.sampling_activation = resolve_sampling_activation(args.sampling_activation, model)
+    print(f"Sampling activation: {args.sampling_activation}")
+
     if (
         args.init_from == 'resume'
         and args.multicontext
@@ -1685,7 +1709,7 @@ def main():
                                 v, _ = torch.topk(cur_logits, k)
                                 cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
 
-                            probs = F.softmax(cur_logits, dim=-1)
+                            probs = compute_sampling_probs(cur_logits, args.sampling_activation)
                             idx_next = torch.multinomial(probs, num_samples=1)
 
                         token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
