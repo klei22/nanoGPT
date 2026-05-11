@@ -291,6 +291,25 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --quant_report_dir quantization_reports
 ```
 
+## LM-head angle webapp (token-to-token geometry)
+
+`lm_head_angle_webapp.py` provides a Streamlit UI for inspecting LM-head vector geometry:
+
+- Pairwise mode: select any two vocabulary tokens and compute their angle in degrees plus each vector magnitude.
+- Single-token mode: select one token and produce a full nearest→furthest angle-sorted vocabulary list, including magnitudes.
+- Token picker supports both selection by token ID and case-insensitive substring matching across raw tokens and display-normalized variants, so typing partial strings like `refix` can match `prefix` and `Hello` can surface `hello`, `_hello`, `Hello`, etc. (depending on tokenizer vocabulary entries).
+
+Run:
+
+```bash
+pip install streamlit transformers torch pandas
+streamlit run huggingface_model/gemma/270M/lm_head_angle_webapp.py
+```
+
+Notes:
+
+- Default model is `google/gemma-3-270m`; replace in the sidebar if you want `-it` or a local checkpoint path.
+- For very large vocab scans, CPU mode may take longer; CUDA is supported when available.
 Standalone trimmed-vocab two-pass sweep:
 
 ```bash
