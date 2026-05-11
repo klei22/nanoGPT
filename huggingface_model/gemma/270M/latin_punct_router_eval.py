@@ -949,8 +949,8 @@ def _run_quantization_sweep(
 def _run_two_pass_trim_sweep(
     model: AutoModelForCausalLM, tokenizer: AutoTokenizer, base_groups: Dict[str, Sequence[int]], split: str,
     max_samples: int, max_target_tokens: int, byte_fallback: bool, device: torch.device, report_dir: str,
-    sweep_max_percent: int, sweep_step_percent: int, latin_trim_strategy: str, first_pass_bits: int,
-    first_pass_mode: str, first_pass_group_size: int, second_pass_topn_values: Sequence[int], second_pass_dtype: str,
+    sweep_max_percent: int, sweep_step_percent: int, latin_trim_strategy: str, first_pass_configs: Sequence[QuantConfig],
+    first_pass_group_size: int, second_pass_topn_values: Sequence[int], second_pass_dtype: str,
 ) -> None:
     os.makedirs(report_dir, exist_ok=True)
     percents = list(range(0, sweep_max_percent + 1, sweep_step_percent))
@@ -966,21 +966,35 @@ def _run_two_pass_trim_sweep(
         for variant_name, candidate in [("trimmed", trimmed_candidate), ("untrimmed", untrimmed_candidate)]:
             candidate_ids = torch.tensor(candidate, dtype=torch.long, device=device)
             fp_weight = base_weight.index_select(0, candidate_ids)
-            coarse = _quantize_weights(fp_weight, QuantConfig(bits=first_pass_bits, mode=first_pass_mode), group_size=first_pass_group_size)
-            coarse_norm = torch.nn.functional.normalize(coarse, dim=-1)
             second = fp_weight.to(second_dtype)
-            for topn in second_pass_topn_values:
-                acc = _evaluate_two_pass_candidate_weight_top1(
-                    model=model, tokenizer=tokenizer, candidate_ids=candidate_ids,
-                    first_pass_weight_normalized=coarse_norm, second_pass_weight=second, second_pass_topn=topn,
-                    split=split, max_samples=max_samples, max_target_tokens=max_target_tokens, device=device,
-                )
-                rows.append((pct, variant_name, topn, len(candidate), acc))
-                print(f"- two-pass {variant_name} trim={pct}% topn={topn} candidates={len(candidate)} top1={acc:.2f}%")
+            for cfg in first_pass_configs:
+                coarse = _quantize_weights(fp_weight, cfg, group_size=first_pass_group_size)
+                coarse_norm = torch.nn.functional.normalize(coarse, dim=-1)
+                for topn in second_pass_topn_values:
+                    acc = _evaluate_two_pass_candidate_weight_top1(
+                        model=model, tokenizer=tokenizer, candidate_ids=candidate_ids,
+                        first_pass_weight_normalized=coarse_norm, second_pass_weight=second, second_pass_topn=topn,
+                        split=split, max_samples=max_samples, max_target_tokens=max_target_tokens, device=device,
+                    )
+                    rows.append((pct, variant_name, cfg.mode, cfg.bits, topn, len(candidate), acc))
+                    print(
+                        f"- two-pass {variant_name} trim={pct}% first={cfg.mode}/{cfg.bits}b "
+                        f"topn={topn} candidates={len(candidate)} top1={acc:.2f}%"
+                    )
     csv_path = os.path.join(report_dir, "two_pass_trim_sweep.csv")
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["latin_trim_percent", "candidate_variant", "second_pass_topn", "candidate_vocab_count", "top1_two_pass_percent"])
+        w.writerow(
+            [
+                "latin_trim_percent",
+                "candidate_variant",
+                "first_pass_mode",
+                "first_pass_bits",
+                "second_pass_topn",
+                "candidate_vocab_count",
+                "top1_two_pass_percent",
+            ]
+        )
         w.writerows(rows)
 
 
@@ -1103,9 +1117,18 @@ def main() -> None:
     parser.add_argument("--two_pass_trim_sweep", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--two_pass_first_bits", type=int, default=4)
     parser.add_argument("--two_pass_first_mode", type=str, default="group32_asymmetric")
+    parser.add_argument(
+        "--two_pass_first_configs",
+        type=str,
+        default=(
+            "group32_asymmetric:4,group32_symmetric:4,vector_asymmetric:4,vector_symmetric:4,"
+            "group32_asymmetric:3,group32_symmetric:3,vector_asymmetric:3,vector_symmetric:3"
+        ),
+        help="Comma-separated first-pass configs in mode:bits form.",
+    )
     parser.add_argument("--two_pass_first_group_size", type=int, default=32)
     parser.add_argument("--two_pass_second_topn", type=int, default=1000)
-    parser.add_argument("--two_pass_second_topn_values", type=str, default="100,1000,10000")
+    parser.add_argument("--two_pass_second_topn_values", type=str, default="1,10,100,1000,10000")
     parser.add_argument("--two_pass_second_dtype", type=str, default="float16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--two_pass_report_dir", type=str, default="two_pass_trim_reports")
     parser.add_argument("--quant_group_size", type=int, default=32)
@@ -1227,6 +1250,15 @@ def main() -> None:
         second_topn_values = [int(x.strip()) for x in args.two_pass_second_topn_values.split(",") if x.strip()]
         if not second_topn_values:
             second_topn_values = [args.two_pass_second_topn]
+        first_pass_configs = []
+        for item in args.two_pass_first_configs.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            mode, bits = item.split(":")
+            first_pass_configs.append(QuantConfig(bits=int(bits), mode=mode.strip()))
+        if not first_pass_configs:
+            first_pass_configs = [QuantConfig(bits=args.two_pass_first_bits, mode=args.two_pass_first_mode)]
         _run_two_pass_trim_sweep(
             model=model,
             tokenizer=tokenizer,
@@ -1240,8 +1272,7 @@ def main() -> None:
             sweep_max_percent=args.latin_trim_sweep_max,
             sweep_step_percent=args.latin_trim_sweep_step,
             latin_trim_strategy=args.latin_trim_strategy,
-            first_pass_bits=args.two_pass_first_bits,
-            first_pass_mode=args.two_pass_first_mode,
+            first_pass_configs=first_pass_configs,
             first_pass_group_size=args.two_pass_first_group_size,
             second_pass_topn_values=second_topn_values,
             second_pass_dtype=args.two_pass_second_dtype,

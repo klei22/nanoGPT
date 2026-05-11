@@ -54,8 +54,9 @@ python huggingface_model/gemma/270M/latin_punct_router_eval.py \
   --two_pass_trim_sweep \
   --two_pass_first_bits 4 \
   --two_pass_first_mode group32_asymmetric \
+  --two_pass_first_configs group32_asymmetric:4,group32_symmetric:4,vector_asymmetric:4,vector_symmetric:4,group32_asymmetric:3,group32_symmetric:3,vector_asymmetric:3,vector_symmetric:3 \
   --two_pass_first_group_size 32 \
-  --two_pass_second_topn_values 100,1000,10000 \
+  --two_pass_second_topn_values 1,10,100,1000,10000 \
   --two_pass_second_dtype float16 \
   --latin_trim_strategy longest_bytes \
   --latin_trim_sweep_max 80 \
@@ -102,7 +103,12 @@ two_pass_series = {}
 with open("two_pass_trim_reports/two_pass_trim_sweep.csv", "r", encoding="utf-8") as f:
     reader = csv.DictReader(f)
     for row in reader:
-        key = (row["candidate_variant"], int(row["second_pass_topn"]))
+        key = (
+            row["candidate_variant"],
+            row.get("first_pass_mode", "unknown"),
+            int(row.get("first_pass_bits", 0)),
+            int(row["second_pass_topn"]),
+        )
         two_pass_series.setdefault(key, ([], []))
         two_pass_series[key][0].append(int(float(row["latin_trim_percent"])))
         two_pass_series[key][1].append(float(row["top1_two_pass_percent"]))
@@ -112,8 +118,8 @@ ax0, ax1 = axes
 ax0.plot(xs_a, full_a, marker="o", label="Full LM head")
 ax0.plot(xs_a, routed_a, marker="o", label="Routed (longest_bytes)")
 ax0.plot(xs_b, routed_b, marker="o", label="Routed (highest_id)")
-for (variant, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1])):
-    ax0.plot(xs, ys, marker="o", label=f"Two-pass {variant} (top{topn})")
+for (variant, mode, bits, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3])):
+    ax0.plot(xs, ys, marker="o", label=f"Two-pass {variant} ({mode}/{bits}b, top{topn})")
 ax0.set_xlabel("Latin trim percent")
 ax0.set_ylabel("Top-1 accuracy (%)")
 ax0.set_title("Trim strategies vs Full LM head")
@@ -153,13 +159,13 @@ for pct, routed in zip(xs_b, routed_b):
         "top1_percent": routed,
         "extra": "",
     })
-for (variant, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1])):
+for (variant, mode, bits, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3])):
     for pct, score in zip(xs, ys):
         combined_rows.append({
-            "series": f"two_pass_{variant}_top{topn}",
+            "series": f"two_pass_{variant}_{mode}_{bits}b_top{topn}",
             "latin_trim_percent": pct,
             "top1_percent": score,
-            "extra": f"candidate_variant={variant};second_pass_topn={topn}",
+            "extra": f"candidate_variant={variant};first_pass_mode={mode};first_pass_bits={bits};second_pass_topn={topn}",
         })
 for label, val in zip(quant_labels, quant_vals):
     combined_rows.append({
@@ -181,8 +187,8 @@ fig = go.Figure()
 fig.add_trace(go.Scatter(x=xs_a, y=full_a, mode="lines+markers", name="Full LM head"))
 fig.add_trace(go.Scatter(x=xs_a, y=routed_a, mode="lines+markers", name="Routed (longest_bytes)"))
 fig.add_trace(go.Scatter(x=xs_b, y=routed_b, mode="lines+markers", name="Routed (highest_id)"))
-for (variant, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1])):
-    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", name=f"Two-pass {variant} (top{topn})"))
+for (variant, mode, bits, topn), (xs, ys) in sorted(two_pass_series.items(), key=lambda x: (x[0][0], x[0][1], x[0][2], x[0][3])):
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines+markers", name=f"Two-pass {variant} ({mode}/{bits}b, top{topn})"))
 fig.update_layout(
     title="Trim strategies + two-pass variants (interactive)",
     xaxis_title="Latin trim percent",
