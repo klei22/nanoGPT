@@ -2,7 +2,6 @@
 from contextlib import nullcontext
 import csv
 import json
-import html
 import math
 import os
 import random
@@ -1414,7 +1413,7 @@ class Trainer:
             self.iter_num,
         )
 
-    def _get_vocab_label(self, token_id: int) -> str:
+    def _get_vocab_label_parts(self, token_id: int) -> tuple[str, str]:
         token_text = None
         if hasattr(self, "itos") and self.itos is not None and token_id < len(self.itos):
             token_text = self.itos[token_id]
@@ -1425,8 +1424,9 @@ class Trainer:
                 token_text = None
         if token_text is None:
             token_text = f"<id:{token_id}>"
-        escaped = html.escape(str(token_text)).replace("\n", "\\n")
-        return f"{token_id}: {escaped}"
+        raw = str(token_text)
+        human = raw.encode("unicode_escape").decode("utf-8")
+        return raw, human
 
     def _export_lm_head_vocab_histogram_html(self) -> None:
         if not self.args.export_lm_head_vocab_hist_html:
@@ -1437,10 +1437,17 @@ class Trainer:
             return
         with torch.no_grad():
             magnitudes = lm_head.weight.detach().norm(dim=1).float().cpu().tolist()
-        vocab_data = [
-            {"id": i, "magnitude": float(m), "label": self._get_vocab_label(i)}
-            for i, m in enumerate(magnitudes)
-        ]
+        vocab_data = []
+        for i, m in enumerate(magnitudes):
+            token_raw, token_display = self._get_vocab_label_parts(i)
+            vocab_data.append(
+                {
+                    "id": i,
+                    "magnitude": float(m),
+                    "token_raw": token_raw,
+                    "token_display": token_display,
+                }
+            )
         out_path = self.args.lm_head_vocab_hist_html_path or os.path.join(
             self.args.out_dir, "lm_head_vocab_histogram.html"
         )
@@ -1457,7 +1464,7 @@ class Trainer:
   <option value="mag_desc">Magnitude (high to low)</option>
   <option value="mag_asc">Magnitude (low to high)</option>
 </select>
-<div style="margin-top:8px;">Bars include both token id and rendered token text in hover tooltip.</div>
+<div style="margin-top:8px;">X-axis is token symbol; hover shows token id + symbol.</div>
 <div id="plot" style="width:100%;height:85vh;"></div>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script>
@@ -1472,19 +1479,21 @@ function sortedData(mode) {{
 }}
 function render(mode) {{
   const d = sortedData(mode);
-  Plotly.newPlot('plot', [{{
+  const trace = {{
     type: 'bar',
-    x: d.map(v => v.id),
+    x: d.map(v => v.token_display),
     y: d.map(v => v.magnitude),
-    customdata: d.map(v => v.label),
-    hovertemplate: '%{{customdata}}<br>Magnitude=%{{y:.6f}}<extra></extra>'
-  }}], {{
-    xaxis: {{title: 'Vocab ID'}},
+    customdata: d.map(v => [v.id, v.token_display]),
+    hovertemplate: 'id=%{{customdata[0]}}<br>token=%{{customdata[1]}}<br>Magnitude=%{{y:.6f}}<extra></extra>'
+  }};
+  Plotly.react('plot', [trace], {{
+    xaxis: {{title: 'Token symbol'}},
     yaxis: {{title: 'Vector magnitude (L2 norm)'}},
     margin: {{t: 20, l: 60, r: 20, b: 60}}
   }}, {{responsive: true}});
 }}
-document.getElementById('sortBy').addEventListener('change', (e)=>render(e.target.value));
+const select = document.getElementById('sortBy');
+select.onchange = function() {{ render(this.value); }};
 render('id_asc');
 </script></body></html>"""
         with open(out_path, "w", encoding="utf-8") as f:
