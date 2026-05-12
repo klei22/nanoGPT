@@ -36,22 +36,18 @@ named_static_groups:
 
   # lm_head norm feature settings
   - named_group: "lm_head_default_features"
-    norm_lm_head_radius: [null]
     norm_lm_head_scale: [1.0]
     norm_lm_head_gain: [false]
     norm_lm_head_radius_learning: [false]
   - named_group: "lm_head_gain_on"
-    norm_lm_head_radius: [null]
     norm_lm_head_scale: [1.0]
     norm_lm_head_gain: [true]
     norm_lm_head_radius_learning: [false]
   - named_group: "lm_head_radius_learn"
-    norm_lm_head_radius: [null]
     norm_lm_head_scale: [1.0]
     norm_lm_head_gain: [false]
     norm_lm_head_radius_learning: [true]
   - named_group: "lm_head_scaled_2x"
-    norm_lm_head_radius: [null]
     norm_lm_head_scale: [2.0]
     norm_lm_head_gain: [false]
     norm_lm_head_radius_learning: [false]
