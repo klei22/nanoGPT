@@ -22,6 +22,16 @@ python3 demos/check_ckpt_for_gelu_shift.py \
 `adam_vs_adamw.sh` trains two tiny Shakespeare models, one with Adam and one
 with AdamW, then compares their statistics using `view_model_stats.py`.
 
+## lm_head Vocab Magnitude Histogram (TensorBoard Animation)
+
+`lm_head_vocab_histogram_demo.sh` runs a short `shakespeare_char` training job
+with `--log_lm_head_vocab_hist` enabled so you can watch the distribution of
+per-token `lm_head` vector magnitudes evolve over time in TensorBoard.
+
+```bash
+bash demos/lm_head_vocab_histogram_demo.sh
+```
+
 ## Grouped Asymmetric Vector PTQ Comparison
 
 `fake_ptq_asymmetric_grouped_vector_eval_demo_shakespeare_char.sh` runs a
