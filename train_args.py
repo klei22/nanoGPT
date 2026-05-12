@@ -790,9 +790,9 @@ def parse_args():
     model_group.add_argument("--norm_abs_radius_learning", type=bool, default=None, action=argparse.BooleanOptionalAction)
 
     model_group.add_argument("--norm_lm_head_radius", type=float, default=None)
-    model_group.add_argument("--norm_lm_head_scale", type=float, default=None)
-    model_group.add_argument("--norm_lm_head_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
-    model_group.add_argument("--norm_lm_head_radius_learning", type=bool, default=None, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--norm_lm_head_scale", type=float, default=1.0)
+    model_group.add_argument("--norm_lm_head_gain", type=bool, default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--norm_lm_head_radius_learning", type=bool, default=False, action=argparse.BooleanOptionalAction)
 
     ## Layernorm
     model_group.add_argument('--bias', default=False, action=argparse.BooleanOptionalAction, help="only used for layernorm variation option")

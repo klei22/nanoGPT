@@ -204,16 +204,32 @@ class kRMSNorm(nn.Module):
 
 
 class CappedHyperSphereNorm(nn.Module):
-    """Project vectors onto a sqrt(n_embd) hypersphere only when outside the radius."""
+    """Project vectors onto a (possibly learned/scaled) hypersphere only when outside the radius."""
 
     def __init__(self, config):
         super().__init__()
-        self.radius = math.sqrt(config.n_embd)
+        ndim = config.n_embd
+
+        if config.hsnorm_gain:
+            self.gain = nn.Parameter(torch.ones(ndim))
+        else:
+            self.gain = 1.0
+
+        radius_init = config.hsnorm_radius if config.hsnorm_radius is not None else math.sqrt(ndim)
+        self.const_radius_factor = config.hsnorm_scale
+        self.hsnorm_radius_learning = config.hsnorm_radius_learning
+
+        if self.hsnorm_radius_learning:
+            radius_init = radius_init / self.const_radius_factor
+            self.radius_init_factor = nn.Parameter(torch.tensor([radius_init]))
+        else:
+            self.radius_init_factor = radius_init
 
     def forward(self, x):
+        radius = self.const_radius_factor * self.radius_init_factor
         norms = x.norm(2, dim=-1, keepdim=True)
-        scale = torch.where(norms > self.radius, self.radius / (norms + 1e-8), torch.ones_like(norms))
-        return x * scale
+        scale = torch.where(norms > radius, radius / (norms + 1e-8), torch.ones_like(norms))
+        return x * scale * self.gain
 
 class IdentityNorm(nn.Module):
     def __init__(self, config=None):  # Accept config for API consistency
