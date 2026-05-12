@@ -1,0 +1,103 @@
+# Baseline template from default_inf_softmax_no_mqa_hd100_h3.yaml
+# Ablations:
+# 1) lm_head norm feature settings for hyperspherenorm and cappedhyperspherenorm
+# 2) wte norm variant sweep across cappedhyperspherenorm/hyperspherenorm/rmsnorm
+# 3) dedicated variant: lm_head=cappedhyperspherenorm, wte=rmsnorm, attn=rmsnorm
+---
+
+named_static_groups:
+  # Base architecture / training settings
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+  - named_group: "h3"
+    n_head: [3]
+
+  # Norm variants for lm_head
+  - named_group: "lm_head_hypersphere"
+    norm_variant_lm_head: ["hyperspherenorm"]
+  - named_group: "lm_head_capped"
+    norm_variant_lm_head: ["cappedhyperspherenorm"]
+
+  # lm_head norm feature settings
+  - named_group: "lm_head_default_features"
+    norm_lm_head_scale: [1.0]
+    norm_lm_head_gain: [false]
+    norm_lm_head_radius_learning: [false]
+  - named_group: "lm_head_gain_on"
+    norm_lm_head_scale: [1.0]
+    norm_lm_head_gain: [true]
+    norm_lm_head_radius_learning: [false]
+  - named_group: "lm_head_radius_learn"
+    norm_lm_head_scale: [1.0]
+    norm_lm_head_gain: [false]
+    norm_lm_head_radius_learning: [true]
+  - named_group: "lm_head_scaled_2x"
+    norm_lm_head_scale: [2.0]
+    norm_lm_head_gain: [false]
+    norm_lm_head_radius_learning: [false]
+
+  # WTE norm ablation variants
+  - named_group: "wte_rmsnorm"
+    norm_variant_wte: ["rmsnorm"]
+  - named_group: "wte_hypersphere"
+    norm_variant_wte: ["hyperspherenorm"]
+  - named_group: "wte_capped"
+    norm_variant_wte: ["cappedhyperspherenorm"]
+
+  # Special-case last variant requested
+  - named_group: "attn_rmsnorm"
+    norm_variant_attn: ["rmsnorm"]
+    norm_variant_output: ["rmsnorm"]
+
+named_variation_groups:
+  - named_group: "lm_head_variant_var"
+    named_group_alternates: ["lm_head_hypersphere", "lm_head_capped"]
+  - named_group: "lm_head_feature_var"
+    named_group_alternates: ["lm_head_default_features", "lm_head_gain_on", "lm_head_radius_learn", "lm_head_scaled_2x"]
+  - named_group: "wte_norm_var"
+    named_group_alternates: ["wte_rmsnorm", "wte_hypersphere", "wte_capped"]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  - named_group_static: ["qk_norm", "peri_ln", "rotary", "softmax", "infinite", "hd_100", "h3"]
+    named_group_variations:
+      - "lm_head_variant_var"
+      - "lm_head_feature_var"
+      - "wte_norm_var"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite"
+      - "hd_100"
+      - "h3"
+      - "lm_head_capped"
+      - "lm_head_default_features"
+      - "wte_rmsnorm"
+      - "attn_rmsnorm"
