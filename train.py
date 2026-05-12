@@ -2,6 +2,7 @@
 from contextlib import nullcontext
 import csv
 import json
+import html
 import math
 import os
 import random
@@ -1413,6 +1414,83 @@ class Trainer:
             self.iter_num,
         )
 
+    def _get_vocab_label(self, token_id: int) -> str:
+        token_text = None
+        if hasattr(self, "itos") and self.itos is not None and token_id < len(self.itos):
+            token_text = self.itos[token_id]
+        elif hasattr(self, "decode") and callable(self.decode):
+            try:
+                token_text = self.decode([int(token_id)])
+            except Exception:
+                token_text = None
+        if token_text is None:
+            token_text = f"<id:{token_id}>"
+        escaped = html.escape(str(token_text)).replace("\n", "\\n")
+        return f"{token_id}: {escaped}"
+
+    def _export_lm_head_vocab_histogram_html(self) -> None:
+        if not self.args.export_lm_head_vocab_hist_html:
+            return
+        lm_head = getattr(self.model, "lm_head", None)
+        if lm_head is None or not hasattr(lm_head, "weight"):
+            print("Skipping lm_head vocab histogram HTML export: lm_head not found.")
+            return
+        with torch.no_grad():
+            magnitudes = lm_head.weight.detach().norm(dim=1).float().cpu().tolist()
+        vocab_data = [
+            {"id": i, "magnitude": float(m), "label": self._get_vocab_label(i)}
+            for i, m in enumerate(magnitudes)
+        ]
+        out_path = self.args.lm_head_vocab_hist_html_path or os.path.join(
+            self.args.out_dir, "lm_head_vocab_histogram.html"
+        )
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        payload = json.dumps(vocab_data)
+        html_text = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>lm_head vocab histogram</title></head>
+<body>
+<h2>Final lm_head vocabulary vector magnitudes</h2>
+<label for="sortBy">Sort by:</label>
+<select id="sortBy">
+  <option value="id_asc">Vocab ID (low to high)</option>
+  <option value="id_desc">Vocab ID (high to low)</option>
+  <option value="mag_desc">Magnitude (high to low)</option>
+  <option value="mag_asc">Magnitude (low to high)</option>
+</select>
+<div style="margin-top:8px;">Bars include both token id and rendered token text in hover tooltip.</div>
+<div id="plot" style="width:100%;height:85vh;"></div>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script>
+const vocabData = {payload};
+function sortedData(mode) {{
+  const d = [...vocabData];
+  if (mode === 'id_asc') d.sort((a,b)=>a.id-b.id);
+  if (mode === 'id_desc') d.sort((a,b)=>b.id-a.id);
+  if (mode === 'mag_desc') d.sort((a,b)=>b.magnitude-a.magnitude || a.id-b.id);
+  if (mode === 'mag_asc') d.sort((a,b)=>a.magnitude-b.magnitude || a.id-b.id);
+  return d;
+}}
+function render(mode) {{
+  const d = sortedData(mode);
+  Plotly.newPlot('plot', [{{
+    type: 'bar',
+    x: d.map(v => v.id),
+    y: d.map(v => v.magnitude),
+    customdata: d.map(v => v.label),
+    hovertemplate: '%{{customdata}}<br>Magnitude=%{{y:.6f}}<extra></extra>'
+  }}], {{
+    xaxis: {{title: 'Vocab ID'}},
+    yaxis: {{title: 'Vector magnitude (L2 norm)'}},
+    margin: {{t: 20, l: 60, r: 20, b: 60}}
+  }}, {{responsive: true}});
+}}
+document.getElementById('sortBy').addEventListener('change', (e)=>render(e.target.value));
+render('id_asc');
+</script></body></html>"""
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html_text)
+        print(f"Exported lm_head vocab histogram HTML: {out_path}")
+
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset, val_better_than_chance):
         compute_rankme = self.args.log_rankme or self.args.log_areq
 
@@ -2334,6 +2412,7 @@ class Trainer:
 
                 # End of training actions
                 if self.iter_num > self.args.max_iters:
+                    self._export_lm_head_vocab_histogram_html()
                     print(self.best_val_loss, self.best_iter, self.best_tokens)
                     if self.args.only_save_checkpoint_at_end:
                         if not self.args.never_save_checkpoint:

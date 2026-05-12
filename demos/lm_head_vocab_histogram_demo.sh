@@ -25,7 +25,9 @@ python3 train.py \
   --tensorboard_log \
   --tensorboard_run_name "${RUN_NAME}" \
   --log_lm_head_vocab_hist \
-  --log_lm_head_vocab_hist_interval 10
+  --log_lm_head_vocab_hist_interval 10 \
+  --export_lm_head_vocab_hist_html \
+  --lm_head_vocab_hist_html_path "${OUT_DIR}/lm_head_vocab_histogram.html"
 
 cat <<MSG
 Done.
@@ -38,4 +40,7 @@ Then open TensorBoard and navigate to:
 
 Use the Histograms or Distributions tab and scrub over steps to animate the
 change in lm_head vocab-vector magnitude distribution during training.
+
+An interactive final-snapshot HTML is also written to:
+  ${OUT_DIR}/lm_head_vocab_histogram.html
 MSG

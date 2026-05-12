@@ -27,6 +27,9 @@ with AdamW, then compares their statistics using `view_model_stats.py`.
 `lm_head_vocab_histogram_demo.sh` runs a short `shakespeare_char` training job
 with `--log_lm_head_vocab_hist` enabled so you can watch the distribution of
 per-token `lm_head` vector magnitudes evolve over time in TensorBoard.
+It also emits an interactive HTML file with sortable bars (by vocab id asc/desc
+or magnitude asc/desc) and hover labels that include both vocab id and rendered
+token text.
 
 ```bash
 bash demos/lm_head_vocab_histogram_demo.sh
