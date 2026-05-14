@@ -767,6 +767,7 @@ def parse_args():
             "hyperspherenorm",
             "dact",
             "identity",
+            "cappedhyperspherenorm",
             ]
 
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)
@@ -776,6 +777,7 @@ def parse_args():
     ### WTE and Abs Pos Embedding Post Norms (optional, and default None)
     model_group.add_argument("--norm_variant_wte", type=str, default=None, choices=norm_variations)
     model_group.add_argument("--norm_variant_abs", type=str, default=None, choices=norm_variations)
+    model_group.add_argument("--norm_variant_lm_head", type=str, default=None, choices=norm_variations)
 
     model_group.add_argument("--norm_wte_radius", type=float, default=None)
     model_group.add_argument("--norm_wte_scale", type=float, default=None)
@@ -786,6 +788,11 @@ def parse_args():
     model_group.add_argument("--norm_abs_scale", type=float, default=None)
     model_group.add_argument("--norm_abs_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--norm_abs_radius_learning", type=bool, default=None, action=argparse.BooleanOptionalAction)
+
+    model_group.add_argument("--norm_lm_head_radius", type=float, default=None)
+    model_group.add_argument("--norm_lm_head_scale", type=float, default=None)
+    model_group.add_argument("--norm_lm_head_gain", type=bool, default=None, action=argparse.BooleanOptionalAction)
+    model_group.add_argument("--norm_lm_head_radius_learning", type=bool, default=None, action=argparse.BooleanOptionalAction)
 
     ## Layernorm
     model_group.add_argument('--bias', default=False, action=argparse.BooleanOptionalAction, help="only used for layernorm variation option")
