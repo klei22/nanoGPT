@@ -414,37 +414,113 @@ def write_csv(path: Path, theory: List[TheoryPoint], empirical: List[EmpiricalPo
             )
 
 
-def plot_results(path: Path, bits_list: Iterable[int], angles: List[float], theory: List[TheoryPoint], empirical: List[EmpiricalPoint], args: argparse.Namespace) -> None:
+def plot_results(path, bits_list, angles, theory, empirical, args):
     t_by_bits = {b: [p for p in theory if p.bits == b] for b in bits_list}
     e_by_bits = {b: [p for p in empirical if p.bits == b] for b in bits_list}
 
-    plt.figure(figsize=(11, 7))
+    plt.rcParams.update({
+        "font.size": 11,
+        "axes.titlesize": 12,
+        "axes.labelsize": 12,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "figure.dpi": 200,
+        "savefig.dpi": 300,
+        "lines.linewidth": 2.2,
+    })
+
+    colors = {
+        3: "#1f77b4",
+        4: "#2ca02c",
+        5: "#9467bd",
+    }
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.8))
+
+    ax.axhline(0.0, linewidth=1, linestyle="--", color="black", alpha=0.5)
+    ax.axvspan(
+        20, 30,
+        color="gray",
+        alpha=0.12,
+        label=r"$20^\circ$--$30^\circ$ regime",
+    )
+
     for bits in bits_list:
         ts = sorted(t_by_bits[bits], key=lambda p: p.angle_deg)
         es = sorted(e_by_bits[bits], key=lambda p: p.angle_deg)
+
         x_t = [p.angle_deg for p in ts]
         y_t = [p.distortion_deg_theory for p in ts]
-        plt.plot(x_t, y_t, linewidth=2, label=f"int{bits} theory")
+
+        ax.plot(
+            x_t,
+            y_t,
+            color=colors.get(bits, None),
+            label=fr"INT{bits} predicted",
+        )
 
         if es:
             x_e = [p.angle_deg for p in es]
             y_e = [p.mean_distortion_deg for p in es]
             yerr_e = [p.std_distortion_deg for p in es]
-            plt.errorbar(x_e, y_e, yerr=yerr_e, fmt="o", capsize=2, markersize=3, alpha=0.55, label=f"int{bits} MC mean ± std")
 
-    plt.axhline(0.0, linewidth=1, linestyle="--")
-    plt.xlabel("Original angular separation (degrees)")
-    plt.ylabel("Quantized angular distortion: arccos(cos_q) - original angle (degrees)")
-    trial_text = "theory only" if args.no_monte_carlo else f"trials={args.trials}"
-    plt.title(
-        f"Low-bit symmetric quantization distortion | d={args.dim}, {trial_text}, "
-        f"scale={args.scale_mode}, clip_sigma={args.clip_sigma}"
+            ax.errorbar(
+                x_e,
+                y_e,
+                yerr=yerr_e,
+                fmt="o",
+                color=colors.get(bits, None),
+                markersize=2.4,
+                capsize=1.6,
+                elinewidth=0.75,
+                alpha=0.45,
+                label=fr"INT{bits} MC",
+            )
+
+    ax.set_xlim(0, 90)
+    ax.set_xticks(np.arange(0, 91, 10))
+
+    ax.set_xlabel(r"Original angle $\theta$ (degrees)")
+    ax.set_ylabel(
+        r"Angular distortion $\arccos(C_b(\cos\theta))-\theta$ (degrees)"
     )
-    plt.legend()
-    plt.grid(True, alpha=0.25)
-    plt.tight_layout()
-    plt.savefig(path, dpi=180)
+    ax.set_title("Angle-dependent distortion from low-bit symmetric quantization")
 
+    ax.grid(True, alpha=0.22)
+    ax.legend(frameon=True, ncol=2)
+
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+def plot_arcsine_alignment(
+    output: Path = Path("arcsine_alignment.png"),
+    n: int = 2_000_000,
+    seed: int = 0,
+) -> None:
+    rng = np.random.default_rng(seed)
+    rhos = np.linspace(-0.99, 0.99, 101)
+    mc = []
+
+    for rho in rhos:
+        x = rng.normal(size=n)
+        z = rng.normal(size=n)
+        y = rho * x + np.sqrt(1.0 - rho**2) * z
+        mc.append(np.mean(np.sign(x) * np.sign(y)))
+
+    theory = (2.0 / np.pi) * np.arcsin(rhos)
+
+    plt.figure(figsize=(7, 5))
+    plt.plot(rhos, theory, label=r"$\frac{2}{\pi}\arcsin(\rho)$", linewidth=2)
+    plt.scatter(rhos, mc, s=10, alpha=0.55, label="Gaussian Monte Carlo")
+    plt.xlabel(r"True Gaussian correlation $\rho$")
+    plt.ylabel("Sign-quantized correlation")
+    plt.title("Arcsine-law alignment for sign-quantized Gaussian pairs")
+    plt.grid(alpha=0.25)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output, dpi=200)
+    plt.close()
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -508,7 +584,13 @@ def main() -> None:
     print(f"Writing CSV: {args.csv}")
     write_csv(args.csv, theory, empirical, args)
     print(f"Writing plot: {args.output}")
+
     plot_results(args.output, args.bits, angles, theory, empirical, args)
+
+    arcsine_output = args.output.parent / "arcsine_alignment.png"
+    print(f"Writing arcsine-law plot: {arcsine_output}")
+    plot_arcsine_alignment(arcsine_output)
+
     print("Done.")
 
 
