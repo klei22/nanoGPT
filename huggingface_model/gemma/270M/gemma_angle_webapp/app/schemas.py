@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class StatusResponse(BaseModel):
+    loaded: bool = False
+    model_name: str
+    requested_device: str
+    effective_device: str
+    vocab_size: int = Field(ge=0)
+    hidden_dim: int = Field(ge=0)
+
+
+class ModelLoadRequest(BaseModel):
+    model_name: str = Field(..., min_length=1, description="Hugging Face model repo ID, e.g. Qwen/Qwen3.5-0.8B-Base")
+    device: str | None = Field(default=None, description="Torch device string such as cpu, cuda:0, or auto")
+    force_reload: bool = False
+    allow_download: bool = Field(
+        default=True,
+        description="When true, missing files may be downloaded from the Hugging Face Hub. When false, only the local cache is used.",
+    )
+
+
+class LocalModelRecord(BaseModel):
+    model_name: str
+    cache_path: str | None = None
+    size_bytes: int | None = Field(default=None, ge=0)
+    last_modified: float | None = None
+
+
+class LocalModelsResponse(BaseModel):
+    models: list[LocalModelRecord]
+
+
+class TokenRecord(BaseModel):
+    token_id: int
+    raw: str
+    display: str
+
+
+class TokenSearchResponse(BaseModel):
+    query: str
+    results: list[TokenRecord]
+
+
+class AngleResponse(BaseModel):
+    token_a_id: int
+    token_a_raw: str
+    token_a_display: str
+    token_a_magnitude: float
+    token_b_id: int
+    token_b_raw: str
+    token_b_display: str
+    token_b_magnitude: float
+    angle_deg: float
+
+
+class NeighborhoodRow(BaseModel):
+    rank: int
+    token_id: int
+    token_raw: str
+    token_display: str
+    angle_deg: float
+    magnitude: float
+
+
+class NeighborhoodResponse(BaseModel):
+    anchor_id: int
+    anchor_raw: str
+    anchor_display: str
+    anchor_magnitude: float
+    limit: int = Field(ge=1)
+    rows: list[NeighborhoodRow]

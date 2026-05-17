@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_search_buttons_exist_for_each_picker() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    for prefix in ["tokenA", "tokenB", "anchor"]:
+        assert f'id="{prefix}Search"' in html
+        assert f'id="{prefix}Query"' in html
+        assert f'id="{prefix}Results"' in html
+
+
+
+def test_search_is_not_triggered_by_typing_or_initialization() -> None:
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+    setup = js[js.index("function setupPicker"):js.index("async function computeAngle")]
+    dom_ready = js[js.index("window.addEventListener('DOMContentLoaded'"):]
+
+    assert "debounce" not in setup
+    assert "addEventListener('input', debounce" not in setup
+    assert "queryInput.addEventListener('input', () => markSearchStale(prefix, key))" in setup
+    assert "searchButton.addEventListener('click', () => search(prefix, key))" in setup
+    assert "event.key === 'Enter'" in setup
+    assert "limit: '200'" not in js
+
+    # The old implementation called search(prefix, key) during setupPicker and
+    # then setupPicker during DOMContentLoaded, which caused automatic blank
+    # searches. Now setup only wires events and the page load only calls setup.
+    setup_lines = [line.strip() for line in setup.splitlines() if line.strip()]
+    assert setup_lines[-1] == "}"
+    assert setup_lines[-2] == "byId(`${prefix}UseId`).addEventListener('click', () => selectFromId(prefix, key));"
+    assert "search(prefix" not in dom_ready
+
+
+def test_model_loader_controls_exist() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+
+    assert 'id="modelNameInput"' in html
+    assert 'id="loadModelButton"' in html
+    assert 'id="localModelSelect"' in html
+    assert 'id="refreshLocalModelsButton"' in html
+    assert 'id="allowDownloadInput"' in html
+    assert 'placeholder="Qwen/Qwen3.5-0.8B-Base"' in html
+    assert "fetchJson('/api/model/load'" in js
+    assert "fetchJson('/api/status')" in js
+    assert "fetchJson('/api/models/available')" in js
+    assert "allow_download: allowDownload" in js
+    assert "Download if missing" in html
+    assert "No model loaded yet" in js
+    assert 'loadRequestedModel' in js
+    assert "loadAvailableModels" in js
+    assert "resetAllSelectionsAfterModelChange" in js
+    assert "loadModelFromInput" not in js
