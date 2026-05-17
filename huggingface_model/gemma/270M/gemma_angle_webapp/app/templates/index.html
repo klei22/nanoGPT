@@ -158,6 +158,55 @@
         </table>
       </div>
     </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">All-pairs angle distribution</p>
+          <h2>Ranked 5° angle-bin counts</h2>
+        </div>
+        <button id="pairwiseBinsButton" type="button" class="primary">Compute pairwise bins</button>
+      </div>
+
+      <p class="lede panel-lede">For the active model, this computes unique unordered token pairs block by block, immediately bins each block into acute-angle buckets from 0° to 90°, and never writes or caches the full pairwise matrix.</p>
+
+      <div class="analysis-controls">
+        <div>
+          <label for="pairwiseBlockSize">CUDA/CPU block size</label>
+          <input id="pairwiseBlockSize" type="number" min="1" max="16384" value="2048" step="256" />
+        </div>
+        <div>
+          <label for="pairwiseComputeDevice">Compute device</label>
+          <input id="pairwiseComputeDevice" type="text" value="auto" placeholder="auto, cuda:0, or cpu" autocomplete="off" spellcheck="false" />
+        </div>
+        <label class="checkbox-row analysis-checkbox" for="pairwiseIncludeSelf">
+          <input id="pairwiseIncludeSelf" type="checkbox" />
+          Include self-pairs
+        </label>
+      </div>
+
+      <div id="pairwiseBinsOutput" class="output muted">Load a model, then compute the global pairwise angle-bin distribution. A CUDA device is used automatically when available.</div>
+
+      <div id="pairwisePlotCard" class="plot-card hidden">
+        <canvas id="pairwiseAnglePlot" width="1000" height="420" aria-label="Ranked pairwise angle-bin counts plot"></canvas>
+        <p class="selection">Y axis uses log10(count). X axis is the rank of each 5° angle bin after sorting bins by count.</p>
+      </div>
+
+      <div class="table-wrap">
+        <table id="pairwiseBinsTable" class="hidden">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Angle bin</th>
+              <th>Bin index</th>
+              <th>Pair count</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
   </main>
 
   <script src="/static/app.js" defer></script>

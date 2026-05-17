@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import gc
 import io
+import json
 import os
 import threading
+import time
 from pathlib import Path
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -23,6 +25,10 @@ DEFAULT_TRUST_REMOTE_CODE = os.getenv("TRUST_REMOTE_CODE", "false").casefold() i
     "yes",
     "on",
 }
+DEFAULT_MODEL_LOAD_STRATEGY = os.getenv("MODEL_LOAD_STRATEGY", "auto").strip().casefold()
+DEFAULT_PAIRWISE_BLOCK_SIZE = int(os.getenv("PAIRWISE_BLOCK_SIZE", "2048"))
+PAIRWISE_ANGLE_BIN_DEGREES = 5.0
+PAIRWISE_MAX_ANGLE_DEGREES = 90.0
 
 
 @dataclass(frozen=True)
@@ -218,6 +224,356 @@ def _load_causal_lm(model_name: str, *, allow_download: bool = True):
         return AutoModelForCausalLM.from_pretrained(model_name, **fallback_kwargs)
 
 
+
+_OUTPUT_WEIGHT_CANDIDATE_NAMES: tuple[str, ...] = (
+    "lm_head.weight",
+    "language_model.lm_head.weight",
+    "model.lm_head.weight",
+    "embed_out.weight",
+    "gpt_neox.embed_out.weight",
+    "output.weight",
+    # Many tied-output models save only the input embedding matrix.  For this
+    # app that is still the correct vocabulary vector matrix when weights are
+    # tied, and it avoids importing architecture-specific model classes.
+    "model.embed_tokens.weight",
+    "language_model.model.embed_tokens.weight",
+    "language_model.embed_tokens.weight",
+    "transformer.wte.weight",
+    "gpt_neox.embed_in.weight",
+    "decoder.embed_tokens.weight",
+    "embed_tokens.weight",
+)
+
+_OUTPUT_WEIGHT_SUFFIXES: tuple[str, ...] = (
+    ".lm_head.weight",
+    ".embed_out.weight",
+    ".output.weight",
+    ".embed_tokens.weight",
+    ".wte.weight",
+    ".embed_in.weight",
+)
+
+
+def _local_model_path(model_name: str) -> Path | None:
+    """Return an existing local model directory/file path, if model_name is one."""
+    try:
+        path = Path(model_name).expanduser()
+    except (TypeError, ValueError):
+        return None
+    return path if path.exists() else None
+
+
+def _download_or_find_repo_file(
+    model_name: str,
+    filename: str,
+    *,
+    allow_download: bool,
+) -> Path:
+    """Resolve a file from either a local model directory or the HF Hub cache."""
+    local_path = _local_model_path(model_name)
+    if local_path is not None:
+        if local_path.is_file():
+            if local_path.name == filename:
+                return local_path
+            raise FileNotFoundError(f"{filename!r} is not available in local file {model_name!r}.")
+        candidate = local_path / filename
+        if candidate.exists():
+            return candidate
+        raise FileNotFoundError(f"{filename!r} is not available in local model directory {str(local_path)!r}.")
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception as exc:  # pragma: no cover - dependency availability varies by env
+        raise RuntimeError(
+            "huggingface-hub is required to download or resolve remote model files."
+        ) from exc
+
+    return Path(
+        hf_hub_download(
+            repo_id=model_name,
+            filename=filename,
+            local_files_only=not allow_download,
+        )
+    )
+
+
+def _try_download_or_find_repo_file(
+    model_name: str,
+    filename: str,
+    *,
+    allow_download: bool,
+) -> Path | None:
+    try:
+        return _download_or_find_repo_file(model_name, filename, allow_download=allow_download)
+    except Exception:
+        return None
+
+
+def _list_repo_safetensors_files(model_name: str, *, allow_download: bool) -> list[str]:
+    """Return likely safetensors filenames without downloading tensor contents."""
+    local_path = _local_model_path(model_name)
+    if local_path is not None:
+        if local_path.is_file() and local_path.suffix == ".safetensors":
+            return [local_path.name]
+        if local_path.is_dir():
+            return sorted(path.name for path in local_path.glob("*.safetensors"))
+        return []
+
+    if not allow_download:
+        return []
+
+    try:
+        from huggingface_hub import list_repo_files
+    except Exception:
+        return []
+
+    try:
+        files = list_repo_files(repo_id=model_name, repo_type="model")
+    except Exception:
+        return []
+    return sorted(name for name in files if name.endswith(".safetensors"))
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected {str(path)!r} to contain a JSON object.")
+    return data
+
+
+def _weight_name_rank(name: str) -> tuple[int, int, str]:
+    """Sort key for choosing a vocab/output weight tensor from safetensors."""
+    for idx, candidate in enumerate(_OUTPUT_WEIGHT_CANDIDATE_NAMES):
+        if name == candidate:
+            return (0, idx, name)
+    for idx, candidate in enumerate(_OUTPUT_WEIGHT_CANDIDATE_NAMES):
+        if name.endswith("." + candidate):
+            return (1, idx, name)
+    for idx, suffix in enumerate(_OUTPUT_WEIGHT_SUFFIXES):
+        if name.endswith(suffix):
+            return (2, idx, name)
+    return (99, 99, name)
+
+
+def _choose_weight_tensor_name(names: list[str] | tuple[str, ...]) -> str | None:
+    ranked = [name for name in names if _weight_name_rank(name)[0] < 99]
+    if not ranked:
+        return None
+    return sorted(ranked, key=_weight_name_rank)[0]
+
+
+def _safe_open_tensor(path: Path, tensor_name: str) -> torch.Tensor:
+    """Read one tensor from a safetensors file without importing the model class."""
+    try:
+        from safetensors import safe_open
+    except Exception as exc:  # pragma: no cover - dependency availability varies by env
+        raise RuntimeError(
+            "safetensors is required for the weight-only loader. Install it with `pip install safetensors`."
+        ) from exc
+
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        available = set(handle.keys())
+        if tensor_name not in available:
+            raise KeyError(f"Tensor {tensor_name!r} not found in {str(path)!r}.")
+        tensor = handle.get_tensor(tensor_name)
+    if tensor.ndim != 2:
+        raise ValueError(
+            f"Tensor {tensor_name!r} in {str(path)!r} is {tuple(tensor.shape)}, expected a 2D matrix."
+        )
+    return tensor.detach().to(dtype=torch.float32, device="cpu")
+
+
+def _load_weight_from_safetensors_index(
+    model_name: str,
+    *,
+    allow_download: bool,
+) -> torch.Tensor | None:
+    index_path = _try_download_or_find_repo_file(
+        model_name,
+        "model.safetensors.index.json",
+        allow_download=allow_download,
+    )
+    if index_path is None:
+        return None
+
+    index_data = _read_json(index_path)
+    weight_map = index_data.get("weight_map")
+    if not isinstance(weight_map, dict):
+        raise ValueError(f"{str(index_path)!r} does not contain a safetensors weight_map.")
+
+    tensor_name = _choose_weight_tensor_name([str(name) for name in weight_map.keys()])
+    if tensor_name is None:
+        interesting = ", ".join(sorted(str(name) for name in weight_map.keys())[:20])
+        raise ValueError(
+            "Could not find an LM-head/output-embedding tensor in model.safetensors.index.json. "
+            f"First known tensors: {interesting}"
+        )
+
+    shard_name = weight_map.get(tensor_name)
+    if not isinstance(shard_name, str) or not shard_name:
+        raise ValueError(f"Invalid safetensors shard name for tensor {tensor_name!r}.")
+    shard_path = _download_or_find_repo_file(model_name, shard_name, allow_download=allow_download)
+    return _safe_open_tensor(shard_path, tensor_name)
+
+
+def _load_weight_from_single_safetensors(
+    model_name: str,
+    *,
+    allow_download: bool,
+) -> torch.Tensor | None:
+    filenames = _list_repo_safetensors_files(model_name, allow_download=allow_download)
+    preferred = ["model.safetensors", "pytorch_model.safetensors"]
+    is_remote = _local_model_path(model_name) is None
+
+    # When we can list files, trust that list.  When we cannot list a remote repo
+    # (for example in cache-only mode), try standard single-file names anyway;
+    # hf_hub_download with local_files_only=True resolves them if cached and fails
+    # cheaply if they are absent.
+    if filenames:
+        ordered = [name for name in preferred if name in filenames]
+        ordered.extend(name for name in filenames if name not in ordered)
+    else:
+        ordered = list(preferred) if is_remote else []
+
+    # If the repo has many shards but no index, inspecting/downloading all of
+    # them would defeat the limited-disk goal.  We inspect local files, and for
+    # remote repos we only download when there is a clear single-file checkpoint.
+    if is_remote:
+        if len(ordered) > 1 and not any(name in preferred for name in ordered):
+            return None
+        if len(ordered) > 1 and filenames:
+            ordered = [name for name in ordered if name in preferred]
+
+    for filename in ordered:
+        path = _try_download_or_find_repo_file(model_name, filename, allow_download=allow_download)
+        if path is None:
+            continue
+        try:
+            from safetensors import safe_open
+        except Exception as exc:  # pragma: no cover - dependency availability varies by env
+            raise RuntimeError(
+                "safetensors is required for the weight-only loader. Install it with `pip install safetensors`."
+            ) from exc
+        try:
+            with safe_open(str(path), framework="pt", device="cpu") as handle:
+                tensor_name = _choose_weight_tensor_name(list(handle.keys()))
+            if tensor_name is not None:
+                return _safe_open_tensor(path, tensor_name)
+        except Exception:
+            if len(ordered) == 1:
+                raise
+            continue
+
+    return None
+
+
+def _load_output_weight_from_safetensors(
+    model_name: str,
+    *,
+    allow_download: bool = True,
+) -> torch.Tensor:
+    """Load only the vocab/output vector matrix from safetensors.
+
+    This avoids importing architecture-specific classes such as Gemma3ForCausalLM.
+    The app only needs the output vectors, so loading the entire model class is a
+    fallback rather than the preferred path.
+    """
+    index_weight = _load_weight_from_safetensors_index(model_name, allow_download=allow_download)
+    if index_weight is not None:
+        return index_weight
+
+    single_weight = _load_weight_from_single_safetensors(model_name, allow_download=allow_download)
+    if single_weight is not None:
+        return single_weight
+
+    raise ValueError(
+        "Could not locate a usable safetensors LM-head/output-embedding matrix. "
+        "Expected tensors such as 'lm_head.weight' or 'model.embed_tokens.weight'."
+    )
+
+
+def _load_output_weight_from_full_model(
+    model_name: str,
+    *,
+    allow_download: bool = True,
+    effective_device: str,
+) -> torch.Tensor:
+    model = _load_causal_lm(model_name, allow_download=allow_download)
+    try:
+        model.to(effective_device)
+        model.eval()
+        with torch.inference_mode():
+            return _output_embedding_weight(model).detach().to(device="cpu", dtype=torch.float32)
+    finally:
+        del model
+        _release_cached_cuda_memory()
+
+
+def _load_output_weight_matrix(
+    model_name: str,
+    *,
+    allow_download: bool = True,
+    effective_device: str,
+) -> torch.Tensor:
+    """Load the output weight matrix, preferring a safetensors-only path."""
+    strategy = DEFAULT_MODEL_LOAD_STRATEGY or "auto"
+    if strategy not in {"auto", "weight_only", "safetensors", "full_model"}:
+        raise ValueError(
+            "MODEL_LOAD_STRATEGY must be one of: auto, weight_only, safetensors, full_model."
+        )
+
+    if strategy in {"auto", "weight_only", "safetensors"}:
+        try:
+            return _load_output_weight_from_safetensors(model_name, allow_download=allow_download)
+        except Exception as weight_only_exc:
+            if strategy in {"weight_only", "safetensors"}:
+                raise RuntimeError(
+                    "Weight-only safetensors loading failed: "
+                    f"{_format_model_load_error(weight_only_exc)}"
+                ) from weight_only_exc
+            fallback_error = weight_only_exc
+    else:
+        fallback_error = None
+
+    try:
+        return _load_output_weight_from_full_model(
+            model_name,
+            allow_download=allow_download,
+            effective_device=effective_device,
+        )
+    except Exception as full_model_exc:
+        if fallback_error is not None:
+            raise RuntimeError(
+                "Could not load the output vector matrix. "
+                "The safetensors weight-only path failed with: "
+                f"{_format_model_load_error(fallback_error)}. "
+                "The full Transformers model path failed with: "
+                f"{_format_model_load_error(full_model_exc)}"
+            ) from full_model_exc
+        raise
+
+
+def _format_model_load_error(exc: BaseException) -> str:
+    text = str(exc).strip() or exc.__class__.__name__
+    hints: list[str] = []
+    lowered = text.casefold()
+    if "gemma3forcausallm" in lowered or "gemma3" in lowered:
+        hints.append(
+            "Gemma 3 usually requires a recent Transformers build; this app now tries a "
+            "safetensors-only weight loader first to avoid importing Gemma3ForCausalLM."
+        )
+    if "cpp extensions" in lowered or "torchao" in lowered or "fbgemm" in lowered:
+        hints.append(
+            "An optional compiled extension appears incompatible with the installed Torch; "
+            "because the app only needs output vectors, uninstalling/pinning that extension or "
+            "using the safetensors loader avoids the full-model import path."
+        )
+    if hints:
+        return text + " Hint: " + " ".join(hints)
+    return text
+
+
 def _output_embedding_weight(model: Any) -> torch.Tensor:
     """Return the LM-head/output-embedding matrix for a causal LM.
 
@@ -308,18 +664,20 @@ def get_assets(
             return _ASSETS
 
         tokenizer = _load_tokenizer(target_model, allow_download=allow_download)
-        model = _load_causal_lm(target_model, allow_download=allow_download)
-        model.to(effective)
-        model.eval()
+        weight_cpu = _load_output_weight_matrix(
+            target_model,
+            allow_download=allow_download,
+            effective_device=effective,
+        )
 
         with torch.inference_mode():
-            weight = _output_embedding_weight(model).detach().to(device=effective, dtype=torch.float32)
+            weight = weight_cpu.to(device=effective, dtype=torch.float32, non_blocking=True)
             magnitudes = vector_magnitudes(weight)
 
         token_infos = _build_token_infos(tokenizer, vocab_size=int(weight.shape[0]))
 
         # Keep only the tokenizer plus the tensors needed by the app.
-        del model
+        del weight_cpu
         _release_cached_cuda_memory()
 
         _ASSETS = ModelAssets(
@@ -551,6 +909,174 @@ def list_local_models() -> list[LocalModelInfo]:
     _scan_cache_with_hub(records)
     _scan_cache_manually(records)
     return sorted(records.values(), key=lambda item: item.model_name.casefold())
+
+
+def _resolve_pairwise_compute_device(requested_device: str | None, assets: ModelAssets) -> str:
+    """Resolve the device used for all-pairs binning.
+
+    ``auto`` prefers the tensor's existing CUDA device. If the active model was
+    loaded on CPU but CUDA is available, it streams row/column blocks to cuda:0
+    so the expensive block matrix multiplies are still GPU accelerated without
+    caching the full pairwise matrix.
+    """
+    requested = (requested_device or "auto").strip().lower()
+    if not requested or requested == "auto":
+        weight_device = str(assets.weight.device)
+        if weight_device.startswith("cuda"):
+            return weight_device
+        if torch.cuda.is_available():
+            return "cuda:0"
+        return "cpu"
+    return resolve_device(requested)
+
+
+def _angle_bin_metadata(counts: torch.Tensor, *, bin_degrees: float) -> list[dict[str, Any]]:
+    bins: list[dict[str, Any]] = []
+    counts_list = [int(value) for value in counts.detach().cpu().tolist()]
+    for bin_index, count in enumerate(counts_list):
+        angle_min = float(bin_index * bin_degrees)
+        angle_max = float((bin_index + 1) * bin_degrees)
+        bins.append(
+            {
+                "rank": 0,
+                "bin_index": bin_index,
+                "angle_min_deg": angle_min,
+                "angle_max_deg": angle_max,
+                "label": f"{angle_min:g}–{angle_max:g}°",
+                "count": count,
+            }
+        )
+
+    # The requested chart is a sorted point plot where x is rank, not angle.
+    # Sort by descending bin population, then by increasing angle for stable ties.
+    ranked = sorted(bins, key=lambda item: (-item["count"], item["angle_min_deg"]))
+    for rank, item in enumerate(ranked, start=1):
+        item["rank"] = rank
+    return ranked
+
+
+@torch.inference_mode()
+def pairwise_angle_distribution(
+    assets: ModelAssets,
+    *,
+    block_size: int = DEFAULT_PAIRWISE_BLOCK_SIZE,
+    compute_device: str | None = "auto",
+    include_self: bool = False,
+    bin_degrees: float = PAIRWISE_ANGLE_BIN_DEGREES,
+) -> dict[str, Any]:
+    """Return a blockwise all-token acute-angle histogram.
+
+    This computes dot products for unique unordered token pairs ``i < j`` by
+    default. Each block is immediately reduced into 5-degree angle bins, so the
+    full vocab-by-vocab dot-product matrix is never materialized or written to
+    disk. Angles are acute angles in ``[0, 90]`` via ``abs(cosine)``; a signed
+    vector angle would instead span ``[0, 180]``.
+    """
+    vocab_size = assets.vocab_size
+    if vocab_size <= 0:
+        raise ValueError("The active model has an empty LM-head/output-embedding matrix.")
+
+    block_size = int(block_size)
+    if block_size < 1:
+        raise ValueError("block_size must be at least 1.")
+
+    if bin_degrees <= 0:
+        raise ValueError("bin_degrees must be positive.")
+    num_bins_float = PAIRWISE_MAX_ANGLE_DEGREES / bin_degrees
+    num_bins = int(round(num_bins_float))
+    if abs(num_bins_float - num_bins) > 1e-9:
+        raise ValueError("bin_degrees must evenly divide 90 degrees.")
+
+    device = _resolve_pairwise_compute_device(compute_device, assets)
+    counts = torch.zeros(num_bins, dtype=torch.int64, device="cpu")
+
+    # Use cosine thresholds instead of computing arccos for every dot product.
+    # Boundaries are increasing: cos(85°), cos(80°), ..., cos(5°).
+    inner_angles = torch.arange(
+        bin_degrees,
+        PAIRWISE_MAX_ANGLE_DEGREES,
+        bin_degrees,
+        dtype=torch.float32,
+        device=device,
+    )
+    boundaries = torch.cos(torch.deg2rad(torch.flip(inner_angles, dims=[0]))).contiguous()
+
+    started = time.perf_counter()
+    weight = assets.weight
+    magnitudes = assets.magnitudes
+
+    try:
+        for row_start in range(0, vocab_size, block_size):
+            row_end = min(row_start + block_size, vocab_size)
+            row_weight = weight[row_start:row_end].to(device=device, dtype=torch.float32, non_blocking=True)
+            row_norm = magnitudes[row_start:row_end].to(device=device, dtype=torch.float32, non_blocking=True)
+            row_vectors = row_weight / row_norm.clamp_min(1e-12).unsqueeze(1)
+
+            for col_start in range(row_start, vocab_size, block_size):
+                col_end = min(col_start + block_size, vocab_size)
+
+                if col_start == row_start:
+                    col_vectors = row_vectors
+                else:
+                    col_weight = weight[col_start:col_end].to(device=device, dtype=torch.float32, non_blocking=True)
+                    col_norm = magnitudes[col_start:col_end].to(device=device, dtype=torch.float32, non_blocking=True)
+                    col_vectors = col_weight / col_norm.clamp_min(1e-12).unsqueeze(1)
+
+                dots = row_vectors @ col_vectors.T
+
+                if col_start == row_start:
+                    diagonal = 0 if include_self else 1
+                    mask = torch.ones(dots.shape, dtype=torch.bool, device=device).triu(diagonal=diagonal)
+                    cos_values = dots[mask]
+                else:
+                    cos_values = dots.reshape(-1)
+
+                if cos_values.numel() == 0:
+                    continue
+
+                cos_abs = cos_values.abs().clamp_(0.0, 1.0).contiguous()
+                bucket = torch.bucketize(cos_abs, boundaries, right=False)
+                bin_indices = (num_bins - 1 - bucket).to(torch.int64)
+                block_counts = torch.bincount(bin_indices, minlength=num_bins)[:num_bins]
+                counts += block_counts.detach().cpu()
+
+                del dots, cos_values, cos_abs, bucket, bin_indices, block_counts
+                if col_start != row_start:
+                    del col_vectors
+
+            del row_weight, row_norm, row_vectors
+
+        if device.startswith("cuda"):
+            torch.cuda.synchronize(torch.device(device))
+    except RuntimeError as exc:
+        if "out of memory" in str(exc).lower():
+            _release_cached_cuda_memory()
+            raise RuntimeError(
+                f"Pairwise binning ran out of memory on {device} with block_size={block_size}. "
+                "Try a smaller block size such as 512 or 1024."
+            ) from exc
+        raise
+
+    elapsed = time.perf_counter() - started
+    total_pairs = vocab_size * (vocab_size - 1) // 2
+    if include_self:
+        total_pairs += vocab_size
+
+    return {
+        "model_name": assets.model_name,
+        "vocab_size": vocab_size,
+        "hidden_dim": assets.hidden_dim,
+        "total_pairs": total_pairs,
+        "bin_degrees": float(bin_degrees),
+        "angle_min_deg": 0.0,
+        "angle_max_deg": PAIRWISE_MAX_ANGLE_DEGREES,
+        "block_size": block_size,
+        "compute_device": device,
+        "include_self": include_self,
+        "acute_angle": True,
+        "elapsed_seconds": float(elapsed),
+        "bins": _angle_bin_metadata(counts, bin_degrees=bin_degrees),
+    }
 
 def search_tokens(assets: ModelAssets, query: str) -> list[TokenInfo]:
     """Return every token matching a case-insensitive literal substring query.

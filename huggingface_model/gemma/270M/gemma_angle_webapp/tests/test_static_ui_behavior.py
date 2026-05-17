@@ -55,3 +55,20 @@ def test_model_loader_controls_exist() -> None:
     assert "loadAvailableModels" in js
     assert "resetAllSelectionsAfterModelChange" in js
     assert "loadModelFromInput" not in js
+
+
+def test_pairwise_angle_distribution_controls_exist() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+
+    assert 'id="pairwiseBinsButton"' in html
+    assert 'id="pairwiseBlockSize"' in html
+    assert 'id="pairwiseComputeDevice"' in html
+    assert 'id="pairwiseIncludeSelf"' in html
+    assert 'id="pairwiseAnglePlot"' in html
+    assert 'id="pairwiseBinsTable"' in html
+    assert 'Compute pairwise bins' in html
+    assert 'fetchJson(`/api/pairwise-angle-bins?' in js
+    assert 'drawPairwiseRankPlot' in js
+    assert 'log10' in js
+    assert 'resetPairwiseBinsOutput' in js

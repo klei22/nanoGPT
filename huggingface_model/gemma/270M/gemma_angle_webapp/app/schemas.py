@@ -72,3 +72,29 @@ class NeighborhoodResponse(BaseModel):
     anchor_magnitude: float
     limit: int = Field(ge=1)
     rows: list[NeighborhoodRow]
+
+
+
+class PairwiseAngleBin(BaseModel):
+    rank: int = Field(ge=1)
+    bin_index: int = Field(ge=0)
+    angle_min_deg: float = Field(ge=0)
+    angle_max_deg: float = Field(ge=0)
+    label: str
+    count: int = Field(ge=0)
+
+
+class PairwiseAngleDistributionResponse(BaseModel):
+    model_name: str
+    vocab_size: int = Field(ge=0)
+    hidden_dim: int = Field(ge=0)
+    total_pairs: int = Field(ge=0)
+    bin_degrees: float = Field(gt=0)
+    angle_min_deg: float = Field(ge=0)
+    angle_max_deg: float = Field(ge=0)
+    block_size: int = Field(ge=1)
+    compute_device: str
+    include_self: bool
+    acute_angle: bool = True
+    elapsed_seconds: float = Field(ge=0)
+    bins: list[PairwiseAngleBin]

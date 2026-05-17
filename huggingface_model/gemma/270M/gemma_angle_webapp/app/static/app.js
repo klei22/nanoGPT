@@ -222,6 +222,7 @@ function resetAllSelectionsAfterModelChange() {
   setOutput('neighborhoodOutput', 'Choose an anchor token, then compute its closest tokens.', true);
   byId('neighborhoodTable').classList.add('hidden');
   byId('downloadCsv').classList.add('hidden');
+  resetPairwiseBinsOutput();
 }
 
 async function loadRequestedModel() {
@@ -469,6 +470,181 @@ async function computeNeighborhood() {
   }
 }
 
+
+function resetPairwiseBinsOutput() {
+  const output = byId('pairwiseBinsOutput');
+  if (!output) return;
+  setOutput('pairwiseBinsOutput', 'Load a model, then compute the global pairwise angle-bin distribution. A CUDA device is used automatically when available.', true);
+  byId('pairwisePlotCard').classList.add('hidden');
+  byId('pairwiseBinsTable').classList.add('hidden');
+  byId('pairwiseBinsTable').querySelector('tbody').innerHTML = '';
+}
+
+function formatCount(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number.toLocaleString() : String(value);
+}
+
+function drawPairwiseRankPlot(bins) {
+  const canvas = byId('pairwiseAnglePlot');
+  const card = byId('pairwisePlotCard');
+  const ctx = canvas.getContext('2d');
+  const style = getComputedStyle(document.documentElement);
+  const textColor = style.getPropertyValue('--text').trim() || '#e5e7eb';
+  const mutedColor = style.getPropertyValue('--muted').trim() || '#9ca3af';
+  const borderColor = style.getPropertyValue('--border').trim() || '#374151';
+  const accentColor = style.getPropertyValue('--accent-strong').trim() || '#60a5fa';
+
+  const cssWidth = Math.max(720, card.clientWidth || 1000);
+  const cssHeight = 420;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssWidth * ratio);
+  canvas.height = Math.round(cssHeight * ratio);
+  canvas.style.width = `${cssWidth}px`;
+  canvas.style.height = `${cssHeight}px`;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const margin = { top: 28, right: 26, bottom: 58, left: 76 };
+  const width = cssWidth - margin.left - margin.right;
+  const height = cssHeight - margin.top - margin.bottom;
+  const counts = bins.map((bin) => Number(bin.count || 0));
+  const logs = counts.map((count) => Math.log10(Math.max(1, count)));
+  const maxLog = Math.max(1, ...logs);
+  const minLog = 0;
+  const rankCount = Math.max(1, bins.length);
+
+  function xForRank(rank) {
+    if (rankCount === 1) return margin.left + width / 2;
+    return margin.left + ((rank - 1) / (rankCount - 1)) * width;
+  }
+
+  function yForLog(logValue) {
+    return margin.top + ((maxLog - logValue) / (maxLog - minLog)) * height;
+  }
+
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top);
+  ctx.lineTo(margin.left, margin.top + height);
+  ctx.lineTo(margin.left + width, margin.top + height);
+  ctx.stroke();
+
+  ctx.fillStyle = mutedColor;
+  ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const yTicks = Math.max(2, Math.ceil(maxLog));
+  for (let tick = 0; tick <= yTicks; tick += 1) {
+    const logValue = (tick / yTicks) * maxLog;
+    const y = yForLog(logValue);
+    ctx.strokeStyle = borderColor;
+    ctx.globalAlpha = 0.45;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(margin.left + width, y);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    const countLabel = Math.round(10 ** logValue).toLocaleString();
+    ctx.fillText(countLabel, margin.left - 10, y);
+  }
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const xTickStep = Math.max(1, Math.ceil(rankCount / 6));
+  for (let rank = 1; rank <= rankCount; rank += xTickStep) {
+    const x = xForRank(rank);
+    ctx.fillText(String(rank), x, margin.top + height + 10);
+  }
+  if (rankCount > 1 && (rankCount - 1) % xTickStep !== 0) {
+    ctx.fillText(String(rankCount), xForRank(rankCount), margin.top + height + 10);
+  }
+
+  ctx.save();
+  ctx.translate(18, margin.top + height / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = textColor;
+  ctx.textAlign = 'center';
+  ctx.fillText('Pair count, log scale', 0, 0);
+  ctx.restore();
+
+  ctx.fillStyle = textColor;
+  ctx.textAlign = 'center';
+  ctx.fillText('Angle-bin rank', margin.left + width / 2, cssHeight - 22);
+
+  ctx.fillStyle = accentColor;
+  for (const bin of bins) {
+    const x = xForRank(Number(bin.rank));
+    const y = yForLog(Math.log10(Math.max(1, Number(bin.count || 0))));
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function renderPairwiseBinsTable(bins) {
+  const table = byId('pairwiseBinsTable');
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+  for (const bin of bins) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${bin.rank}</td>
+      <td>${escapeHtml(bin.label)}</td>
+      <td>${bin.bin_index}</td>
+      <td>${formatCount(bin.count)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  table.classList.remove('hidden');
+}
+
+async function computePairwiseAngleBins() {
+  const button = byId('pairwiseBinsButton');
+  const blockSize = Number(byId('pairwiseBlockSize').value || 2048);
+  const computeDevice = byId('pairwiseComputeDevice').value.trim() || 'auto';
+  const includeSelf = byId('pairwiseIncludeSelf').checked;
+
+  byId('pairwisePlotCard').classList.add('hidden');
+  byId('pairwiseBinsTable').classList.add('hidden');
+  setOutput('pairwiseBinsOutput', 'Computing all-pairs angle bins block by block… The full pairwise matrix is not cached or written to disk.', true);
+  button.disabled = true;
+  button.textContent = 'Computing…';
+
+  try {
+    const params = new URLSearchParams({
+      block_size: String(blockSize),
+      compute_device: computeDevice,
+      include_self: String(includeSelf),
+    });
+    const data = await fetchJson(`/api/pairwise-angle-bins?${params.toString()}`);
+    setOutput('pairwiseBinsOutput', `
+      <div class="metric"><span>Total pairs binned</span><strong>${formatCount(data.total_pairs)}</strong></div>
+      <table class="mini-table">
+        <tbody>
+          <tr><th>Model</th><td>${escapeHtml(data.model_name)}</td></tr>
+          <tr><th>Vocab × hidden</th><td>${formatCount(data.vocab_size)} × ${formatCount(data.hidden_dim)}</td></tr>
+          <tr><th>Angle definition</th><td>Acute angle, abs(cosine), 0°–90°</td></tr>
+          <tr><th>Bin width</th><td>${data.bin_degrees}°</td></tr>
+          <tr><th>Compute device</th><td>${escapeHtml(data.compute_device)}</td></tr>
+          <tr><th>Block size</th><td>${formatCount(data.block_size)}</td></tr>
+          <tr><th>Self-pairs</th><td>${data.include_self ? 'included' : 'excluded'}</td></tr>
+          <tr><th>Elapsed</th><td>${Number(data.elapsed_seconds).toFixed(3)} seconds</td></tr>
+        </tbody>
+      </table>
+    `);
+    byId('pairwisePlotCard').classList.remove('hidden');
+    drawPairwiseRankPlot(data.bins);
+    renderPairwiseBinsTable(data.bins);
+  } catch (error) {
+    setOutput('pairwiseBinsOutput', `<strong>Pairwise binning failed:</strong> ${escapeHtml(error.message)}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Compute pairwise bins';
+  }
+}
+
 function setupModelControls() {
   const loadButton = byId('loadModelButton');
   const modelInput = byId('modelNameInput');
@@ -500,4 +676,5 @@ window.addEventListener('DOMContentLoaded', () => {
   setupPicker('anchor', 'anchor');
   byId('angleButton').addEventListener('click', computeAngle);
   byId('neighborhoodButton').addEventListener('click', computeNeighborhood);
+  byId('pairwiseBinsButton').addEventListener('click', computePairwiseAngleBins);
 });

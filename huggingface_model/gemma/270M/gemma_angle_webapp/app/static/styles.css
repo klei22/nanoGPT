@@ -432,3 +432,45 @@ code {
     margin-top: 8px;
   }
 }
+
+.panel-lede {
+  margin-bottom: 16px;
+}
+
+.analysis-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(180px, 0.8fr) auto;
+  gap: 16px;
+  align-items: end;
+  margin: 12px 0 18px;
+}
+
+.analysis-checkbox {
+  min-height: 40px;
+  align-items: center;
+}
+
+.plot-card {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: #020617;
+  overflow-x: auto;
+}
+
+.plot-card canvas {
+  display: block;
+  max-width: none;
+}
+
+@media (max-width: 900px) {
+  .analysis-controls {
+    display: block;
+  }
+
+  .analysis-controls > *,
+  .analysis-checkbox {
+    margin-top: 12px;
+  }
+}

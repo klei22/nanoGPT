@@ -10,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import pytest
+import torch
 from fastapi.testclient import TestClient
 
 
@@ -39,6 +40,16 @@ class FakeAssets:
             TokenInfo(token_id=2, raw="world", display="world", normalized="world world"),
             TokenInfo(token_id=3, raw="<0xF9>", display="<0xF9>", normalized="<0xf9> 0xf9 f9"),
         ]
+        self.weight = torch.tensor(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0, 0.0],
+                [-1.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=torch.float32,
+        )
+        self.magnitudes = torch.linalg.vector_norm(self.weight, ord=2, dim=1)
 
     @property
     def vocab_size(self) -> int:
@@ -46,7 +57,7 @@ class FakeAssets:
 
     @property
     def hidden_dim(self) -> int:
-        return 4
+        return int(self.weight.shape[1])
 
     def token(self, token_id: int) -> TokenInfo:
         if token_id < 0 or token_id >= len(self.token_infos):
@@ -254,3 +265,126 @@ def test_manual_local_cache_scanner_finds_huggingface_model_dirs(
         "google/gemma-3-270m",
         "Qwen/Qwen3.5-0.8B-Base",
     ]
+
+
+def test_pairwise_angle_bins_route_returns_ranked_5_degree_counts(client: TestClient) -> None:
+    response = client.get(
+        "/api/pairwise-angle-bins",
+        params={"block_size": 2, "compute_device": "cpu", "include_self": False},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["model_name"] == "fake-model"
+    assert data["total_pairs"] == 6
+    assert data["bin_degrees"] == 5.0
+    assert data["angle_min_deg"] == 0.0
+    assert data["angle_max_deg"] == 90.0
+    assert data["acute_angle"] is True
+    assert data["compute_device"] == "cpu"
+    assert data["block_size"] == 2
+    assert len(data["bins"]) == 18
+
+    top = data["bins"][:3]
+    assert [(row["rank"], row["label"], row["count"]) for row in top] == [
+        (1, "45–50°", 3),
+        (2, "85–90°", 2),
+        (3, "0–5°", 1),
+    ]
+    assert sum(row["count"] for row in data["bins"]) == data["total_pairs"]
+
+
+def test_pairwise_angle_bins_route_can_include_self_pairs(client: TestClient) -> None:
+    response = client.get(
+        "/api/pairwise-angle-bins",
+        params={"block_size": 2, "compute_device": "cpu", "include_self": True},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["include_self"] is True
+    assert data["total_pairs"] == 10
+    assert sum(row["count"] for row in data["bins"]) == 10
+    zero_degree_bin = next(row for row in data["bins"] if row["label"] == "0–5°")
+    assert zero_degree_bin["count"] == 5
+
+
+def test_weight_tensor_name_prefers_lm_head_over_input_embedding() -> None:
+    chosen = model_service._choose_weight_tensor_name(
+        [
+            "model.layers.0.mlp.up_proj.weight",
+            "model.embed_tokens.weight",
+            "lm_head.weight",
+        ]
+    )
+    assert chosen == "lm_head.weight"
+
+
+def test_load_active_model_uses_weight_only_matrix_without_importing_model_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeTokenizer:
+        def get_vocab(self) -> dict[str, int]:
+            return {"<bos>": 0, "hello": 1}
+
+    weight = torch.tensor([[3.0, 4.0], [5.0, 12.0]], dtype=torch.float32)
+    calls: list[tuple[str, bool, str]] = []
+
+    monkeypatch.setattr(model_service, "_ASSETS", None)
+    monkeypatch.setattr(model_service, "_load_tokenizer", lambda model_name, allow_download=True: FakeTokenizer())
+
+    def fake_weight_matrix(model_name: str, *, allow_download: bool, effective_device: str) -> torch.Tensor:
+        calls.append((model_name, allow_download, effective_device))
+        return weight
+
+    monkeypatch.setattr(model_service, "_load_output_weight_matrix", fake_weight_matrix)
+    monkeypatch.setattr(
+        model_service,
+        "_load_causal_lm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("full model class should not be imported")),
+    )
+
+    assets = model_service.load_active_model("google/gemma-3-270m", "cpu", force_reload=True, allow_download=True)
+
+    assert calls == [("google/gemma-3-270m", True, "cpu")]
+    assert assets.vocab_size == 2
+    assert assets.hidden_dim == 2
+    assert assets.token(1).raw == "hello"
+    assert assets.magnitudes.detach().cpu().tolist() == [5.0, 13.0]
+
+
+def test_model_load_error_formatter_adds_gemma_and_cpp_extension_hints() -> None:
+    message = model_service._format_model_load_error(
+        RuntimeError("Could not import module 'Gemma3ForCausalLM'. Skipping import of cpp extensions due to incompatible torch version.")
+    )
+    assert "safetensors-only" in message
+    assert "compiled extension" in message
+
+
+def test_weight_only_loader_uses_safetensors_index_for_single_needed_shard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_dir = tmp_path / "fake-indexed-model"
+    model_dir.mkdir()
+    (model_dir / "model-00002-of-00003.safetensors").write_bytes(b"fake")
+    (model_dir / "model.safetensors.index.json").write_text(
+        '{"weight_map": {'
+        '"model.layers.0.mlp.up_proj.weight": "model-00001-of-00003.safetensors", '
+        '"model.embed_tokens.weight": "model-00002-of-00003.safetensors"'
+        '}}',
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    def fake_safe_open(path: Path, tensor_name: str) -> torch.Tensor:
+        calls.append((path.name, tensor_name))
+        return torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+
+    monkeypatch.setattr(model_service, "_safe_open_tensor", fake_safe_open)
+
+    weight = model_service._load_output_weight_from_safetensors(str(model_dir), allow_download=False)
+
+    assert weight.shape == (2, 2)
+    assert calls == [("model-00002-of-00003.safetensors", "model.embed_tokens.weight")]

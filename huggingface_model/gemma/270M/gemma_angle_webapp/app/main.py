@@ -18,6 +18,7 @@ from .model_service import (
     list_local_models,
     load_active_model,
     nearest_neighbors,
+    pairwise_angle_distribution,
     search_tokens,
 )
 from .schemas import (
@@ -26,6 +27,7 @@ from .schemas import (
     LocalModelsResponse,
     ModelLoadRequest,
     NeighborhoodResponse,
+    PairwiseAngleDistributionResponse,
     StatusResponse,
     TokenRecord,
     TokenSearchResponse,
@@ -220,6 +222,27 @@ def token_neighborhood_csv(anchor_id: int = Query(..., ge=0)) -> StreamingRespon
         media_type="text/csv; charset=utf-8",
         headers=headers,
     )
+
+
+@app.get("/api/pairwise-angle-bins", response_model=PairwiseAngleDistributionResponse)
+def pairwise_angle_bins(
+    block_size: int = Query(2048, ge=1, le=16384),
+    compute_device: str = Query("auto", description="auto, cpu, cuda:0, etc."),
+    include_self: bool = Query(False, description="Include i == j self-pairs in the 0-degree bin."),
+) -> PairwiseAngleDistributionResponse:
+    assets = _load_assets_or_500()
+    try:
+        data = pairwise_angle_distribution(
+            assets,
+            block_size=block_size,
+            compute_device=compute_device,
+            include_self=include_self,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return PairwiseAngleDistributionResponse(**data)
 
 
 if __name__ == "__main__":
