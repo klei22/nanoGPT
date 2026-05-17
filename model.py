@@ -214,6 +214,42 @@ class GPT(nn.Module):
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
 
+    def compute_lm_logits(self, hidden_states, lm_head):
+        """Compute logits in Euclidean space or via a hyperbolic manifold."""
+        if self.config.lm_head_manifold == "euclidean":
+            return lm_head(hidden_states)
+        if self.config.lm_head_manifold != "hyperbolic":
+            raise ValueError(
+                f"Unsupported lm_head_manifold={self.config.lm_head_manifold}. "
+                "Expected 'euclidean' or 'hyperbolic'."
+            )
+
+        if self.config.hyperbolic_curvature <= 0:
+            raise ValueError("hyperbolic_curvature must be positive for hyperbolic lm head")
+
+        # Hyperboloid model with curvature c > 0 and radius sqrt(K), K = 1/c.
+        # Map hidden vectors and token prototypes to hyperboloid:
+        # phi(x) = [sqrt(K + ||x||^2), x]
+        # d_H(phi(x), phi(w)) = sqrt(K) * arcosh(-<phi(x),phi(w)>_L / K)
+        # logits = -scale * d_H^2
+        c = self.config.hyperbolic_curvature
+        K = 1.0 / c
+
+        eps = 1e-6
+        x = hidden_states
+        w = lm_head.weight
+
+        x_sq = (x * x).sum(dim=-1, keepdim=True)
+        w_sq = (w * w).sum(dim=-1, keepdim=True).transpose(0, 1)
+        x0 = torch.sqrt(torch.clamp(x_sq + K, min=eps))
+        w0 = torch.sqrt(torch.clamp(w_sq + K, min=eps))
+
+        spatial_dot = torch.matmul(x, w.transpose(0, 1))
+        lorentz_inner = -x0 * w0 + spatial_dot
+        acosh_arg = torch.clamp(-lorentz_inner / K, min=1.0 + eps)
+        d_h = math.sqrt(K) * torch.acosh(acosh_arg)
+        return -self.config.hyperbolic_logit_scale * (d_h * d_h)
+
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
@@ -500,7 +536,7 @@ class GPT(nn.Module):
                     logits = [pred[:, [-1], :] for pred in logits]
                     losses = None
             else:
-                logits = [self.transformer[f'lm_head_{i}'](x) for i in range(len(token_list))]
+                logits = [self.compute_lm_logits(x, self.transformer[f'lm_head_{i}']) for i in range(len(token_list))]
 
                 # Soft‑cap **each** logits tensor (training & inference)
                 if self.config.final_logit_softcapping is not None:
@@ -606,9 +642,9 @@ class GPT(nn.Module):
             if targets is not None:
                 # if we are given some desired targets also calculate the loss
                 if self.config.multidataset_wte and dataset_idx is not None:
-                    logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+                    logits = self.compute_lm_logits(x, self.transformer[f'lm_head_{dataset_idx}'])
                 else:
-                    logits = self.lm_head(x)
+                    logits = self.compute_lm_logits(x, self.lm_head)
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -622,9 +658,9 @@ class GPT(nn.Module):
             else:
                 # inference-time mini-optimization: only forward the lm_head on the very last position
                 if self.config.multidataset_wte and dataset_idx is not None:
-                    logits = self.transformer[f'lm_head_{dataset_idx}'](x[:, [-1], :])
+                    logits = self.compute_lm_logits(x[:, [-1], :], self.transformer[f'lm_head_{dataset_idx}'])
                 else:
-                    logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+                    logits = self.compute_lm_logits(x[:, [-1], :], self.lm_head) # note: using list [-1] to preserve the time dim
 
                 if self.config.final_logit_softcapping is not None:
                     logits = logits / self.config.final_logit_softcapping
@@ -707,9 +743,9 @@ class GPT(nn.Module):
             x = F.linear(x, self.transformer.scale_down.weight.t())
 
         if self.config.multidataset_wte and dataset_idx is not None:
-            logits = self.transformer[f'lm_head_{dataset_idx}'](x)
+            logits = self.compute_lm_logits(x, self.transformer[f'lm_head_{dataset_idx}'])
         else:
-            logits = self.lm_head(x)
+            logits = self.compute_lm_logits(x, self.lm_head)
         if self.final_logit_softcapping is not None:
             logits = torch.tanh(logits / self.final_logit_softcapping) \
                      * self.final_logit_softcapping
