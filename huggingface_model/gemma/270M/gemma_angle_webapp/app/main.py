@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import os
+from html import escape as html_escape
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from .model_service import (
     DEFAULT_DEVICE,
     DEFAULT_MODEL_NAME,
     angle_degrees,
+    common_close_tokens,
     get_current_assets,
     get_model_status,
     iter_neighborhood_csv,
     list_local_models,
     load_active_model,
+    minimum_angular_distances,
     nearest_neighbors,
     pairwise_angle_bin_tokens,
     pairwise_angle_distribution,
@@ -24,8 +26,10 @@ from .model_service import (
 )
 from .schemas import (
     AngleResponse,
+    CommonCloseTokensResponse,
     LocalModelRecord,
     LocalModelsResponse,
+    MinAngularDistancesResponse,
     ModelLoadRequest,
     NeighborhoodResponse,
     PairwiseAngleBinTokensResponse,
@@ -39,7 +43,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(title="LM-Head Angle Explorer")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=BASE_DIR / "templates")
+INDEX_TEMPLATE_PATH = BASE_DIR / "templates" / "index.html"
 
 
 def _status_from_assets(assets) -> StatusResponse:
@@ -72,17 +76,17 @@ def _token_record(token_id: int) -> TokenRecord:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
-    # Render directly instead of using Jinja2Templates.TemplateResponse so the
-    # app is insensitive to Starlette's old/new TemplateResponse call signatures.
-    template = templates.get_template("index.html")
-    html = template.render(
-        {
-            "request": request,
-            "model_name": DEFAULT_MODEL_NAME,
-            "requested_device": DEFAULT_DEVICE,
-        }
-    )
+def index() -> HTMLResponse:
+    """Serve the browser UI as plain HTML.
+
+    Some mixed FastAPI/Starlette installations route older templating call
+    signatures incorrectly, which makes GET / fail before any front-end buttons
+    can be wired.  The page only needs two escaped defaults, so a plain HTML
+    response keeps the homepage independent of Starlette's template API version.
+    """
+    html = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
+    html = html.replace("{{ model_name }}", html_escape(DEFAULT_MODEL_NAME, quote=True))
+    html = html.replace("{{ requested_device }}", html_escape(DEFAULT_DEVICE, quote=True))
     return HTMLResponse(html)
 
 
@@ -187,6 +191,38 @@ def pairwise_angle(
     )
 
 
+@app.get("/api/common-close-tokens", response_model=CommonCloseTokensResponse)
+def tokens_close_to_both_pairwise_anchors(
+    token_a: int = Query(..., ge=0),
+    token_b: int = Query(..., ge=0),
+    max_angle_deg: float = Query(35.0, ge=0, le=180),
+) -> CommonCloseTokensResponse:
+    """Return tokens within max_angle_deg of both selected pairwise tokens."""
+    assets = _load_assets_or_500()
+    try:
+        info_a = assets.token(token_a)
+        info_b = assets.token(token_b)
+        rows = common_close_tokens(assets, token_a, token_b, max_angle_deg)
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return CommonCloseTokensResponse(
+        token_a_id=token_a,
+        token_a_raw=info_a.raw,
+        token_a_display=info_a.display,
+        token_a_magnitude=float(assets.magnitudes[token_a].item()),
+        token_b_id=token_b,
+        token_b_raw=info_b.raw,
+        token_b_display=info_b.display,
+        token_b_magnitude=float(assets.magnitudes[token_b].item()),
+        threshold_deg=float(max_angle_deg),
+        match_count=len(rows),
+        rows=rows,
+    )
+
+
 @app.get("/api/neighborhood", response_model=NeighborhoodResponse)
 def token_neighborhood(
     anchor_id: int = Query(..., ge=0),
@@ -257,6 +293,26 @@ def pairwise_angle_bin_token_list(bin_index: int) -> PairwiseAngleBinTokensRespo
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return PairwiseAngleBinTokensResponse(**data)
+
+
+@app.get("/api/min-angular-distances", response_model=MinAngularDistancesResponse)
+def min_angular_distances(
+    block_size: int = Query(2048, ge=1, le=16384),
+    compute_device: str = Query("auto", description="auto, cpu, cuda:0, etc."),
+) -> MinAngularDistancesResponse:
+    """Return the closest non-self token for every token in the active model."""
+    assets = _load_assets_or_500()
+    try:
+        data = minimum_angular_distances(
+            assets,
+            block_size=block_size,
+            compute_device=compute_device,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return MinAngularDistancesResponse(**data)
 
 
 if __name__ == "__main__":

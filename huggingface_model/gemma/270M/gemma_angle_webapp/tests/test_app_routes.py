@@ -167,6 +167,46 @@ def test_legacy_token_lookup_route_still_works(client: TestClient) -> None:
     assert response.json()["raw"] == "world"
 
 
+def test_common_close_tokens_route_finds_tokens_under_threshold_from_both(client: TestClient) -> None:
+    response = client.get(
+        "/api/common-close-tokens",
+        params={"token_a": 0, "token_b": 2, "max_angle_deg": 46},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["token_a_id"] == 0
+    assert data["token_b_id"] == 2
+    assert data["threshold_deg"] == 46
+    assert data["match_count"] == 2
+    assert [row["token_id"] for row in data["rows"]] == [0, 2]
+    assert data["rows"][0]["angle_to_token_a_deg"] == pytest.approx(0.0)
+    assert data["rows"][0]["angle_to_token_b_deg"] == pytest.approx(45.0)
+    assert data["rows"][0]["magnitude"] == pytest.approx(1.0)
+
+
+def test_common_close_tokens_route_uses_default_35_degree_threshold(client: TestClient) -> None:
+    response = client.get(
+        "/api/common-close-tokens",
+        params={"token_a": 0, "token_b": 2},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["threshold_deg"] == 35.0
+    assert data["match_count"] == 0
+    assert data["rows"] == []
+
+
+def test_common_close_tokens_route_rejects_invalid_threshold(client: TestClient) -> None:
+    response = client.get(
+        "/api/common-close-tokens",
+        params={"token_a": 0, "token_b": 2, "max_angle_deg": -1},
+    )
+
+    assert response.status_code == 422
+
+
 def test_model_load_endpoint_accepts_huggingface_designation(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 
@@ -420,3 +460,30 @@ def test_pairwise_angle_bin_tokens_route_requires_prior_bin_compute(client: Test
 
     assert response.status_code == 400
     assert "Compute pairwise bins first" in response.json()["detail"]
+
+
+def test_min_angular_distances_route_returns_closest_non_self_tokens(client: TestClient) -> None:
+    response = client.get(
+        "/api/min-angular-distances",
+        params={"block_size": 2, "compute_device": "cpu"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["model_name"] == "fake-model"
+    assert data["total_pairs"] == 6
+    assert data["compute_device"] == "cpu"
+    assert data["block_size"] == 2
+
+    rows = data["rows"]
+    assert [row["token_id"] for row in rows] == [0, 1, 2, 3]
+    assert [row["other_token_id"] for row in rows] == [2, 2, 0, 1]
+    assert [row["min_angle_rank"] for row in rows] == [1, 2, 3, 4]
+    assert rows[0]["min_angle_deg"] == pytest.approx(45.0)
+    assert rows[1]["min_angle_deg"] == pytest.approx(45.0)
+    assert rows[2]["min_angle_deg"] == pytest.approx(45.0)
+    assert rows[3]["min_angle_deg"] == pytest.approx(90.0)
+    assert rows[0]["token_raw"] == "<bos>"
+    assert rows[0]["other_token_raw"] == "world"
+    assert rows[0]["magnitude"] == pytest.approx(1.0)
+    assert rows[0]["other_magnitude"] == pytest.approx(2**0.5)

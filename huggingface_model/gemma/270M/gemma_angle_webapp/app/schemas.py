@@ -56,6 +56,30 @@ class AngleResponse(BaseModel):
     angle_deg: float
 
 
+class CommonCloseTokenRow(BaseModel):
+    rank: int = Field(ge=1)
+    token_id: int
+    token_raw: str
+    token_display: str
+    angle_to_token_a_deg: float
+    angle_to_token_b_deg: float
+    magnitude: float
+
+
+class CommonCloseTokensResponse(BaseModel):
+    token_a_id: int
+    token_a_raw: str
+    token_a_display: str
+    token_a_magnitude: float
+    token_b_id: int
+    token_b_raw: str
+    token_b_display: str
+    token_b_magnitude: float
+    threshold_deg: float = Field(ge=0)
+    match_count: int = Field(ge=0)
+    rows: list[CommonCloseTokenRow]
+
+
 class NeighborhoodRow(BaseModel):
     rank: int
     token_id: int
@@ -110,3 +134,27 @@ class PairwiseAngleBinTokensResponse(BaseModel):
     label: str
     token_count: int = Field(ge=0)
     tokens: list[TokenRecord]
+
+class MinAngularDistanceRow(BaseModel):
+    min_angle_rank: int = Field(ge=1)
+    token_id: int
+    token_raw: str
+    token_display: str
+    magnitude: float
+    min_angle_deg: float
+    other_token_id: int
+    other_token_raw: str
+    other_token_display: str
+    other_magnitude: float
+
+
+class MinAngularDistancesResponse(BaseModel):
+    model_name: str
+    vocab_size: int = Field(ge=0)
+    hidden_dim: int = Field(ge=0)
+    total_pairs: int = Field(ge=0)
+    block_size: int = Field(ge=1)
+    compute_device: str
+    elapsed_seconds: float = Field(ge=0)
+    rows: list[MinAngularDistanceRow]
+

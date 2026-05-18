@@ -77,6 +77,25 @@ def test_pairwise_angle_distribution_controls_exist() -> None:
     assert 'resetPairwiseBinsOutput' in js
 
 
+def test_common_close_tokens_controls_exist() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+    css = (PROJECT_ROOT / "app" / "static" / "styles.css").read_text()
+
+    assert 'id="commonCloseThreshold"' in html
+    assert 'value="35"' in html
+    assert 'id="commonCloseButton"' in html
+    assert 'id="commonCloseOutput"' in html
+    assert 'id="commonCloseTable"' in html
+    assert 'Angle to A °' in html
+    assert 'Angle to B °' in html
+    assert 'fetchJson(`/api/common-close-tokens?' in js
+    assert 'computeCommonCloseTokens' in js
+    assert 'renderCommonCloseTable' in js
+    assert 'resetCommonCloseOutput' in js
+    assert 'common-close-scroll' in css
+
+
 def test_pairwise_bin_token_list_ui_exists_and_rows_are_clickable() -> None:
     html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
     js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
@@ -91,3 +110,60 @@ def test_pairwise_bin_token_list_ui_exists_and_rows_are_clickable() -> None:
     assert 'clickable-row' in js
     assert 'token-list-scroll' in css
     assert 'overflow: auto' in css
+
+
+def test_homepage_avoids_template_response_signature_path() -> None:
+    main_py = (PROJECT_ROOT / "app" / "main.py").read_text()
+    assert "TemplateResponse" not in main_py
+    assert "Jinja2Templates" not in main_py
+    assert "INDEX_TEMPLATE_PATH.read_text" in main_py
+
+
+def test_pairwise_actions_resolve_typed_ids_before_running() -> None:
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+    assert "async function ensurePickerSelection" in js
+    assert "async function ensurePairwiseSelections" in js
+    assert "await ensurePairwiseSelections()" in js
+    assert "Search/select a token or enter an ID and click Use ID" in js
+
+
+def test_export_buttons_exist_for_tables_and_graphs() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+
+    for export_id in [
+        "exportAngleSummaryCsv",
+        "exportCommonCloseCsv",
+        "exportNeighborhoodCsv",
+        "exportPairwisePlotPng",
+        "exportPairwiseBinsCsv",
+        "exportPairwiseBinTokensCsv",
+        "exportMinDistancePlotPng",
+        "exportMinDistancesCsv",
+    ]:
+        assert f'id="{export_id}"' in html
+        assert export_id in js
+
+    assert "exportHtmlTableAsCsv" in js
+    assert "exportCanvasAsPng" in js
+    assert "setupExportButtons" in js
+
+
+def test_minimum_angular_distance_ui_exists() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+    css = (PROJECT_ROOT / "app" / "static" / "styles.css").read_text()
+
+    assert 'id="minDistancesButton"' in html
+    assert 'id="minDistanceBlockSize"' in html
+    assert 'id="minDistanceComputeDevice"' in html
+    assert 'id="minDistanceSort"' in html
+    assert 'id="minDistancePlot"' in html
+    assert 'id="minDistancesTable"' in html
+    assert "Closest non-self token for every token" in html
+    assert "fetchJson(`/api/min-angular-distances?" in js
+    assert "computeMinAngularDistances" in js
+    assert "drawMinDistancePlot" in js
+    assert "renderMinDistanceTable" in js
+    assert "resetMinDistancesOutput" in js
+    assert "min-distance-scroll" in css

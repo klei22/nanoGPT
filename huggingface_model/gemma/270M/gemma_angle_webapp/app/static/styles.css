@@ -198,6 +198,15 @@ h3 {
   margin-bottom: 18px;
 }
 
+.pairwise-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pairwise-actions input {
+  width: 110px;
+}
+
 .picker-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -305,7 +314,7 @@ select:focus {
 }
 
 button,
-a#downloadCsv {
+a.export-button {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel-soft);
@@ -320,7 +329,7 @@ a#downloadCsv {
 }
 
 button:hover,
-a#downloadCsv:hover {
+a.export-button:hover {
   border-color: var(--accent-strong);
 }
 
@@ -343,6 +352,14 @@ button.primary {
   margin: 12px 0 0;
   color: var(--muted);
   white-space: pre-wrap;
+}
+
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 12px 0;
 }
 
 .output {
@@ -401,6 +418,31 @@ code {
 
 .mini-table th {
   width: 180px;
+}
+
+.common-close-panel {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.common-close-scroll {
+  max-height: 430px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #020617;
+}
+
+.common-close-scroll table {
+  min-width: 960px;
+}
+
+.common-close-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #020617;
 }
 
 .hidden {
@@ -524,6 +566,29 @@ code {
 }
 
 .token-list-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #020617;
+}
+
+.min-distance-controls {
+  grid-template-columns: minmax(180px, 0.7fr) minmax(180px, 0.8fr) minmax(180px, 0.7fr);
+}
+
+.min-distance-scroll {
+  max-height: 560px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #020617;
+}
+
+.min-distance-scroll table {
+  min-width: 1380px;
+}
+
+.min-distance-scroll thead th {
   position: sticky;
   top: 0;
   z-index: 1;
