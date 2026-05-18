@@ -1,0 +1,28 @@
+# Explore repeated attention/MLP ops per block without intermediate skip connections.
+---
+max_iters: [20000]
+eval_interval: [500]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["float16"]
+compile: [true]
+
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_pre_ln: [true]
+
+use_sequential_ops: [true]
+sequence_intermediate_skip_connections: [false]
+# Keep one outer skip over the whole op chain.
+sequence_final_skip_connection: [true]
+
+match_sequential_mlp_param_budget: [true]
+
+block_operation_sequence:
+  - ["attn", "attn", "mlp", "mlp"]
+  - ["attn", "mlp", "mlp", "mlp", "attn", "mlp", "mlp", "mlp"]
