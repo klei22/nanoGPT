@@ -65,10 +65,29 @@ def test_pairwise_angle_distribution_controls_exist() -> None:
     assert 'id="pairwiseBlockSize"' in html
     assert 'id="pairwiseComputeDevice"' in html
     assert 'id="pairwiseIncludeSelf"' in html
+    assert 'id="pairwiseLogScale"' in html
     assert 'id="pairwiseAnglePlot"' in html
     assert 'id="pairwiseBinsTable"' in html
     assert 'Compute pairwise bins' in html
     assert 'fetchJson(`/api/pairwise-angle-bins?' in js
-    assert 'drawPairwiseRankPlot' in js
+    assert 'drawPairwiseAngleBinPlot' in js
+    assert 'buildLogTicks' in js
+    assert 'buildLinearTicks' in js
     assert 'log10' in js
     assert 'resetPairwiseBinsOutput' in js
+
+
+def test_pairwise_bin_token_list_ui_exists_and_rows_are_clickable() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+    css = (PROJECT_ROOT / "app" / "static" / "styles.css").read_text()
+
+    assert 'id="pairwiseBinTokensPanel"' in html
+    assert 'id="pairwiseBinTokensTable"' in html
+    assert 'Unique tokens' in html
+    assert 'Search label' in html
+    assert 'loadPairwiseBinTokens' in js
+    assert 'fetchJson(`/api/pairwise-angle-bins/${bin.bin_index}/tokens`)' in js
+    assert 'clickable-row' in js
+    assert 'token-list-scroll' in css
+    assert 'overflow: auto' in css

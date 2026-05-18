@@ -18,6 +18,7 @@ from .model_service import (
     list_local_models,
     load_active_model,
     nearest_neighbors,
+    pairwise_angle_bin_tokens,
     pairwise_angle_distribution,
     search_tokens,
 )
@@ -27,6 +28,7 @@ from .schemas import (
     LocalModelsResponse,
     ModelLoadRequest,
     NeighborhoodResponse,
+    PairwiseAngleBinTokensResponse,
     PairwiseAngleDistributionResponse,
     StatusResponse,
     TokenRecord,
@@ -243,6 +245,18 @@ def pairwise_angle_bins(
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return PairwiseAngleDistributionResponse(**data)
+
+
+@app.get("/api/pairwise-angle-bins/{bin_index:int}/tokens", response_model=PairwiseAngleBinTokensResponse)
+def pairwise_angle_bin_token_list(bin_index: int) -> PairwiseAngleBinTokensResponse:
+    assets = _load_assets_or_500()
+    try:
+        data = pairwise_angle_bin_tokens(assets, bin_index)
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return PairwiseAngleBinTokensResponse(**data)
 
 
 if __name__ == "__main__":

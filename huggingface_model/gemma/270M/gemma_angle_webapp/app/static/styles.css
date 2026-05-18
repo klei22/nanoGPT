@@ -439,7 +439,7 @@ code {
 
 .analysis-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 0.7fr) minmax(180px, 0.8fr) auto;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(180px, 0.8fr) auto auto;
   gap: 16px;
   align-items: end;
   margin: 12px 0 18px;
@@ -452,7 +452,7 @@ code {
 
 .plot-card {
   margin-top: 18px;
-  padding: 14px;
+  padding: 18px;
   border: 1px solid var(--border);
   border-radius: 18px;
   background: #020617;
@@ -473,4 +473,59 @@ code {
   .analysis-checkbox {
     margin-top: 12px;
   }
+}
+
+.subpanel-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.badge.subtle {
+  color: var(--muted);
+}
+
+.clickable-table tbody tr,
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-table tbody tr:hover,
+.clickable-row:hover,
+.clickable-row:focus {
+  background: rgba(96, 165, 250, 0.10);
+}
+
+.selected-row,
+.selected-row:hover,
+.selected-row:focus {
+  background: rgba(96, 165, 250, 0.18);
+  outline: 1px solid rgba(96, 165, 250, 0.45);
+}
+
+.bin-token-panel {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.token-list-scroll {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #020617;
+}
+
+.token-list-scroll table {
+  min-width: 820px;
+}
+
+.token-list-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #020617;
 }

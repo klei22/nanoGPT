@@ -2,6 +2,8 @@ const state = {
   tokenA: null,
   tokenB: null,
   anchor: null,
+  pairwiseBins: null,
+  pairwiseSelectedBinIndex: null,
 };
 
 const pickerPrefixes = ['tokenA', 'tokenB', 'anchor'];
@@ -471,13 +473,31 @@ async function computeNeighborhood() {
 }
 
 
+function resetPairwiseBinTokensOutput() {
+  state.pairwiseSelectedBinIndex = null;
+  const panel = byId('pairwiseBinTokensPanel');
+  if (!panel) return;
+  panel.classList.add('hidden');
+  byId('pairwiseBinTokensCount').textContent = 'No bin selected';
+  setOutput('pairwiseBinTokensOutput', 'Click an angle-bin table row to show the unique tokens that participate in that bin.', true);
+  const table = byId('pairwiseBinTokensTable');
+  table.classList.add('hidden');
+  table.querySelector('tbody').innerHTML = '';
+  for (const row of byId('pairwiseBinsTable').querySelectorAll('tbody tr')) {
+    row.classList.remove('selected-row');
+  }
+}
+
 function resetPairwiseBinsOutput() {
   const output = byId('pairwiseBinsOutput');
   if (!output) return;
   setOutput('pairwiseBinsOutput', 'Load a model, then compute the global pairwise angle-bin distribution. A CUDA device is used automatically when available.', true);
+  state.pairwiseBins = null;
+  state.pairwiseSelectedBinIndex = null;
   byId('pairwisePlotCard').classList.add('hidden');
   byId('pairwiseBinsTable').classList.add('hidden');
   byId('pairwiseBinsTable').querySelector('tbody').innerHTML = '';
+  resetPairwiseBinTokensOutput();
 }
 
 function formatCount(value) {
@@ -485,7 +505,52 @@ function formatCount(value) {
   return Number.isFinite(number) ? number.toLocaleString() : String(value);
 }
 
-function drawPairwiseRankPlot(bins) {
+function niceCeil(value) {
+  const safeValue = Math.max(1, Number(value || 0));
+  const exponent = Math.floor(Math.log10(safeValue));
+  const magnitude = 10 ** exponent;
+  const normalized = safeValue / magnitude;
+  let niceNormalized;
+  if (normalized <= 1) niceNormalized = 1;
+  else if (normalized <= 2) niceNormalized = 2;
+  else if (normalized <= 5) niceNormalized = 5;
+  else niceNormalized = 10;
+  return niceNormalized * magnitude;
+}
+
+function buildLinearTicks(maxCount) {
+  const maxNice = niceCeil(maxCount);
+  const tickCount = 6;
+  const ticks = [];
+  for (let i = 0; i < tickCount; i += 1) {
+    ticks.push({
+      value: (maxNice * i) / (tickCount - 1),
+      label: Math.round((maxNice * i) / (tickCount - 1)).toLocaleString(),
+    });
+  }
+  return { ticks, yMax: maxNice };
+}
+
+function buildLogTicks(maxCount) {
+  const maxPower = Math.max(0, Math.ceil(Math.log10(Math.max(1, maxCount))));
+  const step = maxPower > 10 ? 2 : 1;
+  const ticks = [];
+  for (let power = 0; power <= maxPower; power += step) {
+    ticks.push({
+      value: power,
+      label: Math.round(10 ** power).toLocaleString(),
+    });
+  }
+  if (ticks[ticks.length - 1].value !== maxPower) {
+    ticks.push({
+      value: maxPower,
+      label: Math.round(10 ** maxPower).toLocaleString(),
+    });
+  }
+  return { ticks, yMax: Math.max(1, maxPower) };
+}
+
+function drawPairwiseAngleBinPlot(bins, logScale = true) {
   const canvas = byId('pairwiseAnglePlot');
   const card = byId('pairwisePlotCard');
   const ctx = canvas.getContext('2d');
@@ -495,8 +560,9 @@ function drawPairwiseRankPlot(bins) {
   const borderColor = style.getPropertyValue('--border').trim() || '#374151';
   const accentColor = style.getPropertyValue('--accent-strong').trim() || '#60a5fa';
 
-  const cssWidth = Math.max(720, card.clientWidth || 1000);
-  const cssHeight = 420;
+  const angleBins = [...bins].sort((a, b) => Number(a.angle_min_deg) - Number(b.angle_min_deg));
+  const cssWidth = Math.max(980, card.clientWidth || 1100);
+  const cssHeight = 460;
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.round(cssWidth * ratio);
   canvas.height = Math.round(cssHeight * ratio);
@@ -505,22 +571,33 @@ function drawPairwiseRankPlot(bins) {
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, cssWidth, cssHeight);
 
-  const margin = { top: 28, right: 26, bottom: 58, left: 76 };
+  const counts = angleBins.map((bin) => Number(bin.count || 0));
+  const maxCount = Math.max(1, ...counts);
+  const yScale = logScale ? buildLogTicks(maxCount) : buildLinearTicks(maxCount);
+
+  ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+  const maxTickLabelWidth = Math.max(0, ...yScale.ticks.map((tick) => ctx.measureText(tick.label).width));
+  const margin = {
+    top: 28,
+    right: 32,
+    bottom: 94,
+    left: Math.ceil(Math.max(150, maxTickLabelWidth + 64)),
+  };
   const width = cssWidth - margin.left - margin.right;
   const height = cssHeight - margin.top - margin.bottom;
-  const counts = bins.map((bin) => Number(bin.count || 0));
-  const logs = counts.map((count) => Math.log10(Math.max(1, count)));
-  const maxLog = Math.max(1, ...logs);
-  const minLog = 0;
-  const rankCount = Math.max(1, bins.length);
+  const binCount = Math.max(1, angleBins.length);
 
-  function xForRank(rank) {
-    if (rankCount === 1) return margin.left + width / 2;
-    return margin.left + ((rank - 1) / (rankCount - 1)) * width;
+  function xForIndex(index) {
+    if (binCount === 1) return margin.left + width / 2;
+    return margin.left + (index / (binCount - 1)) * width;
   }
 
-  function yForLog(logValue) {
-    return margin.top + ((maxLog - logValue) / (maxLog - minLog)) * height;
+  function yValueForCount(count) {
+    return logScale ? Math.log10(Math.max(1, count)) : count;
+  }
+
+  function yForValue(value) {
+    return margin.top + ((yScale.yMax - value) / yScale.yMax) * height;
   }
 
   ctx.strokeStyle = borderColor;
@@ -532,13 +609,10 @@ function drawPairwiseRankPlot(bins) {
   ctx.stroke();
 
   ctx.fillStyle = mutedColor;
-  ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  const yTicks = Math.max(2, Math.ceil(maxLog));
-  for (let tick = 0; tick <= yTicks; tick += 1) {
-    const logValue = (tick / yTicks) * maxLog;
-    const y = yForLog(logValue);
+  for (const tick of yScale.ticks) {
+    const y = yForValue(tick.value);
     ctx.strokeStyle = borderColor;
     ctx.globalAlpha = 0.45;
     ctx.beginPath();
@@ -546,40 +620,104 @@ function drawPairwiseRankPlot(bins) {
     ctx.lineTo(margin.left + width, y);
     ctx.stroke();
     ctx.globalAlpha = 1;
-    const countLabel = Math.round(10 ** logValue).toLocaleString();
-    ctx.fillText(countLabel, margin.left - 10, y);
+    ctx.fillText(tick.label, margin.left - 12, y);
   }
 
-  ctx.textAlign = 'center';
+  ctx.textAlign = 'right';
   ctx.textBaseline = 'top';
-  const xTickStep = Math.max(1, Math.ceil(rankCount / 6));
-  for (let rank = 1; rank <= rankCount; rank += xTickStep) {
-    const x = xForRank(rank);
-    ctx.fillText(String(rank), x, margin.top + height + 10);
-  }
-  if (rankCount > 1 && (rankCount - 1) % xTickStep !== 0) {
-    ctx.fillText(String(rankCount), xForRank(rankCount), margin.top + height + 10);
+  for (const [index, bin] of angleBins.entries()) {
+    const x = xForIndex(index);
+    ctx.save();
+    ctx.translate(x, margin.top + height + 14);
+    ctx.rotate(-Math.PI / 4);
+    ctx.fillText(String(bin.label), 0, 0);
+    ctx.restore();
   }
 
   ctx.save();
-  ctx.translate(18, margin.top + height / 2);
+  ctx.translate(24, margin.top + height / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillStyle = textColor;
   ctx.textAlign = 'center';
-  ctx.fillText('Pair count, log scale', 0, 0);
+  ctx.textBaseline = 'middle';
+  ctx.fillText(logScale ? 'Pair count, log scale' : 'Pair count', 0, 0);
   ctx.restore();
 
   ctx.fillStyle = textColor;
   ctx.textAlign = 'center';
-  ctx.fillText('Angle-bin rank', margin.left + width / 2, cssHeight - 22);
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('Angle bin (degrees)', margin.left + width / 2, cssHeight - 18);
 
   ctx.fillStyle = accentColor;
-  for (const bin of bins) {
-    const x = xForRank(Number(bin.rank));
-    const y = yForLog(Math.log10(Math.max(1, Number(bin.count || 0))));
+  for (const [index, bin] of angleBins.entries()) {
+    const x = xForIndex(index);
+    const y = yForValue(yValueForCount(Number(bin.count || 0)));
     ctx.beginPath();
     ctx.arc(x, y, 4, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  const caption = byId('pairwisePlotCaption');
+  if (caption) {
+    caption.textContent = logScale
+      ? 'Y axis uses log10(count). X axis is the 5° angle-bin range ordered from 0° to 90°.'
+      : 'Y axis uses the raw pair count. X axis is the 5° angle-bin range ordered from 0° to 90°.';
+  }
+  const summary = byId('pairwiseYScaleSummary');
+  if (summary) {
+    summary.textContent = logScale ? 'log10(count)' : 'raw count';
+  }
+}
+
+function markSelectedPairwiseBinRow(binIndex) {
+  for (const row of byId('pairwiseBinsTable').querySelectorAll('tbody tr')) {
+    row.classList.toggle('selected-row', Number(row.dataset.binIndex) === Number(binIndex));
+  }
+}
+
+function renderPairwiseBinTokens(data) {
+  const table = byId('pairwiseBinTokensTable');
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+
+  const fragment = document.createDocumentFragment();
+  const tokens = [...(data.tokens || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  for (const token of tokens) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${token.token_id}</td>
+      <td><code>${escapeHtml(tokenLabel(token))}</code></td>
+      <td><code>${escapeHtml(token.raw)}</code></td>
+      <td><code>${escapeHtml(token.display)}</code></td>
+    `;
+    fragment.appendChild(tr);
+  }
+  tbody.appendChild(fragment);
+  table.classList.toggle('hidden', tokens.length === 0);
+}
+
+async function loadPairwiseBinTokens(bin) {
+  const panel = byId('pairwiseBinTokensPanel');
+  panel.classList.remove('hidden');
+  state.pairwiseSelectedBinIndex = Number(bin.bin_index);
+  markSelectedPairwiseBinRow(bin.bin_index);
+
+  byId('pairwiseBinTokensTable').classList.add('hidden');
+  byId('pairwiseBinTokensTable').querySelector('tbody').innerHTML = '';
+  byId('pairwiseBinTokensCount').textContent = `${escapeHtml(bin.label)} selected`;
+  setOutput('pairwiseBinTokensOutput', `Loading tokens for ${escapeHtml(bin.label)}…`, true);
+
+  try {
+    const data = await fetchJson(`/api/pairwise-angle-bins/${bin.bin_index}/tokens`);
+    byId('pairwiseBinTokensCount').textContent = `${formatCount(data.token_count)} unique tokens`;
+    setOutput('pairwiseBinTokensOutput', `
+      Showing unique tokens that participate in at least one pair in the <strong>${escapeHtml(data.label)}</strong> bin.
+      Tokens are sorted by token ID and use the same label format as token search.
+    `);
+    renderPairwiseBinTokens(data);
+  } catch (error) {
+    byId('pairwiseBinTokensCount').textContent = 'Load failed';
+    setOutput('pairwiseBinTokensOutput', `<strong>Token list failed:</strong> ${escapeHtml(error.message)}`);
   }
 }
 
@@ -589,12 +727,24 @@ function renderPairwiseBinsTable(bins) {
   tbody.innerHTML = '';
   for (const bin of bins) {
     const tr = document.createElement('tr');
+    tr.classList.add('clickable-row');
+    tr.tabIndex = 0;
+    tr.dataset.binIndex = String(bin.bin_index);
+    tr.title = `Show tokens in ${bin.label}`;
     tr.innerHTML = `
       <td>${bin.rank}</td>
       <td>${escapeHtml(bin.label)}</td>
       <td>${bin.bin_index}</td>
       <td>${formatCount(bin.count)}</td>
+      <td>${formatCount(bin.token_count || 0)}</td>
     `;
+    tr.addEventListener('click', () => loadPairwiseBinTokens(bin));
+    tr.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        loadPairwiseBinTokens(bin);
+      }
+    });
     tbody.appendChild(tr);
   }
   table.classList.remove('hidden');
@@ -605,9 +755,11 @@ async function computePairwiseAngleBins() {
   const blockSize = Number(byId('pairwiseBlockSize').value || 2048);
   const computeDevice = byId('pairwiseComputeDevice').value.trim() || 'auto';
   const includeSelf = byId('pairwiseIncludeSelf').checked;
+  const logScale = byId('pairwiseLogScale').checked;
 
   byId('pairwisePlotCard').classList.add('hidden');
   byId('pairwiseBinsTable').classList.add('hidden');
+  resetPairwiseBinTokensOutput();
   setOutput('pairwiseBinsOutput', 'Computing all-pairs angle bins block by block… The full pairwise matrix is not cached or written to disk.', true);
   button.disabled = true;
   button.textContent = 'Computing…';
@@ -630,12 +782,14 @@ async function computePairwiseAngleBins() {
           <tr><th>Compute device</th><td>${escapeHtml(data.compute_device)}</td></tr>
           <tr><th>Block size</th><td>${formatCount(data.block_size)}</td></tr>
           <tr><th>Self-pairs</th><td>${data.include_self ? 'included' : 'excluded'}</td></tr>
+          <tr><th>Y scale</th><td id="pairwiseYScaleSummary">${logScale ? 'log10(count)' : 'raw count'}</td></tr>
           <tr><th>Elapsed</th><td>${Number(data.elapsed_seconds).toFixed(3)} seconds</td></tr>
         </tbody>
       </table>
     `);
     byId('pairwisePlotCard').classList.remove('hidden');
-    drawPairwiseRankPlot(data.bins);
+    state.pairwiseBins = data.bins;
+    drawPairwiseAngleBinPlot(data.bins, logScale);
     renderPairwiseBinsTable(data.bins);
   } catch (error) {
     setOutput('pairwiseBinsOutput', `<strong>Pairwise binning failed:</strong> ${escapeHtml(error.message)}`);
@@ -677,4 +831,9 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('angleButton').addEventListener('click', computeAngle);
   byId('neighborhoodButton').addEventListener('click', computeNeighborhood);
   byId('pairwiseBinsButton').addEventListener('click', computePairwiseAngleBins);
+  byId('pairwiseLogScale').addEventListener('change', () => {
+    if (state.pairwiseBins && !byId('pairwisePlotCard').classList.contains('hidden')) {
+      drawPairwiseAngleBinPlot(state.pairwiseBins, byId('pairwiseLogScale').checked);
+    }
+  });
 });

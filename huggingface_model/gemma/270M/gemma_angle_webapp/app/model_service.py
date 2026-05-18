@@ -72,8 +72,32 @@ class ModelAssets:
         return self.token_infos[token_id]
 
 
+@dataclass(frozen=True)
+class PairwiseBinTokenCache:
+    """Small in-memory cache of unique token membership for the last bin run.
+
+    This deliberately stores only a ``num_bins × vocab_size`` boolean matrix,
+    not the pairwise dot-product/angle matrix and not token-pair rows.
+    """
+
+    model_name: str
+    vocab_size: int
+    hidden_dim: int
+    bin_degrees: float
+    angle_min_deg: float
+    angle_max_deg: float
+    block_size: int
+    compute_device: str
+    include_self: bool
+    created_at: float
+    token_membership: torch.Tensor
+
+
+
 _ASSETS_LOCK = threading.RLock()
 _ASSETS: ModelAssets | None = None
+_PAIRWISE_BIN_TOKEN_CACHE_LOCK = threading.RLock()
+_PAIRWISE_BIN_TOKEN_CACHE: PairwiseBinTokenCache | None = None
 
 
 def _norm(text: str) -> str:
@@ -663,6 +687,8 @@ def get_assets(
         ):
             return _ASSETS
 
+        clear_pairwise_bin_token_cache()
+
         tokenizer = _load_tokenizer(target_model, allow_download=allow_download)
         weight_cpu = _load_output_weight_matrix(
             target_model,
@@ -930,29 +956,87 @@ def _resolve_pairwise_compute_device(requested_device: str | None, assets: Model
     return resolve_device(requested)
 
 
-def _angle_bin_metadata(counts: torch.Tensor, *, bin_degrees: float) -> list[dict[str, Any]]:
+def _angle_bin_metadata(
+    counts: torch.Tensor,
+    *,
+    bin_degrees: float,
+    token_membership: torch.Tensor | None = None,
+) -> list[dict[str, Any]]:
+    """Return angle-bin records ordered from the lowest to highest angle range."""
     bins: list[dict[str, Any]] = []
     counts_list = [int(value) for value in counts.detach().cpu().tolist()]
+    token_counts: list[int] | None = None
+    if token_membership is not None:
+        token_counts = [int(value) for value in token_membership.sum(dim=1).detach().cpu().tolist()]
+
     for bin_index, count in enumerate(counts_list):
         angle_min = float(bin_index * bin_degrees)
         angle_max = float((bin_index + 1) * bin_degrees)
         bins.append(
             {
-                "rank": 0,
+                # ``rank`` is now the angle-order position, kept for backwards
+                # compatibility with the existing response schema.
+                "rank": bin_index + 1,
                 "bin_index": bin_index,
                 "angle_min_deg": angle_min,
                 "angle_max_deg": angle_max,
                 "label": f"{angle_min:g}–{angle_max:g}°",
                 "count": count,
+                "token_count": token_counts[bin_index] if token_counts is not None else 0,
             }
         )
+    return bins
 
-    # The requested chart is a sorted point plot where x is rank, not angle.
-    # Sort by descending bin population, then by increasing angle for stable ties.
-    ranked = sorted(bins, key=lambda item: (-item["count"], item["angle_min_deg"]))
-    for rank, item in enumerate(ranked, start=1):
-        item["rank"] = rank
-    return ranked
+
+
+
+def _set_pairwise_bin_token_cache(cache: PairwiseBinTokenCache) -> None:
+    global _PAIRWISE_BIN_TOKEN_CACHE
+    with _PAIRWISE_BIN_TOKEN_CACHE_LOCK:
+        _PAIRWISE_BIN_TOKEN_CACHE = cache
+
+
+def clear_pairwise_bin_token_cache() -> None:
+    """Drop the saved unique-token membership for the previous binning run."""
+    global _PAIRWISE_BIN_TOKEN_CACHE
+    with _PAIRWISE_BIN_TOKEN_CACHE_LOCK:
+        _PAIRWISE_BIN_TOKEN_CACHE = None
+
+
+def _update_pairwise_token_membership(
+    token_membership: torch.Tensor,
+    bin_indices: torch.Tensor,
+    row_indices: torch.Tensor,
+    col_indices: torch.Tensor,
+    *,
+    row_start: int,
+    row_end: int,
+    col_start: int,
+    col_end: int,
+    num_bins: int,
+) -> None:
+    """Mark every token that participates in at least one pair in each bin.
+
+    ``token_membership`` is CPU bool with shape ``[num_bins, vocab_size]``.
+    ``bin_indices``, ``row_indices``, and ``col_indices`` describe the valid
+    pairs from the current block on the compute device. This uses one compact
+    per-block scatter instead of saving token-pair rows or looping through bins
+    with many GPU synchronizations.
+    """
+    row_len = row_end - row_start
+    col_len = col_end - col_start
+    if row_len <= 0 or col_len <= 0 or bin_indices.numel() == 0:
+        return
+
+    device = bin_indices.device
+    row_presence = torch.zeros((num_bins, row_len), dtype=torch.bool, device=device)
+    col_presence = torch.zeros((num_bins, col_len), dtype=torch.bool, device=device)
+    row_presence[bin_indices, row_indices] = True
+    col_presence[bin_indices, col_indices] = True
+
+    token_membership[:, row_start:row_end] |= row_presence.detach().cpu()
+    token_membership[:, col_start:col_end] |= col_presence.detach().cpu()
+    del row_presence, col_presence
 
 
 @torch.inference_mode()
@@ -989,6 +1073,9 @@ def pairwise_angle_distribution(
 
     device = _resolve_pairwise_compute_device(compute_device, assets)
     counts = torch.zeros(num_bins, dtype=torch.int64, device="cpu")
+    # A compact CPU membership matrix lets the UI show unique tokens per bin
+    # without saving pair rows or the full pairwise angle matrix.
+    token_membership = torch.zeros((num_bins, vocab_size), dtype=torch.bool, device="cpu")
 
     # Use cosine thresholds instead of computing arccos for every dot product.
     # Boundaries are increasing: cos(85°), cos(80°), ..., cos(5°).
@@ -1023,24 +1110,47 @@ def pairwise_angle_distribution(
                     col_vectors = col_weight / col_norm.clamp_min(1e-12).unsqueeze(1)
 
                 dots = row_vectors @ col_vectors.T
+                cos_abs = dots.abs().clamp_(0.0, 1.0).contiguous()
+                bucket = torch.bucketize(cos_abs, boundaries, right=False)
+                bin_matrix = (num_bins - 1 - bucket).to(torch.int64)
 
                 if col_start == row_start:
                     diagonal = 0 if include_self else 1
-                    mask = torch.ones(dots.shape, dtype=torch.bool, device=device).triu(diagonal=diagonal)
-                    cos_values = dots[mask]
+                    row_indices, col_indices = torch.triu_indices(
+                        bin_matrix.shape[0],
+                        bin_matrix.shape[1],
+                        offset=diagonal,
+                        device=device,
+                    )
+                    bin_indices = bin_matrix[row_indices, col_indices]
                 else:
-                    cos_values = dots.reshape(-1)
+                    row_len = row_end - row_start
+                    col_len = col_end - col_start
+                    row_indices = torch.arange(row_len, device=device, dtype=torch.long).repeat_interleave(col_len)
+                    col_indices = torch.arange(col_len, device=device, dtype=torch.long).repeat(row_len)
+                    bin_indices = bin_matrix.reshape(-1)
 
-                if cos_values.numel() == 0:
+                if bin_indices.numel() == 0:
+                    del dots, cos_abs, bucket, bin_matrix, bin_indices, row_indices, col_indices
+                    if col_start != row_start:
+                        del col_vectors
                     continue
 
-                cos_abs = cos_values.abs().clamp_(0.0, 1.0).contiguous()
-                bucket = torch.bucketize(cos_abs, boundaries, right=False)
-                bin_indices = (num_bins - 1 - bucket).to(torch.int64)
                 block_counts = torch.bincount(bin_indices, minlength=num_bins)[:num_bins]
                 counts += block_counts.detach().cpu()
+                _update_pairwise_token_membership(
+                    token_membership,
+                    bin_indices,
+                    row_indices,
+                    col_indices,
+                    row_start=row_start,
+                    row_end=row_end,
+                    col_start=col_start,
+                    col_end=col_end,
+                    num_bins=num_bins,
+                )
 
-                del dots, cos_values, cos_abs, bucket, bin_indices, block_counts
+                del dots, cos_abs, bucket, bin_matrix, bin_indices, row_indices, col_indices, block_counts
                 if col_start != row_start:
                     del col_vectors
 
@@ -1062,6 +1172,23 @@ def pairwise_angle_distribution(
     if include_self:
         total_pairs += vocab_size
 
+    bins = _angle_bin_metadata(counts, bin_degrees=bin_degrees, token_membership=token_membership)
+    _set_pairwise_bin_token_cache(
+        PairwiseBinTokenCache(
+            model_name=assets.model_name,
+            vocab_size=vocab_size,
+            hidden_dim=assets.hidden_dim,
+            bin_degrees=float(bin_degrees),
+            angle_min_deg=0.0,
+            angle_max_deg=PAIRWISE_MAX_ANGLE_DEGREES,
+            block_size=block_size,
+            compute_device=device,
+            include_self=include_self,
+            created_at=time.time(),
+            token_membership=token_membership,
+        )
+    )
+
     return {
         "model_name": assets.model_name,
         "vocab_size": vocab_size,
@@ -1075,7 +1202,47 @@ def pairwise_angle_distribution(
         "include_self": include_self,
         "acute_angle": True,
         "elapsed_seconds": float(elapsed),
-        "bins": _angle_bin_metadata(counts, bin_degrees=bin_degrees),
+        "bins": bins,
+    }
+
+
+
+def pairwise_angle_bin_tokens(assets: ModelAssets, bin_index: int) -> dict[str, Any]:
+    """Return unique tokens participating in the selected bin from the last run.
+
+    The cache is intentionally small: it stores one boolean membership value per
+    ``(bin, token_id)`` pair. Token-pair rows and pairwise dot products are never
+    saved.
+    """
+    with _PAIRWISE_BIN_TOKEN_CACHE_LOCK:
+        cache = _PAIRWISE_BIN_TOKEN_CACHE
+        if cache is None:
+            raise ValueError("No pairwise angle-bin token list is available yet. Compute pairwise bins first.")
+        if cache.model_name != assets.model_name or cache.vocab_size != assets.vocab_size:
+            raise ValueError("The saved pairwise bin token list belongs to a different model. Recompute pairwise bins.")
+        num_bins = int(cache.token_membership.shape[0])
+        if bin_index < 0 or bin_index >= num_bins:
+            raise IndexError(f"bin_index must be in [0, {num_bins - 1}], got {bin_index}")
+
+        membership = cache.token_membership[bin_index].clone()
+        bin_degrees = cache.bin_degrees
+
+    token_ids = torch.nonzero(membership, as_tuple=False).flatten().cpu().tolist()
+    tokens = [
+        {"token_id": int(token_id), "raw": assets.token_infos[int(token_id)].raw, "display": assets.token_infos[int(token_id)].display}
+        for token_id in token_ids
+    ]
+    angle_min = float(bin_index * bin_degrees)
+    angle_max = float((bin_index + 1) * bin_degrees)
+    return {
+        "model_name": assets.model_name,
+        "vocab_size": assets.vocab_size,
+        "bin_index": int(bin_index),
+        "angle_min_deg": angle_min,
+        "angle_max_deg": angle_max,
+        "label": f"{angle_min:g}–{angle_max:g}°",
+        "token_count": len(tokens),
+        "tokens": tokens,
     }
 
 def search_tokens(assets: ModelAssets, query: str) -> list[TokenInfo]:

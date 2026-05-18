@@ -82,6 +82,7 @@ class PairwiseAngleBin(BaseModel):
     angle_max_deg: float = Field(ge=0)
     label: str
     count: int = Field(ge=0)
+    token_count: int = Field(default=0, ge=0)
 
 
 class PairwiseAngleDistributionResponse(BaseModel):
@@ -98,3 +99,14 @@ class PairwiseAngleDistributionResponse(BaseModel):
     acute_angle: bool = True
     elapsed_seconds: float = Field(ge=0)
     bins: list[PairwiseAngleBin]
+
+
+class PairwiseAngleBinTokensResponse(BaseModel):
+    model_name: str
+    vocab_size: int = Field(ge=0)
+    bin_index: int = Field(ge=0)
+    angle_min_deg: float = Field(ge=0)
+    angle_max_deg: float = Field(ge=0)
+    label: str
+    token_count: int = Field(ge=0)
+    tokens: list[TokenRecord]

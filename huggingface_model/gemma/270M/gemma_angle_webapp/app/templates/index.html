@@ -146,7 +146,7 @@
         <table id="neighborhoodTable" class="hidden">
           <thead>
             <tr>
-              <th>Rank</th>
+              <th>Angle order</th>
               <th>Token ID</th>
               <th>Raw token</th>
               <th>Display</th>
@@ -163,7 +163,7 @@
       <div class="panel-heading">
         <div>
           <p class="eyebrow">All-pairs angle distribution</p>
-          <h2>Ranked 5° angle-bin counts</h2>
+          <h2>Angle-ordered 5° bin counts</h2>
         </div>
         <button id="pairwiseBinsButton" type="button" class="primary">Compute pairwise bins</button>
       </div>
@@ -183,28 +183,57 @@
           <input id="pairwiseIncludeSelf" type="checkbox" />
           Include self-pairs
         </label>
+        <label class="checkbox-row analysis-checkbox" for="pairwiseLogScale">
+          <input id="pairwiseLogScale" type="checkbox" checked />
+          Log-scale y-axis
+        </label>
       </div>
 
       <div id="pairwiseBinsOutput" class="output muted">Load a model, then compute the global pairwise angle-bin distribution. A CUDA device is used automatically when available.</div>
 
       <div id="pairwisePlotCard" class="plot-card hidden">
-        <canvas id="pairwiseAnglePlot" width="1000" height="420" aria-label="Ranked pairwise angle-bin counts plot"></canvas>
-        <p class="selection">Y axis uses log10(count). X axis is the rank of each 5° angle bin after sorting bins by count.</p>
+        <canvas id="pairwiseAnglePlot" width="1100" height="460" aria-label="Angle-ordered pairwise angle-bin counts plot"></canvas>
+        <p id="pairwisePlotCaption" class="selection">Y axis uses log10(count). X axis is the 5° angle-bin range ordered from 0° to 90°.</p>
       </div>
 
       <div class="table-wrap">
-        <table id="pairwiseBinsTable" class="hidden">
+        <table id="pairwiseBinsTable" class="hidden clickable-table">
           <thead>
             <tr>
-              <th>Rank</th>
+              <th>Angle order</th>
               <th>Angle bin</th>
               <th>Bin index</th>
               <th>Pair count</th>
+              <th>Unique tokens</th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
       </div>
+
+      <section id="pairwiseBinTokensPanel" class="bin-token-panel hidden" aria-live="polite">
+        <div class="subpanel-heading">
+          <div>
+            <p class="eyebrow">Selected angle bin</p>
+            <h3>Tokens in last clicked 5° bin</h3>
+          </div>
+          <span id="pairwiseBinTokensCount" class="badge subtle">No bin selected</span>
+        </div>
+        <div id="pairwiseBinTokensOutput" class="output muted">Click an angle-bin table row to show the unique tokens that participate in that bin.</div>
+        <div class="table-wrap token-list-scroll">
+          <table id="pairwiseBinTokensTable" class="hidden">
+            <thead>
+              <tr>
+                <th>Token ID</th>
+                <th>Search label</th>
+                <th>Raw token</th>
+                <th>Display</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
     </section>
 
   </main>

@@ -267,7 +267,7 @@ def test_manual_local_cache_scanner_finds_huggingface_model_dirs(
     ]
 
 
-def test_pairwise_angle_bins_route_returns_ranked_5_degree_counts(client: TestClient) -> None:
+def test_pairwise_angle_bins_route_returns_angle_ordered_5_degree_counts(client: TestClient) -> None:
     response = client.get(
         "/api/pairwise-angle-bins",
         params={"block_size": 2, "compute_device": "cpu", "include_self": False},
@@ -285,12 +285,17 @@ def test_pairwise_angle_bins_route_returns_ranked_5_degree_counts(client: TestCl
     assert data["block_size"] == 2
     assert len(data["bins"]) == 18
 
-    top = data["bins"][:3]
-    assert [(row["rank"], row["label"], row["count"]) for row in top] == [
-        (1, "45–50°", 3),
-        (2, "85–90°", 2),
-        (3, "0–5°", 1),
+    assert [(row["rank"], row["label"], row["count"]) for row in data["bins"][:3]] == [
+        (1, "0–5°", 1),
+        (2, "5–10°", 0),
+        (3, "10–15°", 0),
     ]
+    assert data["bins"][9]["rank"] == 10
+    assert data["bins"][9]["label"] == "45–50°"
+    assert data["bins"][9]["count"] == 3
+    assert data["bins"][17]["rank"] == 18
+    assert data["bins"][17]["label"] == "85–90°"
+    assert data["bins"][17]["count"] == 2
     assert sum(row["count"] for row in data["bins"]) == data["total_pairs"]
 
 
@@ -388,3 +393,30 @@ def test_weight_only_loader_uses_safetensors_index_for_single_needed_shard(
 
     assert weight.shape == (2, 2)
     assert calls == [("model-00002-of-00003.safetensors", "model.embed_tokens.weight")]
+
+
+def test_pairwise_angle_bin_tokens_route_returns_last_clicked_bin_tokens(client: TestClient) -> None:
+    model_service.clear_pairwise_bin_token_cache()
+    bins_response = client.get(
+        "/api/pairwise-angle-bins",
+        params={"block_size": 2, "compute_device": "cpu", "include_self": False},
+    )
+    assert bins_response.status_code == 200
+
+    response = client.get("/api/pairwise-angle-bins/9/tokens")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["label"] == "45–50°"
+    assert data["token_count"] == 4
+    assert [row["token_id"] for row in data["tokens"]] == [0, 1, 2, 3]
+    assert [row["raw"] for row in data["tokens"]] == ["<bos>", "▁Hello", "world", "<0xF9>"]
+
+
+def test_pairwise_angle_bin_tokens_route_requires_prior_bin_compute(client: TestClient) -> None:
+    model_service.clear_pairwise_bin_token_cache()
+
+    response = client.get("/api/pairwise-angle-bins/0/tokens")
+
+    assert response.status_code == 400
+    assert "Compute pairwise bins first" in response.json()["detail"]
