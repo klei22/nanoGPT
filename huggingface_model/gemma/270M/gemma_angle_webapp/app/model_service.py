@@ -1245,6 +1245,213 @@ def pairwise_angle_bin_tokens(assets: ModelAssets, bin_index: int) -> dict[str, 
         "tokens": tokens,
     }
 
+
+def _update_best_cosine_matches(
+    best_cos: torch.Tensor,
+    best_ids: torch.Tensor,
+    target_ids: torch.Tensor,
+    candidate_cos: torch.Tensor,
+    candidate_ids: torch.Tensor,
+) -> None:
+    """Update per-token best cosine / nearest-token IDs in place.
+
+    ``best_cos`` and ``best_ids`` live on the compute device.  The arrays are
+    intentionally one-dimensional, so this routine keeps only O(vocab) state
+    while the caller streams blockwise dot products.  Ties are resolved by the
+    lower other-token ID to keep results deterministic.
+    """
+    if target_ids.numel() == 0:
+        return
+
+    current_cos = best_cos[target_ids]
+    current_ids = best_ids[target_ids]
+    better = (candidate_cos > current_cos) | (
+        (candidate_cos == current_cos)
+        & ((current_ids < 0) | (candidate_ids < current_ids))
+    )
+    if not bool(torch.any(better).item()):
+        return
+
+    selected = target_ids[better]
+    best_cos[selected] = candidate_cos[better]
+    best_ids[selected] = candidate_ids[better]
+
+
+def _minimum_angular_distance_row(
+    assets: ModelAssets,
+    token_id: int,
+    min_angle_deg: float,
+    min_angle_rank: int,
+    other_token_id: int,
+    magnitudes_cpu: list[float],
+) -> dict[str, Any]:
+    info = assets.token(token_id)
+    other = assets.token(other_token_id)
+    return {
+        "min_angle_rank": int(min_angle_rank),
+        "token_id": int(token_id),
+        "token_raw": info.raw,
+        "token_display": info.display,
+        "magnitude": float(magnitudes_cpu[token_id]),
+        "min_angle_deg": float(min_angle_deg),
+        "other_token_id": int(other_token_id),
+        "other_token_raw": other.raw,
+        "other_token_display": other.display,
+        "other_magnitude": float(magnitudes_cpu[other_token_id]),
+    }
+
+
+@torch.inference_mode()
+def minimum_angular_distances(
+    assets: ModelAssets,
+    *,
+    block_size: int = DEFAULT_PAIRWISE_BLOCK_SIZE,
+    compute_device: str | None = "auto",
+) -> dict[str, Any]:
+    """Return the closest non-self token for every vocabulary vector.
+
+    The ordinary signed vector angle in ``[0, 180]`` is used, matching the
+    pairwise angle and neighborhood features.  The computation is streamed in
+    blocks and keeps only two O(vocab) vectors on the compute device:
+    best cosine and best other-token ID.  No pairwise matrix or pair rows are
+    cached or written to disk.
+    """
+    vocab_size = assets.vocab_size
+    if vocab_size < 2:
+        raise ValueError("At least two tokens are required to compute non-self minimum angles.")
+
+    block_size = int(block_size)
+    if block_size < 1:
+        raise ValueError("block_size must be at least 1.")
+
+    device = _resolve_pairwise_compute_device(compute_device, assets)
+    best_cos = torch.full((vocab_size,), -float("inf"), dtype=torch.float32, device=device)
+    best_ids = torch.full((vocab_size,), -1, dtype=torch.long, device=device)
+
+    weight = assets.weight
+    magnitudes = assets.magnitudes
+    started = time.perf_counter()
+
+    try:
+        for row_start in range(0, vocab_size, block_size):
+            row_end = min(row_start + block_size, vocab_size)
+            row_len = row_end - row_start
+            row_ids = torch.arange(row_start, row_end, dtype=torch.long, device=device)
+            row_weight = weight[row_start:row_end].to(device=device, dtype=torch.float32, non_blocking=True)
+            row_norm = magnitudes[row_start:row_end].to(device=device, dtype=torch.float32, non_blocking=True)
+            row_vectors = row_weight / row_norm.clamp_min(1e-12).unsqueeze(1)
+
+            for col_start in range(row_start, vocab_size, block_size):
+                col_end = min(col_start + block_size, vocab_size)
+                col_len = col_end - col_start
+
+                if col_start == row_start:
+                    col_vectors = row_vectors
+                    col_ids = row_ids
+                else:
+                    col_ids = torch.arange(col_start, col_end, dtype=torch.long, device=device)
+                    col_weight = weight[col_start:col_end].to(device=device, dtype=torch.float32, non_blocking=True)
+                    col_norm = magnitudes[col_start:col_end].to(device=device, dtype=torch.float32, non_blocking=True)
+                    col_vectors = col_weight / col_norm.clamp_min(1e-12).unsqueeze(1)
+
+                dots = (row_vectors @ col_vectors.T).clamp_(-1.0, 1.0)
+
+                if col_start == row_start:
+                    diag = torch.arange(row_len, dtype=torch.long, device=device)
+                    dots[diag, diag] = -float("inf")
+                    candidate_cos, candidate_local_ids = torch.max(dots, dim=1)
+                    candidate_ids = col_ids[candidate_local_ids]
+                    _update_best_cosine_matches(
+                        best_cos,
+                        best_ids,
+                        row_ids,
+                        candidate_cos,
+                        candidate_ids,
+                    )
+                    del diag, candidate_cos, candidate_local_ids, candidate_ids
+                else:
+                    row_candidate_cos, row_candidate_local_ids = torch.max(dots, dim=1)
+                    row_candidate_ids = col_ids[row_candidate_local_ids]
+                    _update_best_cosine_matches(
+                        best_cos,
+                        best_ids,
+                        row_ids,
+                        row_candidate_cos,
+                        row_candidate_ids,
+                    )
+
+                    col_candidate_cos, col_candidate_local_ids = torch.max(dots, dim=0)
+                    col_candidate_ids = row_ids[col_candidate_local_ids]
+                    _update_best_cosine_matches(
+                        best_cos,
+                        best_ids,
+                        col_ids,
+                        col_candidate_cos,
+                        col_candidate_ids,
+                    )
+                    del (
+                        row_candidate_cos,
+                        row_candidate_local_ids,
+                        row_candidate_ids,
+                        col_candidate_cos,
+                        col_candidate_local_ids,
+                        col_candidate_ids,
+                    )
+
+                del dots
+                if col_start != row_start:
+                    del col_ids, col_weight, col_norm, col_vectors
+
+            del row_ids, row_weight, row_norm, row_vectors
+
+        if device.startswith("cuda"):
+            torch.cuda.synchronize(torch.device(device))
+    except RuntimeError as exc:
+        if "out of memory" in str(exc).lower():
+            _release_cached_cuda_memory()
+            raise RuntimeError(
+                f"Minimum-angle computation ran out of memory on {device} with block_size={block_size}. "
+                "Try a smaller block size such as 512 or 1024."
+            ) from exc
+        raise
+
+    if bool(torch.any(best_ids < 0).item()):
+        raise RuntimeError("Could not determine a non-self nearest token for every token.")
+
+    angles = torch.rad2deg(torch.arccos(best_cos.clamp(-1.0, 1.0)))
+    angle_order = torch.argsort(angles, stable=True)
+    min_angle_ranks = torch.empty(vocab_size, dtype=torch.long, device=device)
+    min_angle_ranks[angle_order] = torch.arange(1, vocab_size + 1, dtype=torch.long, device=device)
+
+    elapsed = time.perf_counter() - started
+    angles_cpu = angles.detach().cpu().tolist()
+    ranks_cpu = min_angle_ranks.detach().cpu().tolist()
+    best_ids_cpu = best_ids.detach().cpu().tolist()
+    magnitudes_cpu = assets.magnitudes.detach().cpu().tolist()
+
+    rows = [
+        _minimum_angular_distance_row(
+            assets,
+            token_id,
+            float(angles_cpu[token_id]),
+            int(ranks_cpu[token_id]),
+            int(best_ids_cpu[token_id]),
+            magnitudes_cpu,
+        )
+        for token_id in range(vocab_size)
+    ]
+
+    return {
+        "model_name": assets.model_name,
+        "vocab_size": vocab_size,
+        "hidden_dim": assets.hidden_dim,
+        "total_pairs": vocab_size * (vocab_size - 1) // 2,
+        "block_size": block_size,
+        "compute_device": device,
+        "elapsed_seconds": float(elapsed),
+        "rows": rows,
+    }
+
 def search_tokens(assets: ModelAssets, query: str) -> list[TokenInfo]:
     """Return every token matching a case-insensitive literal substring query.
 
@@ -1288,6 +1495,92 @@ def _neighborhood_row(assets: ModelAssets, token_id: int, angle_deg: float, rank
         "angle_deg": angle_deg,
         "magnitude": float(assets.magnitudes[token_id].item()),
     }
+
+
+def _common_close_token_row(
+    assets: ModelAssets,
+    token_id: int,
+    angle_to_token_a_deg: float,
+    angle_to_token_b_deg: float,
+    rank: int,
+) -> dict[str, Any]:
+    info = assets.token(token_id)
+    return {
+        "rank": rank,
+        "token_id": token_id,
+        "token_raw": info.raw,
+        "token_display": info.display,
+        "angle_to_token_a_deg": angle_to_token_a_deg,
+        "angle_to_token_b_deg": angle_to_token_b_deg,
+        "magnitude": float(assets.magnitudes[token_id].item()),
+    }
+
+
+@torch.inference_mode()
+def common_close_tokens(
+    assets: ModelAssets,
+    token_a_id: int,
+    token_b_id: int,
+    threshold_deg: float = 35.0,
+) -> list[dict[str, Any]]:
+    """Return tokens whose vector is within ``threshold_deg`` of both anchors.
+
+    This uses the same signed 0°–180° angle definition as the pairwise angle
+    endpoint, not the acute ``abs(cosine)`` angle used by the all-pairs global
+    distribution. Results are sorted by the worst of the two angles, then the
+    sum of both angles, then token ID, so the most jointly close tokens appear
+    first.
+    """
+    assets.token(token_a_id)
+    assets.token(token_b_id)
+    threshold = float(threshold_deg)
+    if threshold < 0:
+        raise ValueError("threshold_deg must be non-negative.")
+
+    angles_a = _angles_for_anchor(assets, token_a_id)
+    angles_b = _angles_for_anchor(assets, token_b_id)
+    mask = (angles_a <= threshold) & (angles_b <= threshold)
+    token_ids = torch.nonzero(mask, as_tuple=False).flatten()
+
+    if token_ids.numel() == 0:
+        return []
+
+    selected_angles_a = angles_a[token_ids]
+    selected_angles_b = angles_b[token_ids]
+    max_angles = torch.maximum(selected_angles_a, selected_angles_b)
+    sum_angles = selected_angles_a + selected_angles_b
+
+    # Lexicographic sort: max(angle_to_A, angle_to_B), then sum, then token_id.
+    # ``torch.nonzero`` returns IDs in ascending order, so stable sorts preserve
+    # token ID as the final tie-breaker.
+    order = torch.argsort(sum_angles, stable=True)
+    token_ids = token_ids[order]
+    selected_angles_a = selected_angles_a[order]
+    selected_angles_b = selected_angles_b[order]
+    max_angles = max_angles[order]
+
+    order = torch.argsort(max_angles, stable=True)
+    token_ids = token_ids[order]
+    selected_angles_a = selected_angles_a[order]
+    selected_angles_b = selected_angles_b[order]
+
+    ids_cpu = token_ids.detach().cpu().tolist()
+    angles_a_cpu = selected_angles_a.detach().cpu().tolist()
+    angles_b_cpu = selected_angles_b.detach().cpu().tolist()
+
+    return [
+        _common_close_token_row(
+            assets,
+            int(token_id),
+            float(angle_a),
+            float(angle_b),
+            rank,
+        )
+        for rank, (token_id, angle_a, angle_b) in enumerate(
+            zip(ids_cpu, angles_a_cpu, angles_b_cpu),
+            start=1,
+        )
+    ]
 
 
 @torch.inference_mode()

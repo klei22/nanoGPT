@@ -5,6 +5,7 @@ import types
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
 import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,7 +19,7 @@ if "transformers" not in sys.modules:
     fake_transformers.PreTrainedTokenizerBase = object
     sys.modules["transformers"] = fake_transformers
 
-from app.model_service import TokenInfo, pairwise_angle_distribution, vector_magnitudes  # noqa: E402
+from app.model_service import TokenInfo, common_close_tokens, minimum_angular_distances, pairwise_angle_distribution, vector_magnitudes  # noqa: E402
 
 
 @dataclass
@@ -94,3 +95,31 @@ def test_pairwise_distribution_saves_unique_token_membership_by_bin() -> None:
     forty_five_degree_tokens = pairwise_angle_bin_tokens(assets, 9)
     assert forty_five_degree_tokens["label"] == "45–50°"
     assert [row["token_id"] for row in forty_five_degree_tokens["tokens"]] == [0, 1, 2, 3]
+
+
+def test_common_close_tokens_requires_both_angles_under_threshold_and_sorts_jointly() -> None:
+    assets = TinyAssets(torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 0.0]]))
+
+    rows = common_close_tokens(assets, 0, 2, threshold_deg=46)
+
+    assert [row["token_id"] for row in rows] == [0, 2]
+    assert rows[0]["angle_to_token_a_deg"] == pytest.approx(0.0)
+    assert rows[0]["angle_to_token_b_deg"] == pytest.approx(45.0)
+    assert rows[1]["angle_to_token_a_deg"] == pytest.approx(45.0)
+    assert rows[1]["angle_to_token_b_deg"] == pytest.approx(0.0)
+    assert rows[1]["magnitude"] == pytest.approx(torch.sqrt(torch.tensor(2.0)).item())
+
+
+def test_minimum_angular_distances_excludes_self_and_tracks_nearest_other_token() -> None:
+    assets = TinyAssets(torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 0.0]]))
+
+    data = minimum_angular_distances(assets, block_size=2, compute_device="cpu")
+
+    assert data["total_pairs"] == 6
+    rows = data["rows"]
+    assert [row["token_id"] for row in rows] == [0, 1, 2, 3]
+    assert [row["other_token_id"] for row in rows] == [2, 2, 0, 1]
+    assert [row["min_angle_rank"] for row in rows] == [1, 2, 3, 4]
+    assert [row["min_angle_deg"] for row in rows] == pytest.approx([45.0, 45.0, 45.0, 90.0])
+    assert rows[0]["magnitude"] == pytest.approx(1.0)
+    assert rows[0]["other_magnitude"] == pytest.approx(torch.sqrt(torch.tensor(2.0)).item())
