@@ -883,6 +883,7 @@ def parse_args():
                           "ssm",
                           "identity",
                           "infinite",
+                          "msa",
                           "mla",
                           "co4",
                           ]
@@ -901,6 +902,18 @@ def parse_args():
         default="causal",
         choices=attention_variants,
         help="Which attention variant to use for the Transformer blocks."
+    )
+    model_group.add_argument(
+        "--msa_topk",
+        type=int,
+        default=64,
+        help="Top-k key positions retained per query token for MSA attention."
+    )
+    model_group.add_argument(
+        "--msa_min_tokens",
+        type=int,
+        default=32,
+        help="Minimum number of key positions to retain per query token for MSA attention."
     )
 
     ## MLA Variations
