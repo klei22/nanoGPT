@@ -80,6 +80,11 @@ class GPTConfig:
     l2_norm_attn_v_dim: str = "embed"     # 'embed' or 'hidden'
     l2_norm_attn_cproj_dim: str = "embed" # 'embed' or 'hidden'
 
+    # ProjectOutL2Norm options
+    proj_out_norm_eps: float = 1e-8
+    proj_out_norm_learn_scale: bool = True
+    proj_out_norm_init_scale: float = 1.0
+
     ## MLA Variations
     mla_latent_dim: int | None = None   # d_c  (proj dimension of the shared latent)
     mla_rotary_dim: int       = 32      # d_r  (# rotary channels per head)
