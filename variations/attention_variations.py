@@ -1023,7 +1023,7 @@ class InfiniteHeadAttention(nn.Module):
 
         # Concat Heads
         self.use_concat_heads = config.use_concat_heads
-        self.n_cproj         = config.n_cproj
+        self.n_cproj         = 1 if config.n_cproj is None else config.n_cproj
 
         # QK Norm
         self.use_qk_norm        = config.use_qk_norm
