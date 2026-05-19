@@ -1,0 +1,74 @@
+# Compare default infinite attention vs infinite_no_wv, with softmax and no MQA.
+---
+
+named_static_groups:
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  - named_group: "default_infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  - named_group: "infinite_no_wv"
+    attention_variant: ["infinite_no_wv"]
+    use_concat_heads: [true]
+
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+
+  - named_group: "hd_150"
+    n_qk_head_dim: [150]
+
+  - named_group: "hd_200"
+    n_qk_head_dim: [200]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "default_infinite"
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 1
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+    n_v_head_dim_layerlist: ["100", "150", "200"]
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "infinite_no_wv"
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 1
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+    n_v_head_dim: [768]
