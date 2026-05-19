@@ -890,6 +890,7 @@ def parse_args():
                           "ssm",
                           "identity",
                           "infinite",
+                          "infinite_no_wv",
                           "mla",
                           "co4",
                           ]

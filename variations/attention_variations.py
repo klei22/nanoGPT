@@ -1314,6 +1314,89 @@ class InfiniteHeadAttention(nn.Module):
 
         return y
 
+
+class InfiniteHeadAttentionNoWv(InfiniteHeadAttention):
+    """Infinite attention variant without a learned value projection (Wv).
+
+    Values are taken directly from the input embedding stream `x`, with
+    `n_v_head_dim` constrained to `n_embd` and `use_concat_heads=True`.
+    """
+    def __init__(self, config, fire_pos_enc=None):
+        super().__init__(config, fire_pos_enc=fire_pos_enc)
+        if not self.use_concat_heads:
+            raise ValueError("InfiniteHeadAttentionNoWv requires use_concat_heads=True.")
+        if self.n_v_head_dim != self.n_embd:
+            raise ValueError("InfiniteHeadAttentionNoWv requires n_v_head_dim == n_embd.")
+        # Remove Wv parameters for this variant.
+        self.c_attn_v = None
+
+    def forward(self, x, iter_num):
+        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+
+        if self.l2_norm_attn_q:
+            q_weight = F.normalize(self.c_attn_q.weight, p=2, dim=self.q_norm_dim)
+            q = F.linear(x, q_weight, self.c_attn_q.bias)
+        else:
+            q = self.c_attn_q(x)
+
+        if self.l2_norm_attn_k:
+            k_weight = F.normalize(self.c_attn_k.weight, p=2, dim=self.k_norm_dim)
+            k = F.linear(x, k_weight, self.c_attn_k.bias)
+        else:
+            k = self.c_attn_k(x)
+
+        q = q.view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2) # (B, n_h, T, hs)
+        k = k.view(B, T, self.n_kv_group, self.n_qk_head_dim).transpose(1, 2) # (B, n_kv, T, hs)
+        v = x.unsqueeze(1).expand(B, self.n_kv_group, T, C) # (B, n_kv, T, n_embd)
+
+        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
+            q = self.rotary_emb_q(q)
+            k = self.rotary_emb_k(k)
+
+        if self.use_qk_norm:
+            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+
+        if self.use_v_norm:
+            v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+
+        y = None
+        if not self.disable_flash_attention:
+            k_attn = self._expand_kv(k)
+            v_attn = self._expand_kv(v)
+            if self.use_qk_norm_scale:
+                sqrt_head_dim = math.sqrt(k_attn.size(-1))
+                qk_scaling_factor = self.qk_norm_factor * sqrt_head_dim
+                q = q * qk_scaling_factor
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q, k_attn, v_attn, dropout_p=self.dropout if self.training else 0, is_causal=True
+            )
+        else:
+            k_attn = self._expand_kv(k)
+            v_attn = self._expand_kv(v)
+            att = (q @ k_attn.transpose(-2, -1))
+            if self.use_qk_norm_scale:
+                att = att * self.qk_norm_factor
+            else:
+                att = att / math.sqrt(k_attn.size(-1))
+            att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
+            att = self.softmax_layer_attn(att) if self.softmax_variant_attn != 'softmax' else F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v_attn
+
+        if self.post_act_l2_norm:
+            y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            y = y / self.cproj_scale
+
+        y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
+        if self.l2_norm_attn_cproj:
+            cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
+            y = F.linear(y, cproj_weight, self.c_proj.bias)
+        else:
+            y = self.c_proj(y)
+        return self.resid_dropout(y)
+
 ##############################################################################
 #  Multi-head Latent Attention (MLA) – DeepSeek-V2 implementation
 #  - low-rank joint compression of K & V (latent_kv_dim)
@@ -1541,6 +1624,7 @@ attention_dictionary = {
     # "ssm": MambaBlock,
     "identity": AttnIdentity,
     "infinite": InfiniteHeadAttention,
+    "infinite_no_wv": InfiniteHeadAttentionNoWv,
     "mla": MultiHeadLatentAttention,
     "co4": Co4Attention,
 }
