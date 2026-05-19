@@ -167,3 +167,65 @@ def test_minimum_angular_distance_ui_exists() -> None:
     assert "renderMinDistanceTable" in js
     assert "resetMinDistancesOutput" in js
     assert "min-distance-scroll" in css
+
+
+def test_recursive_angle_group_ui_and_exports_exist() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+    css = (PROJECT_ROOT / "app" / "static" / "styles.css").read_text()
+
+    for element_id in [
+        "groupSeedSearch",
+        "groupSeedResults",
+        "groupSeedUseId",
+        "recursiveGroupButton",
+        "recursiveGroupLimit",
+        "recursiveGroupMaxAngle",
+        "recursiveGroupBlockSize",
+        "recursiveGroupComputeDevice",
+        "recursiveGroupGraph",
+        "recursiveGroupTable",
+        "exportRecursiveGroupGraphSvg",
+        "exportRecursiveGroupAdjacencyCsv",
+        "exportRecursiveGroupDictionaryJson",
+        "exportRecursiveGroupListCsv",
+    ]:
+        assert f'id="{element_id}"' in html
+
+    for js_name in [
+        "groupSeed",
+        "recursiveGroupButton",
+        "recursiveGroupLimit",
+        "recursiveGroupMaxAngle",
+        "recursiveGroupBlockSize",
+        "recursiveGroupComputeDevice",
+        "recursiveGroupGraph",
+        "recursiveGroupTable",
+        "exportRecursiveGroupGraphSvg",
+        "exportRecursiveGroupAdjacencyCsv",
+        "exportRecursiveGroupDictionaryJson",
+        "exportRecursiveGroupListCsv",
+    ]:
+        assert js_name in js
+
+    assert "fetchJson(`/api/recursive-angle-group?" in js
+    assert "computeRecursiveAngleGroup" in js
+    assert "renderRecursiveGroupGraph" in js
+    assert "renderRecursiveGroupTable" in js
+    assert "exportRecursiveGroupAdjacencyCsv" in js
+    assert "exportRecursiveGroupDictionaryJson" in js
+    assert "recursive-group-scroll" in css
+    assert "graph-edge-label" in css
+
+
+def test_recursive_angle_group_can_use_manual_seed_id_directly() -> None:
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+
+    assert "function getPickerTokenId(prefix, key)" in js
+    assert "getPickerTokenId('groupSeed', 'groupSeed')" in js
+    assert "seed_id: String(seedId)" in js
+    assert "seed.token_id" not in js
+    assert "Manual ID input intentionally takes" in js
+    assert "idInput.addEventListener('keydown'" in js
+    assert "selectFromId(prefix, key)" in js
+    assert "rawSelectedId !== ''" in js

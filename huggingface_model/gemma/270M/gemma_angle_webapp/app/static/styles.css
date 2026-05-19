@@ -594,3 +594,82 @@ code {
   z-index: 1;
   background: #020617;
 }
+
+.recursive-group-controls {
+  grid-template-columns: minmax(150px, 0.6fr) minmax(150px, 0.6fr) minmax(180px, 0.7fr) minmax(180px, 0.8fr);
+}
+
+.graph-card {
+  overflow: auto;
+}
+
+.graph-scroll {
+  min-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #020617;
+}
+
+.recursive-graph-svg {
+  display: block;
+  max-width: none;
+}
+
+.graph-edge {
+  stroke: rgba(148, 163, 184, 0.48);
+  stroke-width: 1.25;
+}
+
+.graph-edge-label {
+  fill: var(--muted);
+  font-size: 10px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: #020617;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.graph-node rect {
+  fill: var(--panel-soft);
+  stroke: var(--accent-strong);
+  stroke-width: 1.1;
+}
+
+.graph-node text {
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.graph-node-id {
+  fill: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.graph-node-token {
+  fill: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.recursive-group-scroll {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #020617;
+}
+
+.recursive-group-scroll table {
+  min-width: 860px;
+}
+
+.recursive-group-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #020617;
+}

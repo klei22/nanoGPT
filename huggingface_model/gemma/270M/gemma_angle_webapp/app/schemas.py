@@ -158,3 +158,37 @@ class MinAngularDistancesResponse(BaseModel):
     elapsed_seconds: float = Field(ge=0)
     rows: list[MinAngularDistanceRow]
 
+class RecursiveGroupNode(BaseModel):
+    token_id: int
+    token_raw: str
+    token_display: str
+    magnitude: float
+    connected_count: int = Field(ge=0)
+
+
+class RecursiveGroupEdge(BaseModel):
+    source_token_id: int
+    target_token_id: int
+    angle_deg: float
+
+
+class RecursiveAngleGroupResponse(BaseModel):
+    model_name: str
+    vocab_size: int = Field(ge=0)
+    hidden_dim: int = Field(ge=0)
+    seed_token_id: int
+    seed_token_raw: str
+    seed_token_display: str
+    max_angle_deg: float = Field(ge=0)
+    group_size_limit: int = Field(ge=1)
+    block_size: int = Field(ge=1)
+    compute_device: str
+    elapsed_seconds: float = Field(ge=0)
+    scanned_count: int = Field(ge=0)
+    truncated: bool
+    node_count: int = Field(ge=0)
+    edge_count: int = Field(ge=0)
+    nodes: list[RecursiveGroupNode]
+    edges: list[RecursiveGroupEdge]
+    dictionary: dict[str, RecursiveGroupNode]
+

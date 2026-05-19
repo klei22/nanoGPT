@@ -349,6 +349,93 @@
       </div>
     </section>
 
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Recursive angle group</p>
+          <h2>Grow a connected token group by maximum angle</h2>
+        </div>
+        <button id="recursiveGroupButton" type="button" class="primary">Build recursive group</button>
+      </div>
+
+      <p class="lede panel-lede">Starting from a seed token, this repeatedly adds tokens whose signed vector angle is at or below the chosen maximum from any token already in the group. It stops when no new tokens are found or the group reaches the size limit.</p>
+
+      <article class="picker compact" data-prefix="groupSeed">
+        <h3>Seed token</h3>
+        <div class="compact-grid">
+          <div>
+            <label for="groupSeedQuery">Search text</label>
+            <div class="search-row">
+              <input id="groupSeedQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
+              <button id="groupSeedSearch" type="button">Search</button>
+            </div>
+          </div>
+          <div>
+            <label for="groupSeedResults">Matches</label>
+            <select id="groupSeedResults" size="6"></select>
+          </div>
+          <div>
+            <label for="groupSeedId">or token ID</label>
+            <div class="manual-row compact-manual">
+              <input id="groupSeedId" type="number" min="0" step="1" placeholder="0" />
+              <button id="groupSeedUseId" type="button">Use ID</button>
+            </div>
+            <p id="groupSeedSelected" class="selection">No seed selected.</p>
+          </div>
+        </div>
+      </article>
+
+      <div class="analysis-controls recursive-group-controls">
+        <div>
+          <label for="recursiveGroupLimit">Group size limit</label>
+          <input id="recursiveGroupLimit" type="number" min="1" max="1000" value="100" step="1" />
+        </div>
+        <div>
+          <label for="recursiveGroupMaxAngle">Maximum angle °</label>
+          <input id="recursiveGroupMaxAngle" type="number" min="0" max="180" value="35" step="0.5" />
+        </div>
+        <div>
+          <label for="recursiveGroupBlockSize">CUDA/CPU block size</label>
+          <input id="recursiveGroupBlockSize" type="number" min="1" max="16384" value="2048" step="256" />
+        </div>
+        <div>
+          <label for="recursiveGroupComputeDevice">Compute device</label>
+          <input id="recursiveGroupComputeDevice" type="text" value="auto" placeholder="auto, cuda:0, or cpu" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+
+      <div id="recursiveGroupOutput" class="output muted">Choose a seed token, set the group controls, then build the recursive graph.</div>
+
+      <div id="recursiveGroupGraphCard" class="plot-card graph-card hidden">
+        <div id="recursiveGroupGraph" class="graph-scroll" aria-label="Recursive angle group node-edge graph"></div>
+        <div class="export-actions">
+          <button id="exportRecursiveGroupGraphSvg" type="button" class="export-button">Export graph SVG</button>
+        </div>
+        <p id="recursiveGroupGraphCaption" class="selection">Nodes show token ID and token string. Edges are labelled with the angle between connected tokens.</p>
+      </div>
+
+      <div class="export-actions">
+        <button id="exportRecursiveGroupAdjacencyCsv" type="button" class="export-button hidden">Download adjacency matrix CSV</button>
+        <button id="exportRecursiveGroupDictionaryJson" type="button" class="export-button hidden">Download dictionary JSON</button>
+        <button id="exportRecursiveGroupListCsv" type="button" class="export-button hidden">Download token list CSV</button>
+      </div>
+      <div class="table-wrap recursive-group-scroll">
+        <table id="recursiveGroupTable" class="hidden">
+          <thead>
+            <tr>
+              <th>Token ID</th>
+              <th>Raw token</th>
+              <th>Display</th>
+              <th>Connected nodes</th>
+              <th>Vector length</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
   </main>
 
   <script src="/static/app.js" defer></script>

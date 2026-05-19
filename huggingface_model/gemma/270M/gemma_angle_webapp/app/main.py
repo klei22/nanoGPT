@@ -22,6 +22,7 @@ from .model_service import (
     nearest_neighbors,
     pairwise_angle_bin_tokens,
     pairwise_angle_distribution,
+    recursive_angle_group,
     search_tokens,
 )
 from .schemas import (
@@ -34,6 +35,7 @@ from .schemas import (
     NeighborhoodResponse,
     PairwiseAngleBinTokensResponse,
     PairwiseAngleDistributionResponse,
+    RecursiveAngleGroupResponse,
     StatusResponse,
     TokenRecord,
     TokenSearchResponse,
@@ -313,6 +315,34 @@ def min_angular_distances(
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return MinAngularDistancesResponse(**data)
+
+
+@app.get("/api/recursive-angle-group", response_model=RecursiveAngleGroupResponse)
+def recursive_token_angle_group(
+    seed_id: int = Query(..., ge=0),
+    max_angle_deg: float = Query(35.0, ge=0, le=180),
+    group_size_limit: int = Query(100, ge=1, le=1000),
+    block_size: int = Query(2048, ge=1, le=16384),
+    compute_device: str = Query("auto", description="auto, cpu, cuda:0, etc."),
+) -> RecursiveAngleGroupResponse:
+    """Return a recursively expanded within-angle token group and graph edges."""
+    assets = _load_assets_or_500()
+    try:
+        data = recursive_angle_group(
+            assets,
+            seed_id,
+            max_angle_deg=max_angle_deg,
+            group_size_limit=group_size_limit,
+            block_size=block_size,
+            compute_device=compute_device,
+        )
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RecursiveAngleGroupResponse(**data)
 
 
 if __name__ == "__main__":

@@ -1452,6 +1452,253 @@ def minimum_angular_distances(
         "rows": rows,
     }
 
+
+
+def _angle_threshold_cosine(max_angle_deg: float) -> float:
+    """Return cosine threshold for signed vector angles in [0, 180]."""
+    angle = float(max_angle_deg)
+    if angle < 0 or angle > 180:
+        raise ValueError("max_angle_deg must be between 0 and 180 degrees.")
+    value = torch.cos(torch.deg2rad(torch.tensor(angle, dtype=torch.float32))).item()
+    return float(value)
+
+
+@torch.inference_mode()
+def _neighbors_within_angle(
+    assets: ModelAssets,
+    anchor_id: int,
+    *,
+    max_angle_deg: float,
+    block_size: int,
+    device: str,
+) -> list[tuple[int, float]]:
+    """Return non-self neighbors within max_angle_deg, sorted by angle then token ID.
+
+    The scan is blockwise. It never materializes a vocab-by-vocab matrix; each
+    block is reduced to matching token IDs/cosines immediately.
+    """
+    assets.token(anchor_id)
+    threshold_cos = _angle_threshold_cosine(max_angle_deg)
+    vocab_size = assets.vocab_size
+    block_size = int(block_size)
+    if block_size < 1:
+        raise ValueError("block_size must be at least 1.")
+
+    anchor_vector = assets.weight[anchor_id].to(device=device, dtype=torch.float32, non_blocking=True)
+    anchor_norm = assets.magnitudes[anchor_id].to(device=device, dtype=torch.float32, non_blocking=True).clamp_min(1e-12)
+    anchor_unit = anchor_vector / anchor_norm
+
+    ids_chunks: list[torch.Tensor] = []
+    cos_chunks: list[torch.Tensor] = []
+    weight = assets.weight
+    magnitudes = assets.magnitudes
+
+    for start in range(0, vocab_size, block_size):
+        end = min(start + block_size, vocab_size)
+        block_weight = weight[start:end].to(device=device, dtype=torch.float32, non_blocking=True)
+        block_norm = magnitudes[start:end].to(device=device, dtype=torch.float32, non_blocking=True)
+        block_vectors = block_weight / block_norm.clamp_min(1e-12).unsqueeze(1)
+        cos = (block_vectors @ anchor_unit).clamp_(-1.0, 1.0)
+        mask = cos >= threshold_cos
+        if start <= anchor_id < end:
+            mask[anchor_id - start] = False
+
+        local_ids = torch.nonzero(mask, as_tuple=False).flatten()
+        if local_ids.numel() > 0:
+            ids_chunks.append((local_ids.detach().cpu() + start).to(torch.long))
+            cos_chunks.append(cos[local_ids].detach().cpu())
+
+        del block_weight, block_norm, block_vectors, cos, mask, local_ids
+
+    if not ids_chunks:
+        return []
+
+    all_ids = torch.cat(ids_chunks).tolist()
+    all_cos = torch.cat(cos_chunks).clamp(-1.0, 1.0)
+    all_angles = torch.rad2deg(torch.arccos(all_cos)).tolist()
+    neighbors = [(int(token_id), float(angle)) for token_id, angle in zip(all_ids, all_angles)]
+    neighbors.sort(key=lambda item: (item[1], item[0]))
+    return neighbors
+
+
+@torch.inference_mode()
+def _edges_for_angle_group(
+    assets: ModelAssets,
+    token_ids: list[int],
+    *,
+    max_angle_deg: float,
+    device: str,
+) -> list[dict[str, Any]]:
+    """Return all within-threshold undirected edges among selected token IDs."""
+    if len(token_ids) < 2:
+        return []
+
+    sorted_ids = sorted(int(token_id) for token_id in token_ids)
+    threshold_cos = _angle_threshold_cosine(max_angle_deg)
+    selected_weight = assets.weight[sorted_ids].to(device=device, dtype=torch.float32, non_blocking=True)
+    selected_norm = assets.magnitudes[sorted_ids].to(device=device, dtype=torch.float32, non_blocking=True)
+    selected_vectors = selected_weight / selected_norm.clamp_min(1e-12).unsqueeze(1)
+    dots = (selected_vectors @ selected_vectors.T).clamp_(-1.0, 1.0)
+
+    n = len(sorted_ids)
+    row_indices, col_indices = torch.triu_indices(n, n, offset=1, device=device)
+    cos_values = dots[row_indices, col_indices]
+    keep = cos_values >= threshold_cos
+    if not bool(torch.any(keep).item()):
+        return []
+
+    kept_rows = row_indices[keep].detach().cpu().tolist()
+    kept_cols = col_indices[keep].detach().cpu().tolist()
+    kept_angles = torch.rad2deg(torch.arccos(cos_values[keep].clamp(-1.0, 1.0))).detach().cpu().tolist()
+
+    edges: list[dict[str, Any]] = []
+    for row, col, angle in zip(kept_rows, kept_cols, kept_angles):
+        source = int(sorted_ids[int(row)])
+        target = int(sorted_ids[int(col)])
+        if source > target:
+            source, target = target, source
+        edges.append(
+            {
+                "source_token_id": source,
+                "target_token_id": target,
+                "angle_deg": float(angle),
+            }
+        )
+    edges.sort(key=lambda item: (item["source_token_id"], item["target_token_id"]))
+    return edges
+
+
+@torch.inference_mode()
+def recursive_angle_group(
+    assets: ModelAssets,
+    seed_token_id: int,
+    *,
+    max_angle_deg: float = 35.0,
+    group_size_limit: int = 100,
+    block_size: int = DEFAULT_PAIRWISE_BLOCK_SIZE,
+    compute_device: str | None = "auto",
+) -> dict[str, Any]:
+    """Recursively collect tokens linked by a maximum angular distance.
+
+    Starting from ``seed_token_id``, this repeatedly scans for tokens whose
+    signed vector angle is less than or equal to ``max_angle_deg`` from any
+    token already reached.  Tokens are held in a dictionary/set to avoid double
+    counting.  The expansion stops when the frontier is exhausted or the group
+    reaches ``group_size_limit``.  The final graph contains every edge among the
+    collected nodes whose angle is within the same threshold.
+    """
+    seed = assets.token(seed_token_id)
+    limit = int(group_size_limit)
+    if limit < 1:
+        raise ValueError("group_size_limit must be at least 1.")
+    block_size = int(block_size)
+    if block_size < 1:
+        raise ValueError("block_size must be at least 1.")
+    threshold = float(max_angle_deg)
+    _angle_threshold_cosine(threshold)  # validate early
+
+    device = _resolve_pairwise_compute_device(compute_device, assets)
+    started = time.perf_counter()
+
+    group: dict[int, None] = {int(seed_token_id): None}
+    frontier: list[int] = [int(seed_token_id)]
+    frontier_index = 0
+    scanned: set[int] = set()
+    truncated = False
+
+    try:
+        while frontier_index < len(frontier):
+            if len(group) >= limit:
+                truncated = frontier_index < len(frontier)
+                break
+
+            current_id = int(frontier[frontier_index])
+            frontier_index += 1
+            if current_id in scanned:
+                continue
+            scanned.add(current_id)
+
+            neighbors = _neighbors_within_angle(
+                assets,
+                current_id,
+                max_angle_deg=threshold,
+                block_size=block_size,
+                device=device,
+            )
+
+            for neighbor_index, (candidate_id, _angle) in enumerate(neighbors):
+                if candidate_id in group:
+                    continue
+                group[int(candidate_id)] = None
+                frontier.append(int(candidate_id))
+                if len(group) >= limit:
+                    # There may be more neighbors from this token, and possibly
+                    # more frontier tokens, but the requested cap has been met.
+                    truncated = neighbor_index < len(neighbors) - 1 or frontier_index < len(frontier)
+                    break
+
+            if len(group) >= limit:
+                break
+
+        edges = _edges_for_angle_group(
+            assets,
+            list(group.keys()),
+            max_angle_deg=threshold,
+            device=device,
+        )
+        if device.startswith("cuda"):
+            torch.cuda.synchronize(torch.device(device))
+    except RuntimeError as exc:
+        if "out of memory" in str(exc).lower():
+            _release_cached_cuda_memory()
+            raise RuntimeError(
+                f"Recursive angle-group computation ran out of memory on {device} with block_size={block_size}. "
+                "Try a smaller block size such as 512 or 1024, or a lower group size limit."
+            ) from exc
+        raise
+
+    connected_counts = {int(token_id): 0 for token_id in group.keys()}
+    for edge in edges:
+        connected_counts[int(edge["source_token_id"])] += 1
+        connected_counts[int(edge["target_token_id"])] += 1
+
+    magnitudes_cpu = assets.magnitudes.detach().cpu().tolist()
+    nodes: list[dict[str, Any]] = []
+    for token_id in sorted(group.keys()):
+        info = assets.token(int(token_id))
+        nodes.append(
+            {
+                "token_id": int(token_id),
+                "token_raw": info.raw,
+                "token_display": info.display,
+                "magnitude": float(magnitudes_cpu[int(token_id)]),
+                "connected_count": int(connected_counts[int(token_id)]),
+            }
+        )
+
+    dictionary = {str(node["token_id"]): dict(node) for node in nodes}
+    elapsed = time.perf_counter() - started
+    return {
+        "model_name": assets.model_name,
+        "vocab_size": assets.vocab_size,
+        "hidden_dim": assets.hidden_dim,
+        "seed_token_id": int(seed_token_id),
+        "seed_token_raw": seed.raw,
+        "seed_token_display": seed.display,
+        "max_angle_deg": threshold,
+        "group_size_limit": limit,
+        "block_size": block_size,
+        "compute_device": device,
+        "elapsed_seconds": float(elapsed),
+        "scanned_count": len(scanned),
+        "truncated": bool(truncated),
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "nodes": nodes,
+        "edges": edges,
+        "dictionary": dictionary,
+    }
+
 def search_tokens(assets: ModelAssets, query: str) -> list[TokenInfo]:
     """Return every token matching a case-insensitive literal substring query.
 

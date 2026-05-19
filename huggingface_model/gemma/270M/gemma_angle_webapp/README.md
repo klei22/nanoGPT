@@ -179,3 +179,15 @@ Then restart the server and click **Load model** again. The weight-only path rea
 ## Common-close button notes
 
 The homepage is rendered as plain `HTMLResponse` and no longer uses Starlette's `TemplateResponse`, so mixed FastAPI/Starlette versions cannot prevent the JavaScript button handlers from loading. The pairwise buttons also resolve typed token IDs automatically, even if the user typed an ID but did not click **Use ID** first.
+
+### Recursive angle group
+
+The bottom section lets you choose a seed token by search or token ID, set a group size limit, set a maximum signed angle, and recursively grow a token dictionary. A token is added when it is within the maximum angle of any token already in the dictionary. The expansion stops when no new tokens are found or when the group reaches the size limit.
+
+The backend endpoint is:
+
+```text
+GET /api/recursive-angle-group?seed_id=0&max_angle_deg=35&group_size_limit=100&block_size=2048&compute_device=auto
+```
+
+The computation scans neighbors blockwise and only keeps the current group plus the final nodes/edges. It does not materialize or cache a full pairwise matrix. The UI renders a node-edge SVG graph with angle-labelled edges and provides downloads for the graph SVG, adjacency matrix CSV, dictionary JSON, and token list CSV.

@@ -2,6 +2,7 @@ const state = {
   tokenA: null,
   tokenB: null,
   anchor: null,
+  groupSeed: null,
   angleSummary: null,
   commonCloseRows: [],
   neighborhoodRows: [],
@@ -9,26 +10,30 @@ const state = {
   pairwiseSelectedBinIndex: null,
   pairwiseBinTokens: [],
   minDistanceRows: [],
+  recursiveGroup: null,
 };
 
-const pickerPrefixes = ['tokenA', 'tokenB', 'anchor'];
+const pickerPrefixes = ['tokenA', 'tokenB', 'anchor', 'groupSeed'];
 
 const cache = {
   tokenA: [],
   tokenB: [],
   anchor: [],
+  groupSeed: [],
 };
 
 const searchRequestIds = {
   tokenA: 0,
   tokenB: 0,
   anchor: 0,
+  groupSeed: 0,
 };
 
 const lastSearchedQuery = {
   tokenA: null,
   tokenB: null,
   anchor: null,
+  groupSeed: null,
 };
 
 
@@ -144,6 +149,33 @@ function setBadge(text, className = null) {
   badge.textContent = text;
 }
 
+function pickerEmptyMessage(prefix) {
+  if (prefix === 'anchor') return 'No anchor selected.';
+  if (prefix === 'groupSeed') return 'No seed selected.';
+  return 'No token selected.';
+}
+
+function parseNonNegativeInteger(rawValue) {
+  const raw = String(rawValue ?? '').trim();
+  if (raw === '') return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error('Enter a non-negative integer token ID.');
+  }
+  return value;
+}
+
+function markPickerDependentOutputsStale(key) {
+  if (key === 'tokenA' || key === 'tokenB') {
+    resetAngleOutput();
+    resetCommonCloseOutput('Token selection changed. Click Find shared close tokens to refresh this list.');
+  } else if (key === 'anchor') {
+    resetNeighborhoodOutput();
+  } else if (key === 'groupSeed') {
+    resetRecursiveGroupOutput('Seed token changed. Click Build recursive group to refresh the graph.');
+  }
+}
+
 function setPickerSelection(prefix, key, token, message = null) {
   state[key] = token;
   const idInput = byId(`${prefix}Id`);
@@ -154,15 +186,35 @@ function setPickerSelection(prefix, key, token, message = null) {
     selected.textContent = `Selected: ${tokenLabel(token)}`;
   } else {
     idInput.value = '';
-    selected.textContent = message || 'No token selected.';
+    selected.textContent = message || pickerEmptyMessage(prefix);
   }
 
-  if (key === 'tokenA' || key === 'tokenB') {
-    resetAngleOutput();
-    resetCommonCloseOutput('Token selection changed. Click Find shared close tokens to refresh this list.');
-  } else if (key === 'anchor') {
-    resetNeighborhoodOutput();
+  markPickerDependentOutputsStale(key);
+}
+
+function setPickerSelectionFromKnownToken(prefix, key, token) {
+  // Used after a compute endpoint has already validated the token ID and
+  // returned token text.  This avoids an extra /api/tokens/id lookup and does
+  // not clear the freshly rendered result panels.
+  state[key] = token;
+  byId(`${prefix}Id`).value = String(token.token_id);
+  byId(`${prefix}Selected`).textContent = `Selected: ${tokenLabel(token)}`;
+}
+
+function markManualIdPending(prefix, key) {
+  const rawId = byId(`${prefix}Id`).value.trim();
+  const selected = byId(`${prefix}Selected`);
+  const current = state[key];
+
+  if (rawId === '') {
+    state[key] = null;
+    selected.textContent = pickerEmptyMessage(prefix);
+  } else if (!current || String(current.token_id) !== rawId) {
+    state[key] = null;
+    selected.textContent = `Token ID ${rawId} entered. Click Use ID or run the action button.`;
   }
+
+  markPickerDependentOutputsStale(key);
 }
 
 async function fetchJson(url, options = {}) {
@@ -275,7 +327,7 @@ function resetPicker(prefix, key) {
   searchButton.classList.add('needs-search');
 
   byId(`${prefix}Id`).value = '';
-  byId(`${prefix}Selected`).textContent = prefix === 'anchor' ? 'No anchor selected.' : 'No token selected.';
+  byId(`${prefix}Selected`).textContent = pickerEmptyMessage(prefix);
 }
 
 function resetCommonCloseOutput(message = 'Set a max angle, then click Find shared close tokens.') {
@@ -309,12 +361,14 @@ function resetAllSelectionsAfterModelChange() {
   resetPicker('tokenA', 'tokenA');
   resetPicker('tokenB', 'tokenB');
   resetPicker('anchor', 'anchor');
+  resetPicker('groupSeed', 'groupSeed');
 
   resetAngleOutput();
   resetCommonCloseOutput();
   resetNeighborhoodOutput();
   resetPairwiseBinsOutput();
   resetMinDistancesOutput();
+  resetRecursiveGroupOutput();
 }
 
 async function loadRequestedModel() {
@@ -422,10 +476,20 @@ async function search(prefix, key) {
 }
 
 async function selectFromId(prefix, key) {
-  const rawValue = byId(`${prefix}Id`).value;
-  const tokenId = Number(rawValue);
-  if (!Number.isInteger(tokenId) || tokenId < 0) {
-    setPickerSelection(prefix, key, null, 'Enter a non-negative integer token ID.');
+  const selected = byId(`${prefix}Selected`);
+  let tokenId;
+  try {
+    tokenId = parseNonNegativeInteger(byId(`${prefix}Id`).value);
+  } catch (error) {
+    state[key] = null;
+    selected.textContent = error.message;
+    markPickerDependentOutputsStale(key);
+    return;
+  }
+  if (tokenId === null) {
+    state[key] = null;
+    selected.textContent = pickerEmptyMessage(prefix);
+    markPickerDependentOutputsStale(key);
     return;
   }
 
@@ -433,7 +497,9 @@ async function selectFromId(prefix, key) {
     const token = await fetchJson(`/api/tokens/id/${tokenId}`);
     setPickerSelection(prefix, key, token);
   } catch (error) {
-    setPickerSelection(prefix, key, null, `Token lookup failed: ${error.message}`);
+    state[key] = null;
+    selected.textContent = `Token lookup failed: ${error.message}`;
+    markPickerDependentOutputsStale(key);
   }
 }
 
@@ -447,29 +513,42 @@ function selectFromDropdown(prefix, key) {
 
 async function ensurePickerSelection(prefix, key) {
   // Make action buttons forgiving: if a user typed an ID but did not click
-  // "Use ID", or if the browser still has a selected dropdown value while
-  // state was reset, resolve the token before running the action.
-  if (state[key]) return state[key];
-
-  const idInput = byId(`${prefix}Id`);
-  const rawId = idInput.value.trim();
+  // "Use ID", resolve that ID first.  Manual ID input intentionally takes
+  // precedence over stale state from a previous dropdown/search selection.
+  const rawId = byId(`${prefix}Id`).value.trim();
   if (rawId !== '') {
-    const tokenId = Number(rawId);
-    if (Number.isInteger(tokenId) && tokenId >= 0) {
-      const token = await fetchJson(`/api/tokens/id/${tokenId}`);
-      setPickerSelection(prefix, key, token);
-      return token;
-    }
+    const tokenId = parseNonNegativeInteger(rawId);
+    if (state[key] && state[key].token_id === tokenId) return state[key];
+    const token = await fetchJson(`/api/tokens/id/${tokenId}`);
+    setPickerSelection(prefix, key, token);
+    return token;
   }
 
-  const select = byId(`${prefix}Results`);
-  const selectedId = Number(select.value);
-  if (Number.isInteger(selectedId) && selectedId >= 0) {
+  if (state[key]) return state[key];
+
+  const rawSelectedId = byId(`${prefix}Results`).value.trim();
+  if (rawSelectedId !== '') {
+    const selectedId = parseNonNegativeInteger(rawSelectedId);
     let token = cache[prefix].find((candidate) => candidate.token_id === selectedId);
     if (!token) token = await fetchJson(`/api/tokens/id/${selectedId}`);
     setPickerSelection(prefix, key, token);
     return token;
   }
+
+  return null;
+}
+
+function getPickerTokenId(prefix, key) {
+  // Lightweight path for compute endpoints that only need the token ID.  This
+  // lets the recursive group feature work even when the user simply types an
+  // ID and presses Build, without needing a separate Use ID click first.
+  const rawId = byId(`${prefix}Id`).value.trim();
+  if (rawId !== '') return parseNonNegativeInteger(rawId);
+
+  if (state[key]) return state[key].token_id;
+
+  const rawSelectedId = byId(`${prefix}Results`).value.trim();
+  if (rawSelectedId !== '') return parseNonNegativeInteger(rawSelectedId);
 
   return null;
 }
@@ -525,6 +604,14 @@ function setupPicker(prefix, key) {
   });
   searchButton.addEventListener('click', () => search(prefix, key));
   byId(`${prefix}Results`).addEventListener('change', () => selectFromDropdown(prefix, key));
+  const idInput = byId(`${prefix}Id`);
+  idInput.addEventListener('input', () => markManualIdPending(prefix, key));
+  idInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      selectFromId(prefix, key);
+    }
+  });
   byId(`${prefix}UseId`).addEventListener('click', () => selectFromId(prefix, key));
 }
 
@@ -1287,6 +1374,308 @@ async function computeMinAngularDistances() {
   }
 }
 
+
+function resetRecursiveGroupOutput(message = 'Choose a seed token, set the group controls, then build the recursive graph.') {
+  state.recursiveGroup = null;
+  const output = byId('recursiveGroupOutput');
+  if (!output) return;
+  setOutput('recursiveGroupOutput', message, true);
+  byId('recursiveGroupGraphCard').classList.add('hidden');
+  byId('recursiveGroupGraph').innerHTML = '';
+  byId('recursiveGroupTable').classList.add('hidden');
+  byId('recursiveGroupTable').querySelector('tbody').innerHTML = '';
+  setExportVisible('exportRecursiveGroupGraphSvg', false);
+  setExportVisible('exportRecursiveGroupAdjacencyCsv', false);
+  setExportVisible('exportRecursiveGroupDictionaryJson', false);
+  setExportVisible('exportRecursiveGroupListCsv', false);
+}
+
+function createSvgElement(name) {
+  return document.createElementNS('http://www.w3.org/2000/svg', name);
+}
+
+function truncateTokenForNode(value, maxLength = 18) {
+  const text = String(value ?? '');
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function renderRecursiveGroupTable(nodes) {
+  const table = byId('recursiveGroupTable');
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+
+  const rows = [...(nodes || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  const fragment = document.createDocumentFragment();
+  for (const node of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${node.token_id}</td>
+      <td><code>${escapeHtml(node.token_raw)}</code></td>
+      <td><code>${escapeHtml(node.token_display)}</code></td>
+      <td>${formatCount(node.connected_count)}</td>
+      <td>${Number(node.magnitude).toFixed(6)}</td>
+    `;
+    fragment.appendChild(tr);
+  }
+  tbody.appendChild(fragment);
+  table.classList.toggle('hidden', rows.length === 0);
+  setExportVisible('exportRecursiveGroupListCsv', rows.length > 0);
+}
+
+function renderRecursiveGroupGraph(data) {
+  const container = byId('recursiveGroupGraph');
+  container.innerHTML = '';
+  const nodes = [...(data.nodes || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  const edges = data.edges || [];
+  if (nodes.length === 0) {
+    byId('recursiveGroupGraphCard').classList.add('hidden');
+    return;
+  }
+
+  const nodeCount = nodes.length;
+  const width = Math.max(980, Math.min(2400, 820 + nodeCount * 14));
+  const height = Math.max(720, Math.min(1800, 680 + nodeCount * 6));
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radius = nodeCount === 1 ? 0 : Math.max(180, Math.min(width, height) / 2 - 115);
+  const positions = new Map();
+
+  for (const [index, node] of nodes.entries()) {
+    const angle = -Math.PI / 2 + (2 * Math.PI * index) / Math.max(1, nodeCount);
+    positions.set(Number(node.token_id), {
+      x: nodeCount === 1 ? centerX : centerX + radius * Math.cos(angle),
+      y: nodeCount === 1 ? centerY : centerY + radius * Math.sin(angle),
+    });
+  }
+
+  const svg = createSvgElement('svg');
+  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Recursive token angle graph');
+  svg.classList.add('recursive-graph-svg');
+
+  const edgeLayer = createSvgElement('g');
+  edgeLayer.classList.add('graph-edge-layer');
+  const labelLayer = createSvgElement('g');
+  labelLayer.classList.add('graph-edge-label-layer');
+  const nodeLayer = createSvgElement('g');
+  nodeLayer.classList.add('graph-node-layer');
+
+  for (const edge of edges) {
+    const source = positions.get(Number(edge.source_token_id));
+    const target = positions.get(Number(edge.target_token_id));
+    if (!source || !target) continue;
+
+    const line = createSvgElement('line');
+    line.classList.add('graph-edge');
+    line.setAttribute('x1', String(source.x));
+    line.setAttribute('y1', String(source.y));
+    line.setAttribute('x2', String(target.x));
+    line.setAttribute('y2', String(target.y));
+    edgeLayer.appendChild(line);
+
+    const label = createSvgElement('text');
+    label.classList.add('graph-edge-label');
+    label.setAttribute('x', String((source.x + target.x) / 2));
+    label.setAttribute('y', String((source.y + target.y) / 2));
+    label.textContent = `${Number(edge.angle_deg).toFixed(2)}°`;
+    labelLayer.appendChild(label);
+  }
+
+  const nodeWidth = 132;
+  const nodeHeight = 50;
+  for (const node of nodes) {
+    const position = positions.get(Number(node.token_id));
+    if (!position) continue;
+
+    const group = createSvgElement('g');
+    group.classList.add('graph-node');
+    group.setAttribute('transform', `translate(${position.x - nodeWidth / 2}, ${position.y - nodeHeight / 2})`);
+
+    const title = createSvgElement('title');
+    title.textContent = `${node.token_id} | ${node.token_raw}`;
+    group.appendChild(title);
+
+    const rect = createSvgElement('rect');
+    rect.setAttribute('width', String(nodeWidth));
+    rect.setAttribute('height', String(nodeHeight));
+    rect.setAttribute('rx', '12');
+    group.appendChild(rect);
+
+    const idText = createSvgElement('text');
+    idText.classList.add('graph-node-id');
+    idText.setAttribute('x', String(nodeWidth / 2));
+    idText.setAttribute('y', '19');
+    idText.textContent = String(node.token_id);
+    group.appendChild(idText);
+
+    const tokenText = createSvgElement('text');
+    tokenText.classList.add('graph-node-token');
+    tokenText.setAttribute('x', String(nodeWidth / 2));
+    tokenText.setAttribute('y', '36');
+    tokenText.textContent = truncateTokenForNode(node.token_raw);
+    group.appendChild(tokenText);
+
+    nodeLayer.appendChild(group);
+  }
+
+  svg.appendChild(edgeLayer);
+  svg.appendChild(labelLayer);
+  svg.appendChild(nodeLayer);
+  container.appendChild(svg);
+  byId('recursiveGroupGraphCard').classList.remove('hidden');
+  setExportVisible('exportRecursiveGroupGraphSvg', true);
+  byId('recursiveGroupGraphCaption').textContent = `Showing ${formatCount(nodes.length)} nodes and ${formatCount(edges.length)} labelled edges. Node labels are token ID plus raw token text; hover a node for the full token string.`;
+}
+
+async function computeRecursiveAngleGroup() {
+  let seedId;
+  try {
+    seedId = getPickerTokenId('groupSeed', 'groupSeed');
+  } catch (error) {
+    setOutput('recursiveGroupOutput', `<strong>Seed token ID failed:</strong> ${escapeHtml(error.message)}`);
+    return;
+  }
+
+  if (seedId === null) {
+    setOutput('recursiveGroupOutput', 'Enter a seed token ID, or search/select a seed token first.', true);
+    return;
+  }
+
+  const groupSizeLimit = Number(byId('recursiveGroupLimit').value || 100);
+  const maxAngle = Number(byId('recursiveGroupMaxAngle').value || 35);
+  const blockSize = Number(byId('recursiveGroupBlockSize').value || 2048);
+  const computeDevice = byId('recursiveGroupComputeDevice').value.trim() || 'auto';
+
+  if (!Number.isInteger(groupSizeLimit) || groupSizeLimit < 1 || groupSizeLimit > 1000) {
+    setOutput('recursiveGroupOutput', 'Enter a group size limit from 1 to 1000.', true);
+    return;
+  }
+  if (!Number.isFinite(maxAngle) || maxAngle < 0 || maxAngle > 180) {
+    setOutput('recursiveGroupOutput', 'Enter a maximum angle from 0 to 180 degrees.', true);
+    return;
+  }
+  if (!Number.isInteger(blockSize) || blockSize < 1 || blockSize > 16384) {
+    setOutput('recursiveGroupOutput', 'Enter a block size from 1 to 16384.', true);
+    return;
+  }
+
+  const button = byId('recursiveGroupButton');
+  state.recursiveGroup = null;
+  byId('recursiveGroupGraphCard').classList.add('hidden');
+  byId('recursiveGroupGraph').innerHTML = '';
+  byId('recursiveGroupTable').classList.add('hidden');
+  byId('recursiveGroupTable').querySelector('tbody').innerHTML = '';
+  setExportVisible('exportRecursiveGroupGraphSvg', false);
+  setExportVisible('exportRecursiveGroupAdjacencyCsv', false);
+  setExportVisible('exportRecursiveGroupDictionaryJson', false);
+  setExportVisible('exportRecursiveGroupListCsv', false);
+  setOutput('recursiveGroupOutput', `Building recursive group from seed ${seedId} with max angle ${maxAngle}°…`, true);
+  button.disabled = true;
+  button.textContent = 'Building…';
+
+  try {
+    const params = new URLSearchParams({
+      seed_id: String(seedId),
+      max_angle_deg: String(maxAngle),
+      group_size_limit: String(groupSizeLimit),
+      block_size: String(blockSize),
+      compute_device: computeDevice,
+    });
+    const data = await fetchJson(`/api/recursive-angle-group?${params.toString()}`);
+    state.recursiveGroup = data;
+    setPickerSelectionFromKnownToken('groupSeed', 'groupSeed', {
+      token_id: data.seed_token_id,
+      raw: data.seed_token_raw,
+      display: data.seed_token_display,
+    });
+    setOutput('recursiveGroupOutput', `
+      <div class="metric"><span>Collected tokens</span><strong>${formatCount(data.node_count)}</strong></div>
+      <div class="metric"><span>Edges</span><strong>${formatCount(data.edge_count)}</strong></div>
+      <table class="mini-table">
+        <tbody>
+          <tr><th>Seed token</th><td>${escapeHtml(tokenLabel({ token_id: data.seed_token_id, raw: data.seed_token_raw, display: data.seed_token_display }))}</td></tr>
+          <tr><th>Max angle</th><td>${Number(data.max_angle_deg).toFixed(3)}°</td></tr>
+          <tr><th>Size limit</th><td>${formatCount(data.group_size_limit)}</td></tr>
+          <tr><th>Expansion status</th><td>${data.truncated ? 'Stopped at size limit' : 'Frontier exhausted'}</td></tr>
+          <tr><th>Tokens scanned</th><td>${formatCount(data.scanned_count)}</td></tr>
+          <tr><th>Compute device</th><td>${escapeHtml(data.compute_device)}</td></tr>
+          <tr><th>Block size</th><td>${formatCount(data.block_size)}</td></tr>
+          <tr><th>Elapsed</th><td>${Number(data.elapsed_seconds).toFixed(3)} seconds</td></tr>
+        </tbody>
+      </table>
+    `);
+    renderRecursiveGroupGraph(data);
+    renderRecursiveGroupTable(data.nodes || []);
+    setExportVisible('exportRecursiveGroupAdjacencyCsv', data.node_count > 0);
+    setExportVisible('exportRecursiveGroupDictionaryJson', data.node_count > 0);
+  } catch (error) {
+    state.recursiveGroup = null;
+    setOutput('recursiveGroupOutput', `<strong>Recursive group failed:</strong> ${escapeHtml(error.message)}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Build recursive group';
+  }
+}
+
+function recursiveEdgeKey(a, b) {
+  const source = Math.min(Number(a), Number(b));
+  const target = Math.max(Number(a), Number(b));
+  return `${source}:${target}`;
+}
+
+function exportRecursiveGroupAdjacencyCsv() {
+  const data = state.recursiveGroup;
+  if (!data || !data.nodes) return;
+  const nodes = [...data.nodes].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  const edgeAngles = new Map();
+  for (const edge of data.edges || []) {
+    edgeAngles.set(recursiveEdgeKey(edge.source_token_id, edge.target_token_id), Number(edge.angle_deg));
+  }
+
+  const header = ['token_id', ...nodes.map((node) => node.token_id)];
+  const rows = [header];
+  for (const rowNode of nodes) {
+    const row = [rowNode.token_id];
+    for (const colNode of nodes) {
+      if (Number(rowNode.token_id) === Number(colNode.token_id)) {
+        row.push('0');
+      } else {
+        const angle = edgeAngles.get(recursiveEdgeKey(rowNode.token_id, colNode.token_id));
+        row.push(angle === undefined ? '' : angle.toFixed(6));
+      }
+    }
+    rows.push(row);
+  }
+  const csv = rows.map((row) => row.map(csvEscape).join(',')).join('\n') + '\n';
+  downloadBlob(csv, `recursive_group_${filenamePart(data.seed_token_id, 'seed')}_adjacency.csv`, 'text/csv;charset=utf-8');
+}
+
+function exportRecursiveGroupDictionaryJson() {
+  const data = state.recursiveGroup;
+  if (!data) return;
+  const dictionary = data.dictionary || Object.fromEntries((data.nodes || []).map((node) => [String(node.token_id), node]));
+  downloadBlob(
+    JSON.stringify(dictionary, null, 2),
+    `recursive_group_${filenamePart(data.seed_token_id, 'seed')}_dictionary.json`,
+    'application/json;charset=utf-8'
+  );
+}
+
+function exportRecursiveGroupGraphSvg() {
+  const svg = byId('recursiveGroupGraph').querySelector('svg');
+  const data = state.recursiveGroup;
+  if (!svg || !data) return;
+  const clone = svg.cloneNode(true);
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  const text = new XMLSerializer().serializeToString(clone);
+  downloadBlob(text, `recursive_group_${filenamePart(data.seed_token_id, 'seed')}_graph.svg`, 'image/svg+xml;charset=utf-8');
+}
+
 function exportAngleSummaryCsv() {
   const data = state.angleSummary;
   if (!data) return;
@@ -1315,6 +1704,10 @@ function setupExportButtons() {
   byId('exportPairwiseBinTokensCsv').addEventListener('click', () => exportHtmlTableAsCsv('pairwiseBinTokensTable', `pairwise_bin_${filenamePart(state.pairwiseSelectedBinIndex, 'selected')}_tokens.csv`));
   byId('exportMinDistancePlotPng').addEventListener('click', () => exportCanvasAsPng('minDistancePlot', 'minimum_angular_distances.png'));
   byId('exportMinDistancesCsv').addEventListener('click', () => exportHtmlTableAsCsv('minDistancesTable', 'minimum_angular_distances.csv'));
+  byId('exportRecursiveGroupGraphSvg').addEventListener('click', exportRecursiveGroupGraphSvg);
+  byId('exportRecursiveGroupAdjacencyCsv').addEventListener('click', exportRecursiveGroupAdjacencyCsv);
+  byId('exportRecursiveGroupDictionaryJson').addEventListener('click', exportRecursiveGroupDictionaryJson);
+  byId('exportRecursiveGroupListCsv').addEventListener('click', () => exportHtmlTableAsCsv('recursiveGroupTable', 'recursive_group_token_list.csv'));
 }
 
 function setupModelControls() {
@@ -1347,6 +1740,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupPicker('tokenA', 'tokenA');
   setupPicker('tokenB', 'tokenB');
   setupPicker('anchor', 'anchor');
+  setupPicker('groupSeed', 'groupSeed');
   byId('angleButton').addEventListener('click', computeAngle);
   byId('commonCloseButton').addEventListener('click', computeCommonCloseTokens);
   byId('commonCloseThreshold').addEventListener('keydown', (event) => {
@@ -1361,9 +1755,22 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('neighborhoodButton').addEventListener('click', computeNeighborhood);
   byId('pairwiseBinsButton').addEventListener('click', computePairwiseAngleBins);
   byId('minDistancesButton').addEventListener('click', computeMinAngularDistances);
+  byId('recursiveGroupButton').addEventListener('click', computeRecursiveAngleGroup);
   byId('minDistanceSort').addEventListener('change', () => {
     if (state.minDistanceRows.length > 0) renderMinDistanceTable();
   });
+
+  for (const controlId of ['recursiveGroupLimit', 'recursiveGroupMaxAngle', 'recursiveGroupBlockSize', 'recursiveGroupComputeDevice']) {
+    byId(controlId).addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        computeRecursiveAngleGroup();
+      }
+    });
+    byId(controlId).addEventListener('input', () => {
+      resetRecursiveGroupOutput('Controls changed. Click Build recursive group to refresh the graph.');
+    });
+  }
   byId('pairwiseLogScale').addEventListener('change', () => {
     if (state.pairwiseBins && !byId('pairwisePlotCard').classList.contains('hidden')) {
       drawPairwiseAngleBinPlot(state.pairwiseBins, byId('pairwiseLogScale').checked);

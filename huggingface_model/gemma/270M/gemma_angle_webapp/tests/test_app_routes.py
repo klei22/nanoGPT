@@ -487,3 +487,63 @@ def test_min_angular_distances_route_returns_closest_non_self_tokens(client: Tes
     assert rows[0]["other_token_raw"] == "world"
     assert rows[0]["magnitude"] == pytest.approx(1.0)
     assert rows[0]["other_magnitude"] == pytest.approx(2**0.5)
+
+
+def test_recursive_angle_group_route_expands_connected_tokens_and_edges(client: TestClient) -> None:
+    response = client.get(
+        "/api/recursive-angle-group",
+        params={
+            "seed_id": 0,
+            "max_angle_deg": 50,
+            "group_size_limit": 100,
+            "block_size": 2,
+            "compute_device": "cpu",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["model_name"] == "fake-model"
+    assert data["seed_token_id"] == 0
+    assert data["max_angle_deg"] == 50.0
+    assert data["group_size_limit"] == 100
+    assert data["compute_device"] == "cpu"
+    assert data["block_size"] == 2
+    assert data["truncated"] is False
+    assert data["node_count"] == 3
+    assert data["edge_count"] == 2
+    assert [node["token_id"] for node in data["nodes"]] == [0, 1, 2]
+    assert [node["connected_count"] for node in data["nodes"]] == [1, 1, 2]
+    assert [(edge["source_token_id"], edge["target_token_id"]) for edge in data["edges"]] == [(0, 2), (1, 2)]
+    assert [edge["angle_deg"] for edge in data["edges"]] == [pytest.approx(45.0), pytest.approx(45.0)]
+    assert set(data["dictionary"].keys()) == {"0", "1", "2"}
+    assert data["dictionary"]["2"]["token_raw"] == "world"
+
+
+def test_recursive_angle_group_route_stops_at_group_size_limit(client: TestClient) -> None:
+    response = client.get(
+        "/api/recursive-angle-group",
+        params={
+            "seed_id": 0,
+            "max_angle_deg": 50,
+            "group_size_limit": 2,
+            "block_size": 2,
+            "compute_device": "cpu",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["truncated"] is True
+    assert data["node_count"] == 2
+    assert [node["token_id"] for node in data["nodes"]] == [0, 2]
+    assert data["edge_count"] == 1
+
+
+def test_recursive_angle_group_route_rejects_invalid_angle(client: TestClient) -> None:
+    response = client.get(
+        "/api/recursive-angle-group",
+        params={"seed_id": 0, "max_angle_deg": 181},
+    )
+
+    assert response.status_code == 422
