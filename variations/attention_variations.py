@@ -1314,6 +1314,94 @@ class InfiniteHeadAttention(nn.Module):
 
         return y
 
+class InfiniteHeadAttentionNoWv(InfiniteHeadAttention):
+    """Infinite attention variant that removes the value projection matrix.
+
+    Values are taken directly from the residual stream and expanded across heads.
+    This constrains c_proj to map n_embd -> n_embd (single projection path).
+    """
+    def __init__(self, config, fire_pos_enc=None):
+        super().__init__(config, fire_pos_enc=fire_pos_enc)
+        del self.c_attn_v
+
+        self.n_v_head_dim = self.n_embd
+        self.use_concat_heads = False
+        self.n_cproj = 1
+        self.c_proj = self.linear_variant_attn_proj(
+            self.n_embd, self.n_embd, config, bias=config.bias
+        )
+
+    def forward(self, x, iter_num):
+        B, T, C = x.size()
+
+        if self.l2_norm_attn_q:
+            q_weight = F.normalize(self.c_attn_q.weight, p=2, dim=self.q_norm_dim)
+            q = F.linear(x, q_weight, self.c_attn_q.bias)
+        else:
+            q = self.c_attn_q(x)
+
+        if self.l2_norm_attn_k:
+            k_weight = F.normalize(self.c_attn_k.weight, p=2, dim=self.k_norm_dim)
+            k = F.linear(x, k_weight, self.c_attn_k.bias)
+        else:
+            k = self.c_attn_k(x)
+
+        q = q.view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2)
+        k = k.view(B, T, self.n_kv_group, self.n_qk_head_dim).transpose(1, 2)
+
+        v = x.unsqueeze(1).expand(B, self.n_kv_group, T, self.n_embd)
+
+        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
+            q = self.rotary_emb_q(q)
+            k = self.rotary_emb_k(k)
+
+        if self.use_qk_norm:
+            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+
+        if self.use_v_norm:
+            v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+
+        k_attn = self._expand_kv(k)
+        v_attn = self._expand_kv(v)
+
+        if not self.disable_flash_attention:
+            if self.use_qk_norm_scale:
+                sqrt_head_dim = math.sqrt(k_attn.size(-1))
+                q = q * (self.qk_norm_factor * sqrt_head_dim)
+
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q, k_attn, v_attn,
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=True,
+            )
+        else:
+            att = (q @ k_attn.transpose(-2, -1))
+            if self.use_qk_norm_scale:
+                att = att * self.qk_norm_factor
+            else:
+                att = att / math.sqrt(k_attn.size(-1))
+            att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
+            if self.softmax_variant_attn != 'softmax':
+                att = self.softmax_layer_attn(att)
+            else:
+                att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v_attn
+
+        if self.post_act_l2_norm:
+            y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            y = y / self.cproj_scale
+
+        y = y.sum(dim=1)
+        if self.l2_norm_attn_cproj:
+            cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
+            y = F.linear(y, cproj_weight, self.c_proj.bias)
+        else:
+            y = self.c_proj(y)
+        return self.resid_dropout(y)
+
 ##############################################################################
 #  Multi-head Latent Attention (MLA) – DeepSeek-V2 implementation
 #  - low-rank joint compression of K & V (latent_kv_dim)
@@ -1541,6 +1629,7 @@ attention_dictionary = {
     # "ssm": MambaBlock,
     "identity": AttnIdentity,
     "infinite": InfiniteHeadAttention,
+    "infinite_nowv": InfiniteHeadAttentionNoWv,
     "mla": MultiHeadLatentAttention,
     "co4": Co4Attention,
 }
