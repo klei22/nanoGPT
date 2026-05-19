@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import argparse, io, pickle, math
 from pathlib import Path
-from typing import Callable, List, Sequence
+from typing import Any, Callable, List, Sequence
 
 import numpy as np
 import torch, torch.nn.functional as F
@@ -67,6 +67,30 @@ def _colour(ids: List[int], scalars: List[float], decode: Callable[[Sequence[int
             token = _escape_ws(token)
         out.append(token, style=f"bold #{r:02x}{g:02x}00")
     return out
+
+
+def build_colorized_token_rows(
+    ids: List[int],
+    scalars: List[float],
+    decode: Callable[[Sequence[int]], str],
+    escape_ws: bool = True,
+) -> List[dict[str, Any]]:
+    rows: List[dict[str, Any]] = []
+    vals = torch.tensor(scalars, dtype=torch.float32)
+    norm = (vals - vals.min()) / (vals.max() - vals.min() + 1e-6)
+    for tid, scalar, heat in zip(ids, scalars, norm.tolist()):
+        token = decode([tid])
+        if escape_ws:
+            token = _escape_ws(token)
+        rows.append(
+            {
+                "token_id": int(tid),
+                "token": token,
+                "scalar": float(scalar),
+                "heat": float(heat),
+            }
+        )
+    return rows
 
 # byte-fallback helpers -------------------------------------------------------
 

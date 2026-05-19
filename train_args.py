@@ -233,6 +233,11 @@ def parse_args():
     training_group.add_argument('--sample_only', default=False, action=argparse.BooleanOptionalAction, help="Run only the sampling process and exit")
     training_group.add_argument('--dataset_benchmarks', default=False, action=argparse.BooleanOptionalAction, help="Run dataset benchmark metrics on a random slice after each validation")
     training_group.add_argument('--sample_metrics', default=False, action=argparse.BooleanOptionalAction, help="Display sample metrics like spelling correctness during sampling")
+    training_group.add_argument('--colorize_val_passage', default=False, action=argparse.BooleanOptionalAction, help="At each validation interval, colorize a validation passage and append it to a YAML timeline.")
+    training_group.add_argument('--colorize_val_tokens', default=128, type=int, help="Number of target tokens to colorize during validation passage dumps.")
+    training_group.add_argument('--colorize_val_offset', default=0, type=int, help="Start offset into val.bin for validation passage colorization.")
+    training_group.add_argument('--colorize_val_mode', choices=['softmax', 'minmax'], default='softmax', help="Scoring mode for validation passage colorization.")
+    training_group.add_argument('--colorize_val_yaml', default='highlighted_passage.yaml', type=str, help="Path (or filename under out_dir) for saving colorized validation passages as YAML.")
 
     # Checkpoint args
     training_group.add_argument('--save_major_ckpt_interval', default=None, type=int, help="Interval for saving major checkpoints.")
