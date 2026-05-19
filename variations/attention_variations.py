@@ -39,6 +39,13 @@ def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
         )
 
     return group_sizes, head_to_group
+
+
+def apply_exclusive_self_attention(y: torch.Tensor, v_self: torch.Tensor) -> torch.Tensor:
+    """Remove components of attention output along the token's self value direction."""
+    v_self_norm = v_self / v_self.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    return y - (y * v_self_norm).sum(dim=-1, keepdim=True) * v_self_norm
+
 # Mamba related imports
 # if torch.cuda.is_available():
 #     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -150,6 +157,7 @@ class CausalSelfAttention(nn.Module):
         self.use_qk_norm = config.use_qk_norm
         self.use_qk_norm_scale = config.use_qk_norm_scale
         self.use_v_norm = config.use_v_norm
+        self.use_exclusive_self_attention = config.use_exclusive_self_attention
 
         # Flash Lobo
         self.use_flash_lobo = config.use_flash_lobo
@@ -375,9 +383,15 @@ class CausalSelfAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=True,
             )
+            if self.use_exclusive_self_attention:
+                y = apply_exclusive_self_attention(y, v_attn)
         elif self.use_flex_attn and self.window_size is not None:
             block_mask = self.get_block_mask(T, x.device)
-            y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
+            k_attn = self._expand_kv(k)
+            v_attn = self._expand_kv(v)
+            y = torch.nn.attention.flex_attention.flex_attention(q, k_attn, v_attn, block_mask=block_mask)
+            if self.use_exclusive_self_attention:
+                y = apply_exclusive_self_attention(y, v_attn)
         else:
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
@@ -442,6 +456,8 @@ class CausalSelfAttention(nn.Module):
 
             v_attn = self._expand_kv(v)
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            if self.use_exclusive_self_attention:
+                y = apply_exclusive_self_attention(y, v_attn)
 
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]
@@ -566,6 +582,7 @@ class EdgeLLMASICAttention(nn.Module):
         self.use_qk_norm = config.use_qk_norm
         self.use_qk_norm_scale = config.use_qk_norm_scale
         self.use_v_norm = config.use_v_norm
+        self.use_exclusive_self_attention = config.use_exclusive_self_attention
 
         # Using flex attention
         self.use_flex_attn = config.use_flex_attn
@@ -1029,6 +1046,7 @@ class InfiniteHeadAttention(nn.Module):
         self.use_qk_norm        = config.use_qk_norm
         self.use_qk_norm_scale  = config.use_qk_norm_scale
         self.use_v_norm         = config.use_v_norm
+        self.use_exclusive_self_attention = config.use_exclusive_self_attention
 
         # Flash Lobo
         self.use_flash_lobo          = config.use_flash_lobo
@@ -1241,6 +1259,8 @@ class InfiniteHeadAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=True,
             )
+            if self.use_exclusive_self_attention:
+                y = apply_exclusive_self_attention(y, v_attn)
 
         else:
             # Manual implementation of attention
@@ -1270,6 +1290,8 @@ class InfiniteHeadAttention(nn.Module):
             att = self.attn_dropout(att)
 
             y = att @ v_attn # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            if self.use_exclusive_self_attention:
+                y = apply_exclusive_self_attention(y, v_attn)
 
         if self.post_act_l2_norm:
             y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
