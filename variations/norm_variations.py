@@ -99,6 +99,52 @@ class HyperSphereNorm(nn.Module):
         hypersphere_norm = x.norm(2, dim=-1, keepdim=True)
         return  x / hypersphere_norm * radius * self.gain
 
+class ProjectOutL2Norm(nn.Module):
+    """
+    Remove the component of x along a learned direction, then L2-normalize.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.dim = config.n_embd
+        self.eps = config.pol2norm_eps
+
+        # Learned direction to project out
+        self.direction = nn.Parameter(torch.randn(self.dim))
+
+        # Optional learned radius after normalization
+        self.learn_scale = config.pol2norm_learn_scale
+        init_scale = config.pol2norm_init_scale
+        if init_scale is None:
+            init_scale = math.sqrt(self.dim)
+        if self.learn_scale:
+            self.log_scale = nn.Parameter(torch.tensor(math.log(init_scale)))
+        else:
+            self.register_buffer(
+                "fixed_scale",
+                torch.tensor(float(init_scale)),
+                persistent=False,
+            )
+
+    def forward(self, x):
+        if x.shape[-1] != self.dim:
+            raise ValueError(
+                f"Expected last dimension {self.dim}, got {x.shape[-1]}"
+            )
+
+        # Normalize learned direction
+        u = F.normalize(self.direction, p=2, dim=0, eps=self.eps)
+
+        # Component of x along u
+        coeff = (x * u).sum(dim=-1, keepdim=True)
+
+        # Remove that component then L2 normalize
+        z = x - coeff * u
+        y = F.normalize(z, p=2, dim=-1, eps=self.eps)
+
+        scale = self.log_scale.exp() if self.learn_scale else self.fixed_scale
+        return scale * y
+
 class pRMSNorm(nn.Module):
     """Partial RMS Normalization"""
 
@@ -217,6 +263,7 @@ norm_dictionary = {
     "prmsnorm": pRMSNorm,
     "krmsnorm": kRMSNorm,
     "hyperspherenorm": HyperSphereNorm,
+    "projectoutl2norm": ProjectOutL2Norm,
     "dact": DynamicActivation,
     "identity": IdentityNorm,
 }
