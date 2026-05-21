@@ -190,4 +190,4 @@ The backend endpoint is:
 GET /api/recursive-angle-group?seed_id=0&max_angle_deg=35&group_size_limit=100&block_size=2048&compute_device=auto
 ```
 
-The computation scans neighbors blockwise and only keeps the current group plus the final nodes/edges. It does not materialize or cache a full pairwise matrix. The UI renders a node-edge SVG graph with angle-labelled edges and provides downloads for the graph SVG, adjacency matrix CSV, dictionary JSON, and token list CSV.
+The computation scans neighbors blockwise and only keeps the current group plus the final nodes/edges. It does not materialize or cache a full pairwise matrix. The UI renders an interactive vis-network node-edge graph with draggable nodes, pan/zoom, and angle-labelled edges. It provides downloads for the graph SVG, graph PNG, adjacency matrix CSV, dictionary JSON, and token list CSV.

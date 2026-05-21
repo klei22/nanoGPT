@@ -11,6 +11,8 @@ const state = {
   pairwiseBinTokens: [],
   minDistanceRows: [],
   recursiveGroup: null,
+  recursiveGroupNetwork: null,
+  recursiveGroupNetworkData: null,
 };
 
 const pickerPrefixes = ['tokenA', 'tokenB', 'anchor', 'groupSeed'];
@@ -1375,8 +1377,17 @@ async function computeMinAngularDistances() {
 }
 
 
+function destroyRecursiveGroupNetwork() {
+  if (state.recursiveGroupNetwork) {
+    state.recursiveGroupNetwork.destroy();
+    state.recursiveGroupNetwork = null;
+  }
+  state.recursiveGroupNetworkData = null;
+}
+
 function resetRecursiveGroupOutput(message = 'Choose a seed token, set the group controls, then build the recursive graph.') {
   state.recursiveGroup = null;
+  destroyRecursiveGroupNetwork();
   const output = byId('recursiveGroupOutput');
   if (!output) return;
   setOutput('recursiveGroupOutput', message, true);
@@ -1385,6 +1396,7 @@ function resetRecursiveGroupOutput(message = 'Choose a seed token, set the group
   byId('recursiveGroupTable').classList.add('hidden');
   byId('recursiveGroupTable').querySelector('tbody').innerHTML = '';
   setExportVisible('exportRecursiveGroupGraphSvg', false);
+  setExportVisible('exportRecursiveGroupGraphPng', false);
   setExportVisible('exportRecursiveGroupAdjacencyCsv', false);
   setExportVisible('exportRecursiveGroupDictionaryJson', false);
   setExportVisible('exportRecursiveGroupListCsv', false);
@@ -1398,6 +1410,25 @@ function truncateTokenForNode(value, maxLength = 18) {
   const text = String(value ?? '');
   if (text.length <= maxLength) return text;
   return `${text.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function recursiveGraphNodeLabel(node) {
+  const token = JSON.stringify(String(node.token_raw ?? ''));
+  return `${node.token_id}\n${truncateTokenForNode(token, 24)}`;
+}
+
+function recursiveGraphNodeTitle(node) {
+  return [
+    `<strong>${escapeHtml(node.token_id)}</strong>`,
+    `raw: <code>${escapeHtml(node.token_raw)}</code>`,
+    `display: <code>${escapeHtml(node.token_display)}</code>`,
+    `vector length: ${Number(node.magnitude).toFixed(6)}`,
+    `connected nodes: ${formatCount(node.connected_count)}`,
+  ].join('<br>');
+}
+
+function recursiveGraphEdgeTitle(edge) {
+  return `${escapeHtml(edge.source_token_id)} ↔ ${escapeHtml(edge.target_token_id)}<br>${Number(edge.angle_deg).toFixed(6)}°`;
 }
 
 function renderRecursiveGroupTable(nodes) {
@@ -1423,24 +1454,15 @@ function renderRecursiveGroupTable(nodes) {
   setExportVisible('exportRecursiveGroupListCsv', rows.length > 0);
 }
 
-function renderRecursiveGroupGraph(data) {
-  const container = byId('recursiveGroupGraph');
-  container.innerHTML = '';
-  const nodes = [...(data.nodes || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
-  const edges = data.edges || [];
-  if (nodes.length === 0) {
-    byId('recursiveGroupGraphCard').classList.add('hidden');
-    return;
-  }
+const RECURSIVE_GRAPH_NODE_WIDTH = 150;
+const RECURSIVE_GRAPH_NODE_HEIGHT = 54;
 
+function circularRecursiveGraphPositions(nodes, width, height) {
   const nodeCount = nodes.length;
-  const width = Math.max(980, Math.min(2400, 820 + nodeCount * 14));
-  const height = Math.max(720, Math.min(1800, 680 + nodeCount * 6));
   const centerX = width / 2;
   const centerY = height / 2;
   const radius = nodeCount === 1 ? 0 : Math.max(180, Math.min(width, height) / 2 - 115);
   const positions = new Map();
-
   for (const [index, node] of nodes.entries()) {
     const angle = -Math.PI / 2 + (2 * Math.PI * index) / Math.max(1, nodeCount);
     positions.set(Number(node.token_id), {
@@ -1448,15 +1470,153 @@ function renderRecursiveGroupGraph(data) {
       y: nodeCount === 1 ? centerY : centerY + radius * Math.sin(angle),
     });
   }
+  return positions;
+}
+
+function forceRecursiveGraphPositions(nodes, edges, width, height) {
+  const base = circularRecursiveGraphPositions(nodes, width, height);
+  const simNodes = nodes.map((node) => {
+    const id = Number(node.token_id);
+    const point = base.get(id) || { x: width / 2, y: height / 2 };
+    return { id, x: point.x, y: point.y, vx: 0, vy: 0 };
+  });
+  const byId = new Map(simNodes.map((node) => [node.id, node]));
+  const simEdges = (edges || [])
+    .map((edge) => ({
+      source: byId.get(Number(edge.source_token_id)),
+      target: byId.get(Number(edge.target_token_id)),
+    }))
+    .filter((edge) => edge.source && edge.target);
+
+  const count = simNodes.length;
+  if (count <= 1) return base;
+
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const idealLink = Math.max(120, Math.min(260, 110 + count * 2.0));
+  const repelStrength = Math.max(2600, Math.min(11000, 5200 + count * 36));
+  const iterations = Math.max(80, Math.min(240, 80 + count * 2));
+
+  for (let step = 0; step < iterations; step += 1) {
+    const alpha = 1 - step / iterations;
+
+    for (let i = 0; i < count; i += 1) {
+      const a = simNodes[i];
+      for (let j = i + 1; j < count; j += 1) {
+        const b = simNodes[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let distance2 = dx * dx + dy * dy;
+        if (distance2 < 0.01) {
+          dx = (i % 2 === 0 ? 1 : -1) * 0.1;
+          dy = (j % 2 === 0 ? 1 : -1) * 0.1;
+          distance2 = dx * dx + dy * dy;
+        }
+        const distance = Math.sqrt(distance2);
+        const force = (repelStrength * alpha) / Math.max(80, distance2);
+        const fx = (dx / distance) * force;
+        const fy = (dy / distance) * force;
+        a.vx -= fx;
+        a.vy -= fy;
+        b.vx += fx;
+        b.vy += fy;
+      }
+    }
+
+    for (const edge of simEdges) {
+      const a = edge.source;
+      const b = edge.target;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const stretch = distance - idealLink;
+      const force = stretch * 0.012 * alpha;
+      const fx = (dx / distance) * force;
+      const fy = (dy / distance) * force;
+      a.vx += fx;
+      a.vy += fy;
+      b.vx -= fx;
+      b.vy -= fy;
+    }
+
+    for (const node of simNodes) {
+      node.vx += (centerX - node.x) * 0.0025 * alpha;
+      node.vy += (centerY - node.y) * 0.0025 * alpha;
+      node.vx *= 0.78;
+      node.vy *= 0.78;
+      node.x += node.vx;
+      node.y += node.vy;
+      node.x = Math.max(RECURSIVE_GRAPH_NODE_WIDTH, Math.min(width - RECURSIVE_GRAPH_NODE_WIDTH, node.x));
+      node.y = Math.max(RECURSIVE_GRAPH_NODE_HEIGHT, Math.min(height - RECURSIVE_GRAPH_NODE_HEIGHT, node.y));
+    }
+  }
+
+  const positions = new Map();
+  for (const node of simNodes) {
+    positions.set(node.id, { x: node.x, y: node.y });
+  }
+  return positions;
+}
+
+function recursiveGraphExportCss() {
+  return `
+    .recursive-graph-svg { background: #020617; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .graph-edge { stroke: rgba(148, 163, 184, 0.52); stroke-width: 1.25px; }
+    .graph-edge-label { fill: #94a3b8; font-size: 10px; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: #020617; stroke-width: 3px; stroke-linejoin: round; }
+    .graph-node rect { fill: #111827; stroke: #38bdf8; stroke-width: 1.1px; }
+    .graph-node text { text-anchor: middle; pointer-events: none; }
+    .graph-node-id { fill: #f8fafc; font-weight: 700; font-size: 13px; }
+    .graph-node-token { fill: #cbd5e1; font-size: 11px; }
+  `;
+}
+
+function embedRecursiveGraphStyles(svg) {
+  const existing = svg.querySelector('style[data-recursive-graph-export]');
+  if (existing) existing.remove();
+  const style = createSvgElement('style');
+  style.setAttribute('data-recursive-graph-export', 'true');
+  style.textContent = recursiveGraphExportCss();
+  svg.insertBefore(style, svg.firstChild);
+  return svg;
+}
+
+function createRecursiveGroupSvg(data, positions, options = {}) {
+  const nodes = [...(data.nodes || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  const edges = data.edges || [];
+  const nodeWidth = RECURSIVE_GRAPH_NODE_WIDTH;
+  const nodeHeight = RECURSIVE_GRAPH_NODE_HEIGHT;
+  const margin = 80;
+
+  let minX = 0;
+  let minY = 0;
+  let maxX = 980;
+  let maxY = 720;
+  if (positions && positions.size > 0) {
+    const values = [...positions.values()];
+    minX = Math.min(...values.map((point) => point.x)) - nodeWidth / 2 - margin;
+    maxX = Math.max(...values.map((point) => point.x)) + nodeWidth / 2 + margin;
+    minY = Math.min(...values.map((point) => point.y)) - nodeHeight / 2 - margin;
+    maxY = Math.max(...values.map((point) => point.y)) + nodeHeight / 2 + margin;
+  }
+  const width = Number(options.width || Math.max(980, Math.ceil(maxX - minX)));
+  const height = Number(options.height || Math.max(720, Math.ceil(maxY - minY)));
+  const viewBox = options.viewBox || `${minX} ${minY} ${width} ${height}`;
 
   const svg = createSvgElement('svg');
   svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('viewBox', viewBox);
   svg.setAttribute('width', String(width));
   svg.setAttribute('height', String(height));
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', 'Recursive token angle graph');
   svg.classList.add('recursive-graph-svg');
+  if (options.interactive) {
+    svg.classList.add('recursive-graph-svg-local');
+    svg.setAttribute('tabindex', '0');
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+  }
+  if (options.embedStyles) embedRecursiveGraphStyles(svg);
 
   const edgeLayer = createSvgElement('g');
   edgeLayer.classList.add('graph-edge-layer');
@@ -1466,12 +1626,16 @@ function renderRecursiveGroupGraph(data) {
   nodeLayer.classList.add('graph-node-layer');
 
   for (const edge of edges) {
-    const source = positions.get(Number(edge.source_token_id));
-    const target = positions.get(Number(edge.target_token_id));
+    const sourceId = Number(edge.source_token_id);
+    const targetId = Number(edge.target_token_id);
+    const source = positions.get(sourceId);
+    const target = positions.get(targetId);
     if (!source || !target) continue;
 
     const line = createSvgElement('line');
     line.classList.add('graph-edge');
+    line.dataset.sourceTokenId = String(sourceId);
+    line.dataset.targetTokenId = String(targetId);
     line.setAttribute('x1', String(source.x));
     line.setAttribute('y1', String(source.y));
     line.setAttribute('x2', String(target.x));
@@ -1480,20 +1644,22 @@ function renderRecursiveGroupGraph(data) {
 
     const label = createSvgElement('text');
     label.classList.add('graph-edge-label');
+    label.dataset.sourceTokenId = String(sourceId);
+    label.dataset.targetTokenId = String(targetId);
     label.setAttribute('x', String((source.x + target.x) / 2));
     label.setAttribute('y', String((source.y + target.y) / 2));
     label.textContent = `${Number(edge.angle_deg).toFixed(2)}°`;
     labelLayer.appendChild(label);
   }
 
-  const nodeWidth = 132;
-  const nodeHeight = 50;
   for (const node of nodes) {
-    const position = positions.get(Number(node.token_id));
+    const id = Number(node.token_id);
+    const position = positions.get(id);
     if (!position) continue;
 
     const group = createSvgElement('g');
     group.classList.add('graph-node');
+    group.dataset.tokenId = String(id);
     group.setAttribute('transform', `translate(${position.x - nodeWidth / 2}, ${position.y - nodeHeight / 2})`);
 
     const title = createSvgElement('title');
@@ -1509,15 +1675,15 @@ function renderRecursiveGroupGraph(data) {
     const idText = createSvgElement('text');
     idText.classList.add('graph-node-id');
     idText.setAttribute('x', String(nodeWidth / 2));
-    idText.setAttribute('y', '19');
+    idText.setAttribute('y', '20');
     idText.textContent = String(node.token_id);
     group.appendChild(idText);
 
     const tokenText = createSvgElement('text');
     tokenText.classList.add('graph-node-token');
     tokenText.setAttribute('x', String(nodeWidth / 2));
-    tokenText.setAttribute('y', '36');
-    tokenText.textContent = truncateTokenForNode(node.token_raw);
+    tokenText.setAttribute('y', '38');
+    tokenText.textContent = truncateTokenForNode(JSON.stringify(String(node.token_raw ?? '')), 22);
     group.appendChild(tokenText);
 
     nodeLayer.appendChild(group);
@@ -1526,10 +1692,235 @@ function renderRecursiveGroupGraph(data) {
   svg.appendChild(edgeLayer);
   svg.appendChild(labelLayer);
   svg.appendChild(nodeLayer);
+  return svg;
+}
+
+function renderRecursiveGroupStaticSvgGraph(data) {
+  const container = byId('recursiveGroupGraph');
+  container.classList.add('static-svg-fallback');
+  const nodes = [...(data.nodes || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  const nodeCount = nodes.length;
+  const width = Math.max(980, Math.min(2600, 820 + nodeCount * 16));
+  const height = Math.max(720, Math.min(2000, 680 + nodeCount * 8));
+  const positions = circularRecursiveGraphPositions(nodes, width, height);
+  const svg = createRecursiveGroupSvg(data, positions, { viewBox: `0 0 ${width} ${height}`, width, height, embedStyles: false });
   container.appendChild(svg);
+  byId('recursiveGroupGraphCaption').textContent = `Showing ${formatCount(nodes.length)} nodes and ${formatCount((data.edges || []).length)} labelled edges. SVG support was limited, so this fallback is static.`;
+}
+
+function svgPointFromClient(svg, event) {
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return { x: point.x, y: point.y };
+  return point.matrixTransform(ctm.inverse());
+}
+
+function setRecursiveSvgViewBox(svg, viewBox) {
+  svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`);
+}
+
+function updateRecursiveGraphElements(svg, positions, tokenId = null) {
+  const nodeWidth = RECURSIVE_GRAPH_NODE_WIDTH;
+  const nodeHeight = RECURSIVE_GRAPH_NODE_HEIGHT;
+  const updateNode = (id) => {
+    const position = positions.get(Number(id));
+    const group = svg.querySelector(`.graph-node[data-token-id="${String(id)}"]`);
+    if (position && group) {
+      group.setAttribute('transform', `translate(${position.x - nodeWidth / 2}, ${position.y - nodeHeight / 2})`);
+    }
+  };
+  const updateEdge = (element) => {
+    const sourceId = Number(element.dataset.sourceTokenId);
+    const targetId = Number(element.dataset.targetTokenId);
+    if (tokenId !== null && sourceId !== tokenId && targetId !== tokenId) return;
+    const source = positions.get(sourceId);
+    const target = positions.get(targetId);
+    if (!source || !target) return;
+    if (element.tagName.toLowerCase() === 'line') {
+      element.setAttribute('x1', String(source.x));
+      element.setAttribute('y1', String(source.y));
+      element.setAttribute('x2', String(target.x));
+      element.setAttribute('y2', String(target.y));
+    } else {
+      element.setAttribute('x', String((source.x + target.x) / 2));
+      element.setAttribute('y', String((source.y + target.y) / 2));
+    }
+  };
+
+  if (tokenId === null) {
+    for (const id of positions.keys()) updateNode(id);
+  } else {
+    updateNode(tokenId);
+  }
+  svg.querySelectorAll('.graph-edge, .graph-edge-label').forEach(updateEdge);
+}
+
+function attachRecursiveGraphInteractions(svg, positions, width, height) {
+  let activeNodeId = null;
+  let activeNodeElement = null;
+  let nodeOffset = { x: 0, y: 0 };
+  let panStart = null;
+  const viewBox = { x: 0, y: 0, width, height };
+  const eventOptions = { passive: false };
+
+  const handlePointerDown = (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const nodeElement = target ? target.closest('.graph-node') : null;
+    if (nodeElement && svg.contains(nodeElement)) {
+      event.preventDefault();
+      activeNodeId = Number(nodeElement.dataset.tokenId);
+      activeNodeElement = nodeElement;
+      activeNodeElement.classList.add('dragging');
+      const current = positions.get(activeNodeId) || { x: 0, y: 0 };
+      const point = svgPointFromClient(svg, event);
+      nodeOffset = { x: current.x - point.x, y: current.y - point.y };
+      svg.setPointerCapture?.(event.pointerId);
+      return;
+    }
+
+    event.preventDefault();
+    panStart = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      viewBox: { ...viewBox },
+    };
+    svg.classList.add('panning');
+    svg.setPointerCapture?.(event.pointerId);
+  };
+
+  const handlePointerMove = (event) => {
+    if (activeNodeId !== null) {
+      event.preventDefault();
+      const point = svgPointFromClient(svg, event);
+      const next = { x: point.x + nodeOffset.x, y: point.y + nodeOffset.y };
+      positions.set(activeNodeId, next);
+      updateRecursiveGraphElements(svg, positions, activeNodeId);
+      return;
+    }
+    if (panStart) {
+      event.preventDefault();
+      const clientWidth = Math.max(1, svg.clientWidth || width);
+      const clientHeight = Math.max(1, svg.clientHeight || height);
+      const dx = ((event.clientX - panStart.clientX) / clientWidth) * panStart.viewBox.width;
+      const dy = ((event.clientY - panStart.clientY) / clientHeight) * panStart.viewBox.height;
+      viewBox.x = panStart.viewBox.x - dx;
+      viewBox.y = panStart.viewBox.y - dy;
+      setRecursiveSvgViewBox(svg, viewBox);
+    }
+  };
+
+  const endPointerInteraction = (event) => {
+    if (activeNodeElement) activeNodeElement.classList.remove('dragging');
+    activeNodeId = null;
+    activeNodeElement = null;
+    panStart = null;
+    svg.classList.remove('panning');
+    if (event && event.pointerId !== undefined) svg.releasePointerCapture?.(event.pointerId);
+  };
+
+  const handleWheel = (event) => {
+    event.preventDefault();
+    const point = svgPointFromClient(svg, event);
+    const zoomFactor = event.deltaY > 0 ? 1.14 : 0.88;
+    const nextWidth = Math.max(180, Math.min(12000, viewBox.width * zoomFactor));
+    const nextHeight = Math.max(140, Math.min(9000, viewBox.height * zoomFactor));
+    const widthRatio = nextWidth / viewBox.width;
+    const heightRatio = nextHeight / viewBox.height;
+    viewBox.x = point.x - (point.x - viewBox.x) * widthRatio;
+    viewBox.y = point.y - (point.y - viewBox.y) * heightRatio;
+    viewBox.width = nextWidth;
+    viewBox.height = nextHeight;
+    setRecursiveSvgViewBox(svg, viewBox);
+  };
+
+  const handleDblClick = (event) => {
+    event.preventDefault();
+    viewBox.x = 0;
+    viewBox.y = 0;
+    viewBox.width = width;
+    viewBox.height = height;
+    setRecursiveSvgViewBox(svg, viewBox);
+  };
+
+  svg.addEventListener('pointerdown', handlePointerDown);
+  svg.addEventListener('pointermove', handlePointerMove);
+  svg.addEventListener('pointerup', endPointerInteraction);
+  svg.addEventListener('pointercancel', endPointerInteraction);
+  svg.addEventListener('lostpointercapture', endPointerInteraction);
+  svg.addEventListener('wheel', handleWheel, eventOptions);
+  svg.addEventListener('dblclick', handleDblClick);
+
+  return {
+    destroy() {
+      svg.removeEventListener('pointerdown', handlePointerDown);
+      svg.removeEventListener('pointermove', handlePointerMove);
+      svg.removeEventListener('pointerup', endPointerInteraction);
+      svg.removeEventListener('pointercancel', endPointerInteraction);
+      svg.removeEventListener('lostpointercapture', endPointerInteraction);
+      svg.removeEventListener('wheel', handleWheel, eventOptions);
+      svg.removeEventListener('dblclick', handleDblClick);
+    },
+    getPositions(ids) {
+      const result = {};
+      for (const id of ids) {
+        const point = positions.get(Number(id));
+        if (point) result[id] = { x: point.x, y: point.y };
+      }
+      return result;
+    },
+    svg,
+  };
+}
+
+function hasLocalSvgGraphSupport() {
+  return typeof document !== 'undefined' && typeof document.createElementNS === 'function';
+}
+
+function renderRecursiveGroupInteractiveGraph(data) {
+  const container = byId('recursiveGroupGraph');
+  container.classList.remove('static-svg-fallback');
+  container.classList.add('local-draggable-graph');
+  const nodes = [...(data.nodes || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  const edges = data.edges || [];
+  const width = Math.max(1040, Math.min(3200, 900 + nodes.length * 18));
+  const height = Math.max(720, Math.min(2400, 680 + nodes.length * 9));
+  const positions = forceRecursiveGraphPositions(nodes, edges, width, height);
+  const svg = createRecursiveGroupSvg(data, positions, {
+    viewBox: `0 0 ${width} ${height}`,
+    width,
+    height,
+    interactive: true,
+    embedStyles: false,
+  });
+  container.appendChild(svg);
+  state.recursiveGroupNetwork = attachRecursiveGraphInteractions(svg, positions, width, height);
+  state.recursiveGroupNetworkData = { renderer: 'local-svg-drag' };
+
+  byId('recursiveGroupGraphCaption').textContent = `Showing ${formatCount(nodes.length)} nodes and ${formatCount(edges.length)} labelled edges. Drag nodes to reposition them; drag empty space to pan; mouse-wheel zooms; double-click resets the view. SVG/PNG exports use the current node positions.`;
+}
+
+function renderRecursiveGroupGraph(data) {
+  const container = byId('recursiveGroupGraph');
+  destroyRecursiveGroupNetwork();
+  container.innerHTML = '';
+  container.classList.remove('local-draggable-graph', 'static-svg-fallback');
+  const nodes = [...(data.nodes || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  if (nodes.length === 0) {
+    byId('recursiveGroupGraphCard').classList.add('hidden');
+    return;
+  }
+
+  if (hasLocalSvgGraphSupport()) {
+    renderRecursiveGroupInteractiveGraph(data);
+  } else {
+    renderRecursiveGroupStaticSvgGraph(data);
+  }
+
   byId('recursiveGroupGraphCard').classList.remove('hidden');
   setExportVisible('exportRecursiveGroupGraphSvg', true);
-  byId('recursiveGroupGraphCaption').textContent = `Showing ${formatCount(nodes.length)} nodes and ${formatCount(edges.length)} labelled edges. Node labels are token ID plus raw token text; hover a node for the full token string.`;
+  setExportVisible('exportRecursiveGroupGraphPng', true);
 }
 
 async function computeRecursiveAngleGroup() {
@@ -1566,11 +1957,13 @@ async function computeRecursiveAngleGroup() {
 
   const button = byId('recursiveGroupButton');
   state.recursiveGroup = null;
+  destroyRecursiveGroupNetwork();
   byId('recursiveGroupGraphCard').classList.add('hidden');
   byId('recursiveGroupGraph').innerHTML = '';
   byId('recursiveGroupTable').classList.add('hidden');
   byId('recursiveGroupTable').querySelector('tbody').innerHTML = '';
   setExportVisible('exportRecursiveGroupGraphSvg', false);
+  setExportVisible('exportRecursiveGroupGraphPng', false);
   setExportVisible('exportRecursiveGroupAdjacencyCsv', false);
   setExportVisible('exportRecursiveGroupDictionaryJson', false);
   setExportVisible('exportRecursiveGroupListCsv', false);
@@ -1666,14 +2059,87 @@ function exportRecursiveGroupDictionaryJson() {
   );
 }
 
+function getRecursiveGroupCurrentPositions(data) {
+  const nodes = [...(data.nodes || [])].sort((a, b) => Number(a.token_id) - Number(b.token_id));
+  if (state.recursiveGroupNetwork) {
+    const ids = nodes.map((node) => Number(node.token_id));
+    const rawPositions = state.recursiveGroupNetwork.getPositions(ids);
+    const positions = new Map();
+    for (const node of nodes) {
+      const key = Number(node.token_id);
+      const position = rawPositions[key] || rawPositions[String(key)];
+      if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+        positions.set(key, { x: Number(position.x), y: Number(position.y) });
+      }
+    }
+    if (positions.size === nodes.length) return positions;
+  }
+
+  const width = Math.max(980, Math.min(2400, 820 + nodes.length * 14));
+  const height = Math.max(720, Math.min(1800, 680 + nodes.length * 6));
+  return circularRecursiveGraphPositions(nodes, width, height);
+}
+
 function exportRecursiveGroupGraphSvg() {
-  const svg = byId('recursiveGroupGraph').querySelector('svg');
   const data = state.recursiveGroup;
-  if (!svg || !data) return;
-  const clone = svg.cloneNode(true);
-  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-  const text = new XMLSerializer().serializeToString(clone);
+  if (!data || !(data.nodes || []).length) return;
+  const positions = getRecursiveGroupCurrentPositions(data);
+  const svg = createRecursiveGroupSvg(data, positions, { embedStyles: true });
+  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  const text = new XMLSerializer().serializeToString(svg);
   downloadBlob(text, `recursive_group_${filenamePart(data.seed_token_id, 'seed')}_graph.svg`, 'image/svg+xml;charset=utf-8');
+}
+
+function parseSvgViewBox(svg) {
+  const raw = svg.getAttribute('viewBox') || '';
+  const parts = raw.trim().split(/\s+/).map(Number);
+  if (parts.length === 4 && parts.every(Number.isFinite)) {
+    return { x: parts[0], y: parts[1], width: parts[2], height: parts[3] };
+  }
+  return {
+    x: 0,
+    y: 0,
+    width: Number(svg.getAttribute('width')) || 1200,
+    height: Number(svg.getAttribute('height')) || 800,
+  };
+}
+
+function exportRecursiveGroupGraphPng() {
+  const data = state.recursiveGroup;
+  const currentSvg = byId('recursiveGroupGraph').querySelector('svg');
+  if (!data || !currentSvg) return;
+
+  const svg = currentSvg.cloneNode(true);
+  embedRecursiveGraphStyles(svg);
+  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  const viewBox = parseSvgViewBox(svg);
+  const width = Math.max(1, Math.ceil(viewBox.width));
+  const height = Math.max(1, Math.ceil(viewBox.height));
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+
+  const text = new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([text], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const image = new Image();
+  image.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    ctx.drawImage(image, 0, 0, width, height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((pngBlob) => {
+      if (!pngBlob) return;
+      downloadBlob(pngBlob, `recursive_group_${filenamePart(data.seed_token_id, 'seed')}_graph.png`, 'image/png');
+    }, 'image/png');
+  };
+  image.onerror = () => URL.revokeObjectURL(url);
+  image.src = url;
 }
 
 function exportAngleSummaryCsv() {
@@ -1705,6 +2171,7 @@ function setupExportButtons() {
   byId('exportMinDistancePlotPng').addEventListener('click', () => exportCanvasAsPng('minDistancePlot', 'minimum_angular_distances.png'));
   byId('exportMinDistancesCsv').addEventListener('click', () => exportHtmlTableAsCsv('minDistancesTable', 'minimum_angular_distances.csv'));
   byId('exportRecursiveGroupGraphSvg').addEventListener('click', exportRecursiveGroupGraphSvg);
+  byId('exportRecursiveGroupGraphPng').addEventListener('click', exportRecursiveGroupGraphPng);
   byId('exportRecursiveGroupAdjacencyCsv').addEventListener('click', exportRecursiveGroupAdjacencyCsv);
   byId('exportRecursiveGroupDictionaryJson').addEventListener('click', exportRecursiveGroupDictionaryJson);
   byId('exportRecursiveGroupListCsv').addEventListener('click', () => exportHtmlTableAsCsv('recursiveGroupTable', 'recursive_group_token_list.csv'));

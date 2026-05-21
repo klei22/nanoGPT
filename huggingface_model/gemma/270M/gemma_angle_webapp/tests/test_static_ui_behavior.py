@@ -186,6 +186,7 @@ def test_recursive_angle_group_ui_and_exports_exist() -> None:
         "recursiveGroupGraph",
         "recursiveGroupTable",
         "exportRecursiveGroupGraphSvg",
+        "exportRecursiveGroupGraphPng",
         "exportRecursiveGroupAdjacencyCsv",
         "exportRecursiveGroupDictionaryJson",
         "exportRecursiveGroupListCsv",
@@ -202,6 +203,7 @@ def test_recursive_angle_group_ui_and_exports_exist() -> None:
         "recursiveGroupGraph",
         "recursiveGroupTable",
         "exportRecursiveGroupGraphSvg",
+        "exportRecursiveGroupGraphPng",
         "exportRecursiveGroupAdjacencyCsv",
         "exportRecursiveGroupDictionaryJson",
         "exportRecursiveGroupListCsv",
@@ -211,11 +213,22 @@ def test_recursive_angle_group_ui_and_exports_exist() -> None:
     assert "fetchJson(`/api/recursive-angle-group?" in js
     assert "computeRecursiveAngleGroup" in js
     assert "renderRecursiveGroupGraph" in js
+    assert "renderRecursiveGroupInteractiveGraph" in js
+    assert "attachRecursiveGraphInteractions" in js
+    assert "forceRecursiveGraphPositions" in js
+    assert "pointerdown" in js
+    assert "pointermove" in js
+    assert "wheel" in js
+    assert "local-svg-drag" in js
+    assert "new window.vis.Network" not in js
+    assert "vis-network@" not in html
     assert "renderRecursiveGroupTable" in js
     assert "exportRecursiveGroupAdjacencyCsv" in js
     assert "exportRecursiveGroupDictionaryJson" in js
     assert "recursive-group-scroll" in css
     assert "graph-edge-label" in css
+    assert "recursive-graph-svg-local" in css
+    assert "overflow: hidden" in css
 
 
 def test_recursive_angle_group_can_use_manual_seed_id_directly() -> None:

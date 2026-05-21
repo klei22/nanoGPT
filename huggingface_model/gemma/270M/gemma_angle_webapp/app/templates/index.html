@@ -12,7 +12,8 @@
       <div>
         <p class="eyebrow">LM-head geometry</p>
         <h1>LM-Head Angle Explorer</h1>
-        <p class="lede">Load a Hugging Face causal language model, search vocabulary tokens, compare LM-head vector angles, and inspect nearest token neighborhoods without Streamlit reruns.</p>
+        <p class="lede">Load a Hugging Face causal language model, search vocabulary tokens, compare LM-head vector angles, inspect nearest token neighborhoods, and drag recursive-group graph nodes after layout initialization.</p>
+        <p class="selection build-marker">Interactive graph build: local draggable SVG nodes; no external graph CDN required.</p>
       </div>
       <section class="status-card" aria-live="polite">
         <span id="statusBadge" class="badge">No model loaded</span>
@@ -408,11 +409,12 @@
       <div id="recursiveGroupOutput" class="output muted">Choose a seed token, set the group controls, then build the recursive graph.</div>
 
       <div id="recursiveGroupGraphCard" class="plot-card graph-card hidden">
-        <div id="recursiveGroupGraph" class="graph-scroll" aria-label="Recursive angle group node-edge graph"></div>
+        <div id="recursiveGroupGraph" class="graph-scroll" aria-label="Interactive recursive angle group node-edge graph"></div>
         <div class="export-actions">
           <button id="exportRecursiveGroupGraphSvg" type="button" class="export-button">Export graph SVG</button>
+          <button id="exportRecursiveGroupGraphPng" type="button" class="export-button">Export graph PNG</button>
         </div>
-        <p id="recursiveGroupGraphCaption" class="selection">Nodes show token ID and token string. Edges are labelled with the angle between connected tokens.</p>
+        <p id="recursiveGroupGraphCaption" class="selection">Nodes show token ID and token string. Drag nodes to reposition them; edges are labelled with the angle between connected tokens.</p>
       </div>
 
       <div class="export-actions">
@@ -438,6 +440,6 @@
 
   </main>
 
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=local-svg-drag-1" defer></script>
 </body>
 </html>
