@@ -285,6 +285,7 @@ def test_linear_transform_ui_exists() -> None:
         "transformInputUseId",
         "linearTransformButton",
         "linearTransformType",
+        "linearTransformScale",
         "linearTransformLimit",
         "linearTransformOutput",
         "linearTransformTable",
@@ -297,6 +298,12 @@ def test_linear_transform_ui_exists() -> None:
     assert "minimum-change linear map" in html
     assert "Orthogonal-only direction map" in html
     assert "Analogy offset" in html
+    assert "Transform scale" in html
+    assert "2.5 extrapolates" in html
+    assert "transform_scale: transformScale" in js
+    assert "Enter a finite transform scale" in js
+    assert "Transform scale" in js
+    assert "linearTransformScale" in js
     assert "fetchJson(`/api/linear-transform-neighbors?" in js
     assert "computeLinearTransformNeighbors" in js
     assert "renderLinearTransformTable" in js

@@ -214,3 +214,7 @@ GET /api/recursive-angle-group?seed_id=0&max_angle_deg=35&group_size_limit=100&b
 ```
 
 The computation scans neighbors blockwise and only keeps the current group plus the final nodes/edges. It does not materialize or cache a full pairwise matrix. The UI renders a local interactive SVG node-edge graph with draggable nodes, pan/zoom, angle-labelled edges, and an option to highlight each node’s lowest-angle incident edge. It provides downloads for the graph SVG, graph PNG, adjacency matrix CSV, dictionary JSON, and token list CSV.
+
+### Multi-example linear transform
+
+The bottom **Linear token transform** panel now supports a saved list of source→target token examples. If no examples are saved, the current source and target pickers are used as the original one-pair transform. With two or more saved examples, the least-squares option is enabled. All transform-neighbor rows include both the angle to the transformed input vector and the original angle from the untransformed input token.

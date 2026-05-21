@@ -449,16 +449,16 @@
       <div class="panel-heading">
         <div>
           <p class="eyebrow">Linear token transform</p>
-          <h2>Map one token vector to another, then apply that transform</h2>
+          <h2>Learn from one or more token-pair examples, then transform an input token</h2>
         </div>
         <button id="linearTransformButton" type="button" class="primary">Run transform neighbors</button>
       </div>
 
-      <p class="lede panel-lede">Choose a source token and target token to define a source→target transform. Then choose an input token; the transformed input vector is compared against every token vector and nearest neighbors are listed by angle.</p>
+      <p class="lede panel-lede">Add source→target examples by search or token ID. If you add no examples, the currently selected source and target are used as a one-pair transform, preserving the old behavior. The transformed input vector is compared against every token vector and nearest neighbors are listed by angle.</p>
 
       <div class="picker-grid three-pickers">
         <article class="picker" data-prefix="transformSource">
-          <h3>Source token</h3>
+          <h3>Example source token</h3>
           <label for="transformSourceQuery">Search text</label>
           <div class="search-row">
             <input id="transformSourceQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
@@ -475,7 +475,7 @@
         </article>
 
         <article class="picker" data-prefix="transformTarget">
-          <h3>Target token</h3>
+          <h3>Example target token</h3>
           <label for="transformTargetQuery">Search text</label>
           <div class="search-row">
             <input id="transformTargetQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
@@ -492,7 +492,7 @@
         </article>
 
         <article class="picker" data-prefix="transformInput">
-          <h3>Input token</h3>
+          <h3>Input token to transform</h3>
           <label for="transformInputQuery">Search text</label>
           <div class="search-row">
             <input id="transformInputQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
@@ -509,14 +509,48 @@
         </article>
       </div>
 
+      <div class="transform-example-actions">
+        <button id="addLinearTransformExample" type="button">Add source→target example</button>
+        <button id="clearLinearTransformExamples" type="button">Clear examples</button>
+        <span id="linearTransformExampleCount" class="selection inline-selection">No saved examples; current source→target selection will be used.</span>
+      </div>
+      <div class="table-wrap transform-examples-scroll">
+        <table id="linearTransformExamplesTable" class="hidden">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Source ID</th>
+              <th>Source token</th>
+              <th>Target ID</th>
+              <th>Target token</th>
+              <th>Pair angle °</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
       <div class="analysis-controls linear-transform-controls">
         <div>
           <label for="linearTransformType">Transform type</label>
           <select id="linearTransformType">
-            <option value="closest_identity" selected>Closest-to-identity / minimum-change linear map (rank-one)</option>
-            <option value="orthogonal">Orthogonal-only direction map</option>
-            <option value="offset">Analogy offset: input + target − source</option>
+            <option value="closest_identity" selected>Closest-to-identity / minimum-change linear map</option>
+            <option value="ridge" data-min-examples="2">Ridge closest-to-identity / regularized multi-pair map (2+ examples)</option>
+            <option value="orthogonal">Orthogonal-only direction map / orthonormal Procrustes</option>
+            <option value="least_squares" data-min-examples="2">Least-squares linear map: Y·pinv(X) (2+ examples)</option>
+            <option value="offset">Analogy offset / mean analogy offset: input + average(target − source)</option>
           </select>
+          <p class="selection transform-option-hint">Options marked 2+ are disabled until two or more examples are saved.</p>
+        </div>
+        <div>
+          <label for="linearTransformRidgeLambda">Ridge λ</label>
+          <input id="linearTransformRidgeLambda" type="number" min="0.000001" value="0.001" step="0.001" />
+        </div>
+        <div>
+          <label for="linearTransformScale">Transform scale</label>
+          <input id="linearTransformScale" type="number" value="1" step="0.1" />
+          <p class="selection transform-option-hint">0 keeps the input vector, 1 applies the fitted transform, and 2.5 extrapolates to 2.5× the fitted effect.</p>
         </div>
         <div>
           <label for="linearTransformLimit">Nearest-neighbor rows</label>
@@ -524,7 +558,7 @@
         </div>
       </div>
 
-      <div id="linearTransformOutput" class="output muted">Choose source, target, and input tokens, then run transform neighbors.</div>
+      <div id="linearTransformOutput" class="output muted">Choose source, target, and input tokens, optionally add more example pairs, then run transform neighbors.</div>
       <div class="export-actions">
         <button id="exportLinearTransformCsv" type="button" class="export-button hidden">Export transform-neighbor table CSV</button>
       </div>
@@ -537,6 +571,7 @@
               <th>Raw token</th>
               <th>Display</th>
               <th>Angle to transformed °</th>
+              <th>Original angle from input °</th>
               <th>Cosine similarity</th>
               <th>Vector length</th>
             </tr>
@@ -548,6 +583,6 @@
 
   </main>
 
-  <script src="/static/app.js?v=orthogonal-transform-1" defer></script>
+  <script src="/static/app.js?v=transform-scale-1" defer></script>
 </body>
 </html>

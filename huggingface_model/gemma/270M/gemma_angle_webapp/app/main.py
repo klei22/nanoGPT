@@ -30,6 +30,7 @@ from .schemas import (
     AngleResponse,
     CommonCloseTokensResponse,
     LocalModelRecord,
+    LinearTransformNeighborsRequest,
     LinearTransformNeighborsResponse,
     LocalModelsResponse,
     MinAngularDistancesResponse,
@@ -227,30 +228,66 @@ def tokens_close_to_both_pairwise_anchors(
     )
 
 
-@app.get("/api/linear-transform-neighbors", response_model=LinearTransformNeighborsResponse)
-def transformed_token_neighbors(
-    source_token_id: int = Query(..., ge=0),
-    target_token_id: int = Query(..., ge=0),
-    input_token_id: int = Query(..., ge=0),
-    limit: int = Query(200, ge=1, le=5000),
-    transform_type: str = Query("closest_identity", description="closest_identity, orthogonal, or offset"),
+def _linear_transform_response(
+    *,
+    examples: list[tuple[int, int]],
+    input_token_id: int,
+    limit: int,
+    transform_type: str,
+    ridge_lambda: float = 1e-3,
+    transform_scale: float = 1.0,
 ) -> LinearTransformNeighborsResponse:
-    """Apply a source→target transform to an input token and rank nearest tokens."""
     assets = _load_assets_or_500()
     try:
         data = linear_transform_neighbors(
             assets,
-            source_token_id,
-            target_token_id,
-            input_token_id,
+            input_token_id=input_token_id,
+            examples=examples,
             limit=limit,
             transform_type=transform_type,
+            ridge_lambda=ridge_lambda,
+            transform_scale=transform_scale,
         )
     except IndexError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return LinearTransformNeighborsResponse(**data)
+
+
+@app.get("/api/linear-transform-neighbors", response_model=LinearTransformNeighborsResponse)
+def transformed_token_neighbors(
+    source_token_id: int = Query(..., ge=0),
+    target_token_id: int = Query(..., ge=0),
+    input_token_id: int = Query(..., ge=0),
+    limit: int = Query(200, ge=1, le=5000),
+    transform_type: str = Query("closest_identity", description="closest_identity, orthogonal, least_squares, ridge, or offset"),
+    ridge_lambda: float = Query(1e-3, ge=0),
+    transform_scale: float = Query(1.0, ge=-1000.0, le=1000.0, description="Scale the fitted transform effect; 0 keeps input, 1 is normal, >1 extrapolates."),
+) -> LinearTransformNeighborsResponse:
+    """Backward-compatible single-example transform endpoint."""
+    return _linear_transform_response(
+        examples=[(source_token_id, target_token_id)],
+        input_token_id=input_token_id,
+        limit=limit,
+        transform_type=transform_type,
+        ridge_lambda=ridge_lambda,
+        transform_scale=transform_scale,
+    )
+
+
+@app.post("/api/linear-transform-neighbors", response_model=LinearTransformNeighborsResponse)
+def transformed_token_neighbors_multi(request: LinearTransformNeighborsRequest) -> LinearTransformNeighborsResponse:
+    """Apply a transform learned from one or more token-pair examples."""
+    examples = [(item.source_token_id, item.target_token_id) for item in request.examples]
+    return _linear_transform_response(
+        examples=examples,
+        input_token_id=request.input_token_id,
+        limit=request.limit,
+        transform_type=request.transform_type,
+        ridge_lambda=request.ridge_lambda,
+        transform_scale=request.transform_scale,
+    )
 
 
 @app.get("/api/neighborhood", response_model=NeighborhoodResponse)

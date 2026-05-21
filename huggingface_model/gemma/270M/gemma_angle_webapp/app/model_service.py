@@ -4,6 +4,7 @@ import csv
 import gc
 import io
 import json
+import math
 import os
 import threading
 import time
@@ -1838,32 +1839,57 @@ _TRANSFORM_TYPE_ALIASES = {
     "closest_to_identity": "closest_identity",
     "minimum_change": "closest_identity",
     "min_change": "closest_identity",
+    "least_change": "closest_identity",
     "orthogonal": "orthogonal",
     "orthogonal_only": "orthogonal",
     "orthonormal": "orthogonal",
     "rotation": "orthogonal",
+    "procrustes": "orthogonal",
+    "orthogonal_procrustes": "orthogonal",
+    "least_squares": "least_squares",
+    "least_square": "least_squares",
+    "ls": "least_squares",
+    "minimum_norm": "least_squares",
+    "ridge": "ridge",
+    "ridge_linear": "ridge",
+    "regularized_linear": "ridge",
+    "damped_least_squares": "ridge",
+    "ridge_least_squares": "ridge",
+    "ridge_ls": "ridge",
+    "ridge_closest_identity": "ridge",
+    "regularized": "ridge",
     "offset": "offset",
+    "average_offset": "offset",
+    "mean_offset": "offset",
     "analogy": "offset",
     "analogy_offset": "offset",
 }
 
 _TRANSFORM_TYPE_DESCRIPTIONS = {
     "closest_identity": (
-        "Closest-to-identity rank-one linear map: T(x)=x+((x·source)/(source·source))·(target-source). "
-        "This linear map sends the source vector exactly to the target vector while changing the identity map only along the source direction."
+        "Closest-to-identity / minimum-change linear map. With one example this is the familiar rank-one update "
+        "T(x)=x+((x·source)/(source·source))·(target-source). With multiple examples it is the minimum-Frobenius-change "
+        "update to identity, applied through the source-example pseudoinverse without materializing a full d×d matrix."
     ),
     "rank_one": (
-        "Backward-compatible name for the closest-to-identity rank-one linear map: "
-        "T(x)=x+((x·source)/(source·source))·(target-source)."
+        "Backward-compatible name for the one-example closest-to-identity rank-one map. If multiple examples are supplied, "
+        "it uses the same multi-example closest-to-identity generalization."
     ),
     "orthogonal": (
-        "Orthogonal-only closest-direction map: applies the shortest rotation/reflection that maps the source direction "
-        "to the target direction, then compares the transformed input. It preserves vector lengths; if source and target "
-        "magnitudes differ, it maps source to target direction rather than target length."
+        "Orthogonal-only map. With one example it applies the shortest direction-aligning rotation/reflection. With multiple "
+        "examples it uses an orthogonal Procrustes fit, preserving vector lengths while best aligning all example directions."
+    ),
+    "least_squares": (
+        "Multi-example least-squares linear map: T = Y·pinv(X). This fits the supplied source→target examples directly, "
+        "but unlike closest-to-identity it does not preserve identity behavior on directions unsupported by the examples."
+    ),
+    "ridge": (
+        "Ridge-regularized closest-to-identity map: T(x)=x+(Y-X)·(XᵀX+λI)⁻¹Xᵀx. This is usually more stable than the "
+        "pseudoinverse when examples are redundant or nearly collinear."
     ),
     "offset": (
-        "Analogy-style affine offset: result=input+(target-source). This also maps source to target, "
-        "but it is a translation, not a strictly linear map."
+        "Analogy-style affine offset. With one example result=input+(target-source); with multiple examples it uses the mean "
+        "target-source offset. This is useful as a baseline, but it is not a strictly linear map."
     ),
 }
 
@@ -1907,9 +1933,6 @@ def _apply_orthogonal_direction_map(
         return input_vector.clone(), rotation_angle
 
     if bool(c < -1.0 + 1e-7):
-        # Deterministic orthogonal reflection mapping u -> -u while leaving the
-        # hyperplane perpendicular to u fixed.  This is the closest-to-identity
-        # choice among simple maps in the exactly antipodal one-vector case.
         transformed = input_vector - 2.0 * torch.dot(input_vector, u) * u
         return transformed, rotation_angle
 
@@ -1917,8 +1940,6 @@ def _apply_orthogonal_direction_map(
     s = torch.linalg.vector_norm(w, ord=2).clamp_min(eps)
     w = w / s
 
-    # Planar rotation in the {u, w} basis, identity elsewhere.
-    # R(u)=c*u+s*w and R(w)=-s*u+c*w.
     a = torch.dot(input_vector, u)
     b = torch.dot(input_vector, w)
     transformed = input_vector + ((c - 1.0) * a - s * b) * u + (s * a + (c - 1.0) * b) * w
@@ -1935,12 +1956,189 @@ def _token_vector_summary(assets: ModelAssets, token_id: int, prefix: str) -> di
     }
 
 
+def _angle_between_vectors_degrees(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    denom = (torch.linalg.vector_norm(a, ord=2) * torch.linalg.vector_norm(b, ord=2)).clamp_min(1e-12)
+    cos = torch.dot(a, b) / denom
+    return torch.rad2deg(torch.arccos(torch.clamp(cos, -1.0, 1.0)))
+
+
+def _column_angles_degrees(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    denom = (torch.linalg.vector_norm(a, ord=2, dim=0) * torch.linalg.vector_norm(b, ord=2, dim=0)).clamp_min(1e-12)
+    cos = torch.sum(a * b, dim=0) / denom
+    return torch.rad2deg(torch.arccos(torch.clamp(cos, -1.0, 1.0)))
+
+
+def _transform_example_record(assets: ModelAssets, source_id: int, target_id: int, index: int) -> dict[str, Any]:
+    source = assets.token(source_id)
+    target = assets.token(target_id)
+    return {
+        "example_index": int(index),
+        "source_token_id": int(source_id),
+        "source_token_raw": source.raw,
+        "source_token_display": source.display,
+        "source_token_magnitude": float(assets.magnitudes[source_id].item()),
+        "target_token_id": int(target_id),
+        "target_token_raw": target.raw,
+        "target_token_display": target.display,
+        "target_token_magnitude": float(assets.magnitudes[target_id].item()),
+        "source_to_target_angle_deg": angle_degrees(assets, source_id, target_id),
+    }
+
+
+def _prepare_transform_examples(
+    assets: ModelAssets,
+    examples: list[tuple[int, int]],
+) -> tuple[list[tuple[int, int]], torch.Tensor, torch.Tensor, list[dict[str, Any]], int]:
+    if not examples:
+        raise ValueError("At least one source→target example pair is required.")
+
+    clean_examples: list[tuple[int, int]] = []
+    records: list[dict[str, Any]] = []
+    for index, (source_id, target_id) in enumerate(examples, start=1):
+        source_id = int(source_id)
+        target_id = int(target_id)
+        assets.token(source_id)
+        assets.token(target_id)
+        clean_examples.append((source_id, target_id))
+        records.append(_transform_example_record(assets, source_id, target_id, index))
+
+    source_vectors = torch.stack(
+        [assets.weight[source_id].to(dtype=torch.float32) for source_id, _ in clean_examples],
+        dim=1,
+    )
+    target_vectors = torch.stack(
+        [assets.weight[target_id].to(dtype=torch.float32) for _, target_id in clean_examples],
+        dim=1,
+    )
+    try:
+        source_rank = int(torch.linalg.matrix_rank(source_vectors).item())
+    except Exception:  # pragma: no cover - matrix_rank failures are runtime/version-specific
+        source_rank = min(len(clean_examples), int(source_vectors.shape[0]))
+    return clean_examples, source_vectors, target_vectors, records, source_rank
+
+
+@torch.inference_mode()
+def _apply_transform_from_examples(
+    source_vectors: torch.Tensor,
+    target_vectors: torch.Tensor,
+    input_vector: torch.Tensor,
+    *,
+    transform_key: str,
+    ridge_lambda: float,
+    transform_scale: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor, str, torch.Tensor, float | None]:
+    """Return transformed input, parameter, parameter label, fitted sources, effective ridge.
+
+    Source/target matrices are shaped ``hidden_dim × pair_count``.  All options
+    apply the learned transform to the input without caching a full pairwise
+    token-token matrix.  Closest-identity and ridge also avoid materializing a
+    full hidden_dim×hidden_dim transform matrix.
+    """
+    pair_count = int(source_vectors.shape[1])
+    deltas = target_vectors - source_vectors
+    scale = torch.tensor(float(transform_scale), dtype=torch.float32, device=input_vector.device)
+
+    def scale_effect(base_transformed: torch.Tensor, base_fitted_sources: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Scale only the learned effect away from identity.
+
+        scale=0 returns the original input/source vectors, scale=1 returns the
+        fitted transform, and scale>1 extrapolates the fitted motion.  This keeps
+        the meaning consistent across closest-identity, ridge, least-squares,
+        orthogonal/Procrustes, and offset modes.
+        """
+        if float(transform_scale) == 1.0:
+            return base_transformed, base_fitted_sources
+        return (
+            input_vector + scale * (base_transformed - input_vector),
+            source_vectors + scale * (base_fitted_sources - source_vectors),
+        )
+
+    if transform_key in {"closest_identity", "rank_one"}:
+        pinv_source = torch.linalg.pinv(source_vectors)
+        coefficients = pinv_source @ input_vector
+        base_transformed = input_vector + deltas @ coefficients
+        base_fitted_sources = source_vectors + deltas @ (pinv_source @ source_vectors)
+        transformed, fitted_sources = scale_effect(base_transformed, base_fitted_sources)
+        if pair_count == 1:
+            coefficient = coefficients.reshape(-1)[0].to(dtype=torch.float32)
+            label = "Projection coefficient"
+        else:
+            coefficient = torch.linalg.vector_norm(coefficients, ord=2)
+            label = "Coefficient vector length"
+        return transformed, coefficient, label, fitted_sources, None
+
+    if transform_key == "ridge":
+        lam = float(max(0.0, ridge_lambda))
+        gram = source_vectors.T @ source_vectors
+        eye = torch.eye(pair_count, dtype=gram.dtype, device=gram.device)
+        regularized = gram + lam * eye
+
+        def ridge_coefficients(matrix: torch.Tensor) -> torch.Tensor:
+            rhs = source_vectors.T @ matrix
+            if lam <= 0.0:
+                return torch.linalg.pinv(gram) @ rhs
+            return torch.linalg.solve(regularized, rhs)
+
+        coefficients = ridge_coefficients(input_vector)
+        base_transformed = input_vector + deltas @ coefficients
+        base_fitted_sources = source_vectors + deltas @ ridge_coefficients(source_vectors)
+        transformed, fitted_sources = scale_effect(base_transformed, base_fitted_sources)
+        coefficient = torch.tensor(lam, dtype=torch.float32, device=input_vector.device)
+        label = "Ridge λ"
+        return transformed, coefficient, label, fitted_sources, lam
+
+    if transform_key == "least_squares":
+        pinv_source = torch.linalg.pinv(source_vectors)
+        coefficients = pinv_source @ input_vector
+        base_transformed = target_vectors @ coefficients
+        base_fitted_sources = target_vectors @ (pinv_source @ source_vectors)
+        transformed, fitted_sources = scale_effect(base_transformed, base_fitted_sources)
+        coefficient = torch.linalg.vector_norm(coefficients, ord=2)
+        label = "Coefficient vector length"
+        return transformed, coefficient, label, fitted_sources, None
+
+    if transform_key == "orthogonal":
+        if pair_count == 1:
+            transformed, rotation_angle = _apply_orthogonal_direction_map(
+                source_vectors[:, 0],
+                target_vectors[:, 0],
+                input_vector,
+            )
+            fitted_column, _ = _apply_orthogonal_direction_map(
+                source_vectors[:, 0],
+                target_vectors[:, 0],
+                source_vectors[:, 0],
+            )
+            transformed, fitted_sources = scale_effect(transformed, fitted_column.unsqueeze(1))
+            return transformed, rotation_angle, "Direction rotation/reflection angle °", fitted_sources, None
+
+        cross_covariance = target_vectors @ source_vectors.T
+        u, singular_values, vh = torch.linalg.svd(cross_covariance, full_matrices=False)
+        rotation = u @ vh
+        base_transformed = rotation @ input_vector
+        base_fitted_sources = rotation @ source_vectors
+        transformed, fitted_sources = scale_effect(base_transformed, base_fitted_sources)
+        coefficient = singular_values.sum().to(dtype=torch.float32)
+        label = "Procrustes singular-value sum"
+        return transformed, coefficient, label, fitted_sources, None
+
+    # Affine baseline: input + mean(target-source).  It is kept because it is a
+    # common analogy operation, but the UI labels it separately from linear maps.
+    mean_delta = deltas.mean(dim=1)
+    base_transformed = input_vector + mean_delta
+    base_fitted_sources = source_vectors + mean_delta.unsqueeze(1)
+    transformed, fitted_sources = scale_effect(base_transformed, base_fitted_sources)
+    coefficient = torch.tensor(1.0, dtype=torch.float32, device=input_vector.device)
+    return transformed, coefficient, "Mean offset scale", fitted_sources, None
+
+
 @torch.inference_mode()
 def _nearest_neighbors_to_vector(
     assets: ModelAssets,
     query_vector: torch.Tensor,
     *,
     limit: int,
+    original_anchor_id: int | None = None,
 ) -> list[dict[str, Any]]:
     limit = int(limit)
     if limit < 1:
@@ -1951,17 +2149,17 @@ def _nearest_neighbors_to_vector(
     cos = (assets.weight @ query) / (assets.magnitudes * query_norm).clamp_min(1e-12)
     cos = torch.clamp(cos, -1.0, 1.0)
     angles = torch.rad2deg(torch.arccos(cos))
+    original_angles = _angles_for_anchor(assets, original_anchor_id) if original_anchor_id is not None else None
 
-    # Token IDs are already in ascending order, so a stable sort on angle uses
-    # token ID as the deterministic tie-breaker.
     order = torch.argsort(angles, stable=True)[: min(limit, assets.vocab_size)]
     ids_cpu = order.detach().cpu().tolist()
     angles_cpu = angles[order].detach().cpu().tolist()
     cos_cpu = cos[order].detach().cpu().tolist()
+    original_angles_cpu = original_angles[order].detach().cpu().tolist() if original_angles is not None else [None] * len(ids_cpu)
 
     rows: list[dict[str, Any]] = []
-    for rank, (token_id, angle_deg, cosine_similarity) in enumerate(
-        zip(ids_cpu, angles_cpu, cos_cpu),
+    for rank, (token_id, angle_deg, cosine_similarity, original_angle_deg) in enumerate(
+        zip(ids_cpu, angles_cpu, cos_cpu, original_angles_cpu),
         start=1,
     ):
         info = assets.token(int(token_id))
@@ -1972,6 +2170,7 @@ def _nearest_neighbors_to_vector(
                 "token_raw": info.raw,
                 "token_display": info.display,
                 "angle_deg": float(angle_deg),
+                "angle_to_original_input_deg": None if original_angle_deg is None else float(original_angle_deg),
                 "cosine_similarity": float(cosine_similarity),
                 "magnitude": float(assets.magnitudes[int(token_id)].item()),
             }
@@ -1982,77 +2181,92 @@ def _nearest_neighbors_to_vector(
 @torch.inference_mode()
 def linear_transform_neighbors(
     assets: ModelAssets,
-    source_token_id: int,
-    target_token_id: int,
-    input_token_id: int,
+    source_token_id: int | None = None,
+    target_token_id: int | None = None,
+    input_token_id: int | None = None,
     *,
+    examples: list[tuple[int, int]] | None = None,
     limit: int = 200,
     transform_type: str = "closest_identity",
+    ridge_lambda: float = 1e-3,
+    transform_scale: float = 1.0,
 ) -> dict[str, Any]:
     """Apply a source→target transform to an input token and rank neighbors.
 
-    A single vector pair does not uniquely identify a full d×d linear operator.
-    ``closest_identity`` is the closest-to-identity rank-one update to the
-    identity matrix that maps ``source`` exactly to ``target``:
-
-        T(x) = x + ((x·source) / (source·source)) * (target - source)
-
-    ``orthogonal`` applies the closest direction-aligning orthogonal map.  It
-    preserves vector lengths and maps the source direction to the target
-    direction; exact source→target mapping is only possible in orthogonal mode
-    when the source and target magnitudes match.  ``offset`` is also supported
-    as a familiar analogy-style affine baseline: ``input + target - source``.
+    ``examples`` may contain one or many source→target token-ID pairs.  A single
+    pair keeps the old behavior.  Multiple pairs unlock pseudoinverse,
+    regularized, Procrustes, and mean-offset fits while still avoiding a cached
+    full pairwise token-token matrix.
     """
-    assets.token(source_token_id)
-    assets.token(target_token_id)
+    if input_token_id is None:
+        raise ValueError("input_token_id is required.")
+    input_token_id = int(input_token_id)
     assets.token(input_token_id)
 
     limit = int(limit)
     if limit < 1:
         raise ValueError("limit must be at least 1.")
 
+    transform_scale = float(transform_scale)
+    if not math.isfinite(transform_scale):
+        raise ValueError("transform_scale must be finite.")
+    if abs(transform_scale) > 1000.0:
+        raise ValueError("transform_scale must be between -1000 and 1000.")
+
+    if examples is None:
+        if source_token_id is None or target_token_id is None:
+            raise ValueError("source_token_id and target_token_id are required when examples are not supplied.")
+        examples = [(int(source_token_id), int(target_token_id))]
+
     transform_key = _canonical_transform_type(transform_type)
+    clean_examples, source_vectors, target_vectors, example_records, source_rank = _prepare_transform_examples(assets, examples)
+    first_source_id, first_target_id = clean_examples[0]
 
-    source = assets.weight[source_token_id].to(dtype=torch.float32)
-    target = assets.weight[target_token_id].to(dtype=torch.float32)
     input_vector = assets.weight[input_token_id].to(dtype=torch.float32)
-    delta = target - source
-
-    source_norm_sq = torch.dot(source, source).clamp_min(1e-12)
-    transform_parameter_label = "Projection coefficient"
-    if transform_key in {"closest_identity", "rank_one"}:
-        coefficient = torch.dot(input_vector, source) / source_norm_sq
-        transformed = input_vector + coefficient * delta
-    elif transform_key == "orthogonal":
-        transformed, coefficient = _apply_orthogonal_direction_map(source, target, input_vector)
-        transform_parameter_label = "Direction rotation/reflection angle °"
-    else:
-        coefficient = torch.tensor(1.0, dtype=torch.float32, device=input_vector.device)
-        transformed = input_vector + delta
-        transform_parameter_label = "Offset scale"
+    transformed, coefficient, parameter_label, fitted_sources, effective_ridge = _apply_transform_from_examples(
+        source_vectors,
+        target_vectors,
+        input_vector,
+        transform_key=transform_key,
+        ridge_lambda=ridge_lambda,
+        transform_scale=transform_scale,
+    )
 
     transformed_norm = torch.linalg.vector_norm(transformed, ord=2).clamp_min(1e-12)
-    input_norm = assets.magnitudes[input_token_id].clamp_min(1e-12)
-    input_cos = torch.dot(input_vector, transformed) / (input_norm * transformed_norm).clamp_min(1e-12)
-    input_to_transformed_angle = torch.rad2deg(torch.arccos(torch.clamp(input_cos, -1.0, 1.0)))
+    input_to_transformed_angle = _angle_between_vectors_degrees(input_vector, transformed)
+    fit_angles = _column_angles_degrees(fitted_sources, target_vectors)
+    fit_rms = torch.sqrt(torch.mean(fit_angles * fit_angles)) if fit_angles.numel() else torch.tensor(0.0)
+    fit_max = torch.max(fit_angles) if fit_angles.numel() else torch.tensor(0.0)
 
-    rows = _nearest_neighbors_to_vector(assets, transformed, limit=limit)
+    rows = _nearest_neighbors_to_vector(
+        assets,
+        transformed,
+        limit=limit,
+        original_anchor_id=input_token_id,
+    )
 
     result: dict[str, Any] = {
         "model_name": assets.model_name,
         "vocab_size": assets.vocab_size,
         "hidden_dim": assets.hidden_dim,
-        **_token_vector_summary(assets, source_token_id, "source"),
-        **_token_vector_summary(assets, target_token_id, "target"),
+        "pair_count": len(clean_examples),
+        "examples": example_records,
+        "effective_source_rank": int(source_rank),
+        "ridge_lambda": float(effective_ridge if effective_ridge is not None else ridge_lambda),
+        **_token_vector_summary(assets, first_source_id, "source"),
+        **_token_vector_summary(assets, first_target_id, "target"),
         **_token_vector_summary(assets, input_token_id, "input"),
         "transform_type": transform_key,
         "transform_description": _TRANSFORM_TYPE_DESCRIPTIONS[transform_key],
-        "source_to_target_angle_deg": angle_degrees(assets, source_token_id, target_token_id),
+        "source_to_target_angle_deg": angle_degrees(assets, first_source_id, first_target_id),
         "input_to_transformed_angle_deg": float(input_to_transformed_angle.item()),
         "transformed_vector_magnitude": float(transformed_norm.item()),
         "coefficient": float(coefficient.item()),
-        "transform_parameter_label": transform_parameter_label,
+        "transform_scale": float(transform_scale),
+        "transform_parameter_label": parameter_label,
         "limit": limit,
+        "example_fit_rmse": float(fit_rms.item()),
+        "example_fit_max_angle_deg": float(fit_max.item()),
         "rows": rows,
     }
     return result

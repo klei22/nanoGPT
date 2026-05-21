@@ -742,8 +742,97 @@ code {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+
+.transform-example-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 18px 0 12px;
+}
+
+.inline-selection {
+  margin: 0;
+}
+
+.transform-examples-scroll {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #020617;
+  margin-bottom: 16px;
+}
+
+.transform-examples-scroll table {
+  min-width: 960px;
+}
+
+.transform-examples-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #020617;
+}
+
+.remove-example-button {
+  min-height: 32px;
+  padding: 5px 10px;
+}
+
 .linear-transform-controls {
-  grid-template-columns: minmax(260px, 1fr) minmax(180px, 0.45fr);
+  grid-template-columns: minmax(280px, 1fr) minmax(140px, 0.28fr) minmax(180px, 0.35fr);
+}
+
+
+.example-pair-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.transform-pair-scroll {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #020617;
+  margin-bottom: 1rem;
+}
+
+.transform-pair-scroll table {
+  min-width: 980px;
+}
+
+.transform-pair-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #020617;
+}
+
+.remove-transform-pair {
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.transform-option-hint {
+  margin-top: 0.35rem;
+}
+
+.transform-example-summary {
+  margin-top: 1rem;
+}
+
+.mini-table-wrap {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.transform-examples-mini {
+  min-width: 820px;
 }
 
 .linear-transform-scroll {
@@ -755,7 +844,7 @@ code {
 }
 
 .linear-transform-scroll table {
-  min-width: 1120px;
+  min-width: 1280px;
 }
 
 .linear-transform-scroll thead th {

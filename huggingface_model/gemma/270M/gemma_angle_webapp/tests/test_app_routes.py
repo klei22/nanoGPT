@@ -638,6 +638,46 @@ def test_linear_transform_neighbors_route_supports_orthogonal_mode(client: TestC
     assert data["rows"][0]["angle_deg"] == pytest.approx(0.0)
 
 
+def test_linear_transform_neighbors_route_supports_transform_scale_zero(client: TestClient) -> None:
+    response = client.get(
+        "/api/linear-transform-neighbors",
+        params={
+            "source_token_id": 0,
+            "target_token_id": 2,
+            "input_token_id": 0,
+            "limit": 2,
+            "transform_type": "closest_identity",
+            "transform_scale": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["transform_scale"] == pytest.approx(0.0)
+    assert data["input_to_transformed_angle_deg"] == pytest.approx(0.0)
+    assert data["transformed_vector_magnitude"] == pytest.approx(1.0)
+    assert [row["token_id"] for row in data["rows"][:2]] == [0, 2]
+
+
+def test_linear_transform_neighbors_post_accepts_transform_scale(client: TestClient) -> None:
+    response = client.post(
+        "/api/linear-transform-neighbors",
+        json={
+            "examples": [{"source_token_id": 0, "target_token_id": 2}],
+            "input_token_id": 0,
+            "limit": 2,
+            "transform_type": "closest_identity",
+            "ridge_lambda": 0.001,
+            "transform_scale": 2.5,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["transform_scale"] == pytest.approx(2.5)
+    assert data["input_to_transformed_angle_deg"] > 45.0
+
+
 def test_linear_transform_neighbors_route_rejects_unknown_transform(client: TestClient) -> None:
     response = client.get(
         "/api/linear-transform-neighbors",
@@ -651,3 +691,30 @@ def test_linear_transform_neighbors_route_rejects_unknown_transform(client: Test
 
     assert response.status_code == 400
     assert "transform_type" in response.json()["detail"]
+
+
+def test_linear_transform_neighbors_post_supports_multiple_examples_and_original_distances(client: TestClient) -> None:
+    response = client.post(
+        "/api/linear-transform-neighbors",
+        json={
+            "examples": [
+                {"source_token_id": 0, "target_token_id": 1},
+                {"source_token_id": 1, "target_token_id": 0},
+            ],
+            "input_token_id": 0,
+            "limit": 3,
+            "transform_type": "least_squares",
+            "ridge_lambda": 0.001,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["pair_count"] == 2
+    assert data["effective_source_rank"] == 2
+    assert data["transform_type"] == "least_squares"
+    assert [example["source_token_id"] for example in data["examples"]] == [0, 1]
+    assert data["rows"][0]["token_id"] == 1
+    assert data["rows"][0]["angle_deg"] == pytest.approx(0.0)
+    assert "angle_to_original_input_deg" in data["rows"][0]
+    assert data["rows"][0]["angle_to_original_input_deg"] == pytest.approx(90.0)

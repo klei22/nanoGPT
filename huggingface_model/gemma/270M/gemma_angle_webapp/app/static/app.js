@@ -14,6 +14,7 @@ const state = {
   recursiveGroupNetwork: null,
   recursiveGroupNetworkData: null,
   recursiveGroupHighlightMinEdges: false,
+  linearTransformPairs: [],
   linearTransformRows: [],
   linearTransformSummary: null,
 };
@@ -384,6 +385,7 @@ function resetAllSelectionsAfterModelChange() {
   resetPicker('transformSource', 'transformSource');
   resetPicker('transformTarget', 'transformTarget');
   resetPicker('transformInput', 'transformInput');
+  clearLinearTransformPairs(false);
 
   resetAngleOutput();
   resetCommonCloseOutput();
@@ -391,6 +393,7 @@ function resetAllSelectionsAfterModelChange() {
   resetPairwiseBinsOutput();
   resetMinDistancesOutput();
   resetRecursiveGroupOutput();
+  clearLinearTransformPairs(false);
   resetLinearTransformOutput();
 }
 
@@ -2144,6 +2147,128 @@ function resetLinearTransformOutput(message = 'Choose source, target, and input 
   setExportVisible('exportLinearTransformCsv', false);
 }
 
+function updateLinearTransformPairControls() {
+  const count = state.linearTransformPairs.length;
+  const countElement = byId('linearTransformExampleCount');
+  if (countElement) {
+    countElement.textContent = count === 0
+      ? 'No saved examples; current source/target picker will be used.'
+      : `${count} saved source→target example${count === 1 ? '' : 's'}.`;
+  }
+
+  const select = byId('linearTransformType');
+  if (!select) return;
+  const effectiveExampleCount = count > 0 ? count : 1;
+  for (const option of Array.from(select.options)) {
+    const minExamples = Number(option.dataset.minExamples || 1);
+    option.disabled = effectiveExampleCount < minExamples;
+  }
+  if (select.selectedOptions[0]?.disabled) {
+    select.value = 'closest_identity';
+  }
+}
+
+function renderLinearTransformPairsTable() {
+  const table = byId('linearTransformExamplesTable');
+  if (!table) return;
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+
+  const fragment = document.createDocumentFragment();
+  state.linearTransformPairs.forEach((pair, index) => {
+    const tr = document.createElement('tr');
+    const angleText = Number.isFinite(Number(pair.angle_deg)) ? Number(pair.angle_deg).toFixed(6) : '—';
+    tr.innerHTML = `
+      <td>${index + 1}</td>
+      <td>${pair.source.token_id}</td>
+      <td><code>${escapeHtml(tokenLabel(pair.source))}</code></td>
+      <td>${pair.target.token_id}</td>
+      <td><code>${escapeHtml(tokenLabel(pair.target))}</code></td>
+      <td>${angleText}</td>
+      <td><button type="button" class="remove-transform-pair remove-example-button" data-index="${index}">Remove</button></td>
+    `;
+    fragment.appendChild(tr);
+  });
+  tbody.appendChild(fragment);
+
+  for (const button of Array.from(tbody.querySelectorAll('.remove-transform-pair'))) {
+    button.addEventListener('click', () => removeLinearTransformPair(Number(button.dataset.index)));
+  }
+
+  table.classList.toggle('hidden', state.linearTransformPairs.length === 0);
+  updateLinearTransformPairControls();
+}
+
+async function addLinearTransformPair() {
+  let source;
+  let target;
+  try {
+    source = await ensurePickerSelection('transformSource', 'transformSource');
+    target = await ensurePickerSelection('transformTarget', 'transformTarget');
+  } catch (error) {
+    setOutput('linearTransformOutput', `<strong>Example pair selection failed:</strong> ${escapeHtml(error.message)}`);
+    return;
+  }
+  if (!source || !target) {
+    setOutput('linearTransformOutput', 'Select an example source and target first. Search/select tokens or type token IDs.', true);
+    return;
+  }
+
+  const duplicate = state.linearTransformPairs.some((pair) => (
+    pair.source.token_id === source.token_id && pair.target.token_id === target.token_id
+  ));
+  if (duplicate) {
+    setOutput('linearTransformOutput', 'That exact source→target example pair is already saved.', true);
+    return;
+  }
+
+  let angleDeg = null;
+  try {
+    const angleData = await fetchJson(`/api/angle?token_a=${encodeURIComponent(source.token_id)}&token_b=${encodeURIComponent(target.token_id)}`);
+    angleDeg = Number(angleData.angle_deg);
+  } catch (_) {
+    angleDeg = null;
+  }
+
+  state.linearTransformPairs.push({ source: { ...source }, target: { ...target }, angle_deg: angleDeg });
+  renderLinearTransformPairsTable();
+  resetLinearTransformOutput('Example pair added. Click Run transform neighbors to use the updated example set.');
+}
+
+function removeLinearTransformPair(index) {
+  if (!Number.isInteger(index) || index < 0 || index >= state.linearTransformPairs.length) return;
+  state.linearTransformPairs.splice(index, 1);
+  renderLinearTransformPairsTable();
+  resetLinearTransformOutput('Example pair removed. Click Run transform neighbors to use the updated example set.');
+}
+
+function clearLinearTransformPairs(resetOutput = true) {
+  state.linearTransformPairs = [];
+  const table = byId('linearTransformExamplesTable');
+  if (table) {
+    table.classList.add('hidden');
+    table.querySelector('tbody').innerHTML = '';
+  }
+  updateLinearTransformPairControls();
+  if (resetOutput) {
+    resetLinearTransformOutput('Saved example pairs cleared. The current source/target picker will be used as one implicit example.');
+  }
+}
+
+function linearTransformExamplePayload(source, target) {
+  if (state.linearTransformPairs.length > 0) {
+    return state.linearTransformPairs.map((pair) => ({
+      source_token_id: Number(pair.source.token_id),
+      target_token_id: Number(pair.target.token_id),
+    }));
+  }
+  if (!source || !target) return [];
+  return [{
+    source_token_id: Number(source.token_id),
+    target_token_id: Number(target.token_id),
+  }];
+}
+
 function renderLinearTransformTable(rows) {
   const table = byId('linearTransformTable');
   const tbody = table.querySelector('tbody');
@@ -2158,6 +2283,7 @@ function renderLinearTransformTable(rows) {
       <td><code>${escapeHtml(row.token_raw)}</code></td>
       <td><code>${escapeHtml(row.token_display)}</code></td>
       <td>${Number(row.angle_deg).toFixed(6)}</td>
+      <td>${Number(row.angle_to_original_input_deg).toFixed(6)}</td>
       <td>${Number(row.cosine_similarity).toFixed(8)}</td>
       <td>${Number(row.magnitude).toFixed(6)}</td>
     `;
@@ -2169,27 +2295,66 @@ function renderLinearTransformTable(rows) {
   setExportVisible('exportLinearTransformCsv', Boolean(rows && rows.length > 0));
 }
 
+function renderLinearTransformExamplesSummary(examples) {
+  if (!examples || examples.length === 0) return '<p>No examples returned.</p>';
+  const rows = examples.map((example) => `
+    <tr>
+      <td>${example.example_index}</td>
+      <td>${escapeHtml(tokenLabel({ token_id: example.source_token_id, raw: example.source_token_raw, display: example.source_token_display }))}</td>
+      <td>${escapeHtml(tokenLabel({ token_id: example.target_token_id, raw: example.target_token_raw, display: example.target_token_display }))}</td>
+      <td>${Number(example.source_to_target_angle_deg).toFixed(6)}°</td>
+    </tr>
+  `).join('');
+  return `
+    <details class="transform-example-summary" ${examples.length <= 4 ? 'open' : ''}>
+      <summary>${examples.length} source→target example${examples.length === 1 ? '' : 's'}</summary>
+      <div class="table-wrap mini-table-wrap">
+        <table class="mini-table transform-examples-mini">
+          <thead><tr><th>#</th><th>Source</th><th>Target</th><th>Pair angle</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </details>
+  `;
+}
+
+// Backward-compatible single-pair GET route remains available for scripts/tests: fetchJson(`/api/linear-transform-neighbors?source_token_id=0&target_token_id=1&input_token_id=2`);
+// Backward-compatible GET clients may still use fetchJson(`/api/linear-transform-neighbors?${params.toString()}`); the UI uses POST for multiple examples.
 async function computeLinearTransformNeighbors() {
-  let source;
-  let target;
+  let source = null;
+  let target = null;
   let input;
   try {
-    source = await ensurePickerSelection('transformSource', 'transformSource');
-    target = await ensurePickerSelection('transformTarget', 'transformTarget');
+    if (state.linearTransformPairs.length === 0) {
+      source = await ensurePickerSelection('transformSource', 'transformSource');
+      target = await ensurePickerSelection('transformTarget', 'transformTarget');
+    }
     input = await ensurePickerSelection('transformInput', 'transformInput');
   } catch (error) {
     setOutput('linearTransformOutput', `<strong>Token selection failed:</strong> ${escapeHtml(error.message)}`);
     return;
   }
 
-  if (!source || !target || !input) {
-    setOutput('linearTransformOutput', 'Select source, target, and input tokens first. Search/select tokens or enter token IDs.', true);
+  const examples = linearTransformExamplePayload(source, target);
+  if (examples.length === 0 || !input) {
+    setOutput('linearTransformOutput', 'Select at least one source→target example and an input token. You can save examples with Add source→target example pair or use the current source/target picker as one implicit example.', true);
     return;
   }
 
   const limit = Number(byId('linearTransformLimit').value || 200);
   if (!Number.isInteger(limit) || limit < 1 || limit > 5000) {
     setOutput('linearTransformOutput', 'Enter a nearest-neighbor row limit from 1 to 5000.', true);
+    return;
+  }
+  const ridgeLambda = Number(byId('linearTransformRidgeLambda').value || 0);
+  if (!Number.isFinite(ridgeLambda) || ridgeLambda <= 0) {
+    setOutput('linearTransformOutput', 'Enter a positive ridge λ value.', true);
+    return;
+  }
+  const rawTransformScale = byId('linearTransformScale').value.trim();
+  const transformScale = rawTransformScale === '' ? 1 : Number(rawTransformScale);
+  if (!Number.isFinite(transformScale) || Math.abs(transformScale) > 1000) {
+    setOutput('linearTransformOutput', 'Enter a finite transform scale between -1000 and 1000.', true);
     return;
   }
   const transformType = byId('linearTransformType').value || 'closest_identity';
@@ -2205,26 +2370,33 @@ async function computeLinearTransformNeighbors() {
   button.textContent = 'Running…';
 
   try {
-    const params = new URLSearchParams({
-      source_token_id: String(source.token_id),
-      target_token_id: String(target.token_id),
-      input_token_id: String(input.token_id),
-      limit: String(limit),
-      transform_type: transformType,
+    const data = await fetchJson('/api/linear-transform-neighbors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        examples,
+        input_token_id: Number(input.token_id),
+        limit,
+        transform_type: transformType,
+        ridge_lambda: ridgeLambda,
+        transform_scale: transformScale,
+      }),
     });
-    const data = await fetchJson(`/api/linear-transform-neighbors?${params.toString()}`);
     state.linearTransformSummary = data;
     state.linearTransformRows = data.rows || [];
-    setPickerSelectionFromKnownToken('transformSource', 'transformSource', {
-      token_id: data.source_token_id,
-      raw: data.source_token_raw,
-      display: data.source_token_display,
-    });
-    setPickerSelectionFromKnownToken('transformTarget', 'transformTarget', {
-      token_id: data.target_token_id,
-      raw: data.target_token_raw,
-      display: data.target_token_display,
-    });
+    if (data.examples && data.examples.length > 0) {
+      const first = data.examples[0];
+      setPickerSelectionFromKnownToken('transformSource', 'transformSource', {
+        token_id: first.source_token_id,
+        raw: first.source_token_raw,
+        display: first.source_token_display,
+      });
+      setPickerSelectionFromKnownToken('transformTarget', 'transformTarget', {
+        token_id: first.target_token_id,
+        raw: first.target_token_raw,
+        display: first.target_token_display,
+      });
+    }
     setPickerSelectionFromKnownToken('transformInput', 'transformInput', {
       token_id: data.input_token_id,
       raw: data.input_token_raw,
@@ -2234,19 +2406,22 @@ async function computeLinearTransformNeighbors() {
       <div class="metric"><span>Nearest rows</span><strong>${formatCount(state.linearTransformRows.length)}</strong></div>
       <table class="mini-table">
         <tbody>
-          <tr><th>Source</th><td>${escapeHtml(tokenLabel({ token_id: data.source_token_id, raw: data.source_token_raw, display: data.source_token_display }))}</td></tr>
-          <tr><th>Source vector length</th><td>${Number(data.source_token_magnitude).toFixed(6)}</td></tr>
-          <tr><th>Target</th><td>${escapeHtml(tokenLabel({ token_id: data.target_token_id, raw: data.target_token_raw, display: data.target_token_display }))}</td></tr>
-          <tr><th>Target vector length</th><td>${Number(data.target_token_magnitude).toFixed(6)}</td></tr>
+          <tr><th>Example count</th><td>${formatCount(data.pair_count)}</td></tr>
+          <tr><th>Effective source rank</th><td>${formatCount(data.effective_source_rank)}</td></tr>
           <tr><th>Input</th><td>${escapeHtml(tokenLabel({ token_id: data.input_token_id, raw: data.input_token_raw, display: data.input_token_display }))}</td></tr>
           <tr><th>Input vector length</th><td>${Number(data.input_token_magnitude).toFixed(6)}</td></tr>
           <tr><th>Transform</th><td>${escapeHtml(data.transform_description)}</td></tr>
-          <tr><th>Source→target angle</th><td>${Number(data.source_to_target_angle_deg).toFixed(6)}°</td></tr>
+          <tr><th>Transform scale</th><td>${Number(data.transform_scale ?? transformScale).toFixed(6)}×</td></tr>
+          <tr><th>First source→target angle</th><td>${Number(data.source_to_target_angle_deg).toFixed(6)}°</td></tr>
+          <tr><th>Example fit RMS angle</th><td>${Number(data.example_fit_rmse ?? 0).toFixed(6)}°</td></tr>
+          <tr><th>Example fit max angle</th><td>${Number(data.example_fit_max_angle_deg ?? 0).toFixed(6)}°</td></tr>
           <tr><th>Input→transformed angle</th><td>${Number(data.input_to_transformed_angle_deg).toFixed(6)}°</td></tr>
           <tr><th>${escapeHtml(data.transform_parameter_label || 'Transform parameter')}</th><td>${Number(data.coefficient).toFixed(8)}</td></tr>
+          <tr><th>Ridge λ</th><td>${Number(data.ridge_lambda).toPrecision(6)}</td></tr>
           <tr><th>Transformed vector length</th><td>${Number(data.transformed_vector_magnitude).toFixed(6)}</td></tr>
         </tbody>
       </table>
+      ${renderLinearTransformExamplesSummary(data.examples || [])}
     `);
     renderLinearTransformTable(state.linearTransformRows);
   } catch (error) {
@@ -2476,6 +2651,9 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('minDistancesButton').addEventListener('click', computeMinAngularDistances);
   byId('recursiveGroupButton').addEventListener('click', computeRecursiveAngleGroup);
   byId('linearTransformButton').addEventListener('click', computeLinearTransformNeighbors);
+  byId('addLinearTransformExample').addEventListener('click', addLinearTransformPair);
+  byId('clearLinearTransformExamples').addEventListener('click', () => clearLinearTransformPairs(true));
+  updateLinearTransformPairControls();
   byId('recursiveGroupHighlightMinEdges').addEventListener('change', refreshRecursiveGroupMinEdgeHighlight);
   byId('minDistanceSort').addEventListener('change', () => {
     if (state.minDistanceRows.length > 0) renderMinDistanceTable();
@@ -2492,7 +2670,7 @@ window.addEventListener('DOMContentLoaded', () => {
       resetRecursiveGroupOutput('Controls changed. Click Build recursive group to refresh the graph.');
     });
   }
-  for (const controlId of ['linearTransformType', 'linearTransformLimit']) {
+  for (const controlId of ['linearTransformType', 'linearTransformLimit', 'linearTransformRidgeLambda', 'linearTransformScale']) {
     byId(controlId).addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
