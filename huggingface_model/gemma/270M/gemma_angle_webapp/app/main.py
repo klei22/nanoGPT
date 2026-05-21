@@ -16,6 +16,7 @@ from .model_service import (
     get_current_assets,
     get_model_status,
     iter_neighborhood_csv,
+    linear_transform_neighbors,
     list_local_models,
     load_active_model,
     minimum_angular_distances,
@@ -29,6 +30,7 @@ from .schemas import (
     AngleResponse,
     CommonCloseTokensResponse,
     LocalModelRecord,
+    LinearTransformNeighborsResponse,
     LocalModelsResponse,
     MinAngularDistancesResponse,
     ModelLoadRequest,
@@ -223,6 +225,32 @@ def tokens_close_to_both_pairwise_anchors(
         match_count=len(rows),
         rows=rows,
     )
+
+
+@app.get("/api/linear-transform-neighbors", response_model=LinearTransformNeighborsResponse)
+def transformed_token_neighbors(
+    source_token_id: int = Query(..., ge=0),
+    target_token_id: int = Query(..., ge=0),
+    input_token_id: int = Query(..., ge=0),
+    limit: int = Query(200, ge=1, le=5000),
+    transform_type: str = Query("closest_identity", description="closest_identity, orthogonal, or offset"),
+) -> LinearTransformNeighborsResponse:
+    """Apply a source→target transform to an input token and rank nearest tokens."""
+    assets = _load_assets_or_500()
+    try:
+        data = linear_transform_neighbors(
+            assets,
+            source_token_id,
+            target_token_id,
+            input_token_id,
+            limit=limit,
+            transform_type=transform_type,
+        )
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return LinearTransformNeighborsResponse(**data)
 
 
 @app.get("/api/neighborhood", response_model=NeighborhoodResponse)

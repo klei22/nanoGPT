@@ -547,3 +547,107 @@ def test_recursive_angle_group_route_rejects_invalid_angle(client: TestClient) -
     )
 
     assert response.status_code == 422
+
+
+def test_linear_transform_neighbors_route_maps_source_to_target_and_ranks_neighbors(client: TestClient) -> None:
+    response = client.get(
+        "/api/linear-transform-neighbors",
+        params={
+            "source_token_id": 0,
+            "target_token_id": 2,
+            "input_token_id": 0,
+            "limit": 3,
+            "transform_type": "rank_one",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source_token_id"] == 0
+    assert data["target_token_id"] == 2
+    assert data["input_token_id"] == 0
+    assert data["transform_type"] == "rank_one"
+    assert data["limit"] == 3
+    assert data["coefficient"] == pytest.approx(1.0)
+    assert data["source_to_target_angle_deg"] == pytest.approx(45.0)
+    assert data["transformed_vector_magnitude"] == pytest.approx(2**0.5)
+    assert [row["token_id"] for row in data["rows"][:3]] == [2, 0, 1]
+    assert data["rows"][0]["angle_deg"] == pytest.approx(0.0)
+    assert data["rows"][0]["magnitude"] == pytest.approx(2**0.5)
+
+
+def test_linear_transform_neighbors_route_supports_offset_mode(client: TestClient) -> None:
+    response = client.get(
+        "/api/linear-transform-neighbors",
+        params={
+            "source_token_id": 0,
+            "target_token_id": 2,
+            "input_token_id": 1,
+            "limit": 2,
+            "transform_type": "offset",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["transform_type"] == "offset"
+    assert data["coefficient"] == pytest.approx(1.0)
+    assert [row["token_id"] for row in data["rows"][:2]] == [1, 2]
+    assert data["rows"][0]["angle_deg"] == pytest.approx(0.0)
+
+
+def test_linear_transform_neighbors_route_supports_closest_identity_mode(client: TestClient) -> None:
+    response = client.get(
+        "/api/linear-transform-neighbors",
+        params={
+            "source_token_id": 0,
+            "target_token_id": 2,
+            "input_token_id": 0,
+            "limit": 2,
+            "transform_type": "closest_identity",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["transform_type"] == "closest_identity"
+    assert data["transform_parameter_label"] == "Projection coefficient"
+    assert [row["token_id"] for row in data["rows"][:2]] == [2, 0]
+    assert data["rows"][0]["angle_deg"] == pytest.approx(0.0)
+
+
+def test_linear_transform_neighbors_route_supports_orthogonal_mode(client: TestClient) -> None:
+    response = client.get(
+        "/api/linear-transform-neighbors",
+        params={
+            "source_token_id": 0,
+            "target_token_id": 1,
+            "input_token_id": 0,
+            "limit": 2,
+            "transform_type": "orthogonal",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["transform_type"] == "orthogonal"
+    assert data["transform_parameter_label"] == "Direction rotation/reflection angle °"
+    assert data["coefficient"] == pytest.approx(90.0)
+    assert data["transformed_vector_magnitude"] == pytest.approx(1.0)
+    assert [row["token_id"] for row in data["rows"][:2]] == [1, 2]
+    assert data["rows"][0]["angle_deg"] == pytest.approx(0.0)
+
+
+def test_linear_transform_neighbors_route_rejects_unknown_transform(client: TestClient) -> None:
+    response = client.get(
+        "/api/linear-transform-neighbors",
+        params={
+            "source_token_id": 0,
+            "target_token_id": 2,
+            "input_token_id": 1,
+            "transform_type": "made_up",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "transform_type" in response.json()["detail"]

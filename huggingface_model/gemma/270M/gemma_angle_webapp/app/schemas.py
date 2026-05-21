@@ -80,6 +80,43 @@ class CommonCloseTokensResponse(BaseModel):
     rows: list[CommonCloseTokenRow]
 
 
+class TransformNeighborRow(BaseModel):
+    rank: int = Field(ge=1)
+    token_id: int
+    token_raw: str
+    token_display: str
+    angle_deg: float
+    cosine_similarity: float
+    magnitude: float
+
+
+class LinearTransformNeighborsResponse(BaseModel):
+    model_name: str
+    vocab_size: int = Field(ge=0)
+    hidden_dim: int = Field(ge=0)
+    source_token_id: int
+    source_token_raw: str
+    source_token_display: str
+    source_token_magnitude: float
+    target_token_id: int
+    target_token_raw: str
+    target_token_display: str
+    target_token_magnitude: float
+    input_token_id: int
+    input_token_raw: str
+    input_token_display: str
+    input_token_magnitude: float
+    transform_type: str
+    transform_description: str
+    source_to_target_angle_deg: float
+    input_to_transformed_angle_deg: float
+    transformed_vector_magnitude: float
+    coefficient: float
+    transform_parameter_label: str = "Transform parameter"
+    limit: int = Field(ge=1)
+    rows: list[TransformNeighborRow]
+
+
 class NeighborhoodRow(BaseModel):
     rank: int
     token_id: int

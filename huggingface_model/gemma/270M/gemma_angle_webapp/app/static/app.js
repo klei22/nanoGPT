@@ -13,15 +13,21 @@ const state = {
   recursiveGroup: null,
   recursiveGroupNetwork: null,
   recursiveGroupNetworkData: null,
+  recursiveGroupHighlightMinEdges: false,
+  linearTransformRows: [],
+  linearTransformSummary: null,
 };
 
-const pickerPrefixes = ['tokenA', 'tokenB', 'anchor', 'groupSeed'];
+const pickerPrefixes = ['tokenA', 'tokenB', 'anchor', 'groupSeed', 'transformSource', 'transformTarget', 'transformInput'];
 
 const cache = {
   tokenA: [],
   tokenB: [],
   anchor: [],
   groupSeed: [],
+  transformSource: [],
+  transformTarget: [],
+  transformInput: [],
 };
 
 const searchRequestIds = {
@@ -29,6 +35,9 @@ const searchRequestIds = {
   tokenB: 0,
   anchor: 0,
   groupSeed: 0,
+  transformSource: 0,
+  transformTarget: 0,
+  transformInput: 0,
 };
 
 const lastSearchedQuery = {
@@ -36,6 +45,9 @@ const lastSearchedQuery = {
   tokenB: null,
   anchor: null,
   groupSeed: null,
+  transformSource: null,
+  transformTarget: null,
+  transformInput: null,
 };
 
 
@@ -154,6 +166,9 @@ function setBadge(text, className = null) {
 function pickerEmptyMessage(prefix) {
   if (prefix === 'anchor') return 'No anchor selected.';
   if (prefix === 'groupSeed') return 'No seed selected.';
+  if (prefix === 'transformSource') return 'No source selected.';
+  if (prefix === 'transformTarget') return 'No target selected.';
+  if (prefix === 'transformInput') return 'No input selected.';
   return 'No token selected.';
 }
 
@@ -175,6 +190,8 @@ function markPickerDependentOutputsStale(key) {
     resetNeighborhoodOutput();
   } else if (key === 'groupSeed') {
     resetRecursiveGroupOutput('Seed token changed. Click Build recursive group to refresh the graph.');
+  } else if (key === 'transformSource' || key === 'transformTarget' || key === 'transformInput') {
+    resetLinearTransformOutput('Transform token selection changed. Click Run transform neighbors to refresh this list.');
   }
 }
 
@@ -364,6 +381,9 @@ function resetAllSelectionsAfterModelChange() {
   resetPicker('tokenB', 'tokenB');
   resetPicker('anchor', 'anchor');
   resetPicker('groupSeed', 'groupSeed');
+  resetPicker('transformSource', 'transformSource');
+  resetPicker('transformTarget', 'transformTarget');
+  resetPicker('transformInput', 'transformInput');
 
   resetAngleOutput();
   resetCommonCloseOutput();
@@ -371,6 +391,7 @@ function resetAllSelectionsAfterModelChange() {
   resetPairwiseBinsOutput();
   resetMinDistancesOutput();
   resetRecursiveGroupOutput();
+  resetLinearTransformOutput();
 }
 
 async function loadRequestedModel() {
@@ -1431,6 +1452,84 @@ function recursiveGraphEdgeTitle(edge) {
   return `${escapeHtml(edge.source_token_id)} ↔ ${escapeHtml(edge.target_token_id)}<br>${Number(edge.angle_deg).toFixed(6)}°`;
 }
 
+function getRecursiveMinEdgeKeys(data) {
+  const edges = data?.edges || [];
+  const minAngleByNode = new Map();
+
+  for (const edge of edges) {
+    const sourceId = Number(edge.source_token_id);
+    const targetId = Number(edge.target_token_id);
+    const angle = Number(edge.angle_deg);
+    if (!Number.isFinite(sourceId) || !Number.isFinite(targetId) || !Number.isFinite(angle)) continue;
+
+    for (const nodeId of [sourceId, targetId]) {
+      const existing = minAngleByNode.get(nodeId);
+      if (existing === undefined || angle < existing) minAngleByNode.set(nodeId, angle);
+    }
+  }
+
+  const highlighted = new Set();
+  const tolerance = 1e-9;
+  for (const edge of edges) {
+    const sourceId = Number(edge.source_token_id);
+    const targetId = Number(edge.target_token_id);
+    const angle = Number(edge.angle_deg);
+    if (!Number.isFinite(sourceId) || !Number.isFinite(targetId) || !Number.isFinite(angle)) continue;
+
+    const sourceMin = minAngleByNode.get(sourceId);
+    const targetMin = minAngleByNode.get(targetId);
+    if ((sourceMin !== undefined && angle <= sourceMin + tolerance) ||
+        (targetMin !== undefined && angle <= targetMin + tolerance)) {
+      highlighted.add(recursiveEdgeKey(sourceId, targetId));
+    }
+  }
+
+  return highlighted;
+}
+
+function isRecursiveMinEdgeHighlightEnabled() {
+  const input = byId('recursiveGroupHighlightMinEdges');
+  return Boolean(input && input.checked);
+}
+
+function applyRecursiveGraphMinEdgeHighlight(svg, data, enabled = isRecursiveMinEdgeHighlightEnabled()) {
+  if (!svg || !data) return new Set();
+  const highlighted = enabled ? getRecursiveMinEdgeKeys(data) : new Set();
+  svg.querySelectorAll('.graph-edge, .graph-edge-label').forEach((element) => {
+    const sourceId = Number(element.dataset.sourceTokenId);
+    const targetId = Number(element.dataset.targetTokenId);
+    const key = element.dataset.edgeKey || recursiveEdgeKey(sourceId, targetId);
+    const shouldHighlight = highlighted.has(key);
+    element.classList.toggle('graph-edge-min', enabled && shouldHighlight && element.classList.contains('graph-edge'));
+    element.classList.toggle('graph-edge-label-min', enabled && shouldHighlight && element.classList.contains('graph-edge-label'));
+  });
+  return highlighted;
+}
+
+function recursiveGroupCaptionText(data, interactive = true) {
+  const nodeCount = (data?.nodes || []).length;
+  const edgeCount = (data?.edges || []).length;
+  const dragText = interactive
+    ? 'Drag nodes to reposition them; drag empty space to pan; mouse-wheel zooms; double-click resets the view. SVG/PNG exports use the current node positions.'
+    : 'SVG support was limited, so this fallback is static.';
+  let text = `Showing ${formatCount(nodeCount)} nodes and ${formatCount(edgeCount)} labelled edges. ${dragText}`;
+  if (isRecursiveMinEdgeHighlightEnabled()) {
+    const highlightedCount = getRecursiveMinEdgeKeys(data).size;
+    text += ` Highlighting ${formatCount(highlightedCount)} unique edge${highlightedCount === 1 ? '' : 's'} that are the lowest-angle incident edge for at least one node.`;
+  }
+  return text;
+}
+
+function refreshRecursiveGroupMinEdgeHighlight() {
+  const input = byId('recursiveGroupHighlightMinEdges');
+  state.recursiveGroupHighlightMinEdges = Boolean(input && input.checked);
+  const svg = byId('recursiveGroupGraph')?.querySelector('svg');
+  if (svg && state.recursiveGroup) {
+    applyRecursiveGraphMinEdgeHighlight(svg, state.recursiveGroup, state.recursiveGroupHighlightMinEdges);
+    byId('recursiveGroupGraphCaption').textContent = recursiveGroupCaptionText(state.recursiveGroup, !byId('recursiveGroupGraph')?.classList.contains('static-svg-fallback'));
+  }
+}
+
 function renderRecursiveGroupTable(nodes) {
   const table = byId('recursiveGroupTable');
   const tbody = table.querySelector('tbody');
@@ -1562,7 +1661,9 @@ function recursiveGraphExportCss() {
   return `
     .recursive-graph-svg { background: #020617; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .graph-edge { stroke: rgba(148, 163, 184, 0.52); stroke-width: 1.25px; }
+    .graph-edge-min { stroke: #fbbf24; stroke-width: 3.2px; opacity: 0.98; }
     .graph-edge-label { fill: #94a3b8; font-size: 10px; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: #020617; stroke-width: 3px; stroke-linejoin: round; }
+    .graph-edge-label-min { fill: #fde68a; font-size: 11px; font-weight: 800; stroke-width: 3.5px; }
     .graph-node rect { fill: #111827; stroke: #38bdf8; stroke-width: 1.1px; }
     .graph-node text { text-anchor: middle; pointer-events: none; }
     .graph-node-id { fill: #f8fafc; font-weight: 700; font-size: 13px; }
@@ -1624,6 +1725,7 @@ function createRecursiveGroupSvg(data, positions, options = {}) {
   labelLayer.classList.add('graph-edge-label-layer');
   const nodeLayer = createSvgElement('g');
   nodeLayer.classList.add('graph-node-layer');
+  const highlightedEdgeKeys = options.highlightMinEdges ? getRecursiveMinEdgeKeys(data) : new Set();
 
   for (const edge of edges) {
     const sourceId = Number(edge.source_token_id);
@@ -1632,23 +1734,30 @@ function createRecursiveGroupSvg(data, positions, options = {}) {
     const target = positions.get(targetId);
     if (!source || !target) continue;
 
+    const edgeKey = recursiveEdgeKey(sourceId, targetId);
     const line = createSvgElement('line');
     line.classList.add('graph-edge');
     line.dataset.sourceTokenId = String(sourceId);
     line.dataset.targetTokenId = String(targetId);
+    line.dataset.edgeKey = edgeKey;
+    line.dataset.angleDeg = String(edge.angle_deg);
     line.setAttribute('x1', String(source.x));
     line.setAttribute('y1', String(source.y));
     line.setAttribute('x2', String(target.x));
     line.setAttribute('y2', String(target.y));
+    if (highlightedEdgeKeys.has(edgeKey)) line.classList.add('graph-edge-min');
     edgeLayer.appendChild(line);
 
     const label = createSvgElement('text');
     label.classList.add('graph-edge-label');
     label.dataset.sourceTokenId = String(sourceId);
     label.dataset.targetTokenId = String(targetId);
+    label.dataset.edgeKey = edgeKey;
+    label.dataset.angleDeg = String(edge.angle_deg);
     label.setAttribute('x', String((source.x + target.x) / 2));
     label.setAttribute('y', String((source.y + target.y) / 2));
     label.textContent = `${Number(edge.angle_deg).toFixed(2)}°`;
+    if (highlightedEdgeKeys.has(edgeKey)) label.classList.add('graph-edge-label-min');
     labelLayer.appendChild(label);
   }
 
@@ -1703,9 +1812,15 @@ function renderRecursiveGroupStaticSvgGraph(data) {
   const width = Math.max(980, Math.min(2600, 820 + nodeCount * 16));
   const height = Math.max(720, Math.min(2000, 680 + nodeCount * 8));
   const positions = circularRecursiveGraphPositions(nodes, width, height);
-  const svg = createRecursiveGroupSvg(data, positions, { viewBox: `0 0 ${width} ${height}`, width, height, embedStyles: false });
+  const svg = createRecursiveGroupSvg(data, positions, {
+    viewBox: `0 0 ${width} ${height}`,
+    width,
+    height,
+    embedStyles: false,
+    highlightMinEdges: isRecursiveMinEdgeHighlightEnabled(),
+  });
   container.appendChild(svg);
-  byId('recursiveGroupGraphCaption').textContent = `Showing ${formatCount(nodes.length)} nodes and ${formatCount((data.edges || []).length)} labelled edges. SVG support was limited, so this fallback is static.`;
+  byId('recursiveGroupGraphCaption').textContent = recursiveGroupCaptionText(data, false);
 }
 
 function svgPointFromClient(svg, event) {
@@ -1893,12 +2008,13 @@ function renderRecursiveGroupInteractiveGraph(data) {
     height,
     interactive: true,
     embedStyles: false,
+    highlightMinEdges: isRecursiveMinEdgeHighlightEnabled(),
   });
   container.appendChild(svg);
   state.recursiveGroupNetwork = attachRecursiveGraphInteractions(svg, positions, width, height);
   state.recursiveGroupNetworkData = { renderer: 'local-svg-drag' };
 
-  byId('recursiveGroupGraphCaption').textContent = `Showing ${formatCount(nodes.length)} nodes and ${formatCount(edges.length)} labelled edges. Drag nodes to reposition them; drag empty space to pan; mouse-wheel zooms; double-click resets the view. SVG/PNG exports use the current node positions.`;
+  byId('recursiveGroupGraphCaption').textContent = recursiveGroupCaptionText(data, true);
 }
 
 function renderRecursiveGroupGraph(data) {
@@ -2015,6 +2131,135 @@ async function computeRecursiveAngleGroup() {
   }
 }
 
+
+function resetLinearTransformOutput(message = 'Choose source, target, and input tokens, then run transform neighbors.') {
+  state.linearTransformRows = [];
+  state.linearTransformSummary = null;
+  const output = byId('linearTransformOutput');
+  if (!output) return;
+  setOutput('linearTransformOutput', message, true);
+  const table = byId('linearTransformTable');
+  table.classList.add('hidden');
+  table.querySelector('tbody').innerHTML = '';
+  setExportVisible('exportLinearTransformCsv', false);
+}
+
+function renderLinearTransformTable(rows) {
+  const table = byId('linearTransformTable');
+  const tbody = table.querySelector('tbody');
+  tbody.innerHTML = '';
+
+  const fragment = document.createDocumentFragment();
+  for (const row of rows || []) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${row.rank}</td>
+      <td>${row.token_id}</td>
+      <td><code>${escapeHtml(row.token_raw)}</code></td>
+      <td><code>${escapeHtml(row.token_display)}</code></td>
+      <td>${Number(row.angle_deg).toFixed(6)}</td>
+      <td>${Number(row.cosine_similarity).toFixed(8)}</td>
+      <td>${Number(row.magnitude).toFixed(6)}</td>
+    `;
+    fragment.appendChild(tr);
+  }
+
+  tbody.appendChild(fragment);
+  table.classList.toggle('hidden', !rows || rows.length === 0);
+  setExportVisible('exportLinearTransformCsv', Boolean(rows && rows.length > 0));
+}
+
+async function computeLinearTransformNeighbors() {
+  let source;
+  let target;
+  let input;
+  try {
+    source = await ensurePickerSelection('transformSource', 'transformSource');
+    target = await ensurePickerSelection('transformTarget', 'transformTarget');
+    input = await ensurePickerSelection('transformInput', 'transformInput');
+  } catch (error) {
+    setOutput('linearTransformOutput', `<strong>Token selection failed:</strong> ${escapeHtml(error.message)}`);
+    return;
+  }
+
+  if (!source || !target || !input) {
+    setOutput('linearTransformOutput', 'Select source, target, and input tokens first. Search/select tokens or enter token IDs.', true);
+    return;
+  }
+
+  const limit = Number(byId('linearTransformLimit').value || 200);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 5000) {
+    setOutput('linearTransformOutput', 'Enter a nearest-neighbor row limit from 1 to 5000.', true);
+    return;
+  }
+  const transformType = byId('linearTransformType').value || 'closest_identity';
+
+  const button = byId('linearTransformButton');
+  state.linearTransformRows = [];
+  state.linearTransformSummary = null;
+  byId('linearTransformTable').classList.add('hidden');
+  byId('linearTransformTable').querySelector('tbody').innerHTML = '';
+  setExportVisible('exportLinearTransformCsv', false);
+  setOutput('linearTransformOutput', 'Applying transform and ranking nearest token vectors…', true);
+  button.disabled = true;
+  button.textContent = 'Running…';
+
+  try {
+    const params = new URLSearchParams({
+      source_token_id: String(source.token_id),
+      target_token_id: String(target.token_id),
+      input_token_id: String(input.token_id),
+      limit: String(limit),
+      transform_type: transformType,
+    });
+    const data = await fetchJson(`/api/linear-transform-neighbors?${params.toString()}`);
+    state.linearTransformSummary = data;
+    state.linearTransformRows = data.rows || [];
+    setPickerSelectionFromKnownToken('transformSource', 'transformSource', {
+      token_id: data.source_token_id,
+      raw: data.source_token_raw,
+      display: data.source_token_display,
+    });
+    setPickerSelectionFromKnownToken('transformTarget', 'transformTarget', {
+      token_id: data.target_token_id,
+      raw: data.target_token_raw,
+      display: data.target_token_display,
+    });
+    setPickerSelectionFromKnownToken('transformInput', 'transformInput', {
+      token_id: data.input_token_id,
+      raw: data.input_token_raw,
+      display: data.input_token_display,
+    });
+    setOutput('linearTransformOutput', `
+      <div class="metric"><span>Nearest rows</span><strong>${formatCount(state.linearTransformRows.length)}</strong></div>
+      <table class="mini-table">
+        <tbody>
+          <tr><th>Source</th><td>${escapeHtml(tokenLabel({ token_id: data.source_token_id, raw: data.source_token_raw, display: data.source_token_display }))}</td></tr>
+          <tr><th>Source vector length</th><td>${Number(data.source_token_magnitude).toFixed(6)}</td></tr>
+          <tr><th>Target</th><td>${escapeHtml(tokenLabel({ token_id: data.target_token_id, raw: data.target_token_raw, display: data.target_token_display }))}</td></tr>
+          <tr><th>Target vector length</th><td>${Number(data.target_token_magnitude).toFixed(6)}</td></tr>
+          <tr><th>Input</th><td>${escapeHtml(tokenLabel({ token_id: data.input_token_id, raw: data.input_token_raw, display: data.input_token_display }))}</td></tr>
+          <tr><th>Input vector length</th><td>${Number(data.input_token_magnitude).toFixed(6)}</td></tr>
+          <tr><th>Transform</th><td>${escapeHtml(data.transform_description)}</td></tr>
+          <tr><th>Source→target angle</th><td>${Number(data.source_to_target_angle_deg).toFixed(6)}°</td></tr>
+          <tr><th>Input→transformed angle</th><td>${Number(data.input_to_transformed_angle_deg).toFixed(6)}°</td></tr>
+          <tr><th>${escapeHtml(data.transform_parameter_label || 'Transform parameter')}</th><td>${Number(data.coefficient).toFixed(8)}</td></tr>
+          <tr><th>Transformed vector length</th><td>${Number(data.transformed_vector_magnitude).toFixed(6)}</td></tr>
+        </tbody>
+      </table>
+    `);
+    renderLinearTransformTable(state.linearTransformRows);
+  } catch (error) {
+    state.linearTransformRows = [];
+    state.linearTransformSummary = null;
+    setExportVisible('exportLinearTransformCsv', false);
+    setOutput('linearTransformOutput', `<strong>Transform-neighbor search failed:</strong> ${escapeHtml(error.message)}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Run transform neighbors';
+  }
+}
+
 function recursiveEdgeKey(a, b) {
   const source = Math.min(Number(a), Number(b));
   const target = Math.max(Number(a), Number(b));
@@ -2084,7 +2329,10 @@ function exportRecursiveGroupGraphSvg() {
   const data = state.recursiveGroup;
   if (!data || !(data.nodes || []).length) return;
   const positions = getRecursiveGroupCurrentPositions(data);
-  const svg = createRecursiveGroupSvg(data, positions, { embedStyles: true });
+  const svg = createRecursiveGroupSvg(data, positions, {
+    embedStyles: true,
+    highlightMinEdges: isRecursiveMinEdgeHighlightEnabled(),
+  });
   svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
   const text = new XMLSerializer().serializeToString(svg);
   downloadBlob(text, `recursive_group_${filenamePart(data.seed_token_id, 'seed')}_graph.svg`, 'image/svg+xml;charset=utf-8');
@@ -2175,6 +2423,7 @@ function setupExportButtons() {
   byId('exportRecursiveGroupAdjacencyCsv').addEventListener('click', exportRecursiveGroupAdjacencyCsv);
   byId('exportRecursiveGroupDictionaryJson').addEventListener('click', exportRecursiveGroupDictionaryJson);
   byId('exportRecursiveGroupListCsv').addEventListener('click', () => exportHtmlTableAsCsv('recursiveGroupTable', 'recursive_group_token_list.csv'));
+  byId('exportLinearTransformCsv').addEventListener('click', () => exportHtmlTableAsCsv('linearTransformTable', 'linear_transform_neighbors.csv'));
 }
 
 function setupModelControls() {
@@ -2208,6 +2457,9 @@ window.addEventListener('DOMContentLoaded', () => {
   setupPicker('tokenB', 'tokenB');
   setupPicker('anchor', 'anchor');
   setupPicker('groupSeed', 'groupSeed');
+  setupPicker('transformSource', 'transformSource');
+  setupPicker('transformTarget', 'transformTarget');
+  setupPicker('transformInput', 'transformInput');
   byId('angleButton').addEventListener('click', computeAngle);
   byId('commonCloseButton').addEventListener('click', computeCommonCloseTokens);
   byId('commonCloseThreshold').addEventListener('keydown', (event) => {
@@ -2223,6 +2475,8 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('pairwiseBinsButton').addEventListener('click', computePairwiseAngleBins);
   byId('minDistancesButton').addEventListener('click', computeMinAngularDistances);
   byId('recursiveGroupButton').addEventListener('click', computeRecursiveAngleGroup);
+  byId('linearTransformButton').addEventListener('click', computeLinearTransformNeighbors);
+  byId('recursiveGroupHighlightMinEdges').addEventListener('change', refreshRecursiveGroupMinEdgeHighlight);
   byId('minDistanceSort').addEventListener('change', () => {
     if (state.minDistanceRows.length > 0) renderMinDistanceTable();
   });
@@ -2238,6 +2492,18 @@ window.addEventListener('DOMContentLoaded', () => {
       resetRecursiveGroupOutput('Controls changed. Click Build recursive group to refresh the graph.');
     });
   }
+  for (const controlId of ['linearTransformType', 'linearTransformLimit']) {
+    byId(controlId).addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        computeLinearTransformNeighbors();
+      }
+    });
+    byId(controlId).addEventListener('input', () => {
+      resetLinearTransformOutput('Transform settings changed. Click Run transform neighbors to refresh this list.');
+    });
+  }
+
   byId('pairwiseLogScale').addEventListener('change', () => {
     if (state.pairwiseBins && !byId('pairwisePlotCard').classList.contains('hidden')) {
       drawPairwiseAngleBinPlot(state.pairwiseBins, byId('pairwiseLogScale').checked);

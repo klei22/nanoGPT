@@ -617,6 +617,18 @@ code {
   overflow: auto;
 }
 
+.graph-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin: 0 0 12px;
+}
+
+.graph-options .checkbox-row {
+  color: var(--text);
+}
+
 .graph-scroll .vis-network {
   outline: none;
 }
@@ -660,6 +672,12 @@ code {
   stroke-width: 1.25;
 }
 
+.graph-edge-min {
+  stroke: #fbbf24;
+  stroke-width: 3.2;
+  opacity: 0.98;
+}
+
 .graph-edge-label {
   fill: var(--muted);
   font-size: 10px;
@@ -669,6 +687,13 @@ code {
   stroke: #020617;
   stroke-width: 3px;
   stroke-linejoin: round;
+}
+
+.graph-edge-label-min {
+  fill: #fde68a;
+  font-size: 11px;
+  font-weight: 800;
+  stroke-width: 3.5px;
 }
 
 .graph-node rect {
@@ -711,4 +736,37 @@ code {
   top: 0;
   z-index: 1;
   background: #020617;
+}
+
+.three-pickers {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.linear-transform-controls {
+  grid-template-columns: minmax(260px, 1fr) minmax(180px, 0.45fr);
+}
+
+.linear-transform-scroll {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #020617;
+}
+
+.linear-transform-scroll table {
+  min-width: 1120px;
+}
+
+.linear-transform-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #020617;
+}
+
+@media (max-width: 1100px) {
+  .three-pickers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

@@ -1830,6 +1830,234 @@ def common_close_tokens(
     ]
 
 
+_TRANSFORM_TYPE_ALIASES = {
+    "rank_one": "rank_one",
+    "rankone": "rank_one",
+    "closest": "closest_identity",
+    "closest_identity": "closest_identity",
+    "closest_to_identity": "closest_identity",
+    "minimum_change": "closest_identity",
+    "min_change": "closest_identity",
+    "orthogonal": "orthogonal",
+    "orthogonal_only": "orthogonal",
+    "orthonormal": "orthogonal",
+    "rotation": "orthogonal",
+    "offset": "offset",
+    "analogy": "offset",
+    "analogy_offset": "offset",
+}
+
+_TRANSFORM_TYPE_DESCRIPTIONS = {
+    "closest_identity": (
+        "Closest-to-identity rank-one linear map: T(x)=x+((x·source)/(source·source))·(target-source). "
+        "This linear map sends the source vector exactly to the target vector while changing the identity map only along the source direction."
+    ),
+    "rank_one": (
+        "Backward-compatible name for the closest-to-identity rank-one linear map: "
+        "T(x)=x+((x·source)/(source·source))·(target-source)."
+    ),
+    "orthogonal": (
+        "Orthogonal-only closest-direction map: applies the shortest rotation/reflection that maps the source direction "
+        "to the target direction, then compares the transformed input. It preserves vector lengths; if source and target "
+        "magnitudes differ, it maps source to target direction rather than target length."
+    ),
+    "offset": (
+        "Analogy-style affine offset: result=input+(target-source). This also maps source to target, "
+        "but it is a translation, not a strictly linear map."
+    ),
+}
+
+
+def _canonical_transform_type(transform_type: str | None) -> str:
+    key = str(transform_type or "closest_identity").strip().casefold().replace("-", "_").replace(" ", "_")
+    canonical = _TRANSFORM_TYPE_ALIASES.get(key)
+    if canonical is None:
+        valid = ", ".join(sorted(_TRANSFORM_TYPE_DESCRIPTIONS))
+        raise ValueError(f"transform_type must be one of: {valid}.")
+    return canonical
+
+
+@torch.inference_mode()
+def _apply_orthogonal_direction_map(
+    source: torch.Tensor,
+    target: torch.Tensor,
+    input_vector: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply the closest orthogonal map sending source direction to target direction.
+
+    A one-pair orthogonal transform can only map source exactly to target when
+    their norms are equal, because orthogonal maps preserve lengths.  This helper
+    therefore aligns directions: unit(source) -> unit(target), preserving the
+    input vector norm.  For non-antipodal directions it is the identity on the
+    orthogonal complement and the shortest planar rotation in span(source,target).
+    For antipodal directions it uses the deterministic Householder reflection
+    x -> x - 2(x·u)u.
+
+    Returns ``(transformed, rotation_angle_deg)``.
+    """
+    eps = torch.tensor(1e-12, dtype=torch.float32, device=input_vector.device)
+    source_norm = torch.linalg.vector_norm(source, ord=2).clamp_min(eps)
+    target_norm = torch.linalg.vector_norm(target, ord=2).clamp_min(eps)
+    u = source / source_norm
+    v = target / target_norm
+    c = torch.clamp(torch.dot(u, v), -1.0, 1.0)
+    rotation_angle = torch.rad2deg(torch.arccos(c))
+
+    if bool(c > 1.0 - 1e-7):
+        return input_vector.clone(), rotation_angle
+
+    if bool(c < -1.0 + 1e-7):
+        # Deterministic orthogonal reflection mapping u -> -u while leaving the
+        # hyperplane perpendicular to u fixed.  This is the closest-to-identity
+        # choice among simple maps in the exactly antipodal one-vector case.
+        transformed = input_vector - 2.0 * torch.dot(input_vector, u) * u
+        return transformed, rotation_angle
+
+    w = v - c * u
+    s = torch.linalg.vector_norm(w, ord=2).clamp_min(eps)
+    w = w / s
+
+    # Planar rotation in the {u, w} basis, identity elsewhere.
+    # R(u)=c*u+s*w and R(w)=-s*u+c*w.
+    a = torch.dot(input_vector, u)
+    b = torch.dot(input_vector, w)
+    transformed = input_vector + ((c - 1.0) * a - s * b) * u + (s * a + (c - 1.0) * b) * w
+    return transformed, rotation_angle
+
+
+def _token_vector_summary(assets: ModelAssets, token_id: int, prefix: str) -> dict[str, Any]:
+    info = assets.token(token_id)
+    return {
+        f"{prefix}_token_id": int(token_id),
+        f"{prefix}_token_raw": info.raw,
+        f"{prefix}_token_display": info.display,
+        f"{prefix}_token_magnitude": float(assets.magnitudes[token_id].item()),
+    }
+
+
+@torch.inference_mode()
+def _nearest_neighbors_to_vector(
+    assets: ModelAssets,
+    query_vector: torch.Tensor,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    limit = int(limit)
+    if limit < 1:
+        raise ValueError("limit must be at least 1.")
+
+    query = query_vector.to(device=assets.weight.device, dtype=torch.float32)
+    query_norm = torch.linalg.vector_norm(query, ord=2).clamp_min(1e-12)
+    cos = (assets.weight @ query) / (assets.magnitudes * query_norm).clamp_min(1e-12)
+    cos = torch.clamp(cos, -1.0, 1.0)
+    angles = torch.rad2deg(torch.arccos(cos))
+
+    # Token IDs are already in ascending order, so a stable sort on angle uses
+    # token ID as the deterministic tie-breaker.
+    order = torch.argsort(angles, stable=True)[: min(limit, assets.vocab_size)]
+    ids_cpu = order.detach().cpu().tolist()
+    angles_cpu = angles[order].detach().cpu().tolist()
+    cos_cpu = cos[order].detach().cpu().tolist()
+
+    rows: list[dict[str, Any]] = []
+    for rank, (token_id, angle_deg, cosine_similarity) in enumerate(
+        zip(ids_cpu, angles_cpu, cos_cpu),
+        start=1,
+    ):
+        info = assets.token(int(token_id))
+        rows.append(
+            {
+                "rank": int(rank),
+                "token_id": int(token_id),
+                "token_raw": info.raw,
+                "token_display": info.display,
+                "angle_deg": float(angle_deg),
+                "cosine_similarity": float(cosine_similarity),
+                "magnitude": float(assets.magnitudes[int(token_id)].item()),
+            }
+        )
+    return rows
+
+
+@torch.inference_mode()
+def linear_transform_neighbors(
+    assets: ModelAssets,
+    source_token_id: int,
+    target_token_id: int,
+    input_token_id: int,
+    *,
+    limit: int = 200,
+    transform_type: str = "closest_identity",
+) -> dict[str, Any]:
+    """Apply a source→target transform to an input token and rank neighbors.
+
+    A single vector pair does not uniquely identify a full d×d linear operator.
+    ``closest_identity`` is the closest-to-identity rank-one update to the
+    identity matrix that maps ``source`` exactly to ``target``:
+
+        T(x) = x + ((x·source) / (source·source)) * (target - source)
+
+    ``orthogonal`` applies the closest direction-aligning orthogonal map.  It
+    preserves vector lengths and maps the source direction to the target
+    direction; exact source→target mapping is only possible in orthogonal mode
+    when the source and target magnitudes match.  ``offset`` is also supported
+    as a familiar analogy-style affine baseline: ``input + target - source``.
+    """
+    assets.token(source_token_id)
+    assets.token(target_token_id)
+    assets.token(input_token_id)
+
+    limit = int(limit)
+    if limit < 1:
+        raise ValueError("limit must be at least 1.")
+
+    transform_key = _canonical_transform_type(transform_type)
+
+    source = assets.weight[source_token_id].to(dtype=torch.float32)
+    target = assets.weight[target_token_id].to(dtype=torch.float32)
+    input_vector = assets.weight[input_token_id].to(dtype=torch.float32)
+    delta = target - source
+
+    source_norm_sq = torch.dot(source, source).clamp_min(1e-12)
+    transform_parameter_label = "Projection coefficient"
+    if transform_key in {"closest_identity", "rank_one"}:
+        coefficient = torch.dot(input_vector, source) / source_norm_sq
+        transformed = input_vector + coefficient * delta
+    elif transform_key == "orthogonal":
+        transformed, coefficient = _apply_orthogonal_direction_map(source, target, input_vector)
+        transform_parameter_label = "Direction rotation/reflection angle °"
+    else:
+        coefficient = torch.tensor(1.0, dtype=torch.float32, device=input_vector.device)
+        transformed = input_vector + delta
+        transform_parameter_label = "Offset scale"
+
+    transformed_norm = torch.linalg.vector_norm(transformed, ord=2).clamp_min(1e-12)
+    input_norm = assets.magnitudes[input_token_id].clamp_min(1e-12)
+    input_cos = torch.dot(input_vector, transformed) / (input_norm * transformed_norm).clamp_min(1e-12)
+    input_to_transformed_angle = torch.rad2deg(torch.arccos(torch.clamp(input_cos, -1.0, 1.0)))
+
+    rows = _nearest_neighbors_to_vector(assets, transformed, limit=limit)
+
+    result: dict[str, Any] = {
+        "model_name": assets.model_name,
+        "vocab_size": assets.vocab_size,
+        "hidden_dim": assets.hidden_dim,
+        **_token_vector_summary(assets, source_token_id, "source"),
+        **_token_vector_summary(assets, target_token_id, "target"),
+        **_token_vector_summary(assets, input_token_id, "input"),
+        "transform_type": transform_key,
+        "transform_description": _TRANSFORM_TYPE_DESCRIPTIONS[transform_key],
+        "source_to_target_angle_deg": angle_degrees(assets, source_token_id, target_token_id),
+        "input_to_transformed_angle_deg": float(input_to_transformed_angle.item()),
+        "transformed_vector_magnitude": float(transformed_norm.item()),
+        "coefficient": float(coefficient.item()),
+        "transform_parameter_label": transform_parameter_label,
+        "limit": limit,
+        "rows": rows,
+    }
+    return result
+
+
 @torch.inference_mode()
 def nearest_neighbors(
     assets: ModelAssets,
