@@ -12,7 +12,7 @@ python train.py \
   --colorize_mode all \
   --max_iters 10000
 
-python colorize_dataset.py \
+python explore_trained_model_with_dataset.py \
   --out_dir        out \
   --dataset        filipino/tagalog_filipino_eng_translation  \
   --split          val \
