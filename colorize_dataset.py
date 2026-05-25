@@ -156,6 +156,16 @@ def parse_args():
         help="Number of bins for per-layer activation-input histograms",
     )
     p.add_argument(
+        "--attention_head_heatmap_file",
+        default="attention_head_heatmap.html",
+        help="Output HTML file for per-layer per-head attention output heatmaps",
+    )
+    p.add_argument(
+        "--attention_head_hist_file",
+        default="attention_head_hist.html",
+        help="Output HTML file for per-layer per-head attention output histograms",
+    )
+    p.add_argument(
         "--components",
         choices=["wte", "attn", "mlp", "resid"],
         nargs="+",
@@ -219,6 +229,7 @@ def main():
     lines: List[str] = []
     heatmap_traces = None
     heatmap_inputs = None
+    attn_head_traces = None
 
     if args.display == "token":
         ids: List[int] = []
@@ -268,6 +279,7 @@ def main():
             if heatmap_traces is None:
                 heatmap_traces = [[] for _ in range(model.config.n_layer)]
                 heatmap_inputs = [[] for _ in range(model.config.n_layer)]
+                attn_head_traces = [[[] for _ in range(model.config.n_head)] for _ in range(model.config.n_layer)]
             for li, blk in enumerate(model.transformer.h):
                 if hasattr(blk.mlp, "activation_variant"):
                     act_call_counts[li] = 0
@@ -282,6 +294,16 @@ def main():
                             act_call_counts[layer_idx] += 1
                         return hook
                     handles.append(blk.mlp.activation_variant.register_forward_hook(make_act_hook(li)))
+                def make_attn_head_hook(layer_idx):
+                    def hook(module, inp, out):
+                        vec = out[0, -1, :].detach().float().cpu().numpy()
+                        if vec.shape[0] % model.config.n_head != 0:
+                            return
+                        per_head = vec.reshape(model.config.n_head, -1)
+                        for hi in range(model.config.n_head):
+                            attn_head_traces[layer_idx][hi].append(per_head[hi])
+                    return hook
+                handles.append(blk.attn.register_forward_hook(make_attn_head_hook(li)))
         if args.display != "token" and args.activation_view != "none":
             def t0_hook(module, inp, out):
                 activations["t0"] = out[0, -1, :].detach()
@@ -550,6 +572,57 @@ def main():
         hist_fig.write_html(args.activation_hist_file)
         np.savez(Path(args.activation_hist_file).with_suffix('.npz'), **hist_payload)
         console.print(f"[cyan]Saved activation histograms → {args.activation_hist_file}[/cyan]")
+
+        attn_rows = model.config.n_layer
+        attn_fig = make_subplots(
+            rows=attn_rows,
+            cols=1,
+            shared_xaxes=True,
+            subplot_titles=[f"attn layer {i+1}" for i in range(attn_rows)],
+        )
+        attn_payload = {}
+        for li in range(model.config.n_layer):
+            if not any(attn_head_traces[li][hi] for hi in range(model.config.n_head)):
+                continue
+            head_means = []
+            for hi in range(model.config.n_head):
+                if not attn_head_traces[li][hi]:
+                    head_means.append(np.array([], dtype=np.float32))
+                    continue
+                arr = np.stack(attn_head_traces[li][hi], axis=0)
+                attn_payload[f"layer_{li+1}_head_{hi+1}"] = arr
+                head_means.append(arr.mean(axis=1))
+            max_len = max((m.shape[0] for m in head_means), default=0)
+            if max_len == 0:
+                continue
+            z = np.full((model.config.n_head, max_len), np.nan, dtype=np.float32)
+            for hi, m in enumerate(head_means):
+                if m.shape[0] > 0:
+                    z[hi, :m.shape[0]] = m
+            attn_fig.add_trace(go.Heatmap(z=z, coloraxis="coloraxis", showscale=(li == 0)), row=li + 1, col=1)
+            attn_fig.update_yaxes(title_text="head", row=li + 1, col=1)
+        attn_fig.update_layout(height=max(260 * attn_rows, 400), coloraxis={"colorscale": "RdBu", "cmid": 0.0})
+        attn_fig.write_html(args.attention_head_heatmap_file)
+        np.savez(Path(args.attention_head_heatmap_file).with_suffix(".npz"), **attn_payload)
+        console.print(f"[cyan]Saved attention head heatmaps → {args.attention_head_heatmap_file}[/cyan]")
+
+        attn_hist = make_subplots(rows=attn_rows, cols=1, shared_xaxes=False, subplot_titles=[f"attn layer {i+1}" for i in range(attn_rows)])
+        for li in range(model.config.n_layer):
+            for hi in range(model.config.n_head):
+                if not attn_head_traces[li][hi]:
+                    continue
+                arr = np.stack(attn_head_traces[li][hi], axis=0).reshape(-1)
+                counts, edges = np.histogram(arr, bins=args.activation_hist_bins, density=True)
+                centers = (edges[:-1] + edges[1:]) * 0.5
+                attn_hist.add_trace(
+                    go.Scatter(x=centers, y=counts, mode="lines", name=f"L{li+1}H{hi+1}", line={"width": 1}),
+                    row=li + 1, col=1
+                )
+            attn_hist.update_yaxes(title_text="density", row=li + 1, col=1)
+            attn_hist.update_xaxes(title_text="attn output", row=li + 1, col=1)
+        attn_hist.update_layout(height=max(260 * attn_rows, 400))
+        attn_hist.write_html(args.attention_head_hist_file)
+        console.print(f"[cyan]Saved attention head histograms → {args.attention_head_hist_file}[/cyan]")
 
 if __name__ == "__main__":
     main()
