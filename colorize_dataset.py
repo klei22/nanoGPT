@@ -165,6 +165,12 @@ def parse_args():
         default="attention_head_hist.html",
         help="Output HTML file for per-layer per-head attention output histograms",
     )
+    p.add_argument("--analysis_layers", default="all", help="Layer selection for analysis: 'all' or comma-separated 1-based layer ids")
+    p.add_argument("--analysis_heads", default="all", help="Head selection for attention analysis: 'all' or comma-separated 1-based head ids")
+    p.add_argument("--plot_residual_magnitude", action=argparse.BooleanOptionalAction, default=False,
+                   help="Plot residual magnitude trace across model stages")
+    p.add_argument("--residual_magnitude_file", default="residual_magnitude.html",
+                   help="Output HTML file for residual magnitude traces")
     p.add_argument(
         "--components",
         choices=["wte", "attn", "mlp", "resid"],
@@ -230,6 +236,23 @@ def main():
     heatmap_traces = None
     heatmap_inputs = None
     attn_head_traces = None
+    residual_mag_traces = []
+
+    def parse_selection(spec: str, max_count: int):
+        if spec == "all":
+            return list(range(max_count))
+        out = []
+        for tok in spec.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            idx = int(tok) - 1
+            if 0 <= idx < max_count:
+                out.append(idx)
+        return sorted(set(out))
+
+    selected_layers = parse_selection(args.analysis_layers, model.config.n_layer)
+    selected_heads = parse_selection(args.analysis_heads, model.config.n_head)
 
     if args.display == "token":
         ids: List[int] = []
@@ -281,6 +304,8 @@ def main():
                 heatmap_inputs = [[] for _ in range(model.config.n_layer)]
                 attn_head_traces = [[[] for _ in range(model.config.n_head)] for _ in range(model.config.n_layer)]
             for li, blk in enumerate(model.transformer.h):
+                if li not in selected_layers:
+                    continue
                 if hasattr(blk.mlp, "activation_variant"):
                     act_call_counts[li] = 0
                     def make_act_hook(layer_idx):
@@ -304,6 +329,31 @@ def main():
                             attn_head_traces[layer_idx][hi].append(per_head[hi])
                     return hook
                 handles.append(blk.attn.register_forward_hook(make_attn_head_hook(li)))
+        if args.plot_residual_magnitude:
+            residual_points = {"after_wte": None, "after_norm_wte": None, "after_attn": {}, "after_mlp": {}, "after_ln_f": None}
+            def wte_hook(module, inp, out):
+                residual_points["after_wte"] = out[0, -1, :].detach().float()
+            handles.append(model.transformer.wte.register_forward_hook(wte_hook))
+            if hasattr(model.transformer, "post_embedding_norm"):
+                def norm_wte_hook(module, inp, out):
+                    residual_points["after_norm_wte"] = out[0, -1, :].detach().float()
+                handles.append(model.transformer.post_embedding_norm.register_forward_hook(norm_wte_hook))
+            for li, blk in enumerate(model.transformer.h):
+                if li not in selected_layers:
+                    continue
+                def make_attn_mag_hook(layer_idx):
+                    def hook(module, inp, out):
+                        residual_points["after_attn"][layer_idx] = out[0, -1, :].detach().float()
+                    return hook
+                def make_mlp_mag_hook(layer_idx):
+                    def hook(module, inp, out):
+                        residual_points["after_mlp"][layer_idx] = out[0, -1, :].detach().float()
+                    return hook
+                handles.append(blk.attn.register_forward_hook(make_attn_mag_hook(li)))
+                handles.append(blk.mlp.register_forward_hook(make_mlp_mag_hook(li)))
+            def lnf_hook(module, inp, out):
+                residual_points["after_ln_f"] = out[0, -1, :].detach().float()
+            handles.append(model.transformer.ln_f.register_forward_hook(lnf_hook))
         if args.display != "token" and args.activation_view != "none":
             def t0_hook(module, inp, out):
                 activations["t0"] = out[0, -1, :].detach()
@@ -339,6 +389,23 @@ def main():
 
         for h in handles:
             h.remove()
+        if args.plot_residual_magnitude:
+            stage_names = ["after_wte", "after_norm_wte"]
+            mags = []
+            for st in stage_names:
+                v = residual_points[st]
+                mags.append(float(v.norm().item()) if v is not None else np.nan)
+            for li in selected_layers:
+                stage_names.append(f"after_attn_l{li+1}")
+                v = residual_points["after_attn"].get(li)
+                mags.append(float(v.norm().item()) if v is not None else np.nan)
+                stage_names.append(f"after_mlp_l{li+1}")
+                v = residual_points["after_mlp"].get(li)
+                mags.append(float(v.norm().item()) if v is not None else np.nan)
+            stage_names.append("after_ln_f")
+            v = residual_points["after_ln_f"]
+            mags.append(float(v.norm().item()) if v is not None else np.nan)
+            residual_mag_traces.append((stage_names, mags))
 
         if args.activation_view != "none" and "resid" in args.components and activations["t0"] is not None:
             resid = activations["t0"].float().clone()
@@ -581,11 +648,11 @@ def main():
             subplot_titles=[f"attn layer {i+1}" for i in range(attn_rows)],
         )
         attn_payload = {}
-        for li in range(model.config.n_layer):
+        for li in selected_layers:
             if not any(attn_head_traces[li][hi] for hi in range(model.config.n_head)):
                 continue
             head_means = []
-            for hi in range(model.config.n_head):
+            for hi in selected_heads:
                 if not attn_head_traces[li][hi]:
                     head_means.append(np.array([], dtype=np.float32))
                     continue
@@ -595,10 +662,10 @@ def main():
             max_len = max((m.shape[0] for m in head_means), default=0)
             if max_len == 0:
                 continue
-            z = np.full((model.config.n_head, max_len), np.nan, dtype=np.float32)
-            for hi, m in enumerate(head_means):
+            z = np.full((len(selected_heads), max_len), np.nan, dtype=np.float32)
+            for row_i, m in enumerate(head_means):
                 if m.shape[0] > 0:
-                    z[hi, :m.shape[0]] = m
+                    z[row_i, :m.shape[0]] = m
             attn_fig.add_trace(go.Heatmap(z=z, coloraxis="coloraxis", showscale=(li == 0)), row=li + 1, col=1)
             attn_fig.update_yaxes(title_text="head", row=li + 1, col=1)
         attn_fig.update_layout(height=max(260 * attn_rows, 400), coloraxis={"colorscale": "RdBu", "cmid": 0.0})
@@ -607,8 +674,8 @@ def main():
         console.print(f"[cyan]Saved attention head heatmaps → {args.attention_head_heatmap_file}[/cyan]")
 
         attn_hist = make_subplots(rows=attn_rows, cols=1, shared_xaxes=False, subplot_titles=[f"attn layer {i+1}" for i in range(attn_rows)])
-        for li in range(model.config.n_layer):
-            for hi in range(model.config.n_head):
+        for li in selected_layers:
+            for hi in selected_heads:
                 if not attn_head_traces[li][hi]:
                     continue
                 arr = np.stack(attn_head_traces[li][hi], axis=0).reshape(-1)
@@ -623,6 +690,18 @@ def main():
         attn_hist.update_layout(height=max(260 * attn_rows, 400))
         attn_hist.write_html(args.attention_head_hist_file)
         console.print(f"[cyan]Saved attention head histograms → {args.attention_head_hist_file}[/cyan]")
+
+    if args.plot_residual_magnitude and residual_mag_traces:
+        from plotly.subplots import make_subplots
+        import plotly.graph_objects as go
+        fig = make_subplots(rows=1, cols=1)
+        stage_names = residual_mag_traces[0][0]
+        arr = np.array([m for _, m in residual_mag_traces], dtype=np.float32)
+        fig.add_trace(go.Heatmap(z=arr.T, x=list(range(arr.shape[0])), y=stage_names, coloraxis="coloraxis"))
+        fig.update_layout(height=max(320, 22 * len(stage_names)), coloraxis={"colorscale": "Viridis"})
+        fig.write_html(args.residual_magnitude_file)
+        np.savez(Path(args.residual_magnitude_file).with_suffix(".npz"), stage_names=np.array(stage_names, dtype=object), magnitudes=arr)
+        console.print(f"[cyan]Saved residual magnitude traces → {args.residual_magnitude_file}[/cyan]")
 
 if __name__ == "__main__":
     main()
