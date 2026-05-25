@@ -548,9 +548,23 @@ class Trainer:
 
         if optimizer_key == "muon":
             named = list(self.model.named_parameters())
-            exclude = ("embed", "wte", "wpe", "lm_head")
-            hidden = [p for n, p in named if p.ndim >= 2 and all(e not in n for e in exclude)]
-            other = [p for n, p in named if not (p.ndim >= 2 and all(e not in n for e in exclude))]
+            exclude = tuple(self.args.muon_exclude_substrings)
+            force_include = tuple(self.args.muon_force_include_substrings)
+            muon_min_ndim = self.args.muon_min_ndim
+
+            def _use_muon_for_param(name, param):
+                if self.args.muon_include_all_weights:
+                    return True
+                if force_include and any(token in name for token in force_include):
+                    return True
+                if param.ndim < muon_min_ndim:
+                    return False
+                if exclude and any(token in name for token in exclude):
+                    return False
+                return True
+
+            hidden = [p for n, p in named if _use_muon_for_param(n, p)]
+            other = [p for n, p in named if not _use_muon_for_param(n, p)]
             param_groups = [
                 {"params": other, "use_muon": False},
                 {"params": hidden, "use_muon": True},
