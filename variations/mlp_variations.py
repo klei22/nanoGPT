@@ -860,6 +860,48 @@ class DualPathSwiglu(nn.Module):
         return x
 
 
+class CayleyRotationMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        self.activation_variant = activation_dictionary[config.activation_variant](config=config)
+
+        if config.learn_mlp_x_offset:
+            self.activation_x_offset = nn.Parameter(torch.tensor(config.mlp_x_offset))
+        else:
+            self.register_buffer("activation_x_offset", torch.tensor(config.mlp_x_offset))
+
+        if config.learn_mlp_y_offset:
+            self.activation_y_offset = nn.Parameter(torch.tensor(config.mlp_y_offset))
+        else:
+            self.register_buffer("activation_y_offset", torch.tensor(config.mlp_y_offset))
+
+        mlp_hidden = config.mlp_size if config.mlp_size is not None else config.mlp_expansion_factor * config.n_embd
+        self.c_fc = nn.Linear(config.n_embd, mlp_hidden, bias=(config.mlp_up_bias if config.mlp_up_bias is not None else config.bias))
+
+        # One learnable skew-symmetric seed per hidden scalar gate.
+        self.skew_seed = nn.Parameter(torch.randn(mlp_hidden, config.n_embd, config.n_embd) * 0.02)
+        self.eye = nn.Parameter(torch.eye(config.n_embd), requires_grad=False)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x, iter_num=None):
+        x_in = x
+        gates = self.c_fc(x)
+        gates = self.activation_variant(gates - self.activation_x_offset) - self.activation_y_offset
+
+        # Build skew-symmetric matrices from learned seeds and combine using post-activation scalars.
+        skew_seeds = self.skew_seed - self.skew_seed.transpose(-1, -2)
+        skew = torch.einsum('bth,hnm->btnm', gates, skew_seeds)
+
+        eye = self.eye.to(dtype=x.dtype, device=x.device).unsqueeze(0).unsqueeze(0)
+        half_skew = 0.5 * skew
+        cayley = torch.linalg.solve(eye - half_skew, eye + half_skew)
+
+        x = torch.matmul(cayley, x_in.unsqueeze(-1)).squeeze(-1)
+        x = self.dropout(x)
+        return x
+
+
 class KanMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -890,7 +932,8 @@ mlp_dictionary = {
     "identity": MLP_Identity,
     "kan": KanMLP,
     "dual_path": DualPathMLP,
-    "dual_path_swiglu": DualPathSwiglu
+    "dual_path_swiglu": DualPathSwiglu,
+    "cayley_rotation": CayleyRotationMLP,
     }
 
 def get_mlp_instance(config):

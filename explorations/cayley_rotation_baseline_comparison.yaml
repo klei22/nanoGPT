@@ -1,0 +1,66 @@
+# cayley_rotation_baseline_comparison.yaml
+# Based on explorations/default.yaml, but explicitly avoids ReLU2max and MQA
+# so Cayley-rotation MLP can be compared cleanly against baseline.
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      use_abs_pos_embeddings: [false]
+
+  # Embedding Norm
+  - named_group: "rmsnorm_wte"
+    named_group_settings:
+      norm_variant_wte: ["rmsnorm"]
+
+  # Activation (explicitly not relu2max)
+  - named_group: "squared_relu"
+    named_group_settings:
+      activation_variant: ["squared_relu"]
+
+  # Attention baseline (explicitly not mqa)
+  - named_group: "causal_attention"
+    named_group_settings:
+      attention_variant: ["causal"]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [1000]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  # Baseline MLP
+  - compile: [true]
+    mlp_variant: ["mlp"]
+    named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "squared_relu"
+      - "causal_attention"
+
+  # New Cayley rotation MLP
+  - compile: [true]
+    mlp_variant: ["cayley_rotation"]
+    named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "squared_relu"
+      - "causal_attention"
