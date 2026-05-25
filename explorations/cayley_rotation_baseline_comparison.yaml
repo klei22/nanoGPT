@@ -32,9 +32,9 @@ named_static_groups:
       activation_variant: ["squared_relu"]
 
   # Attention baseline (explicitly not mqa)
-  - named_group: "gqa_attention"
+  - named_group: "causal_attention"
     named_group_settings:
-      attention_variant: ["gqa"]
+      attention_variant: ["causal"]
 
 common_group:
   dataset: ["minipile"]
@@ -52,7 +52,7 @@ parameter_groups:
       - "rotary"
       - "rmsnorm_wte"
       - "squared_relu"
-      - "gqa_attention"
+      - "causal_attention"
 
   # New Cayley rotation MLP
   - compile: [true]
@@ -63,4 +63,4 @@ parameter_groups:
       - "rotary"
       - "rmsnorm_wte"
       - "squared_relu"
-      - "gqa_attention"
+      - "causal_attention"
