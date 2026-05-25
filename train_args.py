@@ -664,6 +664,7 @@ def parse_args():
             "dual_path",
             "dual_path_swiglu",
             "identity",
+            "cayley_rotation",
             ]
 
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
