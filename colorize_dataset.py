@@ -145,6 +145,17 @@ def parse_args():
         help="Output HTML file for activation heatmaps",
     )
     p.add_argument(
+        "--activation_hist_file",
+        default="activation_hist.html",
+        help="Output HTML file for activation-input histograms overlaid with activation curves",
+    )
+    p.add_argument(
+        "--activation_hist_bins",
+        type=int,
+        default=120,
+        help="Number of bins for per-layer activation-input histograms",
+    )
+    p.add_argument(
         "--components",
         choices=["wte", "attn", "mlp", "resid"],
         nargs="+",
@@ -207,6 +218,7 @@ def main():
 
     lines: List[str] = []
     heatmap_traces = None
+    heatmap_inputs = None
 
     if args.display == "token":
         ids: List[int] = []
@@ -255,6 +267,7 @@ def main():
         if args.activation_heatmap:
             if heatmap_traces is None:
                 heatmap_traces = [[] for _ in range(model.config.n_layer)]
+                heatmap_inputs = [[] for _ in range(model.config.n_layer)]
             for li, blk in enumerate(model.transformer.h):
                 if hasattr(blk.mlp, "activation_variant"):
                     act_call_counts[li] = 0
@@ -262,7 +275,9 @@ def main():
                         def hook(module, inp, out):
                             # SwigLU / DualPath* can call activation multiple times; take the first call per token.
                             if act_call_counts[layer_idx] == 0:
+                                in_vec = inp[0][0, -1, :].detach().float().cpu()
                                 vec = out[0, -1, :].detach().float().cpu()
+                                heatmap_inputs[layer_idx].append(in_vec.numpy())
                                 heatmap_traces[layer_idx].append(vec.numpy())
                             act_call_counts[layer_idx] += 1
                         return hook
@@ -494,6 +509,47 @@ def main():
         fig.write_html(args.activation_heatmap_file)
         np.savez(Path(args.activation_heatmap_file).with_suffix('.npz'), **npy_payload)
         console.print(f"[cyan]Saved activation heatmaps → {args.activation_heatmap_file}[/cyan]")
+
+        hist_fig = make_subplots(
+            rows=rows,
+            cols=1,
+            shared_xaxes=False,
+            subplot_titles=[f"layer {i+1}" for i in range(rows)],
+            specs=[[{"secondary_y": True}] for _ in range(rows)],
+        )
+        hist_payload = {}
+        for i, layer_inputs in enumerate(heatmap_inputs):
+            if not layer_inputs:
+                continue
+            arr_in = np.concatenate([a.reshape(-1) for a in layer_inputs], axis=0)
+            hist_payload[f"layer_{i+1}_activation_input"] = arr_in
+            counts, edges = np.histogram(arr_in, bins=args.activation_hist_bins, density=True)
+            centers = (edges[:-1] + edges[1:]) * 0.5
+            layer_mlp = model.transformer.h[i].mlp
+            x_eval = torch.from_numpy(centers.astype(np.float32)).to(args.device)
+            with torch.no_grad():
+                y_eval = layer_mlp.activation_variant(x_eval).detach().float().cpu().numpy()
+
+            hist_fig.add_trace(
+                go.Bar(x=centers, y=counts, name=f"L{i+1} hist", marker_color="rgba(55, 83, 109, 0.55)"),
+                row=i + 1,
+                col=1,
+                secondary_y=False,
+            )
+            hist_fig.add_trace(
+                go.Scatter(x=centers, y=y_eval, mode="lines", name=f"L{i+1} act(x)", line={"color": "crimson", "width": 2}),
+                row=i + 1,
+                col=1,
+                secondary_y=True,
+            )
+            hist_fig.update_yaxes(title_text="density", row=i + 1, col=1, secondary_y=False)
+            hist_fig.update_yaxes(title_text="activation(x)", row=i + 1, col=1, secondary_y=True)
+            hist_fig.update_xaxes(title_text="activation input", row=i + 1, col=1)
+
+        hist_fig.update_layout(height=max(280 * rows, 400), barmode="overlay")
+        hist_fig.write_html(args.activation_hist_file)
+        np.savez(Path(args.activation_hist_file).with_suffix('.npz'), **hist_payload)
+        console.print(f"[cyan]Saved activation histograms → {args.activation_hist_file}[/cyan]")
 
 if __name__ == "__main__":
     main()
