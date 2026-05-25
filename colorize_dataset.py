@@ -31,10 +31,10 @@ python colorize_dataset.py \
 from __future__ import annotations
 
 import argparse, io, pickle, math
+import numpy as np
 from pathlib import Path
 from typing import Callable, List, Sequence
 
-import numpy as np
 import torch, torch.nn.functional as F
 from rich.console import Console
 from rich.table import Table
@@ -134,6 +134,17 @@ def parse_args():
         ),
     )
     p.add_argument(
+        "--activation_heatmap",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Collect per-layer activation traces and save heatmap HTML/NPY outputs",
+    )
+    p.add_argument(
+        "--activation_heatmap_file",
+        default="activation_heatmap.html",
+        help="Output HTML file for activation heatmaps",
+    )
+    p.add_argument(
         "--components",
         choices=["wte", "attn", "mlp", "resid"],
         nargs="+",
@@ -195,6 +206,7 @@ def main():
     tokens_left = min(args.num_tokens, len(data) - 1 - pos)
 
     lines: List[str] = []
+    heatmap_traces = None
 
     if args.display == "token":
         ids: List[int] = []
@@ -239,6 +251,22 @@ def main():
 
         activations = {"t0": None, "attn": [], "mlp": [], "ar": [], "mr": []}
         handles = []
+        act_call_counts = {}
+        if args.activation_heatmap:
+            if heatmap_traces is None:
+                heatmap_traces = [[] for _ in range(model.config.n_layer)]
+            for li, blk in enumerate(model.transformer.h):
+                if hasattr(blk.mlp, "activation_variant"):
+                    act_call_counts[li] = 0
+                    def make_act_hook(layer_idx):
+                        def hook(module, inp, out):
+                            # SwigLU / DualPath* can call activation multiple times; take the first call per token.
+                            if act_call_counts[layer_idx] == 0:
+                                vec = out[0, -1, :].detach().float().cpu()
+                                heatmap_traces[layer_idx].append(vec.numpy())
+                            act_call_counts[layer_idx] += 1
+                        return hook
+                    handles.append(blk.mlp.activation_variant.register_forward_hook(make_act_hook(li)))
         if args.display != "token" and args.activation_view != "none":
             def t0_hook(module, inp, out):
                 activations["t0"] = out[0, -1, :].detach()
@@ -445,6 +473,27 @@ def main():
         fig.write_html(args.plot_file)
         console.print(f"[cyan]Saved plot → {args.plot_file}[/cyan]")
 
+
+    if args.activation_heatmap and heatmap_traces is not None:
+        from plotly.subplots import make_subplots
+        import plotly.graph_objects as go
+
+        rows = len(heatmap_traces)
+        fig = make_subplots(rows=rows, cols=1, shared_xaxes=True,
+                            subplot_titles=[f"layer {i+1}" for i in range(rows)])
+        npy_payload = {}
+        for i, layer_series in enumerate(heatmap_traces):
+            if not layer_series:
+                continue
+            arr = np.stack(layer_series, axis=0)  # (tokens, hidden_or_mlp_dim)
+            npy_payload[f"layer_{i+1}"] = arr
+            fig.add_trace(go.Heatmap(z=arr.T, coloraxis="coloraxis", showscale=(i == 0)), row=i+1, col=1)
+            fig.update_yaxes(title_text="unit", row=i+1, col=1)
+
+        fig.update_layout(height=max(280 * rows, 400), coloraxis={"colorscale": "RdBu", "cmid": 0.0})
+        fig.write_html(args.activation_heatmap_file)
+        np.savez(Path(args.activation_heatmap_file).with_suffix('.npz'), **npy_payload)
+        console.print(f"[cyan]Saved activation heatmaps → {args.activation_heatmap_file}[/cyan]")
 
 if __name__ == "__main__":
     main()
