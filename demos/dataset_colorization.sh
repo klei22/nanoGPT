@@ -1,23 +1,21 @@
 #!/bin/bash
 # demos/dataset_colorization.sh
 
-pushd data/filipino/tagalog_filipino_eng_translation
-bash get_dataset.sh
-popd
+set -euo pipefail
 
-python train.py \
-  --dataset filipino/tagalog_filipino_eng_translation \
-  --compile \
-  --colorize_output \
-  --colorize_mode all \
-  --max_iters 10000
+output_dir="${1:?Usage: $0 <out_dir> [dataset]}"
+dataset="${2:-minipile}"
+
+run_name="$(basename "$output_dir")"
+results_dir="results"
+mkdir -p "$results_dir"
 
 python analyze_with_dataset.py \
-  --out_dir        out \
-  --dataset        filipino/tagalog_filipino_eng_translation  \
-  --split          val \
-  --num_tokens     2048 \
-  --device         cuda:0 \
-  --block_size     256 \
-  --mode           minmax  \
-  --output_file    kulay_ng_dataset_minmax.txt
+  --out_dir "$output_dir" \
+  --dataset "$dataset" \
+  --display topk \
+  --activation_heatmap \
+  --activation_heatmap_file "$results_dir/${run_name}_activation_heatmap.html" \
+  --activation_hist_file "$results_dir/${run_name}_activation_hist.html" \
+  --attention_head_heatmap_file "$results_dir/${run_name}_attn_head_heatmap.html" \
+  --attention_head_hist_file "$results_dir/${run_name}_attn_head_hist.html"
