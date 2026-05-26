@@ -1,5 +1,5 @@
 #!/bin/bash
-# demos/dataset_colorization.sh
+# demos/dataset_analysis.sh
 
 set -euo pipefail
 
