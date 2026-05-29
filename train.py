@@ -23,7 +23,7 @@ from train_variations.optimizer_variants import (
     ActRegularizedAdamW,
 )
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
-from train_variations.loss_variants import build_loss_function
+from train_variations.loss_variants import build_loss_function, build_superposition_loss_function
 from train_variations.distillation_loss_variants import build_distillation_loss
 
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
@@ -209,6 +209,29 @@ class Trainer:
         self.latest_distillation_loss = float('nan')
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
+
+        # Token Superposition Training (TST): the first ``superposition_steps``
+        # iterations run the high-throughput superposition phase (averaged
+        # bag-of-token embeddings + next bag-of-tokens / multi-hot CE loss); the
+        # remaining iterations are ordinary next-token training (recovery phase).
+        self.superposition_enabled = (
+            self.args.superposition_bag_size > 1 and self.args.superposition_ratio > 0.0
+        )
+        self.superposition_steps = (
+            int(round(self.args.superposition_ratio * self.args.max_iters))
+            if self.superposition_enabled
+            else 0
+        )
+        self.superposition_loss_fn = build_superposition_loss_function(self.args)
+        if self.superposition_enabled:
+            if self.args.training_mode == 'multicontext':
+                raise ValueError("Token Superposition Training is not supported with multicontext training mode.")
+            print(
+                f"Token Superposition Training enabled: bag_size={self.args.superposition_bag_size}, "
+                f"ratio={self.args.superposition_ratio} -> superposition phase for the first "
+                f"{self.superposition_steps}/{self.args.max_iters} steps "
+                f"(weighting={self.args.superposition_weighting})."
+            )
 
         # Learning Rate Settings
         self.lr = self.args.learning_rate
@@ -811,9 +834,25 @@ class Trainer:
             self.dataset_size_tokens = len(self.train_data)
 
 
-    def get_batch(self, split, target_dataset=None):
+    def in_superposition_phase(self, iter_num=None):
+        """True while Token Superposition Training should fold tokens into bags."""
+        if not getattr(self, "superposition_enabled", False):
+            return False
+        if iter_num is None:
+            iter_num = self.iter_num
+        return iter_num < self.superposition_steps
+
+    def get_batch(self, split, target_dataset=None, allow_superposition=False):
         dataset = None
         data = None
+        # During the TST superposition phase, training batches carry ``s`` times
+        # more data tokens (folded into bags); evaluation always uses standard
+        # single-token batches so reported losses stay comparable across phases.
+        bag_size = (
+            self.args.superposition_bag_size
+            if (allow_superposition and split == 'train' and self.in_superposition_phase())
+            else 1
+        )
         def interpolate_probs(initial_probs, final_probs, method, step_ratio):
             if method == 'linear':
                 return initial_probs + step_ratio * (final_probs - initial_probs)
@@ -944,9 +983,11 @@ class Trainer:
             if self.gns > self.args.gns_target:
                 self.args.batch_size = math.ceil(self.args.batch_size * (1.0 - self.args.gns_batch_pct))
 
-        # Generate random indices for the batch
-        ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
-        available = len(data) - self.args.block_size
+        # Generate random indices for the batch. In the superposition phase each
+        # example spans ``block_size * bag_size`` contiguous data tokens.
+        span = self.args.block_size * bag_size
+        ix = torch.randint(len(data) - span, (self.args.batch_size,))
+        available = len(data) - span
         if self.args.sampling_method == "random":
             ix = torch.randint(available, (self.args.batch_size,))
         elif self.args.sampling_method == "sequential":
@@ -984,9 +1025,19 @@ class Trainer:
             ix = torch.randint(available, (self.args.batch_size,))
 
 
+        # Clamp indices so permutation-based samplers built for the baseline span
+        # stay in range when the superposition phase temporarily enlarges it.
+        ix = ix.clamp_(0, len(data) - span - 1)
+
         # Get training and targets
-        x = torch.stack([torch.from_numpy((data[i:i+self.args.block_size]).astype(np.int64)) for i in ix])
-        y = torch.stack([torch.from_numpy((data[i+1:i+1+self.args.block_size]).astype(np.int64)) for i in ix])
+        x = torch.stack([torch.from_numpy((data[i:i+span]).astype(np.int64)) for i in ix])
+        y = torch.stack([torch.from_numpy((data[i+1:i+1+span]).astype(np.int64)) for i in ix])
+
+        if bag_size > 1:
+            # Fold each example into ``block_size`` bags of ``bag_size`` tokens.
+            # x: (B, block_size, bag_size) -> averaged to one s-token per position
+            # by the model; y stays (B, block_size * bag_size) for the MCE loss.
+            x = x.view(self.args.batch_size, self.args.block_size, bag_size)
 
         # Send to appropriate device
         if self.device_type == 'cuda':
@@ -2018,8 +2069,8 @@ class Trainer:
             current_dataset = dataset_list[0]
             self.mc_btc_train = {}
         else:
-            self.X, self.Y, current_dataset = self.get_batch('train')
-        self.X, self.Y, current_dataset = self.get_batch('train')
+            self.X, self.Y, current_dataset = self.get_batch('train', allow_superposition=True)
+        self.X, self.Y, current_dataset = self.get_batch('train', allow_superposition=True)
         t_start = time.time()
         t0 = t_start
         local_iter_num = 0
@@ -2117,6 +2168,7 @@ class Trainer:
                     if self.ddp:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
 
+                    is_superposition_batch = False
                     with self.ctx:
                         if self.args.training_mode == 'multicontext':
                             total_loss = 0
@@ -2133,12 +2185,19 @@ class Trainer:
                             loss = sum(training_losses) / len(training_losses)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
+                            # A 3D batch means we are in the superposition phase and
+                            # must use the next bag-of-tokens (multi-hot CE) loss;
+                            # otherwise fall back to the standard configured loss.
+                            is_superposition_batch = self.X.dim() == 3
+                            active_loss_fn = (
+                                self.superposition_loss_fn if is_superposition_batch else self.loss_fn
+                            )
                             logits, loss = self.model(
                                 self.X,
                                 targets=self.Y,
                                 iter_num=self.iter_num,
                                 dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
+                                loss_fn=active_loss_fn,
                             )
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
@@ -2153,6 +2212,7 @@ class Trainer:
                         self.teacher_model is not None
                         and self.distillation_loss_fn is not None
                         and self.args.training_mode != 'multicontext'
+                        and not is_superposition_batch  # teacher distillation runs only on standard batches
                     ):
                         with torch.no_grad():
                             teacher_logits, _ = self.teacher_model(
@@ -2180,7 +2240,10 @@ class Trainer:
                     loss = loss / self.args.gradient_accumulation_steps
 
                     prior_dataset = current_dataset
-                    tokens_trained_this_batch = self.args.batch_size * self.args.block_size
+                    # In the superposition phase each step consumes ``bag_size`` more
+                    # data tokens than a baseline step (equal-FLOPs, higher throughput).
+                    superposition_bag = self.X.size(2) if is_superposition_batch else 1
+                    tokens_trained_this_batch = self.args.batch_size * self.args.block_size * superposition_bag
                     if self.args.dataset_list:
                         # Update per–dataset count
                         self.tokens_trained_dict[current_dataset] += tokens_trained_this_batch
@@ -2204,7 +2267,7 @@ class Trainer:
                         self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
                         current_dataset = dataset_list[0]
                     else:
-                        self.X, self.Y, current_dataset = self.get_batch('train')
+                        self.X, self.Y, current_dataset = self.get_batch('train', allow_superposition=True)
 
                     if self.args.gns_type is not None:
                         approx_gns_results = gather_hook_results(self.model)

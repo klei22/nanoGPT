@@ -125,6 +125,40 @@ def parse_args():
         help="Schedule for rank_distance's scaling factor, e.g. 0:1.0,1000:2.0",
     )
 
+    # Token Superposition Training (TST)
+    # Drop-in two-phase pretraining: a high-throughput "superposition" phase
+    # where s contiguous tokens are averaged into one "s-token" and the model
+    # predicts the next bag-of-tokens with a multi-hot cross-entropy loss,
+    # followed by a "recovery" phase of ordinary next-token training. Every
+    # superposition step is equal-FLOPs to a baseline step (the sequence simply
+    # carries s times more data tokens). See "Efficient Pre-Training with Token
+    # Superposition" for details. Recommended ranges: s in [4, 8], r in [0.2, 0.4].
+    training_group.add_argument(
+        '--superposition_bag_size',
+        type=int,
+        default=1,
+        help='Token Superposition bag size s: number of contiguous tokens averaged '
+             'into one s-token during the superposition phase. 1 disables TST.',
+    )
+    training_group.add_argument(
+        '--superposition_ratio',
+        type=float,
+        default=0.0,
+        help='Fraction r in [0, 1] of total (max_iters) steps trained in the '
+             'superposition phase; the remaining 1 - r steps are standard '
+             'next-token training (recovery phase). 0 disables TST.',
+    )
+    training_group.add_argument(
+        '--superposition_weighting',
+        type=str,
+        default='uniform',
+        choices=['uniform', 'power_law', 'exponential', 'first_token'],
+        help='Weighting of the per-position terms in the next bag-of-tokens '
+             '(multi-hot CE) loss. "uniform" averages all s targets equally; '
+             '"power_law" (1/i) and "exponential" (exp(-i)) down-weight farther '
+             'tokens; "first_token" recovers output-free (input-only) superposition.',
+    )
+
     # Loss hyperparameters
     training_group.add_argument(
         '--label_smoothing',

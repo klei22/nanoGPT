@@ -31,6 +31,83 @@ def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor, *, iter_num:
     return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
 
+def superposition_bag_weights(bag_size: int, weighting: str = "uniform") -> List[float]:
+    """Relative weight of each position i (1-indexed) in a next bag-of-tokens loss.
+
+    Mirrors the weighting schemes from the Token Superposition paper (Appendix D):
+    ``uniform`` (1), ``power_law`` (1/i), ``exponential`` (exp(-i)) and
+    ``first_token`` (1 for the immediate next token, 0 otherwise -- which turns
+    output superposition off, recovering input-only superposition).
+    """
+    if weighting == "uniform":
+        return [1.0] * bag_size
+    if weighting == "power_law":
+        return [1.0 / i for i in range(1, bag_size + 1)]
+    if weighting == "exponential":
+        return [math.exp(-i) for i in range(1, bag_size + 1)]
+    if weighting == "first_token":
+        return [1.0] + [0.0] * (bag_size - 1)
+    raise ValueError(f"Unknown superposition weighting: {weighting}")
+
+
+def multi_hot_cross_entropy(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    weighting: str = "uniform",
+    ignore_index: int = -1,
+) -> torch.Tensor:
+    """Multi-hot cross-entropy (MCE) for Token Superposition Training.
+
+    Each latent ``s-token`` position predicts the next *bag* of ``s`` tokens. The
+    loss is the (optionally weighted) average of the standard cross-entropy of the
+    shared logits against every token in the bag -- the simplified MCE objective
+    ``L = (1/|y|) * sum_y CE(z, y)`` from the paper, which lets us reuse the
+    optimized CE kernel without a custom backward.
+
+    Args:
+        logits: ``(B, l, V)`` predictions over the ``l`` latent positions.
+        targets: ``(B, l * s)`` standard next-token labels. The bag size ``s`` is
+            inferred as ``targets.shape[-1] // logits.shape[-2]``; labels are
+            shifted left by ``s - 1`` and split into non-overlapping bags so that
+            position ``t`` predicts tokens ``[t + s, t + 2s - 1]`` (causal).
+
+    When ``s == 1`` (recovery phase / non-TST batches) this reduces exactly to
+    standard cross-entropy, so it is safe to use for both phases.
+    """
+    if logits.dim() == 2:
+        # (N, V) / (N,) -> treat as a single sequence for convenience.
+        logits = logits.unsqueeze(0)
+        targets = targets.unsqueeze(0)
+
+    bs, seq, vocab = logits.shape
+    label_seq = targets.shape[-1]
+    bag_size = max(1, label_seq // seq)
+    offset = bag_size - 1
+
+    flat_logits = logits.reshape(bs * seq, vocab).float()
+
+    if offset > 0:
+        # Shift labels left by s-1 (pad the tail with ignore) before bagging so
+        # that each latent position is supervised by its *next* bag of tokens.
+        targets = F.pad(targets, (0, offset), mode="constant", value=ignore_index)[..., offset:]
+    targets = targets[..., : seq * bag_size].reshape(bs, seq, bag_size)
+
+    weights = superposition_bag_weights(bag_size, weighting)
+    total_weight = sum(weights)
+    if total_weight == 0.0:
+        raise ValueError("Superposition bag weights sum to zero.")
+
+    loss = flat_logits.new_zeros(())
+    for i, weight in enumerate(weights):
+        if weight == 0.0:
+            continue
+        target_i = targets[..., i].reshape(bs * seq)
+        loss = loss + weight * F.cross_entropy(flat_logits, target_i, ignore_index=ignore_index)
+    return loss / total_weight
+
+
 class BitBalancedCrossEntropy:
     """Cross entropy augmented with a bit-usage penalty."""
 
@@ -503,6 +580,7 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
     "bit_balanced_cross_entropy": BitBalancedCrossEntropy(),
+    "multi_hot_cross_entropy": multi_hot_cross_entropy,
 }
 
 
@@ -662,6 +740,9 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             bit_penalty=getattr(args, "bit_loss_weight", 0.0),
             normalize_by_params=getattr(args, "bit_loss_normalize", False),
         ),
+        "multi_hot_cross_entropy": lambda l, t, *, iter_num=None: LOSS_VARIANTS["multi_hot_cross_entropy"](
+            l, t, iter_num=iter_num, weighting=getattr(args, "superposition_weighting", "uniform")
+        ),
     }
 
     if schedule_str:
@@ -670,4 +751,14 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
 
     loss_name = getattr(args, "loss_fn", "cross_entropy")
     return built_losses.get(loss_name, LOSS_VARIANTS["cross_entropy"])
+
+
+def build_superposition_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    """Return the next bag-of-tokens (MCE) loss used during the TST superposition phase."""
+    weighting = getattr(args, "superposition_weighting", "uniform")
+
+    def _loss(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
+        return multi_hot_cross_entropy(logits, targets, iter_num=iter_num, weighting=weighting)
+
+    return _loss
 

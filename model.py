@@ -535,14 +535,31 @@ class GPT(nn.Module):
 
         else:
             device = idx.device
-            b, t = idx.size()
+            # Token Superposition Training: a 3D ``idx`` of shape (b, t, s) means
+            # each of the t latent positions is a "bag" of s contiguous tokens.
+            # We average their embeddings into a single "s-token" so the model
+            # still processes t positions (equal-FLOPs to a baseline step).
+            superposition_bag_size = idx.size(-1) if idx.dim() == 3 else 1
+            b, t = idx.shape[0], idx.shape[1]
             # assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
 
             # forward the GPT model itself
             if self.config.multidataset_wte and dataset_idx is not None:
-                tok_emb = self.transformer[f'wte_{dataset_idx}'](idx)
+                wte = self.transformer[f'wte_{dataset_idx}']
             else:
-                tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+                wte = self.transformer.wte
+
+            if superposition_bag_size > 1:
+                # Sum the bag's embeddings in float32 for numerical precision, then
+                # average back to the embedding dtype -> (b, t, n_embd).
+                tok_emb = wte(idx[..., 0])
+                emb_dtype = tok_emb.dtype
+                tok_emb = tok_emb.float()
+                for i in range(1, superposition_bag_size):
+                    tok_emb = tok_emb + wte(idx[..., i]).float()
+                tok_emb = (tok_emb / superposition_bag_size).to(emb_dtype)
+            else:
+                tok_emb = wte(idx) # token embeddings of shape (b, t, n_embd)
             x = None
 
             tok_emb = self.add_embedding_gaussian_noise(tok_emb, iter_num=iter_num)
