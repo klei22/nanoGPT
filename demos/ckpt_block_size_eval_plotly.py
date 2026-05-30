@@ -95,6 +95,12 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="If enabled, stop on first checkpoint evaluation error.",
     )
+    parser.add_argument(
+        "--dark_mode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use Plotly dark theme for the output chart.",
+    )
     return parser.parse_args()
 
 
@@ -243,17 +249,10 @@ def build_plotly_report(
     results_by_ckpt: Dict[str, List[Dict[str, float]]],
     dataset: str,
     output_html: Path,
+    dark_mode: bool,
 ) -> None:
-    n_ckpts = len(results_by_ckpt)
-    fig = make_subplots(
-        rows=n_ckpts,
-        cols=1,
-        shared_xaxes=False,
-        vertical_spacing=0.06 if n_ckpts > 1 else 0.1,
-        subplot_titles=list(results_by_ckpt.keys()),
-    )
+    fig = make_subplots(rows=1, cols=1)
 
-    row = 1
     for ckpt_label, rows_data in results_by_ckpt.items():
         x = [r["block_size"] for r in rows_data]
         y = [r["val_loss"] for r in rows_data]
@@ -265,7 +264,7 @@ def build_plotly_report(
                 y=y,
                 mode="lines+markers",
                 name=ckpt_label,
-                showlegend=False,
+                showlegend=True,
                 error_y=dict(type="data", array=err, visible=True),
                 hovertemplate=(
                     "ckpt=%{text}<br>"
@@ -274,17 +273,17 @@ def build_plotly_report(
                 ),
                 text=[ckpt_label] * len(x),
             ),
-            row=row,
+            row=1,
             col=1,
         )
-        fig.update_yaxes(title_text="Validation loss", row=row, col=1)
-        fig.update_xaxes(title_text="Block size", row=row, col=1)
-        row += 1
+    fig.update_yaxes(title_text="Validation loss", row=1, col=1)
+    fig.update_xaxes(title_text="Block size", row=1, col=1)
 
     fig.update_layout(
         title=f"Validation Loss vs Block Size (dataset={dataset})",
-        template="plotly_white",
-        height=max(420, int(320 * n_ckpts)),
+        template="plotly_dark" if dark_mode else "plotly_white",
+        height=700,
+        legend_title_text="Checkpoint",
     )
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
@@ -314,8 +313,13 @@ def main() -> None:
     failed_ckpts: List[Tuple[str, str]] = []
 
     print(f"Found {len(ckpts)} checkpoint(s).")
+    search_dir_resolved = args.search_dir.resolve()
     for ckpt_path in ckpts:
-        ckpt_label = str(ckpt_path.resolve())
+        ckpt_abs = ckpt_path.resolve()
+        try:
+            ckpt_label = str(ckpt_abs.relative_to(search_dir_resolved))
+        except ValueError:
+            ckpt_label = str(ckpt_abs)
         print(f"Evaluating: {ckpt_label}")
         try:
             ckpt_results = evaluate_ckpt_over_block_sizes(
@@ -343,7 +347,12 @@ def main() -> None:
             "Rerun with --fail_fast for immediate debugging."
         )
 
-    build_plotly_report(results_by_ckpt, args.eval_dataset, args.output_html)
+    build_plotly_report(
+        results_by_ckpt,
+        args.eval_dataset,
+        args.output_html,
+        dark_mode=args.dark_mode,
+    )
 
     print(f"Wrote Plotly report: {args.output_html}")
     if failed_ckpts:
