@@ -8,6 +8,7 @@ support for extending block size at inference using GPT.update_block_size().
 import argparse
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -87,6 +88,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("demos/ckpt_block_size_eval_report.html"),
         help="Output HTML file path.",
+    )
+    parser.add_argument(
+        "--fail_fast",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If enabled, stop on first checkpoint evaluation error.",
     )
     return parser.parse_args()
 
@@ -202,6 +209,9 @@ def evaluate_ckpt_over_block_sizes(
 
         if requested_block_size > model.config.block_size:
             model.update_block_size(requested_block_size)
+            # Some position-embedding variants create new modules on CPU in
+            # update_block_size; ensure all parameters stay on the requested device.
+            model.to(device)
 
         metrics = calculate_validation_loss(
             model=model,
@@ -301,25 +311,45 @@ def main() -> None:
     val_data = load_validation_data(args.eval_dataset)
 
     results_by_ckpt: Dict[str, List[Dict[str, float]]] = {}
+    failed_ckpts: List[Tuple[str, str]] = []
 
     print(f"Found {len(ckpts)} checkpoint(s).")
     for ckpt_path in ckpts:
         ckpt_label = str(ckpt_path.resolve())
         print(f"Evaluating: {ckpt_label}")
-        ckpt_results = evaluate_ckpt_over_block_sizes(
-            ckpt_path=ckpt_path,
-            block_sizes=block_sizes,
-            val_data=val_data,
-            eval_iters=args.eval_iters,
-            batch_size=args.batch_size,
-            device=args.device,
-            ptdtype=ptdtype,
+        try:
+            ckpt_results = evaluate_ckpt_over_block_sizes(
+                ckpt_path=ckpt_path,
+                block_sizes=block_sizes,
+                val_data=val_data,
+                eval_iters=args.eval_iters,
+                batch_size=args.batch_size,
+                device=args.device,
+                ptdtype=ptdtype,
+            )
+            results_by_ckpt[ckpt_label] = ckpt_results
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            failed_ckpts.append((ckpt_label, err))
+            print(f"[ERROR] {ckpt_label}: {err}")
+            if args.fail_fast:
+                raise
+            traceback.print_exc()
+            continue
+
+    if not results_by_ckpt:
+        raise RuntimeError(
+            "All checkpoint evaluations failed. "
+            "Rerun with --fail_fast for immediate debugging."
         )
-        results_by_ckpt[ckpt_label] = ckpt_results
 
     build_plotly_report(results_by_ckpt, args.eval_dataset, args.output_html)
 
     print(f"Wrote Plotly report: {args.output_html}")
+    if failed_ckpts:
+        print(f"Completed with {len(failed_ckpts)} failed checkpoint(s):")
+        for ckpt_label, err in failed_ckpts:
+            print(f"  - {ckpt_label}: {err}")
 
 
 if __name__ == "__main__":
