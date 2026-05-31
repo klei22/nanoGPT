@@ -23,6 +23,7 @@ python3 hyperparam_search.py \
         16 \
         0.1 \
   --random_iterations 1 \
+  --resume_trials_from_checkpoint \
   --iterations 1 \
   --num_iterations 20000 \
   --results_file results.yaml

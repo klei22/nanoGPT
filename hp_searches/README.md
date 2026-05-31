@@ -59,10 +59,11 @@ python3 hyperparam_search.py \
         32 \
         32 \
   --random_iterations 1 \
+  --resume_trials_from_checkpoint \
   --iterations 1 \
   --num_iterations 20000 \
   --efficiency_target params \
-  --override max_iters=20000 batch_size=64 \
+  --override_cfg max_iters=20000 batch_size=64 \
   --results_file results.yaml
 ```
 
@@ -72,7 +73,7 @@ noise.
 - `iterations` is the depth of the search per parameter (e.g. try adding 1
     n_layer then trying adding a second n_layer, and see which is best)
 - `num_iterations` is the number of growth steps
-- `override` don't use this at first, but allows you to manually override
+- `override_cfg` don't use this at first, but allows you to manually override
     settings for any hp_search already started (just stop and resume with these
     overrides to for example increase the max_iters, and to unblock the model
     when delta score gets too close to noise levels)
@@ -84,6 +85,12 @@ noise.
   `rankme`, or `areq`.
   - `optimize_mode` controls direction of optimization for the selected
   target: `max` (default) or `min`.
+  - `resume_trials_from_checkpoint` makes each candidate/seed write to a
+  deterministic checkpoint directory and restarts any interrupted `train.py`
+  run from its latest `ckpt.pt` when you rerun the same search command.
+  - `trial_checkpoint_dir` optionally chooses where those per-trial checkpoint
+  directories live; by default it uses `<results_file stem>_trial_ckpts` next
+  to `results_file`.
 
 
 1. Run bash script from main directory
@@ -113,6 +120,32 @@ Note, this will auto-refresh.
 The hyperparameter_search.py has override features, useful for changing training
 settings needed as the model grows, e.g. max_iters, learning rate, batch size,
 etc.
+
+
+## Resuming after a machine failure
+
+For long searches, add `--resume_trials_from_checkpoint` to the
+`hyperparam_search.py` command. With this enabled, the search wrapper:
+
+1. Saves `active_iteration` progress in `results_file` after every completed
+   candidate, so rerunning the same command skips candidates that already
+   finished in the current outer iteration.
+2. Gives each candidate/seed run a stable `out_dir` under
+   `<results_file stem>_trial_ckpts` (or `--trial_checkpoint_dir`).
+3. Forces `always_save_checkpoint=True` for those trial runs, so `train.py`
+   refreshes `ckpt.pt` at validation/checkpoint points.
+4. On restart, detects an existing per-trial `ckpt.pt` and reruns that trial
+   with `init_from=resume`, continuing from the last checkpoint instead of
+   starting from scratch.
+
+A typical restart is just the original command again:
+
+```bash
+bash ./hp_searches/lobo_attnhead_search.sh
+```
+
+Keep the same `results_file`, `param_names`, increments, and checkpoint
+directory so the stable candidate IDs resolve to the same saved checkpoints.
 
 ## Notes And Observations
 

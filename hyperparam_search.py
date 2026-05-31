@@ -18,6 +18,7 @@ Changes vs. the original version
 import argparse
 import ast
 import gc
+import hashlib
 import math
 import os
 import re
@@ -26,12 +27,11 @@ import sys
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import random
 
 import torch
 import yaml
-
 
 TrialMetrics = Tuple[float, float, int, float, float, float, float, float, float]
 
@@ -111,12 +111,10 @@ def run_trial_inproc(cfg: Dict[str, Any]) -> TrialMetrics:
     best_iter = int(getattr(tr, "best_iter", 0))
     torch_alloc_mb = float(
         getattr(tr, "peak_torch_allocated", getattr(tr, "peak_gpu_usage", 0.0))
-        / (1024 ** 2)
+        / (1024**2)
     )
-    torch_resv_mb = float(getattr(tr, "peak_torch_reserved", 0.0) / (1024 ** 2))
-    process_gpu_mb = float(
-        getattr(tr, "peak_process_gpu_usage", 0.0) / (1024 ** 2)
-    )
+    torch_resv_mb = float(getattr(tr, "peak_torch_reserved", 0.0) / (1024**2))
+    process_gpu_mb = float(getattr(tr, "peak_process_gpu_usage", 0.0) / (1024**2))
     iter_latency_ms = float(getattr(tr, "iter_latency_avg", 0.0))
     rankme = float(getattr(tr, "latest_rankme", float("nan")))
     areq = float(getattr(tr, "latest_areq", float("nan")))
@@ -199,6 +197,62 @@ def save_log(path: Path, log: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _candidate_key(label: str, value: Any) -> str:
+    """Stable key used to identify a candidate across process restarts."""
+    return yaml.safe_dump({"param": label, "value": value}, sort_keys=True)
+
+
+def _safe_path_component(text: str, max_len: int = 80) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("._")
+    return (safe or "candidate")[:max_len]
+
+
+def _default_trial_checkpoint_dir(log_path: Path) -> Path:
+    return log_path.with_name(f"{log_path.stem}_trial_ckpts")
+
+
+def _trial_checkpoint_out_dir(
+    root: Path,
+    iter_num: int,
+    label: str,
+    value: Any,
+    seed: int,
+) -> Path:
+    payload = yaml.safe_dump(
+        {"iter": iter_num, "param": label, "value": value, "seed": seed},
+        sort_keys=True,
+    )
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+    label_part = _safe_path_component(label)
+    return root / f"iter_{iter_num:06d}" / f"{label_part}_seed_{seed}_{digest}"
+
+
+def _prepare_resumable_trial_cfg(
+    cfg_run: Dict[str, Any],
+    checkpoint_root: Optional[Path],
+    iter_num: int,
+    label: str,
+    value: Any,
+) -> None:
+    """Route one hp-search trial to a deterministic checkpoint dir and resume it if possible."""
+    if checkpoint_root is None:
+        return
+
+    seed = int(cfg_run["seed"])
+    trial_out_dir = _trial_checkpoint_out_dir(
+        checkpoint_root, iter_num, label, value, seed
+    )
+    ckpt_path = trial_out_dir / str(cfg_run.get("init_from_ckpt", "ckpt.pt"))
+
+    cfg_run["out_dir"] = str(trial_out_dir)
+    cfg_run["always_save_checkpoint"] = True
+    if ckpt_path.exists():
+        cfg_run["init_from"] = "resume"
+        print(f"[RESUME] continuing interrupted trial from {ckpt_path}")
+    else:
+        cfg_run["init_from"] = "scratch"
+
+
 # ───────────────────────── search controller ─────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Greedy hyper-param search wrapper")
@@ -240,7 +294,8 @@ def main():
         help=(
             "If set, and no positive-efficiency candidate is found, increase "
             "'max_iters' by this amount."
-        ),    )
+        ),
+    )
     ap.add_argument(
         "--nlayer_dup_mode",
         choices=["dup_middle", "dup_each"],
@@ -253,7 +308,14 @@ def main():
     )
     ap.add_argument(
         "--efficiency_target",
-        choices=["params", "vram", "iter", "torch_allocated", "torch_reserved", "process_gpu"],
+        choices=[
+            "params",
+            "vram",
+            "iter",
+            "torch_allocated",
+            "torch_reserved",
+            "process_gpu",
+        ],
         default="params",
         help=(
             "Metric to normalize score gain: 'params' (default) for parameter count, "
@@ -278,6 +340,24 @@ def main():
         action="store_true",
         help="Whether to random seed for each separate train.py run, and prevent overfitting via hillclimbing on one section of the target dataset",
     )
+    ap.add_argument(
+        "--resume_trials_from_checkpoint",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Store each candidate/seed run in a deterministic out_dir and resume "
+            "train.py from ckpt.pt if the previous hp_search process died mid-trial."
+        ),
+    )
+    ap.add_argument(
+        "--trial_checkpoint_dir",
+        default=None,
+        help=(
+            "Root directory for resumable per-trial checkpoints. Defaults to "
+            "<results_file stem>_trial_ckpts next to --results_file when "
+            "--resume_trials_from_checkpoint is enabled."
+        ),
+    )
 
     args = ap.parse_args()
 
@@ -291,6 +371,15 @@ def main():
 
     baseline_cfg_master = yaml.safe_load(Path(args.orig_settings).read_text())
     log_path = Path(args.results_file)
+    trial_checkpoint_root: Optional[Path] = None
+    if args.resume_trials_from_checkpoint:
+        trial_checkpoint_root = (
+            Path(args.trial_checkpoint_dir)
+            if args.trial_checkpoint_dir
+            else _default_trial_checkpoint_dir(log_path)
+        )
+        trial_checkpoint_root.mkdir(parents=True, exist_ok=True)
+        print(f"[CHECKPOINT] resumable trial checkpoints: {trial_checkpoint_root}")
     log = load_log(log_path)
 
     def _apply_overrides_to_active_config(
@@ -299,13 +388,17 @@ def main():
         if not overrides:
             return
 
-        print(f"[CONFIG_OVERRIDE] Checking {len(overrides)} overrides for {context_msg}...")
+        print(
+            f"[CONFIG_OVERRIDE] Checking {len(overrides)} overrides for {context_msg}..."
+        )
         effective_overrides = 0
         for item in overrides:
             try:
                 key, value_str = item.split("=", 1)
             except ValueError:
-                sys.exit(f"Error: Invalid override format '{item}'. Expected KEY=VALUE.")
+                sys.exit(
+                    f"Error: Invalid override format '{item}'. Expected KEY=VALUE."
+                )
 
             try:
                 value = ast.literal_eval(value_str)
@@ -314,7 +407,9 @@ def main():
 
             original_value = config_dict.get(key)
             if key not in config_dict or original_value != value:
-                old_desc = repr(original_value) if key in config_dict else "N/A (new key)"
+                old_desc = (
+                    repr(original_value) if key in config_dict else "N/A (new key)"
+                )
                 print(
                     f"  Applying to active config: {key} = {repr(value)} "
                     f"(was: {old_desc}, type: {type(value).__name__})"
@@ -354,7 +449,9 @@ def main():
             "peak_torch_allocated_mb",
             last["baseline_metrics"].get("peak_gpu_mb", 0.0),
         )
-        base_torch_reserved = last["baseline_metrics"].get("peak_torch_reserved_mb", 0.0)
+        base_torch_reserved = last["baseline_metrics"].get(
+            "peak_torch_reserved_mb", 0.0
+        )
         base_process_gpu = last["baseline_metrics"].get("peak_process_gpu_mb", 0.0)
         base_iter_ms = last["baseline_metrics"].get("iter_latency_avg", 0.0)
         cur_iter = last["iter"] + 1
@@ -408,6 +505,73 @@ def main():
         candidates: List[Dict[str, Any]] = []
         best_choice: Tuple[float, Dict[str, Any]] | None = None
 
+        active_iteration = log.get("active_iteration")
+        active_completed_by_key: Dict[str, Dict[str, Any]] = {}
+        if active_iteration and active_iteration.get("iter") == cur_iter:
+            print(
+                f"[RESUME] found {len(active_iteration.get('candidates', []))} "
+                f"completed candidates for interrupted iteration {cur_iter}"
+            )
+            for cand in active_iteration.get("candidates", []):
+                active_completed_by_key[
+                    _candidate_key(cand["param"], cand["value"])
+                ] = cand
+        else:
+            log["active_iteration"] = {
+                "iter": cur_iter,
+                "baseline_metrics_before": {
+                    "loss": base_loss,
+                    "score": base_score,
+                    "params": base_params,
+                    "peak_torch_allocated_mb": base_torch_alloc,
+                    "peak_torch_reserved_mb": base_torch_reserved,
+                    "peak_process_gpu_mb": base_process_gpu,
+                    "iter_latency_avg": base_iter_ms,
+                    "rankme": base_rankme,
+                    "areq": base_areq,
+                },
+                "baseline_config_before": deepcopy(baseline_cfg),
+                "candidates": [],
+            }
+            save_log(log_path, log)
+
+        def _record_active_candidate(cand: Dict[str, Any]) -> None:
+            active = log.setdefault(
+                "active_iteration",
+                {
+                    "iter": cur_iter,
+                    "baseline_config_before": deepcopy(baseline_cfg),
+                    "candidates": [],
+                },
+            )
+            key = _candidate_key(cand["param"], cand["value"])
+            kept = [
+                c
+                for c in active.get("candidates", [])
+                if _candidate_key(c["param"], c["value"]) != key
+            ]
+            kept.append(cand)
+            active["candidates"] = kept
+            if active.get("running_candidate", {}).get("key") == key:
+                active.pop("running_candidate", None)
+            log["baseline_config"] = deepcopy(baseline_cfg)
+            save_log(log_path, log)
+
+        def _consider_best(cand: Dict[str, Any]) -> None:
+            nonlocal best_choice
+            eff = cand["efficiency"]
+            if eff > 0:
+                if best_choice is None:
+                    best_choice = (eff, cand)
+                else:
+                    old_eff, old_cand = best_choice
+                    if (eff > old_eff) or (
+                        math.isinf(eff)
+                        and eff == old_eff
+                        and cand["target_improvement"] > old_cand["target_improvement"]
+                    ):
+                        best_choice = (eff, cand)
+
         for pname in args.param_names:
             if pname not in baseline_cfg:
                 print(f"[WARN] parameter '{pname}' not in baseline config – skipping")
@@ -422,19 +586,57 @@ def main():
             def _evaluate(
                 cfg_template: Dict[str, Any], label_for_log: str, value_for_log: Any
             ) -> None:
-                nonlocal best_choice, candidates
+                nonlocal candidates
+
+                key = _candidate_key(label_for_log, value_for_log)
+                if key in active_completed_by_key:
+                    cand = active_completed_by_key[key]
+                    print(f"[SKIP] {label_for_log}={value_for_log} already completed")
+                    candidates.append(cand)
+                    _consider_best(cand)
+                    return
 
                 seed0 = int(cfg_template.get("seed", 1337))
-                if args.randomize_seed:
-                    seed0 = random.randint(0, 2**31 - 1)
+                running_candidate = log.get("active_iteration", {}).get(
+                    "running_candidate"
+                )
+                if running_candidate and running_candidate.get("key") == key:
+                    seed0 = int(running_candidate["seed0"])
+                else:
+                    if args.randomize_seed:
+                        seed0 = random.randint(0, 2**31 - 1)
+                    active = log.setdefault(
+                        "active_iteration",
+                        {
+                            "iter": cur_iter,
+                            "baseline_config_before": deepcopy(baseline_cfg),
+                            "candidates": [],
+                        },
+                    )
+                    active["running_candidate"] = {
+                        "key": key,
+                        "param": label_for_log,
+                        "value": value_for_log,
+                        "seed0": seed0,
+                    }
+                    save_log(log_path, log)
                 seed_runs: List[Dict[str, Any]] = []
                 scores: List[float] = []
 
                 for r in range(args.random_iterations):
                     cfg_run = deepcopy(cfg_template)
                     cfg_run["seed"] = seed0 + r
+                    _prepare_resumable_trial_cfg(
+                        cfg_run,
+                        trial_checkpoint_root,
+                        cur_iter,
+                        label_for_log,
+                        value_for_log,
+                    )
 
-                    print(f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}")
+                    print(
+                        f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}"
+                    )
                     try:
                         (
                             loss,
@@ -469,15 +671,15 @@ def main():
                     scores.append(score)
 
                 avg_score = sum(scores) / len(scores)
-                avg_torch_alloc = (
-                    sum(s["peak_torch_allocated_mb"] for s in seed_runs) / len(seed_runs)
-                )
-                avg_torch_reserved = (
-                    sum(s["peak_torch_reserved_mb"] for s in seed_runs) / len(seed_runs)
-                )
-                avg_process_gpu = (
-                    sum(s["peak_process_gpu_mb"] for s in seed_runs) / len(seed_runs)
-                )
+                avg_torch_alloc = sum(
+                    s["peak_torch_allocated_mb"] for s in seed_runs
+                ) / len(seed_runs)
+                avg_torch_reserved = sum(
+                    s["peak_torch_reserved_mb"] for s in seed_runs
+                ) / len(seed_runs)
+                avg_process_gpu = sum(
+                    s["peak_process_gpu_mb"] for s in seed_runs
+                ) / len(seed_runs)
                 avg_iter = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
                 avg_rankme = _nanmean([s["rankme"] for s in seed_runs])
                 avg_areq = _nanmean([s["areq"] for s in seed_runs])
@@ -569,18 +771,9 @@ def main():
                     "seeds": seed_runs,
                 }
                 candidates.append(cand)
-
-                if eff > 0:
-                    if best_choice is None:
-                        best_choice = (eff, cand)
-                    else:
-                        old_eff, old_cand = best_choice
-                        if (eff > old_eff) or (
-                            math.isinf(eff)
-                            and eff == old_eff
-                            and cand["target_improvement"] > old_cand["target_improvement"]
-                        ):
-                            best_choice = (eff, cand)
+                active_completed_by_key[key] = cand
+                _record_active_candidate(cand)
+                _consider_best(cand)
 
             if pname == "n_layer":
                 old_nlayer = int(baseline_cfg["n_layer"])
@@ -604,7 +797,9 @@ def main():
                     for dup_idx in range(old_nlayer):
                         _nlayer_candidate(dup_idx, f"+1_dup{dup_idx}")
                 else:
-                    raise ValueError(f"Unknown --nlayer_dup_mode={args.nlayer_dup_mode}")
+                    raise ValueError(
+                        f"Unknown --nlayer_dup_mode={args.nlayer_dup_mode}"
+                    )
 
                 continue
 
@@ -664,7 +859,9 @@ def main():
                                 "peak_torch_reserved_mb": base_torch_reserved,
                                 "peak_process_gpu_mb": base_process_gpu,
                                 "iter_latency_avg": base_iter_ms,
-                                "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
+                                "best_iter": log["iterations"][-1]["baseline_metrics"][
+                                    "best_iter"
+                                ],
                                 "rankme": base_rankme,
                                 "areq": base_areq,
                             },
@@ -675,6 +872,7 @@ def main():
                         }
                     )
                     log["baseline_config"] = deepcopy(baseline_cfg)
+                    log.pop("active_iteration", None)
                     save_log(log_path, log)
                     cur_iter += 1
                     continue
@@ -687,6 +885,7 @@ def main():
             print("No positive-efficiency candidate — stopping.")
             log["stop_reason"] = "no_positive_efficiency"
             log["baseline_config"] = deepcopy(baseline_cfg)
+            log.pop("active_iteration", None)
             save_log(log_path, log)
             break
 
@@ -701,11 +900,13 @@ def main():
             baseline_cfg["n_layer"] = new_layers
             _extend_layerlists(baseline_cfg, dup_idx)
             baseline_cfg["_last_dup_idx"] = dup_idx
-        elif (m := re.fullmatch(r"(\w+_layerlist)\[(\d+)\]", chosen["param"])):
+        elif m := re.fullmatch(r"(\w+_layerlist)\[(\d+)\]", chosen["param"]):
             list_key, str_idx = m.groups()
             idx = int(str_idx)
 
-            if list_key not in baseline_cfg or not isinstance(baseline_cfg[list_key], list):
+            if list_key not in baseline_cfg or not isinstance(
+                baseline_cfg[list_key], list
+            ):
                 raise RuntimeError(
                     f"BUG: expected {list_key} to be a list in baseline_cfg"
                 )
@@ -748,6 +949,7 @@ def main():
             }
         )
         log["baseline_config"] = deepcopy(baseline_cfg)
+        log.pop("active_iteration", None)
         save_log(log_path, log)
         cur_iter += 1
 
