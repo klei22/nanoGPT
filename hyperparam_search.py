@@ -26,8 +26,10 @@ import sys
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import random
+import tempfile
+import uuid
 
 import torch
 import yaml
@@ -199,6 +201,60 @@ def save_log(path: Path, log: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _remote_trial_seed_results(
+    trial_records: List[Dict[str, Any]],
+    hosts: List[str],
+    user: str,
+    key_filename: Optional[str],
+    remote_work_dir: str,
+    conda_env: str,
+    run_dir_name: str,
+    poll_interval: float,
+    timeout: Optional[float],
+) -> List[Dict[str, Any]]:
+    """Run seed trials on remote machines using the NSGA/grid remote framework."""
+    if not trial_records:
+        return []
+
+    # Import lazily so local hp_search usage does not require Fabric.
+    nsga_dir = Path(__file__).parent / "optimization_and_search" / "nsga_search"
+    if str(nsga_dir) not in sys.path:
+        sys.path.insert(0, str(nsga_dir))
+    from remote_trainer import RemoteTrainer  # type: ignore
+
+    run_token = f"hp_search_{uuid.uuid4().hex[:8]}"
+    with tempfile.TemporaryDirectory(prefix="hp_trials_") as td:
+        trials_path = Path(td) / f"{run_token}.yaml"
+        trials_path.write_text(yaml.safe_dump(trial_records, sort_keys=False, width=4096))
+
+        trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
+        if not trainer.submit_trial_shards(
+            path_to_yaml=str(trials_path),
+            remote_work_dir=remote_work_dir,
+            dir_name=run_dir_name,
+            runner_script="optimization_and_search/run_hp_trials.py",
+            runner_yaml_arg="--trials_yaml",
+            runner_results_arg="--results_yaml",
+            result_filename="hp_results.yaml",
+            conda_env=conda_env,
+        ):
+            raise RuntimeError("failed to submit remote hp_search trial shards")
+        if not trainer.wait_for_all(
+            poll_interval=poll_interval, timeout=timeout, verbose=True
+        ):
+            raise TimeoutError("timed out waiting for remote hp_search trial shards")
+
+        fetched_dir = Path(td) / "fetched"
+        fetched = trainer.fetch_job_file("hp_results.yaml", str(fetched_dir))
+        results: List[Dict[str, Any]] = []
+        for result_file in fetched:
+            loaded = yaml.safe_load(result_file.read_text()) or []
+            if not isinstance(loaded, list):
+                raise RuntimeError(f"Unexpected remote result payload in {result_file}")
+            results.extend(loaded)
+    return results
+
+
 # ───────────────────────── search controller ─────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Greedy hyper-param search wrapper")
@@ -277,6 +333,56 @@ def main():
         "--randomize_seed",
         action="store_true",
         help="Whether to random seed for each separate train.py run, and prevent overfitting via hillclimbing on one section of the target dataset",
+    )
+    ap.add_argument(
+        "--distributed_hosts",
+        nargs="*",
+        default=[],
+        help=(
+            "Optional hostnames/IPs for distributed candidate evaluation. When set, "
+            "all candidate seed trials in each greedy iteration are sharded across "
+            "these machines using optimization_and_search/nsga_search/remote_trainer.py."
+        ),
+    )
+    ap.add_argument(
+        "--distributed_user",
+        default=os.environ.get("USER", ""),
+        help="SSH user for --distributed_hosts (defaults to $USER).",
+    )
+    ap.add_argument(
+        "--distributed_key_filename",
+        default=None,
+        help="Optional SSH private key file passed to Fabric for distributed hosts.",
+    )
+    ap.add_argument(
+        "--distributed_remote_work_dir",
+        default=None,
+        help=(
+            "Repository checkout path on each remote host. Defaults to "
+            "/home/<distributed_user>/Evo_GPT to match the existing NSGA search scripts."
+        ),
+    )
+    ap.add_argument(
+        "--distributed_conda_env",
+        default="reallmforge",
+        help="Conda environment to use on distributed hosts.",
+    )
+    ap.add_argument(
+        "--distributed_run_dir_name",
+        default="hp_search",
+        help="Remote run namespace under distributed_trials/.",
+    )
+    ap.add_argument(
+        "--distributed_poll_interval",
+        type=float,
+        default=120.0,
+        help="Seconds between distributed job polls.",
+    )
+    ap.add_argument(
+        "--distributed_timeout",
+        type=float,
+        default=None,
+        help="Optional timeout in seconds for one distributed candidate batch.",
     )
 
     args = ap.parse_args()
@@ -407,6 +513,7 @@ def main():
         print(f"========== Iteration {cur_iter} ==========")
         candidates: List[Dict[str, Any]] = []
         best_choice: Tuple[float, Dict[str, Any]] | None = None
+        pending_evals: List[Dict[str, Any]] = []
 
         for pname in args.param_names:
             if pname not in baseline_cfg:
@@ -422,7 +529,17 @@ def main():
             def _evaluate(
                 cfg_template: Dict[str, Any], label_for_log: str, value_for_log: Any
             ) -> None:
-                nonlocal best_choice, candidates
+                nonlocal best_choice, candidates, pending_evals
+
+                if args.distributed_hosts:
+                    pending_evals.append(
+                        {
+                            "cfg_template": deepcopy(cfg_template),
+                            "label_for_log": label_for_log,
+                            "value_for_log": value_for_log,
+                        }
+                    )
+                    return
 
                 seed0 = int(cfg_template.get("seed", 1337))
                 if args.randomize_seed:
@@ -642,6 +759,187 @@ def main():
                 continue
 
             print(f"[SKIP] '{pname}' is neither numeric nor list-numeric – ignored")
+
+        if args.distributed_hosts and pending_evals:
+            trial_records: List[Dict[str, Any]] = []
+            eval_meta: Dict[int, Dict[str, Any]] = {}
+            for eval_idx, pending in enumerate(pending_evals):
+                cfg_template = pending["cfg_template"]
+                seed0 = int(cfg_template.get("seed", 1337))
+                if args.randomize_seed:
+                    seed0 = random.randint(0, 2**31 - 1)
+                eval_meta[eval_idx] = {
+                    "label_for_log": pending["label_for_log"],
+                    "value_for_log": pending["value_for_log"],
+                }
+                for r in range(args.random_iterations):
+                    cfg_run = deepcopy(cfg_template)
+                    cfg_run["seed"] = seed0 + r
+                    trial_records.append(
+                        {
+                            "trial_id": f"iter{cur_iter}_cand{eval_idx}_seed{r}",
+                            "candidate_index": eval_idx,
+                            "seed_index": r,
+                            "seed": cfg_run["seed"],
+                            "param": pending["label_for_log"],
+                            "value": pending["value_for_log"],
+                            "config": cfg_run,
+                        }
+                    )
+
+            remote_work_dir = args.distributed_remote_work_dir or f"/home/{args.distributed_user}/Evo_GPT"
+            print(
+                f"[DISTRIBUTED] Dispatching {len(trial_records)} seed trials "
+                f"for {len(pending_evals)} candidates across {len(args.distributed_hosts)} hosts."
+            )
+            remote_results = _remote_trial_seed_results(
+                trial_records=trial_records,
+                hosts=args.distributed_hosts,
+                user=args.distributed_user,
+                key_filename=args.distributed_key_filename,
+                remote_work_dir=remote_work_dir,
+                conda_env=args.distributed_conda_env,
+                run_dir_name=args.distributed_run_dir_name,
+                poll_interval=args.distributed_poll_interval,
+                timeout=args.distributed_timeout,
+            )
+
+            by_candidate: Dict[int, List[Dict[str, Any]]] = {}
+            for result in remote_results:
+                if result.get("status") != "completed":
+                    print(
+                        f"   ⚠ remote trial {result.get('trial_id')} failed: "
+                        f"{result.get('error') or result.get('stderr_tail', '')}"
+                    )
+                    continue
+                by_candidate.setdefault(int(result["candidate_index"]), []).append(result)
+
+            for eval_idx, meta in eval_meta.items():
+                seed_results = sorted(
+                    by_candidate.get(eval_idx, []), key=lambda x: int(x.get("seed_index", 0))
+                )
+                if len(seed_results) != args.random_iterations:
+                    print(
+                        f"   ⚠ {meta['label_for_log']}={meta['value_for_log']} skipped: "
+                        f"only {len(seed_results)}/{args.random_iterations} remote seed trials completed"
+                    )
+                    continue
+
+                seed_runs: List[Dict[str, Any]] = []
+                scores: List[float] = []
+                for result in seed_results:
+                    loss = float(result["loss"])
+                    score = 1.0 / math.exp(loss)
+                    seed_runs.append(
+                        {
+                            "seed": result["seed"],
+                            "loss": loss,
+                            "score": score,
+                            "best_iter": int(result["best_iter"]),
+                            "peak_torch_allocated_mb": float(result["peak_torch_allocated_mb"]),
+                            "peak_torch_reserved_mb": float(result["peak_torch_reserved_mb"]),
+                            "peak_process_gpu_mb": float(result["peak_process_gpu_mb"]),
+                            "iter_latency_ms": float(result["iter_latency_ms"]),
+                            "rankme": float(result["rankme"]),
+                            "areq": float(result["areq"]),
+                        }
+                    )
+                    scores.append(score)
+
+                avg_score = sum(scores) / len(scores)
+                avg_torch_alloc = sum(s["peak_torch_allocated_mb"] for s in seed_runs) / len(seed_runs)
+                avg_torch_reserved = sum(s["peak_torch_reserved_mb"] for s in seed_runs) / len(seed_runs)
+                avg_process_gpu = sum(s["peak_process_gpu_mb"] for s in seed_runs) / len(seed_runs)
+                avg_iter = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
+                avg_rankme = _nanmean([s["rankme"] for s in seed_runs])
+                avg_areq = _nanmean([s["areq"] for s in seed_runs])
+                avg_loss = -math.log(avg_score)
+                nparam = float(seed_results[-1]["num_params"])
+
+                d_score = avg_score - base_score
+                d_rankme = avg_rankme - base_rankme if not math.isnan(avg_rankme) and not math.isnan(base_rankme) else float("nan")
+                d_areq = avg_areq - base_areq if not math.isnan(avg_areq) and not math.isnan(base_areq) else float("nan")
+                d_param = nparam - base_params
+                d_torch_alloc = avg_torch_alloc - base_torch_alloc
+                d_torch_reserved = avg_torch_reserved - base_torch_reserved
+                d_process_gpu = avg_process_gpu - base_process_gpu
+                d_iter = avg_iter - base_iter_ms
+
+                if args.efficiency_target == "params":
+                    d_cost = d_param
+                elif args.efficiency_target in ("vram", "torch_allocated"):
+                    d_cost = d_torch_alloc
+                elif args.efficiency_target == "torch_reserved":
+                    d_cost = d_torch_reserved
+                elif args.efficiency_target == "process_gpu":
+                    d_cost = d_process_gpu
+                elif args.efficiency_target == "iter":
+                    d_cost = d_iter
+                else:
+                    raise ValueError("Unknown efficiency target")
+
+                if args.optimize_target == "score":
+                    objective_value = avg_score
+                    baseline_objective = base_score
+                elif args.optimize_target == "rankme":
+                    objective_value = avg_rankme
+                    baseline_objective = base_rankme
+                elif args.optimize_target == "areq":
+                    objective_value = avg_areq
+                    baseline_objective = base_areq
+                else:
+                    raise ValueError("Unknown optimize target")
+
+                objective_delta = objective_value - baseline_objective
+                direction = 1.0 if args.optimize_mode == "max" else -1.0
+                objective_improvement = direction * objective_delta
+                if math.isnan(objective_improvement):
+                    continue
+
+                eff = (objective_improvement / d_cost) if d_cost != 0 else (math.inf if objective_improvement > 0 else 0.0)
+                cand = {
+                    "param": meta["label_for_log"],
+                    "value": meta["value_for_log"],
+                    "avg_loss": avg_loss,
+                    "avg_score": avg_score,
+                    "avg_rankme": avg_rankme,
+                    "avg_areq": avg_areq,
+                    "best_val_loss": avg_loss,
+                    "best_iter": max(s["best_iter"] for s in seed_runs),
+                    "num_params": nparam,
+                    "peak_torch_allocated_mb": avg_torch_alloc,
+                    "peak_torch_reserved_mb": avg_torch_reserved,
+                    "peak_process_gpu_mb": avg_process_gpu,
+                    "iter_latency_avg": avg_iter,
+                    "delta_score": d_score,
+                    "delta_rankme": d_rankme,
+                    "delta_areq": d_areq,
+                    "delta_params": d_param,
+                    "delta_torch_allocated_mb": d_torch_alloc,
+                    "delta_torch_reserved_mb": d_torch_reserved,
+                    "delta_process_gpu_mb": d_process_gpu,
+                    "delta_iter_latency": d_iter,
+                    "efficiency": eff,
+                    "target_metric": args.optimize_target,
+                    "target_mode": args.optimize_mode,
+                    "target_value": objective_value,
+                    "target_delta": objective_delta,
+                    "target_improvement": objective_improvement,
+                    "seeds": seed_runs,
+                    "distributed": True,
+                }
+                candidates.append(cand)
+                if eff > 0:
+                    if best_choice is None:
+                        best_choice = (eff, cand)
+                    else:
+                        old_eff, old_cand = best_choice
+                        if (eff > old_eff) or (
+                            math.isinf(eff)
+                            and eff == old_eff
+                            and cand["target_improvement"] > old_cand["target_improvement"]
+                        ):
+                            best_choice = (eff, cand)
 
         if best_choice is None:
             if args.max_iters_increase is not None and cur_iter < args.num_iterations:
