@@ -29,8 +29,7 @@ def dict_to_cli(config: Dict[str, Any]) -> List[str]:
         if str(key).startswith("_"):
             continue
         if isinstance(value, bool):
-            if value:
-                cli.append(f"--{key}")
+            cli.append(f"--{key}" if value else f"--no-{key}")
         elif isinstance(value, list):
             cli.append(f"--{key}")
             cli.extend(map(str, value))

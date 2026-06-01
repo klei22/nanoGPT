@@ -207,42 +207,130 @@ size, nad vest val loss vs different characteristics, and ratios of differnet
 ones via curve fitting. This could yield insights on balancing parameters
 especially towards small language models.
 
-## Distributed candidate evaluation
+## Distributed / multi-machine candidate evaluation
 
-`hyperparam_search.py` can now keep the greedy controller local while sending the
+`hyperparam_search.py` can keep the greedy controller local while sending the
 expensive candidate seed trials for each outer iteration to multiple machines.
-This reuses the same `RemoteTrainer` machinery used by the existing NSGA/grid
-search code: the controller writes a YAML shard of trial configs, uploads one
-shard per host, launches a remote runner under `distributed_trials/`, polls the
-remote PIDs, fetches `hp_results.yaml`, and then applies the normal greedy
-selection logic locally.
+The search is still a greedy hp_search, not DDP: each remote process trains a
+complete candidate trial independently, writes metrics, and returns them to the
+controller. The controller then averages seeds, computes efficiency, chooses the
+best positive-efficiency step, updates `results_file`, and starts the next outer
+iteration.
 
-Example:
+A ready-to-edit demo is included:
+
+- `hp_searches/multimachine_efficiency_demo.yaml` — a small CUDA baseline using
+  `shakespeare_char`, rotary embeddings, no absolute position embeddings, and an
+  infinite-attention shape that is cheap enough for a smoke/demo search.
+- `hp_searches/multimachine_efficiency_demo.sh` — a wrapper that shards each
+  candidate/seed trial across `HP_SEARCH_HOSTS` and exposes common settings as
+  environment variables.
+
+### One-time remote setup
+
+Each machine listed in `HP_SEARCH_HOSTS` must be reachable from the controller
+with SSH and must already have:
+
+1. The same repository checkout, preferably at the same path on every host.
+2. The same git commit checked out as the controller.
+3. The training data prepared at the same relative path used by the YAML
+   baseline, for example `data/shakespeare_char`.
+4. A working Python/conda environment with the repo dependencies installed.
+5. GPU/runtime compatibility with the YAML (`device: "cuda"` in the demo). If a
+   host should run CPU trials, change the YAML before launching.
+
+Example remote preparation sketch:
 
 ```bash
-python3 hyperparam_search.py \
-  --orig_settings ./hp_searches/shakespeare_char.yaml \
-  --param_names n_layer n_head n_embd mlp_size \
-  --increments 1 1 32 32 \
-  --iterations 2 \
-  --random_iterations 3 \
-  --num_iterations 20 \
-  --results_file results.yaml \
-  --distributed_hosts 10.0.0.11 10.0.0.12 10.0.0.13 \
-  --distributed_user ubuntu \
-  --distributed_remote_work_dir /home/ubuntu/Evo_GPT \
-  --distributed_conda_env reallmforge \
-  --distributed_run_dir_name hp_search_shakespeare
+ssh ubuntu@10.0.0.11
+cd /home/ubuntu/Evo_GPT
+git fetch origin
+git checkout <same-branch-or-commit-as-controller>
+conda activate reallmforge
+python -c "import torch; print(torch.__version__)"
 ```
 
-Notes:
+Repeat that for every host, or automate it with your cluster tooling.
 
-- The baseline measurement still runs on the controller. Distribution starts
-  after candidates have been generated for an outer greedy step.
-- Every candidate/seed pair is a separate trial record, so `--random_iterations`
-  also parallelizes across machines.
-- Remote hosts must already have the repository checkout and matching data paths.
-  Use the same remote work directory convention as NSGA search, or override it
-  with `--distributed_remote_work_dir`.
-- Each remote trial gets an isolated `out_dir` under the remote shard directory
-  to avoid collisions when many candidates run on the same host.
+### Running the demo
+
+Run the wrapper from the repository root on the controller:
+
+```bash
+HP_SEARCH_HOSTS="10.0.0.11 10.0.0.12 10.0.0.13" \
+HP_SEARCH_USER=ubuntu \
+HP_SEARCH_REMOTE_WORK_DIR=/home/ubuntu/Evo_GPT \
+HP_SEARCH_CONDA_ENV=reallmforge \
+HP_SEARCH_RESULTS_FILE=multimachine_efficiency_results.yaml \
+bash hp_searches/multimachine_efficiency_demo.sh
+```
+
+Useful optional environment variables:
+
+- `HP_SEARCH_ORIG_SETTINGS` — alternate YAML baseline path.
+- `HP_SEARCH_RANDOM_ITERATIONS` — seeds per candidate. Each candidate/seed pair
+  is an independent remote trial, so increasing this also increases available
+  parallel work.
+- `HP_SEARCH_ITERATIONS` — candidate depths per parameter for a greedy step.
+- `HP_SEARCH_NUM_ITERATIONS` — maximum number of outer greedy growth steps.
+- `HP_SEARCH_EFFICIENCY_TARGET` — `params`, `vram`, `torch_allocated`,
+  `torch_reserved`, `process_gpu`, or `iter`.
+- `HP_SEARCH_MAX_ITERS_INCREASE` — increase `max_iters` when no positive
+  efficiency candidate is found.
+- `HP_SEARCH_POLL_INTERVAL` — seconds between remote status polls.
+- `HP_SEARCH_TIMEOUT` — maximum seconds to wait for one distributed candidate
+  batch. The demo defaults to `86400` seconds so a dead machine does not hang the
+  controller forever.
+- `HP_SEARCH_RUN_DIR_NAME` — namespace under each remote checkout's
+  `distributed_trials/` directory.
+
+Monitor the controller-side log in another terminal:
+
+```bash
+python view_hp_log.py multimachine_efficiency_results.yaml
+```
+
+### How sharding works
+
+For each outer greedy iteration, the controller builds all candidate configs from
+`--param_names`, `--increments`, `--iterations`, and `--random_iterations`. It
+then creates one trial record for every candidate/seed pair and round-robin
+shards those records across `--distributed_hosts`. On each host, the remote
+runner executes its shard sequentially. Every trial gets its own isolated
+`out_dir` under:
+
+```text
+<remote_work_dir>/distributed_trials/<run_dir_name>/...
+```
+
+The remote runner writes `hp_results.yaml` incrementally as trials finish. After
+all remote jobs reach a terminal state, the controller fetches these result files
+and applies the same local greedy selection logic used by non-distributed
+hp_search.
+
+### Failure behavior
+
+Distributed hp_search is fault-tolerant enough to preserve the current search
+state, but it does not automatically reassign unfinished trials to another host.
+Use `HP_SEARCH_TIMEOUT`/`--distributed_timeout` for predictable recovery.
+
+- **Host cannot launch the shard:** submission returns failure, any shard jobs
+  launched earlier in that batch are cancelled, `hyperparam_search.py` raises an
+  error, and no new greedy step is written. Fix the host list/setup and rerun;
+  the controller resumes from the existing `results_file`.
+- **Host goes down after launch:** polling logs warnings while the job remains
+  non-terminal. If the host comes back before `HP_SEARCH_TIMEOUT`, polling can
+  continue and fetch completed results. If the timeout is reached, the batch is
+  marked timed out and the controller raises without applying a partial greedy
+  step.
+- **A remote trial fails but the host remains reachable:** the remote worker
+  records that trial as failed and continues with later trials in the same shard.
+  During aggregation, candidates missing any required seed are skipped for that
+  outer iteration.
+- **A result file cannot be fetched:** fetched results from other hosts are still
+  read, but candidates that do not have all of their seed runs are skipped. Rerun
+  after fixing the host to re-evaluate the same greedy state.
+- **Controller interruption:** completed baseline/iteration state is already in
+  `results_file`. Restart the same command to resume from the last committed
+  greedy iteration.
+

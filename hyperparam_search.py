@@ -53,8 +53,7 @@ def dict_to_cli(d: Dict[str, Any]) -> List[str]:
             continue
 
         if isinstance(v, bool):
-            if v:
-                cli.append(f"--{k}")
+            cli.append(f"--{k}" if v else f"--no-{k}")
         elif isinstance(v, list):
             cli.append(f"--{k}")
             cli.extend(map(str, v))
