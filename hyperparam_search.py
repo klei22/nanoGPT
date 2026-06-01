@@ -16,7 +16,6 @@ Changes vs. the original version
 """
 
 import argparse
-import ast
 import gc
 import math
 import os
@@ -29,7 +28,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 import random
 
-import torch
 import yaml
 
 
@@ -44,6 +42,11 @@ def dict_to_cli(d: Dict[str, Any]) -> List[str]:
     Any key that starts with “_” is considered **private** and is *not*
     forwarded, because *train.py* would reject unknown flags such as
     “--_last_dup_idx”.
+
+    ``train_args.py`` uses ``argparse.BooleanOptionalAction`` for boolean
+    flags, so false values must be forwarded explicitly as ``--no-<flag>``.
+    Omitting a false value lets argparse fall back to its default, which can
+    silently re-enable options such as ``use_abs_pos_embeddings``.
     """
     cli: List[str] = []
     for k, v in d.items():
@@ -51,14 +54,25 @@ def dict_to_cli(d: Dict[str, Any]) -> List[str]:
             continue
 
         if isinstance(v, bool):
-            if v:
-                cli.append(f"--{k}")
+            cli.append(f"--{k}" if v else f"--no-{k}")
         elif isinstance(v, list):
             cli.append(f"--{k}")
             cli.extend(map(str, v))
         else:
             cli.extend([f"--{k}", str(v)])
     return cli
+
+
+def parse_override_value(value_str: str) -> Any:
+    """Parse an override value using YAML scalar/list semantics.
+
+    This accepts both Python-style booleans (``False``/``True``) and YAML-style
+    booleans (``false``/``true``), matching the baseline YAML files.
+    """
+    try:
+        return yaml.safe_load(value_str)
+    except yaml.YAMLError:
+        return value_str
 
 
 @contextmanager
@@ -72,6 +86,8 @@ def patched_argv(argv: List[str]):
 
 
 def _cleanup_cuda() -> None:
+    import torch
+
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     gc.collect()
@@ -307,10 +323,7 @@ def main():
             except ValueError:
                 sys.exit(f"Error: Invalid override format '{item}'. Expected KEY=VALUE.")
 
-            try:
-                value = ast.literal_eval(value_str)
-            except (ValueError, SyntaxError):
-                value = value_str
+            value = parse_override_value(value_str)
 
             original_value = config_dict.get(key)
             if key not in config_dict or original_value != value:
