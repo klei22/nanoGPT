@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 import random
 
-import torch
 import yaml
 
 
@@ -51,8 +50,7 @@ def dict_to_cli(d: Dict[str, Any]) -> List[str]:
             continue
 
         if isinstance(v, bool):
-            if v:
-                cli.append(f"--{k}")
+            cli.append(f"--{k}" if v else f"--no-{k}")
         elif isinstance(v, list):
             cli.append(f"--{k}")
             cli.extend(map(str, v))
@@ -72,6 +70,8 @@ def patched_argv(argv: List[str]):
 
 
 def _cleanup_cuda() -> None:
+    import torch
+
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     gc.collect()
