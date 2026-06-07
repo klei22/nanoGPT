@@ -210,6 +210,9 @@ def _remote_trial_seed_results(
     run_dir_name: str,
     poll_interval: float,
     timeout: Optional[float],
+    users: Optional[List[str]] = None,
+    remote_work_dirs: Optional[List[str]] = None,
+    conda_envs: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Run seed trials on remote machines using the NSGA/grid remote framework."""
     if not trial_records:
@@ -226,7 +229,9 @@ def _remote_trial_seed_results(
         trials_path = Path(td) / f"{run_token}.yaml"
         trials_path.write_text(yaml.safe_dump(trial_records, sort_keys=False, width=4096))
 
-        trainer = RemoteTrainer(hosts=hosts, user=user, key_filename=key_filename)
+        trainer = RemoteTrainer(
+            hosts=hosts, user=user, key_filename=key_filename, users=users
+        )
         if not trainer.submit_trial_shards(
             path_to_yaml=str(trials_path),
             remote_work_dir=remote_work_dir,
@@ -236,6 +241,8 @@ def _remote_trial_seed_results(
             runner_results_arg="--results_yaml",
             result_filename="hp_results.yaml",
             conda_env=conda_env,
+            remote_work_dirs=remote_work_dirs,
+            conda_envs=conda_envs,
         ):
             raise RuntimeError("failed to submit remote hp_search trial shards")
         if not trainer.wait_for_all(
@@ -349,6 +356,15 @@ def main():
         help="SSH user for --distributed_hosts (defaults to $USER).",
     )
     ap.add_argument(
+        "--distributed_users",
+        nargs="*",
+        default=None,
+        help=(
+            "Optional per-host SSH users. If set, length must match "
+            "--distributed_hosts; otherwise --distributed_user is used for every host."
+        ),
+    )
+    ap.add_argument(
         "--distributed_key_filename",
         default=None,
         help="Optional SSH private key file passed to Fabric for distributed hosts.",
@@ -362,9 +378,28 @@ def main():
         ),
     )
     ap.add_argument(
+        "--distributed_remote_work_dirs",
+        nargs="*",
+        default=None,
+        help=(
+            "Optional per-host repository checkout paths. If set, length must "
+            "match --distributed_hosts; otherwise --distributed_remote_work_dir "
+            "is used for every host."
+        ),
+    )
+    ap.add_argument(
         "--distributed_conda_env",
         default="reallmforge",
         help="Conda environment to use on distributed hosts.",
+    )
+    ap.add_argument(
+        "--distributed_conda_envs",
+        nargs="*",
+        default=None,
+        help=(
+            "Optional per-host conda environment names. If set, length must "
+            "match --distributed_hosts; otherwise --distributed_conda_env is used."
+        ),
     )
     ap.add_argument(
         "--distributed_run_dir_name",
@@ -385,6 +420,19 @@ def main():
     )
 
     args = ap.parse_args()
+
+    def _validate_host_list_arg(values: Optional[List[str]], name: str) -> None:
+        if values is not None and values and len(values) != len(args.distributed_hosts):
+            sys.exit(
+                f"--{name} length must match --distributed_hosts "
+                f"({len(values)} != {len(args.distributed_hosts)})"
+            )
+
+    _validate_host_list_arg(args.distributed_users, "distributed_users")
+    _validate_host_list_arg(
+        args.distributed_remote_work_dirs, "distributed_remote_work_dirs"
+    )
+    _validate_host_list_arg(args.distributed_conda_envs, "distributed_conda_envs")
 
     if len(args.increments) == 1:
         args.increments *= len(args.param_names)
@@ -786,11 +834,29 @@ def main():
                         }
                     )
 
-            remote_work_dir = args.distributed_remote_work_dir or f"/home/{args.distributed_user}/Evo_GPT"
+            distributed_users = args.distributed_users or None
+            remote_work_dir = (
+                args.distributed_remote_work_dir
+                or f"/home/{args.distributed_user}/Evo_GPT"
+            )
+            if args.distributed_remote_work_dirs:
+                remote_work_dirs = args.distributed_remote_work_dirs
+            elif args.distributed_users and not args.distributed_remote_work_dir:
+                remote_work_dirs = [f"/home/{u}/Evo_GPT" for u in args.distributed_users]
+            else:
+                remote_work_dirs = None
+            conda_envs = args.distributed_conda_envs or None
             print(
                 f"[DISTRIBUTED] Dispatching {len(trial_records)} seed trials "
                 f"for {len(pending_evals)} candidates across {len(args.distributed_hosts)} hosts."
             )
+            if distributed_users or remote_work_dirs or conda_envs:
+                print(
+                    "[DISTRIBUTED] Using per-host settings for "
+                    f"users={bool(distributed_users)}, "
+                    f"work_dirs={bool(remote_work_dirs)}, "
+                    f"conda_envs={bool(conda_envs)}."
+                )
             remote_results = _remote_trial_seed_results(
                 trial_records=trial_records,
                 hosts=args.distributed_hosts,
@@ -801,6 +867,9 @@ def main():
                 run_dir_name=args.distributed_run_dir_name,
                 poll_interval=args.distributed_poll_interval,
                 timeout=args.distributed_timeout,
+                users=distributed_users,
+                remote_work_dirs=remote_work_dirs,
+                conda_envs=conda_envs,
             )
 
             by_candidate: Dict[int, List[Dict[str, Any]]] = {}

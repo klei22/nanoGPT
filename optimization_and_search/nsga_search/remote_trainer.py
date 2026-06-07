@@ -18,6 +18,8 @@ class RemoteJob:
     yaml_path: str
     log_path: str
     pid_path: str
+    user: Optional[str] = None
+    key_filename: Optional[str] = None
     pid: Optional[int] = None
     status: str = JobStatus.PENDING
     started_at: float = field(default_factory=time.time)
@@ -29,25 +31,47 @@ class RemoteJob:
     heartbeat_interval: int = 120
 
 class RemoteTrainer:
-    def __init__(self, hosts: List[str], user: str, key_filename: Optional[str]=None):
-        self.hosts=hosts
-        self.user=user
-        self.key_filename=key_filename
-        
+    def __init__(
+        self,
+        hosts: List[str],
+        user: str,
+        key_filename: Optional[str] = None,
+        users: Optional[List[str]] = None,
+        key_filenames: Optional[List[Optional[str]]] = None,
+    ):
+        self.hosts = hosts
+        self.user = user
+        self.key_filename = key_filename
+        self.users = users or [user] * len(hosts)
+        self.key_filenames = key_filenames or [key_filename] * len(hosts)
+        if len(self.users) != len(hosts):
+            raise ValueError("users length must match hosts length")
+        if len(self.key_filenames) != len(hosts):
+            raise ValueError("key_filenames length must match hosts length")
+
         self.num_hosts = len(hosts)
         # New: list of jobs we launched
         self.jobs: List[RemoteJob] = []
         self.watchdog_timeout: int = 300
 
+    def _connection_for_index(self, idx: int) -> Connection:
+        key_filename = self.key_filenames[idx]
+        connect_kwargs = {"key_filename": key_filename} if key_filename else {}
+        return Connection(host=self.hosts[idx], user=self.users[idx], connect_kwargs=connect_kwargs)
+
+    def _connection_for_job(self, job: RemoteJob) -> Connection:
+        key_filename = job.key_filename if job.key_filename is not None else self.key_filename
+        connect_kwargs = {"key_filename": key_filename} if key_filename else {}
+        return Connection(host=job.host, user=job.user or self.user, connect_kwargs=connect_kwargs)
 
     def check_connectivity(self) -> bool:
         all_ok = True
         for i, host in enumerate(self.hosts):
             try:
-                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                conn = self._connection_for_index(i)
                 conn.open()
                 conn.close()
-                logging.info(f"Connectivity OK: host_{i} ({host})")
+                logging.info(f"Connectivity OK: host_{i} ({host}) as {self.users[i]}")
             except Exception as e:
                 logging.error(f"\033[31mConnection to host_{i} ({host}) failed: {e}\033[0m")
                 all_ok = False
@@ -63,7 +87,7 @@ class RemoteTrainer:
         def beater():
             while not stop_event.is_set():
                 try:
-                    conn = Connection(host=job.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                    conn = self._connection_for_job(job)
                     try:
                         conn.open()
                         if job.lease_path:
@@ -367,7 +391,7 @@ fi
         for job in self.jobs:
             if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.TIMEOUT):
                 continue
-            conn = Connection(host=job.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+            conn = self._connection_for_job(job)
             try:
                 conn.open()
                 # Ensure we have a PID
@@ -652,6 +676,8 @@ def _remote_trainer_submit_trial_shards(
     runner_results_arg: str,
     result_filename: str = "results.yaml",
     conda_env: str = "reallmforge",
+    remote_work_dirs: Optional[List[str]] = None,
+    conda_envs: Optional[List[str]] = None,
 ) -> bool:
     yaml_path = Path(path_to_yaml)
     with yaml_path.open("r") as f:
@@ -660,6 +686,10 @@ def _remote_trainer_submit_trial_shards(
         raise ValueError(f"Expected a list of trial records in {yaml_path}, got {type(data)}")
 
     n_hosts = max(1, self.num_hosts)
+    if remote_work_dirs is not None and len(remote_work_dirs) != n_hosts:
+        raise ValueError("remote_work_dirs length must match hosts length")
+    if conda_envs is not None and len(conda_envs) != n_hosts:
+        raise ValueError("conda_envs length must match hosts length")
     splits: List[List[dict]] = [[] for _ in range(n_hosts)]
     for idx, cfg in enumerate(data):
         splits[idx % n_hosts].append(cfg)
@@ -688,10 +718,12 @@ def _remote_trainer_submit_trial_shards(
             logging.warning(f"\033[33mNo trials assigned to host_{i} ({host}); skipping upload.\033[0m")
             continue
 
-        conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+        host_remote_work_dir = remote_work_dirs[i] if remote_work_dirs else remote_work_dir
+        host_conda_env = conda_envs[i] if conda_envs else conda_env
+        conn = self._connection_for_index(i)
         try:
             conn.open()
-            remote_run_dir = f"{remote_work_dir}/distributed_trials/{dir_name}/{base}-{run_id}-host{i}"
+            remote_run_dir = f"{host_remote_work_dir}/distributed_trials/{dir_name}/{base}-{run_id}-host{i}"
             conn.run(f"mkdir -p {shlex.quote(remote_run_dir)}", hide=True)
             remote_yaml_path = f"{remote_run_dir}/{slice_file.name}"
             remote_results_path = f"{remote_run_dir}/{result_filename}"
@@ -706,16 +738,16 @@ def _remote_trainer_submit_trial_shards(
                 f"{shlex.quote(runner_results_arg)} {shlex.quote(remote_results_path)}"
             )
             cmd = (
-                f"cd {shlex.quote(remote_work_dir)} && "
+                f"cd {shlex.quote(host_remote_work_dir)} && "
                 f"setsid bash -lc '\n"
                 f"{{\n"
                 f"echo \"[launcher] $(date) starting on $(hostname)\";\n"
                 f"CONDA_BIN=$(command -v conda || true);\n"
-                f"if [ -n \"$CONDA_BIN\" ] && conda run -n {shlex.quote(conda_env)} python -V >/dev/null 2>&1; then\n"
-                f"  conda run -n {shlex.quote(conda_env)} {runner_cmd}; ec=$?;\n"
+                f"if [ -n \"$CONDA_BIN\" ] && conda run -n {shlex.quote(host_conda_env)} python -V >/dev/null 2>&1; then\n"
+                f"  conda run -n {shlex.quote(host_conda_env)} {runner_cmd}; ec=$?;\n"
                 f"else\n"
                 f"  if [ -n \"$CONDA_BIN\" ]; then eval \"$(conda shell.bash hook)\" >/dev/null 2>&1 || true; fi;\n"
-                f"  if command -v conda >/dev/null 2>&1; then conda activate {shlex.quote(conda_env)} || true; fi;\n"
+                f"  if command -v conda >/dev/null 2>&1; then conda activate {shlex.quote(host_conda_env)} || true; fi;\n"
                 f"  {runner_cmd}; ec=$?;\n"
                 f"fi;\n"
                 f"echo $ec > {shlex.quote(remote_run_dir)}/exit_code\n"
@@ -735,6 +767,8 @@ def _remote_trainer_submit_trial_shards(
                 yaml_path=remote_yaml_path,
                 log_path=remote_log_path,
                 pid_path=remote_pid_path,
+                user=self.users[i],
+                key_filename=self.key_filenames[i],
                 pid=pid,
                 status=JobStatus.RUNNING if pid else JobStatus.PENDING,
                 lease_path=lease_path,
@@ -748,7 +782,7 @@ def _remote_trainer_submit_trial_shards(
             for started in new_jobs:
                 if started.pid is not None:
                     try:
-                        with Connection(host=started.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {}) as c2:
+                        with self._connection_for_job(started) as c2:
                             c2.run(f"kill -9 {started.pid}", hide=True, warn=True)
                     except Exception:
                         pass
@@ -783,7 +817,7 @@ def _remote_trainer_fetch_job_file(self, remote_filename: str, local_dir: str) -
         local_path = out_dir / f"{job.id}.{Path(remote_filename).name}"
         remote_path = f"{job.remote_dir}/{remote_filename}"
         try:
-            with Connection(host=job.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {}) as conn:
+            with self._connection_for_job(job) as conn:
                 conn.get(remote_path, local=str(local_path))
             fetched.append(local_path)
         except Exception as exc:

@@ -265,6 +265,17 @@ HP_SEARCH_RESULTS_FILE=multimachine_efficiency_results.yaml \
 bash hp_searches/multimachine_efficiency_demo.sh
 ```
 
+If users, checkout paths, or conda environments differ by machine, provide
+per-host lists in the same order as `HP_SEARCH_HOSTS`:
+
+```bash
+HP_SEARCH_HOSTS="desktop-gpu jetson-orin" \
+HP_SEARCH_USERS="ubuntu nvidia" \
+HP_SEARCH_REMOTE_WORK_DIRS="/home/ubuntu/Evo_GPT /home/nvidia/nanoGPT" \
+HP_SEARCH_CONDA_ENVS="reallmforge nanojetson" \
+bash hp_searches/multimachine_efficiency_demo.sh
+```
+
 Useful optional environment variables:
 
 - `HP_SEARCH_ORIG_SETTINGS` — alternate YAML baseline path.
@@ -284,6 +295,15 @@ Useful optional environment variables:
   controller forever.
 - `HP_SEARCH_RUN_DIR_NAME` — namespace under each remote checkout's
   `distributed_trials/` directory.
+- `HP_SEARCH_USERS` — optional per-host SSH users. Length and ordering must match
+  `HP_SEARCH_HOSTS`; maps to `--distributed_users`. If this is set and no shared
+  or per-host work directory is provided, the controller defaults each host to
+  `/home/<that-host-user>/Evo_GPT`.
+- `HP_SEARCH_REMOTE_WORK_DIRS` — optional per-host repository checkout paths.
+  Length and ordering must match `HP_SEARCH_HOSTS`; maps to
+  `--distributed_remote_work_dirs`.
+- `HP_SEARCH_CONDA_ENVS` — optional per-host conda environment names. Length and
+  ordering must match `HP_SEARCH_HOSTS`; maps to `--distributed_conda_envs`.
 - `HP_SEARCH_OVERRIDE_CFG` — optional whitespace-separated `KEY=VALUE` overrides
   passed to `--override_cfg`, for example
   `HP_SEARCH_OVERRIDE_CFG="device=cuda:0 dtype=float16 compile=False batch_size=16"`.
@@ -299,9 +319,11 @@ python view_hp_log.py multimachine_efficiency_results.yaml
 For each outer greedy iteration, the controller builds all candidate configs from
 `--param_names`, `--increments`, `--iterations`, and `--random_iterations`. It
 then creates one trial record for every candidate/seed pair and round-robin
-shards those records across `--distributed_hosts`. On each host, the remote
-runner executes its shard sequentially. Every trial gets its own isolated
-`out_dir` under:
+shards those records across `--distributed_hosts`. Host-specific users, checkout
+paths, and conda environments are selected by index from `--distributed_users`,
+`--distributed_remote_work_dirs`, and `--distributed_conda_envs` when those lists
+are provided. On each host, the remote runner executes its shard sequentially.
+Every trial gets its own isolated `out_dir` under:
 
 ```text
 <remote_work_dir>/distributed_trials/<run_dir_name>/...
