@@ -1,4 +1,4 @@
-import json, logging, shlex, threading, time, uuid, tempfile, math, shutil, socket, subprocess
+import json, logging, re, shlex, threading, time, uuid, tempfile, math, shutil, socket, subprocess
 import yaml
 import os
 from dataclasses import dataclass, field
@@ -27,6 +27,7 @@ class RemoteJob:
     key_filename: Optional[str] = None
     pid: Optional[int] = None
     process: Any = None
+    tmux_session: Optional[str] = None
     status: str = JobStatus.PENDING
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
@@ -78,6 +79,11 @@ class RemoteTrainer:
 
     def _is_local_job(self, job: RemoteJob) -> bool:
         return self._is_local_host(job.host)
+
+    @staticmethod
+    def _tmux_session_name(*parts: str) -> str:
+        raw = "_".join(str(part) for part in parts if part)
+        return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)[:200]
 
     def _connection_for_index(self, idx: int) -> Connection:
         key_filename = self.key_filenames[idx]
@@ -439,7 +445,16 @@ fi
             if self._is_local_job(job):
                 try:
                     exit_code: Optional[int] = None
-                    if job.process is not None:
+                    if job.tmux_session:
+                        tmux_alive = subprocess.run(
+                            ["tmux", "has-session", "-t", job.tmux_session],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        ).returncode == 0
+                        if tmux_alive:
+                            job.status = JobStatus.RUNNING
+                            continue
+                    elif job.process is not None:
                         rc = job.process.poll()
                         if rc is None:
                             job.status = JobStatus.RUNNING
@@ -459,6 +474,15 @@ fi
             conn = self._connection_for_job(job)
             try:
                 conn.open()
+                if job.tmux_session:
+                    r = conn.run(
+                        f"tmux has-session -t {shlex.quote(job.tmux_session)}",
+                        hide=True,
+                        warn=True,
+                    )
+                    if r.ok:
+                        job.status = JobStatus.RUNNING
+                        continue
                 # Ensure we have a PID
                 if job.pid is None:
                     r = conn.run(f"test -f {job.pid_path} && cat {job.pid_path}", hide=True, warn=True)
@@ -775,7 +799,9 @@ def _remote_trainer_submit_trial_shards(
         remote_results_path = f"{remote_run_dir}/{result_filename}"
         remote_log_path = f"{remote_run_dir}/run.log"
         remote_pid_path = f"{remote_run_dir}/run.pid"
+        tmux_session_path = f"{remote_run_dir}/tmux_session"
         lease_path = f"{remote_run_dir}/lease"
+        tmux_session = self._tmux_session_name(dir_name, base, run_id, f"host{i}")
         conn = None
         try:
             runner_cmd = (
@@ -805,17 +831,32 @@ def _remote_trainer_submit_trial_shards(
                         "exit $ec",
                     ]
                 )
-                log_fh = open(remote_log_path, "a")
-                proc = subprocess.Popen(
-                    ["bash", "-lc", cmd],
-                    cwd=host_remote_work_dir,
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_fh,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
-                log_fh.close()
-                Path(remote_pid_path).write_text(str(proc.pid))
+                proc = None
+                active_tmux_session = None
+                if shutil.which("tmux"):
+                    tmux_cmd = (
+                        f"cd {shlex.quote(host_remote_work_dir)}\n"
+                        f"({cmd}) 2>&1 | tee -a {shlex.quote(remote_log_path)}"
+                    )
+                    subprocess.run(
+                        ["tmux", "new-session", "-d", "-s", tmux_session, "bash", "-lc", tmux_cmd],
+                        check=True,
+                    )
+                    active_tmux_session = tmux_session
+                    Path(tmux_session_path).write_text(tmux_session)
+                    Path(remote_pid_path).write_text("")
+                else:
+                    log_fh = open(remote_log_path, "a")
+                    proc = subprocess.Popen(
+                        ["bash", "-lc", cmd],
+                        cwd=host_remote_work_dir,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log_fh,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                    log_fh.close()
+                    Path(remote_pid_path).write_text(str(proc.pid))
                 job = RemoteJob(
                     id=f"{base}-{run_id}-host{i}",
                     host=host,
@@ -825,14 +866,15 @@ def _remote_trainer_submit_trial_shards(
                     pid_path=remote_pid_path,
                     user=self.users[i],
                     key_filename=self.key_filenames[i],
-                    pid=proc.pid,
+                    pid=proc.pid if proc is not None else None,
                     process=proc,
+                    tmux_session=active_tmux_session,
                     status=JobStatus.RUNNING,
                     lease_path=lease_path,
                 )
                 self.jobs.append(job)
                 new_jobs.append(job)
-                logging.info(f"\033[32mLaunched local trial shard on host_{i} ({host}), PID={proc.pid}, log: {remote_log_path}\033[0m")
+                logging.info(f"\033[32mLaunched local trial shard on host_{i} ({host}), PID={proc.pid if proc is not None else None}, tmux={active_tmux_session}, log: {remote_log_path}\033[0m")
                 continue
 
             conn = self._connection_for_index(i)
@@ -840,9 +882,7 @@ def _remote_trainer_submit_trial_shards(
             conn.run(f"mkdir -p {shlex.quote(remote_run_dir)}", hide=True)
             conn.put(str(slice_file), remote=remote_yaml_path)
 
-            cmd = (
-                f"cd {shlex.quote(host_remote_work_dir)} && "
-                f"setsid bash -lc '\n"
+            payload = (
                 f"{{\n"
                 f"echo \"[launcher] $(date) starting on $(hostname)\";\n"
                 f"CONDA_BIN=$(command -v conda || true);\n"
@@ -854,11 +894,22 @@ def _remote_trainer_submit_trial_shards(
                 f"  {runner_cmd}; ec=$?;\n"
                 f"fi;\n"
                 f"echo $ec > {shlex.quote(remote_run_dir)}/exit_code\n"
-                f"}} >> {shlex.quote(remote_log_path)} 2>&1 < /dev/null &\n"
-                f"echo $! > {shlex.quote(remote_pid_path)}\n"
-                f"' </dev/null >/dev/null 2>&1 &"
+                f"}} >> {shlex.quote(remote_log_path)} 2>&1"
+            )
+            cmd = (
+                f"cd {shlex.quote(host_remote_work_dir)} && "
+                f"if command -v tmux >/dev/null 2>&1; then "
+                f"tmux new-session -d -s {shlex.quote(tmux_session)} -c {shlex.quote(host_remote_work_dir)} bash -lc {shlex.quote(payload)} && "
+                f"echo {shlex.quote(tmux_session)} > {shlex.quote(tmux_session_path)} && "
+                f": > {shlex.quote(remote_pid_path)}; "
+                f"else "
+                f"setsid bash -lc {shlex.quote(payload)} < /dev/null >/dev/null 2>&1 & "
+                f"echo $! > {shlex.quote(remote_pid_path)}; "
+                f"fi"
             )
             conn.run(cmd, hide=True)
+            tmux_out = conn.run(f"cat {shlex.quote(tmux_session_path)}", hide=True, warn=True)
+            active_tmux_session = tmux_out.stdout.strip() if tmux_out.ok else None
             pid_out = conn.run(f"cat {shlex.quote(remote_pid_path)}", hide=True, warn=True)
             pid: Optional[int] = None
             if pid_out.ok and pid_out.stdout.strip().isdigit():
@@ -873,25 +924,39 @@ def _remote_trainer_submit_trial_shards(
                 user=self.users[i],
                 key_filename=self.key_filenames[i],
                 pid=pid,
-                status=JobStatus.RUNNING if pid else JobStatus.PENDING,
+                tmux_session=active_tmux_session,
+                status=JobStatus.RUNNING if pid or active_tmux_session else JobStatus.PENDING,
                 lease_path=lease_path,
             )
             self.jobs.append(job)
             new_jobs.append(job)
-            logging.info(f"\033[32mLaunched trial shard on host_{i} ({host}), PID={pid}, log: {remote_log_path}\033[0m")
+            logging.info(f"\033[32mLaunched trial shard on host_{i} ({host}), PID={pid}, tmux={active_tmux_session}, log: {remote_log_path}\033[0m")
         except Exception as e:
             logging.error(f"\033[31mFailed to launch trial shard on host_{i} ({host}): {e}\033[0m")
             overall_ok = False
             for started in new_jobs:
-                if started.pid is not None:
-                    try:
-                        if self._is_local_job(started):
+                try:
+                    if self._is_local_job(started):
+                        if started.tmux_session:
+                            subprocess.run(
+                                ["tmux", "kill-session", "-t", started.tmux_session],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                        elif started.pid is not None:
                             started.process.kill() if started.process is not None else os.kill(started.pid, 9)
-                        else:
-                            with self._connection_for_job(started) as c2:
+                    else:
+                        with self._connection_for_job(started) as c2:
+                            if started.tmux_session:
+                                c2.run(
+                                    f"tmux kill-session -t {shlex.quote(started.tmux_session)}",
+                                    hide=True,
+                                    warn=True,
+                                )
+                            elif started.pid is not None:
                                 c2.run(f"kill -9 {started.pid}", hide=True, warn=True)
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
                 started.status = JobStatus.CANCELLED
                 started.finished_at = time.time()
             break

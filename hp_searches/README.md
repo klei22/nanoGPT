@@ -347,6 +347,46 @@ all remote jobs reach a terminal state, the controller fetches these result file
 and applies the same local greedy selection logic used by non-distributed
 hp_search.
 
+### Monitoring local and remote shards
+
+Each distributed shard is launched with a unique session name derived from the
+run namespace, generated hp_search token, timestamp, and host index. If `tmux` is
+installed on a host, hp_search starts that shard inside a detached tmux session;
+otherwise it falls back to the existing background process plus `run.log` file.
+
+On the controller/current machine, list or attach local shard sessions with:
+
+```bash
+tmux ls
+tmux attach -t <session-name>
+```
+
+For a remote host, SSH to that host first, then use the same tmux commands:
+
+```bash
+ssh ubuntu@10.0.0.12
+tmux ls
+tmux attach -t <session-name>
+```
+
+Every shard also writes files under:
+
+```text
+<work_dir>/distributed_trials/<run_dir_name>/<hp-search-token>-<timestamp>-hostN/
+```
+
+Useful files there are:
+
+- `run.log` — appended launcher/training output; use `tail -f run.log` when tmux
+  is unavailable or after the tmux session has exited.
+- `run.pid` — background PID for non-tmux fallback launches.
+- `tmux_session` — tmux session name when the shard is tmux-backed.
+- `hp_results.yaml` — completed trial records written incrementally by the
+  remote/local shard runner.
+
+`view_hp_log.py` remains the best controller-side view of greedy decisions; tmux
+is for watching the active shard process on the machine that is running it.
+
 ### Mixed GPU types, CUDA device names, and Jetson Orin
 
 The demo sends one YAML config to every host. If host A is a desktop/server GPU

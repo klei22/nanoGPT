@@ -10,6 +10,7 @@
 #   HP_SEARCH_USERS="ubuntu nvidia"
 #   HP_SEARCH_REMOTE_WORK_DIRS="/home/ubuntu/Evo_GPT /home/nvidia/nanoGPT"
 #   HP_SEARCH_CONDA_ENVS="reallmforge nanojetson"
+# Install tmux on hosts to optionally attach to running shard sessions.
 # Other optional overrides:
 #   HP_SEARCH_RESULTS_FILE=multimachine_efficiency_results.yaml
 #   HP_SEARCH_TIMEOUT=86400
