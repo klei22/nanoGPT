@@ -26,6 +26,8 @@ for col in df.columns:
 
     if col == "timestamp":
         min_val, max_val = 0, 9
+    elif col == "speed_mm_s":
+        min_val, max_val = -400, 400
     elif col == "total_distance_mm":
         min_val, max_val = 0, 999
     elif col == "battery_percent":
