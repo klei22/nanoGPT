@@ -11,7 +11,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-DATASET="linux-commands"
+DATASET="shakespeare_char"
 OUT_DIR="out/linux_commands_colorize_demo"
 YAML_FILE="${OUT_DIR}/highlighted_passage.yaml"
 
@@ -26,33 +26,43 @@ fi
 head -n 1200 input.txt > demo_segment.txt
 
 # Tokenize the segment into train.bin/val.bin for this dataset
-python3 prepare.py \
-  -t demo_segment.txt \
-  --method tiktoken \
-  --train_output train.bin \
-  --val_output val.bin \
-  -p 0.9
+# python3 prepare.py \
+#   -t demo_segment.txt \
+#   --method tiktoken \
+#   --train_output train.bin \
+#   --val_output val.bin \
+#   -p 0.9
+# python3 prepare.py \
+#   -t demo_segment.txt \
+#   --method tiktoken \
+#   --train_output train.bin \
+#   --val_output val.bin \
+#   -p 0.9
 
 popd >/dev/null
 
 python3 train.py \
   --dataset "${DATASET}" \
   --out_dir "${OUT_DIR}" \
-  --device cpu \
-  --dtype float32 \
-  --n_layer 2 \
-  --n_head 2 \
-  --n_embd 128 \
-  --block_size 64 \
-  --batch_size 8 \
-  --max_iters 60 \
-  --eval_interval 20 \
-  --eval_iters 20 \
+  --device "cuda:0" \
+  --n_layer 6 \
+  --n_head 6 \
+  --n_embd 384 \
+  --block_size 256 \
+  --batch_size 64 \
+  --max_iters 2000 \
+  --use_rotary_embeddings \
+  --no-use_abs_pos_embeddings \
+  --norm_variant_wte rmsnorm \
+  --use_qk_norm \
+  --use_qk_norm_scale \
+  --eval_interval 50 \
+  --eval_iters 100 \
   --log_interval 20 \
-  --no-compile \
+  --compile \
   --no-tensorboard_log \
   --colorize_val_passage \
-  --colorize_val_tokens 80 \
+  --colorize_val_tokens 256 \
   --colorize_val_offset 0 \
   --colorize_val_mode softmax \
   --colorize_val_yaml highlighted_passage.yaml
