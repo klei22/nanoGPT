@@ -8,6 +8,7 @@
 #   HP_SEARCH_CONDA_ENV=reallmforge
 #   HP_SEARCH_RESULTS_FILE=multimachine_efficiency_results.yaml
 #   HP_SEARCH_TIMEOUT=86400
+#   HP_SEARCH_OVERRIDE_CFG="device=cuda:0 dtype=float16 compile=False batch_size=16"
 
 set -euo pipefail
 
@@ -22,6 +23,7 @@ fi
 read -r -a HP_SEARCH_HOST_ARRAY <<< "${HP_SEARCH_HOSTS}"
 HP_SEARCH_EFFECTIVE_USER="${HP_SEARCH_USER:-${USER}}"
 HP_SEARCH_EFFECTIVE_REMOTE_WORK_DIR="${HP_SEARCH_REMOTE_WORK_DIR:-/home/${HP_SEARCH_EFFECTIVE_USER}/Evo_GPT}"
+read -r -a HP_SEARCH_OVERRIDE_CFG_ARRAY <<< "${HP_SEARCH_OVERRIDE_CFG:-}"
 
 python3 hyperparam_search.py \
   --orig_settings "${HP_SEARCH_ORIG_SETTINGS:-./hp_searches/multimachine_efficiency_demo.yaml}" \
@@ -47,6 +49,7 @@ python3 hyperparam_search.py \
   --efficiency_target "${HP_SEARCH_EFFICIENCY_TARGET:-params}" \
   --max_iters_increase "${HP_SEARCH_MAX_ITERS_INCREASE:-1000}" \
   --results_file "${HP_SEARCH_RESULTS_FILE:-multimachine_efficiency_results.yaml}" \
+  --override_cfg "${HP_SEARCH_OVERRIDE_CFG_ARRAY[@]}" \
   --distributed_hosts "${HP_SEARCH_HOST_ARRAY[@]}" \
   --distributed_user "${HP_SEARCH_EFFECTIVE_USER}" \
   --distributed_remote_work_dir "${HP_SEARCH_EFFECTIVE_REMOTE_WORK_DIR}" \

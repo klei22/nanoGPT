@@ -1,13 +1,20 @@
 # hp_searches/multimachine_efficiency_demo.yaml
 # Baseline used by hp_searches/multimachine_efficiency_demo.sh.
 # This is intentionally small so each remote machine can run complete candidate
-# trials quickly while demonstrating distributed hp_search mechanics.
+# trials quickly while demonstrating distributed hp_search mechanics. For mixed
+# GPUs such as desktop CUDA plus Jetson Orin, keep these settings at the
+# lowest-common-denominator or override them from the wrapper.
 
 # Dataset / runtime
 dataset: "shakespeare_char"
-device: "cuda"
-dtype: "bfloat16"
-compile: True
+# One shared config is sent to every host. `cuda:0` is usually correct for
+# both a single desktop GPU and a single Jetson GPU; change/override this if a
+# host needs a different visible device.
+device: "cuda:0"
+# float16 and compile=False are conservative defaults for heterogeneous CUDA
+# hosts, especially Jetson/aarch64 where BF16 or torch.compile support may vary.
+dtype: "float16"
+compile: False
 never_save_checkpoint: true
 max_iters: 1000
 eval_interval: 250

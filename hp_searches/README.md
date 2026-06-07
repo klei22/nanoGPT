@@ -274,7 +274,8 @@ Useful optional environment variables:
 - `HP_SEARCH_ITERATIONS` — candidate depths per parameter for a greedy step.
 - `HP_SEARCH_NUM_ITERATIONS` — maximum number of outer greedy growth steps.
 - `HP_SEARCH_EFFICIENCY_TARGET` — `params`, `vram`, `torch_allocated`,
-  `torch_reserved`, `process_gpu`, or `iter`.
+  `torch_reserved`, `process_gpu`, or `iter`. Use `params` for mixed hardware;
+  hardware metrics are only comparable across similar GPUs.
 - `HP_SEARCH_MAX_ITERS_INCREASE` — increase `max_iters` when no positive
   efficiency candidate is found.
 - `HP_SEARCH_POLL_INTERVAL` — seconds between remote status polls.
@@ -283,6 +284,9 @@ Useful optional environment variables:
   controller forever.
 - `HP_SEARCH_RUN_DIR_NAME` — namespace under each remote checkout's
   `distributed_trials/` directory.
+- `HP_SEARCH_OVERRIDE_CFG` — optional whitespace-separated `KEY=VALUE` overrides
+  passed to `--override_cfg`, for example
+  `HP_SEARCH_OVERRIDE_CFG="device=cuda:0 dtype=float16 compile=False batch_size=16"`.
 
 Monitor the controller-side log in another terminal:
 
@@ -307,6 +311,45 @@ The remote runner writes `hp_results.yaml` incrementally as trials finish. After
 all remote jobs reach a terminal state, the controller fetches these result files
 and applies the same local greedy selection logic used by non-distributed
 hp_search.
+
+### Mixed GPU types, CUDA device names, and Jetson Orin
+
+The demo sends one YAML config to every host. If host A is a desktop/server GPU
+and host B is a Jetson Orin, both hosts still receive the same values for
+`device`, `dtype`, `compile`, `batch_size`, and every model hyperparameter. The
+default demo uses `device: "cuda:0"`, which is normally valid for a single GPU on
+both a desktop CUDA machine and an Orin, but the hardware is not equivalent.
+
+This has a few practical effects:
+
+- **Wall-clock time is limited by the slowest shard.** The controller waits for
+  every host's shard before choosing the next greedy step, so an Orin can make
+  each distributed batch finish at Orin speed for the trials assigned to it.
+- **Use `params` as the efficiency target on mixed hardware.** Parameter deltas
+  are hardware-independent, but `iter`, `vram`, `torch_allocated`,
+  `torch_reserved`, and `process_gpu` are not comparable between a desktop GPU
+  and Jetson unified memory. If you optimize one of those hardware targets, the
+  greedy choice can be biased by which host happened to run that candidate.
+- **Use lowest-common-denominator runtime settings.** Jetson/aarch64 support for
+  BF16, `torch.compile`, and large batches can differ from a desktop GPU. The
+  demo therefore uses `dtype: "float16"` and `compile: False`; reduce
+  `batch_size` or `block_size` if the Orin runs out of memory.
+- **One host cannot currently receive host-specific overrides.** If the desktop
+  should use `cuda:1` but the Orin should use `cuda:0`, launch separate
+  homogeneous host groups or control visibility on each machine with
+  `CUDA_VISIBLE_DEVICES` so the desired accelerator appears as `cuda:0`.
+
+For a mixed desktop CUDA + Orin smoke run, prefer something like:
+
+```bash
+HP_SEARCH_HOSTS="desktop-gpu jetson-orin" \
+HP_SEARCH_EFFICIENCY_TARGET=params \
+HP_SEARCH_OVERRIDE_CFG="device=cuda:0 dtype=float16 compile=False batch_size=16" \
+bash hp_searches/multimachine_efficiency_demo.sh
+```
+
+For timing/VRAM searches, split the fleet and run one search per hardware class
+so every candidate is measured on comparable devices.
 
 ### Failure behavior
 
