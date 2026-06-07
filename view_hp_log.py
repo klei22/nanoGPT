@@ -326,9 +326,15 @@ class SweepViewer(App):
             ]
         )
 
+        previous_after = base_src
         for i, it in enumerate(self.iters):
             ch = it.get("chosen") or {}
-            after = it["baseline_config_after"]
+            after = (
+                it.get("baseline_config_after")
+                or it.get("baseline_config_before")
+                or previous_after
+                or {}
+            )
 
             vals: List[Any] = []
             for p in changed:
@@ -383,7 +389,12 @@ class SweepViewer(App):
                     "-",
                     "-",
                 ]
-            rows.append([str(it.get("iter", i)), *vals])
+            iter_label = str(it.get("iter", i))
+            if it.get("in_progress"):
+                iter_label += "*"
+            rows.append([iter_label, *vals])
+            if it.get("baseline_config_after"):
+                previous_after = it["baseline_config_after"]
         return hdrs, rows
 
     def _refresh_view(self):
