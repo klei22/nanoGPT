@@ -208,6 +208,11 @@ class SweepViewer(App):
             for it in data.get("iterations", [])
             if it.get("iter", 0) >= 0 and "candidates" in it
         ]
+        in_progress = data.get("in_progress_iteration")
+        if isinstance(in_progress, dict) and "candidates" in in_progress:
+            live = dict(in_progress)
+            live["in_progress"] = True
+            self.iters.append(live)
         if self.iters:
             self.idx = len(self.iters) - 1 if initial else min(self.idx, len(self.iters) - 1)
         else:
@@ -219,7 +224,8 @@ class SweepViewer(App):
         nav.clear(columns=True)
         nav.add_column("item")
         for it in self.iters:
-            nav.add_row(str(it["iter"]))
+            suffix = " (running)" if it.get("in_progress") else ""
+            nav.add_row(f"{it['iter']}{suffix}")
         nav.add_row(SUMMARY_LABEL)
         nav.cursor_type = "row"
         row_coord = (
@@ -453,7 +459,8 @@ class SweepViewer(App):
                 prev_iter_baseline_areq=prior_areq_val,
             )
         )
-        self.sub_title = f"Iteration {blk['iter']}  (↑/↓ nav, q quit)"
+        status_suffix = " [in progress]" if blk.get("in_progress") else ""
+        self.sub_title = f"Iteration {blk['iter']}{status_suffix}  (↑/↓ nav, q quit)"
         table.clear(columns=True)
         table.add_columns(
             "param",
@@ -474,6 +481,7 @@ class SweepViewer(App):
             "Δproc",
             "Δiter",
             "eff.",
+            "status",
         )
 
         chosen = blk.get("chosen") or {}
@@ -484,25 +492,33 @@ class SweepViewer(App):
                 and c["value"] == chosen.get("value")
             )
             st = "bold yellow" if hl else ""
+            seed_runs = c.get("seeds", [])
+            if c.get("complete"):
+                status = "complete"
+            elif c.get("failed") or any(s.get("failed") for s in seed_runs):
+                status = "failed"
+            else:
+                status = f"{len(seed_runs)}/{len(c.get('planned_seeds', seed_runs))} seeds"
             table.add_row(
-                Text(str(c["param"]), style=st),
-                Text(str(c["value"]), style=st),
-                f"{c['best_val_loss']:.4f}",
+                Text(str(c.get("param", "-")), style=st),
+                Text(str(c.get("value", "-")), style=st),
+                fnum(c.get("best_val_loss", "-"), "{:.4f}"),
                 str(c.get("best_iter", "-")),
                 fnum(c.get("avg_rankme", "-"), "{:.4f}"),
                 fnum(c.get("delta_rankme", "-"), "{:+.4f}"),
                 fnum(c.get("avg_areq", "-"), "{:.4f}"),
                 fnum(c.get("delta_areq", "-"), "{:+.4f}"),
-                f"{c.get('peak_torch_allocated_mb', c.get('peak_gpu_mb', float('nan'))):.1f}",
-                f"{c.get('peak_torch_reserved_mb', float('nan')):.1f}",
-                f"{c.get('peak_process_gpu_mb', float('nan')):.1f}",
-                f"{c['delta_score']:.2e}",
-                f"{c['delta_params']:.2e}",
-                f"{c.get('delta_torch_allocated_mb', float('nan')):.1f}",
-                f"{c.get('delta_torch_reserved_mb', float('nan')):.1f}",
-                f"{c.get('delta_process_gpu_mb', float('nan')):.1f}",
-                f"{c.get('delta_iter_latency', float('nan')):.2f}",
-                f"{c['efficiency']:.2e}",
+                fnum(c.get("peak_torch_allocated_mb", c.get("peak_gpu_mb", "-")), "{:.1f}"),
+                fnum(c.get("peak_torch_reserved_mb", "-"), "{:.1f}"),
+                fnum(c.get("peak_process_gpu_mb", "-"), "{:.1f}"),
+                fnum(c.get("delta_score", "-"), "{:.2e}"),
+                fnum(c.get("delta_params", "-"), "{:.2e}"),
+                fnum(c.get("delta_torch_allocated_mb", "-"), "{:.1f}"),
+                fnum(c.get("delta_torch_reserved_mb", "-"), "{:.1f}"),
+                fnum(c.get("delta_process_gpu_mb", "-"), "{:.1f}"),
+                fnum(c.get("delta_iter_latency", "-"), "{:.2f}"),
+                fnum(c.get("efficiency", "-"), "{:.2e}"),
+                status,
             )
 
 

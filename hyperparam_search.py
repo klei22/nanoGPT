@@ -26,7 +26,7 @@ import sys
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import random
 
 import torch
@@ -199,6 +199,70 @@ def save_log(path: Path, log: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _seed_run_succeeded(seed_run: Dict[str, Any]) -> bool:
+    return not seed_run.get("failed") and "loss" in seed_run and "score" in seed_run
+
+
+def _existing_seed_run(candidate: Dict[str, Any], seed: int) -> Optional[Dict[str, Any]]:
+    for seed_run in candidate.get("seeds", []):
+        if seed_run.get("seed") == seed:
+            return seed_run
+    return None
+
+
+def _format_candidate_id(param: str, value: Any, metadata: Optional[Dict[str, Any]] = None) -> str:
+    """Return a stable candidate key for matching partial work across resumes."""
+    if metadata and param == "n_layer":
+        return (
+            f"n_layer={metadata['new_layers']}"
+            f";dup_idx={metadata['dup_idx']}"
+            f";dup_mode={metadata['dup_mode']}"
+        )
+    return f"{param}={repr(value)}"
+
+
+def _search_args_for_log(args: argparse.Namespace, inc_map: Dict[str, Any]) -> Dict[str, Any]:
+    """Arguments that influence candidate generation, seed planning, or selection."""
+    return {
+        "param_names": list(args.param_names),
+        "increments": deepcopy(inc_map),
+        "iterations": args.iterations,
+        "random_iterations": args.random_iterations,
+        "nlayer_dup_mode": args.nlayer_dup_mode,
+        "randomize_seed": args.randomize_seed,
+        "efficiency_target": args.efficiency_target,
+        "optimize_target": args.optimize_target,
+        "optimize_mode": args.optimize_mode,
+        "max_iters_increase": args.max_iters_increase,
+    }
+
+
+def _baseline_metrics_for_log(
+    base_loss: float,
+    base_score: float,
+    base_params: float,
+    base_torch_alloc: float,
+    base_torch_reserved: float,
+    base_process_gpu: float,
+    base_iter_ms: float,
+    base_best_iter: int,
+    base_rankme: float,
+    base_areq: float,
+) -> Dict[str, Any]:
+    return {
+        "loss": base_loss,
+        "score": base_score,
+        "params": base_params,
+        "peak_torch_allocated_mb": base_torch_alloc,
+        "peak_torch_reserved_mb": base_torch_reserved,
+        "peak_process_gpu_mb": base_process_gpu,
+        "iter_latency_avg": base_iter_ms,
+        "best_iter": base_best_iter,
+        "rankme": base_rankme,
+        "areq": base_areq,
+    }
+
+
 # ───────────────────────── search controller ─────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Greedy hyper-param search wrapper")
@@ -350,6 +414,7 @@ def main():
         base_rankme = last["baseline_metrics"].get("rankme", float("nan"))
         base_areq = last["baseline_metrics"].get("areq", float("nan"))
         base_params = last["baseline_metrics"]["params"]
+        base_best_iter = last["baseline_metrics"].get("best_iter", 0)
         base_torch_alloc = last["baseline_metrics"].get(
             "peak_torch_allocated_mb",
             last["baseline_metrics"].get("peak_gpu_mb", 0.0),
@@ -405,142 +470,165 @@ def main():
 
     while cur_iter < args.num_iterations:
         print(f"========== Iteration {cur_iter} ==========")
-        candidates: List[Dict[str, Any]] = []
         best_choice: Tuple[float, Dict[str, Any]] | None = None
+        baseline_metrics_before = _baseline_metrics_for_log(
+            base_loss,
+            base_score,
+            base_params,
+            base_torch_alloc,
+            base_torch_reserved,
+            base_process_gpu,
+            base_iter_ms,
+            base_best_iter,
+            base_rankme,
+            base_areq,
+        )
+        search_args = _search_args_for_log(args, inc_map)
+        in_progress = log.get("in_progress_iteration")
+        if not (isinstance(in_progress, dict) and in_progress.get("iter") == cur_iter):
+            in_progress = {
+                "iter": cur_iter,
+                "baseline_config_before": deepcopy(baseline_cfg),
+                "baseline_metrics": deepcopy(baseline_metrics_before),
+                "search_args": search_args,
+                "cursor": {
+                    "generated_candidate_ids": [],
+                    "completed_candidate_ids": [],
+                    "skipped_seed_runs": [],
+                },
+                "candidates": [],
+            }
+            log["in_progress_iteration"] = in_progress
+            save_log(log_path, log)
+        else:
+            in_progress.setdefault("baseline_config_before", deepcopy(baseline_cfg))
+            in_progress.setdefault("baseline_metrics", deepcopy(baseline_metrics_before))
+            in_progress.setdefault("search_args", search_args)
+            in_progress.setdefault("cursor", {})
+            in_progress["cursor"].setdefault("generated_candidate_ids", [])
+            in_progress["cursor"].setdefault("completed_candidate_ids", [])
+            in_progress["cursor"].setdefault("skipped_seed_runs", [])
+            in_progress.setdefault("candidates", [])
+            print(f"[RESUME] hydrating iteration {cur_iter} from in_progress_iteration")
 
-        for pname in args.param_names:
-            if pname not in baseline_cfg:
-                print(f"[WARN] parameter '{pname}' not in baseline config – skipping")
-                continue
+        candidates: List[Dict[str, Any]] = in_progress["candidates"]
+        candidates_by_id: Dict[str, Dict[str, Any]] = {
+            c["id"]: c for c in candidates if "id" in c
+        }
 
-            base_val = baseline_cfg[pname]
-            step_spec = inc_map[pname]
+        def _record_cursor_candidate(candidate_id: str) -> None:
+            generated = in_progress["cursor"].setdefault("generated_candidate_ids", [])
+            if candidate_id not in generated:
+                generated.append(candidate_id)
 
-            def _numeric_add(x: Any, delta: float) -> Any:
-                return int(round(x + delta)) if isinstance(x, int) else float(x + delta)
+        def _mark_candidate_completed(candidate_id: str) -> None:
+            completed = in_progress["cursor"].setdefault("completed_candidate_ids", [])
+            if candidate_id not in completed:
+                completed.append(candidate_id)
 
-            def _evaluate(
-                cfg_template: Dict[str, Any], label_for_log: str, value_for_log: Any
-            ) -> None:
-                nonlocal best_choice, candidates
+        def _numeric_add(x: Any, delta: float) -> Any:
+            return int(round(x + delta)) if isinstance(x, int) else float(x + delta)
 
-                seed0 = int(cfg_template.get("seed", 1337))
-                if args.randomize_seed:
-                    seed0 = random.randint(0, 2**31 - 1)
-                seed_runs: List[Dict[str, Any]] = []
-                scores: List[float] = []
+        def _update_best_choice(cand: Dict[str, Any]) -> None:
+            nonlocal best_choice
+            eff = cand.get("efficiency", float("nan"))
+            if not isinstance(eff, (int, float)) or not eff > 0:
+                return
+            if best_choice is None:
+                best_choice = (eff, cand)
+                return
+            old_eff, old_cand = best_choice
+            if (eff > old_eff) or (
+                math.isinf(eff)
+                and eff == old_eff
+                and cand.get("target_improvement", float("-inf"))
+                > old_cand.get("target_improvement", float("-inf"))
+            ):
+                best_choice = (eff, cand)
 
-                for r in range(args.random_iterations):
-                    cfg_run = deepcopy(cfg_template)
-                    cfg_run["seed"] = seed0 + r
+        def _summarize_candidate(candidate: Dict[str, Any]) -> bool:
+            seed_runs = candidate.get("seeds", [])
+            if len(seed_runs) < args.random_iterations:
+                return False
+            if any(not _seed_run_succeeded(seed_run) for seed_run in seed_runs):
+                candidate["complete"] = False
+                candidate["failed"] = True
+                return False
 
-                    print(f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}")
-                    try:
-                        (
-                            loss,
-                            nparam,
-                            best_it,
-                            torch_alloc_mb,
-                            torch_resv_mb,
-                            process_gpu_mb,
-                            iter_ms,
-                            rankme,
-                            areq,
-                        ) = run_fn(cfg_run)
-                    except Exception as exc:
-                        print("   ⚠", exc)
-                        return
+            scores = [s["score"] for s in seed_runs]
+            avg_score = sum(scores) / len(scores)
+            avg_torch_alloc = (
+                sum(s["peak_torch_allocated_mb"] for s in seed_runs) / len(seed_runs)
+            )
+            avg_torch_reserved = (
+                sum(s["peak_torch_reserved_mb"] for s in seed_runs) / len(seed_runs)
+            )
+            avg_process_gpu = (
+                sum(s["peak_process_gpu_mb"] for s in seed_runs) / len(seed_runs)
+            )
+            avg_iter = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
+            avg_rankme = _nanmean([s["rankme"] for s in seed_runs])
+            avg_areq = _nanmean([s["areq"] for s in seed_runs])
+            avg_loss = -math.log(avg_score)
+            nparam = seed_runs[-1]["num_params"]
 
-                    score = 1.0 / math.exp(loss)
-                    seed_runs.append(
-                        {
-                            "seed": cfg_run["seed"],
-                            "loss": loss,
-                            "score": score,
-                            "best_iter": best_it,
-                            "peak_torch_allocated_mb": torch_alloc_mb,
-                            "peak_torch_reserved_mb": torch_resv_mb,
-                            "peak_process_gpu_mb": process_gpu_mb,
-                            "iter_latency_ms": iter_ms,
-                            "rankme": rankme,
-                            "areq": areq,
-                        }
-                    )
-                    scores.append(score)
+            d_score = avg_score - base_score
+            d_rankme = (
+                avg_rankme - base_rankme
+                if not math.isnan(avg_rankme) and not math.isnan(base_rankme)
+                else float("nan")
+            )
+            d_areq = (
+                avg_areq - base_areq
+                if not math.isnan(avg_areq) and not math.isnan(base_areq)
+                else float("nan")
+            )
+            d_param = nparam - base_params
+            d_torch_alloc = avg_torch_alloc - base_torch_alloc
+            d_torch_reserved = avg_torch_reserved - base_torch_reserved
+            d_process_gpu = avg_process_gpu - base_process_gpu
+            d_iter = avg_iter - base_iter_ms
 
-                avg_score = sum(scores) / len(scores)
-                avg_torch_alloc = (
-                    sum(s["peak_torch_allocated_mb"] for s in seed_runs) / len(seed_runs)
-                )
-                avg_torch_reserved = (
-                    sum(s["peak_torch_reserved_mb"] for s in seed_runs) / len(seed_runs)
-                )
-                avg_process_gpu = (
-                    sum(s["peak_process_gpu_mb"] for s in seed_runs) / len(seed_runs)
-                )
-                avg_iter = sum(s["iter_latency_ms"] for s in seed_runs) / len(seed_runs)
-                avg_rankme = _nanmean([s["rankme"] for s in seed_runs])
-                avg_areq = _nanmean([s["areq"] for s in seed_runs])
-                avg_loss = -math.log(avg_score)
+            if args.efficiency_target == "params":
+                d_cost = d_param
+            elif args.efficiency_target in ("vram", "torch_allocated"):
+                d_cost = d_torch_alloc
+            elif args.efficiency_target == "torch_reserved":
+                d_cost = d_torch_reserved
+            elif args.efficiency_target == "process_gpu":
+                d_cost = d_process_gpu
+            elif args.efficiency_target == "iter":
+                d_cost = d_iter
+            else:
+                raise ValueError("Unknown efficiency target")
 
-                d_score = avg_score - base_score
-                d_rankme = (
-                    avg_rankme - base_rankme
-                    if not math.isnan(avg_rankme) and not math.isnan(base_rankme)
-                    else float("nan")
-                )
-                d_areq = (
-                    avg_areq - base_areq
-                    if not math.isnan(avg_areq) and not math.isnan(base_areq)
-                    else float("nan")
-                )
-                d_param = nparam - base_params
-                d_torch_alloc = avg_torch_alloc - base_torch_alloc
-                d_torch_reserved = avg_torch_reserved - base_torch_reserved
-                d_process_gpu = avg_process_gpu - base_process_gpu
-                d_iter = avg_iter - base_iter_ms
+            if args.optimize_target == "score":
+                objective_value = avg_score
+                baseline_objective = base_score
+            elif args.optimize_target == "rankme":
+                objective_value = avg_rankme
+                baseline_objective = base_rankme
+            elif args.optimize_target == "areq":
+                objective_value = avg_areq
+                baseline_objective = base_areq
+            else:
+                raise ValueError("Unknown optimize target")
 
-                if args.efficiency_target == "params":
-                    d_cost = d_param
-                elif args.efficiency_target in ("vram", "torch_allocated"):
-                    d_cost = d_torch_alloc
-                elif args.efficiency_target == "torch_reserved":
-                    d_cost = d_torch_reserved
-                elif args.efficiency_target == "process_gpu":
-                    d_cost = d_process_gpu
-                elif args.efficiency_target == "iter":
-                    d_cost = d_iter
-                else:
-                    raise ValueError("Unknown efficiency target")
+            objective_delta = objective_value - baseline_objective
+            direction = 1.0 if args.optimize_mode == "max" else -1.0
+            objective_improvement = direction * objective_delta
+            if math.isnan(objective_improvement):
+                candidate["complete"] = False
+                return False
 
-                if args.optimize_target == "score":
-                    objective_value = avg_score
-                    baseline_objective = base_score
-                elif args.optimize_target == "rankme":
-                    objective_value = avg_rankme
-                    baseline_objective = base_rankme
-                elif args.optimize_target == "areq":
-                    objective_value = avg_areq
-                    baseline_objective = base_areq
-                else:
-                    raise ValueError("Unknown optimize target")
+            eff = (
+                (objective_improvement / d_cost)
+                if d_cost != 0
+                else (math.inf if objective_improvement > 0 else 0.0)
+            )
 
-                objective_delta = objective_value - baseline_objective
-                direction = 1.0 if args.optimize_mode == "max" else -1.0
-                objective_improvement = direction * objective_delta
-
-                if math.isnan(objective_improvement):
-                    return
-
-                eff = (
-                    (objective_improvement / d_cost)
-                    if d_cost != 0
-                    else (math.inf if objective_improvement > 0 else 0.0)
-                )
-
-                cand = {
-                    "param": label_for_log,
-                    "value": value_for_log,
+            candidate.update(
+                {
                     "avg_loss": avg_loss,
                     "avg_score": avg_score,
                     "avg_rankme": avg_rankme,
@@ -566,21 +654,118 @@ def main():
                     "target_value": objective_value,
                     "target_delta": objective_delta,
                     "target_improvement": objective_improvement,
-                    "seeds": seed_runs,
+                    "complete": True,
                 }
-                candidates.append(cand)
+            )
+            _mark_candidate_completed(candidate["id"])
+            _update_best_choice(candidate)
+            return True
 
-                if eff > 0:
-                    if best_choice is None:
-                        best_choice = (eff, cand)
-                    else:
-                        old_eff, old_cand = best_choice
-                        if (eff > old_eff) or (
-                            math.isinf(eff)
-                            and eff == old_eff
-                            and cand["target_improvement"] > old_cand["target_improvement"]
-                        ):
-                            best_choice = (eff, cand)
+        def _evaluate(
+            cfg_template: Dict[str, Any],
+            label_for_log: str,
+            value_for_log: Any,
+            candidate_id: str,
+            metadata: Optional[Dict[str, Any]] = None,
+        ) -> None:
+            _record_cursor_candidate(candidate_id)
+            candidate = candidates_by_id.get(candidate_id)
+            if candidate is None:
+                seed0 = int(cfg_template.get("seed", 1337))
+                if args.randomize_seed:
+                    seed0 = random.randint(0, 2**31 - 1)
+                planned_seeds = [seed0 + r for r in range(args.random_iterations)]
+                candidate = {
+                    "id": candidate_id,
+                    "param": label_for_log,
+                    "value": deepcopy(value_for_log),
+                    "metadata": deepcopy(metadata or {}),
+                    "seed_start": seed0,
+                    "planned_seeds": planned_seeds,
+                    "seeds": [],
+                }
+                candidates.append(candidate)
+                candidates_by_id[candidate_id] = candidate
+                save_log(log_path, log)
+            else:
+                candidate.setdefault("seeds", [])
+                candidate.setdefault(
+                    "planned_seeds",
+                    [
+                        int(candidate.get("seed_start", cfg_template.get("seed", 1337))) + r
+                        for r in range(args.random_iterations)
+                    ],
+                )
+
+            if _summarize_candidate(candidate):
+                return
+
+            for seed in candidate["planned_seeds"][: args.random_iterations]:
+                existing = _existing_seed_run(candidate, seed)
+                if existing is not None:
+                    in_progress["cursor"].setdefault("skipped_seed_runs", []).append(
+                        {"candidate_id": candidate_id, "seed": seed}
+                    )
+                    continue
+
+                cfg_run = deepcopy(cfg_template)
+                cfg_run["seed"] = seed
+                print(f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}")
+                try:
+                    (
+                        loss,
+                        nparam,
+                        best_it,
+                        torch_alloc_mb,
+                        torch_resv_mb,
+                        process_gpu_mb,
+                        iter_ms,
+                        rankme,
+                        areq,
+                    ) = run_fn(cfg_run)
+                except Exception as exc:
+                    print("   ⚠", exc)
+                    candidate["seeds"].append(
+                        {
+                            "seed": seed,
+                            "failed": True,
+                            "error": str(exc),
+                            "param": label_for_log,
+                            "value": deepcopy(value_for_log),
+                        }
+                    )
+                    candidate["failed"] = True
+                    save_log(log_path, log)
+                    return
+
+                score = 1.0 / math.exp(loss)
+                candidate["seeds"].append(
+                    {
+                        "seed": seed,
+                        "loss": loss,
+                        "score": score,
+                        "best_iter": best_it,
+                        "num_params": nparam,
+                        "peak_torch_allocated_mb": torch_alloc_mb,
+                        "peak_torch_reserved_mb": torch_resv_mb,
+                        "peak_process_gpu_mb": process_gpu_mb,
+                        "iter_latency_ms": iter_ms,
+                        "rankme": rankme,
+                        "areq": areq,
+                    }
+                )
+                save_log(log_path, log)
+
+            if _summarize_candidate(candidate):
+                save_log(log_path, log)
+
+        for pname in args.param_names:
+            if pname not in baseline_cfg:
+                print(f"[WARN] parameter '{pname}' not in baseline config – skipping")
+                continue
+
+            base_val = baseline_cfg[pname]
+            step_spec = inc_map[pname]
 
             if pname == "n_layer":
                 old_nlayer = int(baseline_cfg["n_layer"])
@@ -591,10 +776,18 @@ def main():
                     cfg2["n_layer"] = new_nlayer
                     _extend_layerlists(cfg2, dup_idx)
                     cfg2["_last_dup_idx"] = dup_idx
+                    metadata = {
+                        "dup_idx": dup_idx,
+                        "dup_tag": tag,
+                        "new_layers": new_nlayer,
+                        "dup_mode": args.nlayer_dup_mode,
+                    }
                     _evaluate(
                         cfg2,
                         "n_layer",
                         {"dup": dup_idx, "new_layers": new_nlayer},
+                        _format_candidate_id("n_layer", new_nlayer, metadata),
+                        metadata,
                     )
 
                 if args.nlayer_dup_mode == "dup_middle":
@@ -613,7 +806,8 @@ def main():
                     new_val = _numeric_add(base_val, m * step_spec)
                     cfg_tmpl = deepcopy(baseline_cfg)
                     cfg_tmpl[pname] = new_val
-                    _evaluate(cfg_tmpl, pname, new_val)
+                    candidate_id = _format_candidate_id(pname, new_val, {"multiple": m})
+                    _evaluate(cfg_tmpl, pname, new_val, candidate_id, {"multiple": m})
                 continue
 
             if isinstance(base_val, list):
@@ -638,7 +832,17 @@ def main():
                         new_list[idx] = new_elem
                         cfg_tmpl = deepcopy(baseline_cfg)
                         cfg_tmpl[pname] = new_list
-                        _evaluate(cfg_tmpl, f"{pname}[{idx}]", new_elem)
+                        label = f"{pname}[{idx}]"
+                        candidate_id = _format_candidate_id(
+                            label, new_elem, {"layerlist_index": idx, "multiple": m}
+                        )
+                        _evaluate(
+                            cfg_tmpl,
+                            label,
+                            new_elem,
+                            candidate_id,
+                            {"layerlist_index": idx, "multiple": m},
+                        )
                 continue
 
             print(f"[SKIP] '{pname}' is neither numeric nor list-numeric – ignored")
@@ -653,28 +857,17 @@ def main():
                         f"'max_iters' from {current_max_iters} to {new_max_iters}."
                     )
                     baseline_cfg["max_iters"] = new_max_iters
-                    log["iterations"].append(
-                        {
-                            "iter": cur_iter,
-                            "baseline_metrics": {
-                                "loss": base_loss,
-                                "score": base_score,
-                                "params": base_params,
-                                "peak_torch_allocated_mb": base_torch_alloc,
-                                "peak_torch_reserved_mb": base_torch_reserved,
-                                "peak_process_gpu_mb": base_process_gpu,
-                                "iter_latency_avg": base_iter_ms,
-                                "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
-                                "rankme": base_rankme,
-                                "areq": base_areq,
-                            },
-                            "candidates": candidates,
-                            "chosen": None,
-                            "action": f"max_iters_increased_to_{new_max_iters}",
-                            "baseline_config_after": deepcopy(baseline_cfg),
-                        }
-                    )
+                    completed_iteration = {
+                        "iter": cur_iter,
+                        "baseline_metrics": deepcopy(baseline_metrics_before),
+                        "candidates": candidates,
+                        "chosen": None,
+                        "action": f"max_iters_increased_to_{new_max_iters}",
+                        "baseline_config_after": deepcopy(baseline_cfg),
+                    }
+                    log["iterations"].append(completed_iteration)
                     log["baseline_config"] = deepcopy(baseline_cfg)
+                    log.pop("in_progress_iteration", None)
                     save_log(log_path, log)
                     cur_iter += 1
                     continue
@@ -686,7 +879,16 @@ def main():
 
             print("No positive-efficiency candidate — stopping.")
             log["stop_reason"] = "no_positive_efficiency"
+            completed_iteration = {
+                "iter": cur_iter,
+                "baseline_metrics": deepcopy(baseline_metrics_before),
+                "candidates": candidates,
+                "chosen": None,
+                "baseline_config_after": deepcopy(baseline_cfg),
+            }
+            log["iterations"].append(completed_iteration)
             log["baseline_config"] = deepcopy(baseline_cfg)
+            log.pop("in_progress_iteration", None)
             save_log(log_path, log)
             break
 
@@ -724,30 +926,32 @@ def main():
         base_torch_reserved = chosen.get("peak_torch_reserved_mb", base_torch_reserved)
         base_process_gpu = chosen.get("peak_process_gpu_mb", base_process_gpu)
         base_iter_ms = chosen.get("iter_latency_avg", base_iter_ms)
+        base_best_iter = chosen["best_iter"]
         base_rankme = chosen.get("avg_rankme", base_rankme)
         base_areq = chosen.get("avg_areq", base_areq)
 
         log["iterations"].append(
             {
                 "iter": cur_iter,
-                "baseline_metrics": {
-                    "loss": base_loss,
-                    "score": base_score,
-                    "params": base_params,
-                    "peak_torch_allocated_mb": base_torch_alloc,
-                    "peak_torch_reserved_mb": base_torch_reserved,
-                    "peak_process_gpu_mb": base_process_gpu,
-                    "iter_latency_avg": base_iter_ms,
-                    "best_iter": chosen["best_iter"],
-                    "rankme": base_rankme,
-                    "areq": base_areq,
-                },
+                "baseline_metrics": _baseline_metrics_for_log(
+                    base_loss,
+                    base_score,
+                    base_params,
+                    base_torch_alloc,
+                    base_torch_reserved,
+                    base_process_gpu,
+                    base_iter_ms,
+                    base_best_iter,
+                    base_rankme,
+                    base_areq,
+                ),
                 "candidates": candidates,
                 "chosen": chosen,
                 "baseline_config_after": deepcopy(baseline_cfg),
             }
         )
         log["baseline_config"] = deepcopy(baseline_cfg)
+        log.pop("in_progress_iteration", None)
         save_log(log_path, log)
         cur_iter += 1
 

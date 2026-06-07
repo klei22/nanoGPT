@@ -1,0 +1,87 @@
+# Fixture: partial hyperparam_search.py log with one completed seed recorded in
+# in_progress_iteration. Re-running hyperparam_search.py with matching search args
+# should hydrate candidate id "n_embd=48", skip seed 1337, and only run seed 1338.
+baseline_config:
+  seed: 1337
+  n_layer: 2
+  n_head: 2
+  n_embd: 32
+  max_iters: 10
+iterations:
+  - iter: -1
+    baseline_metrics:
+      loss: 2.0
+      score: 0.1353352832366127
+      params: 1000.0
+      peak_torch_allocated_mb: 10.0
+      peak_torch_reserved_mb: 12.0
+      peak_process_gpu_mb: 20.0
+      iter_latency_avg: 1.0
+      best_iter: 10
+      rankme: .nan
+      areq: .nan
+    baseline_config_after:
+      seed: 1337
+      n_layer: 2
+      n_head: 2
+      n_embd: 32
+      max_iters: 10
+in_progress_iteration:
+  iter: 0
+  baseline_config_before:
+    seed: 1337
+    n_layer: 2
+    n_head: 2
+    n_embd: 32
+    max_iters: 10
+  baseline_metrics:
+    loss: 2.0
+    score: 0.1353352832366127
+    params: 1000.0
+    peak_torch_allocated_mb: 10.0
+    peak_torch_reserved_mb: 12.0
+    peak_process_gpu_mb: 20.0
+    iter_latency_avg: 1.0
+    best_iter: 10
+    rankme: .nan
+    areq: .nan
+  search_args:
+    param_names:
+      - n_embd
+    increments:
+      n_embd: 16.0
+    iterations: 1
+    random_iterations: 2
+    nlayer_dup_mode: dup_middle
+    randomize_seed: false
+    efficiency_target: params
+    optimize_target: score
+    optimize_mode: max
+    max_iters_increase: null
+  cursor:
+    generated_candidate_ids:
+      - n_embd=48
+    completed_candidate_ids: []
+    skipped_seed_runs: []
+  candidates:
+    - id: n_embd=48
+      param: n_embd
+      value: 48
+      metadata:
+        multiple: 1
+      seed_start: 1337
+      planned_seeds:
+        - 1337
+        - 1338
+      seeds:
+        - seed: 1337
+          loss: 1.9
+          score: 0.14956861922263506
+          best_iter: 10
+          num_params: 1200.0
+          peak_torch_allocated_mb: 11.0
+          peak_torch_reserved_mb: 13.0
+          peak_process_gpu_mb: 21.0
+          iter_latency_ms: 1.1
+          rankme: .nan
+          areq: .nan
