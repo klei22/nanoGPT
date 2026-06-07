@@ -1,0 +1,47 @@
+# hp_searches/multimachine_efficiency_demo.yaml
+# Baseline used by hp_searches/multimachine_efficiency_demo.sh.
+# This is intentionally small so each remote machine can run complete candidate
+# trials quickly while demonstrating distributed hp_search mechanics. For mixed
+# GPUs such as desktop CUDA plus Jetson Orin, keep these settings at the
+# lowest-common-denominator or override them from the wrapper.
+
+# Dataset / runtime
+dataset: "shakespeare_char"
+# One shared config is sent to every host. `cuda:0` is usually correct for
+# both a single desktop GPU and a single Jetson GPU; change/override this if a
+# host needs a different visible device.
+device: "cuda:0"
+# float16 and compile=False are conservative defaults for heterogeneous CUDA
+# hosts, especially Jetson/aarch64 where BF16 or torch.compile support may vary.
+dtype: "float16"
+compile: False
+never_save_checkpoint: true
+max_iters: 1000
+eval_interval: 250
+batch_size: 32
+block_size: 128
+
+# Position embeddings / attention
+use_rotary_embeddings: true
+use_abs_pos_embeddings: false
+attention_variant: "infinite"
+use_concat_heads: true
+use_qk_norm: true
+use_qk_norm_scale: true
+
+# Normalization
+norm_variant_wte: "hyperspherenorm"
+norm_variant_attn: "hyperspherenorm"
+norm_variant_output: "hyperspherenorm"
+norm_wte_radius_learning: true
+hsnorm_radius_learning: true
+use_peri_ln: true
+
+# Starting model shape
+n_layer: 1
+n_head: 1
+n_kv_group: 1
+n_embd: 64
+mlp_size: 128
+n_qk_head_dim: 64
+n_v_head_dim: 64

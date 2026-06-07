@@ -1,10 +1,15 @@
-import json, logging, shlex, threading, time, uuid, tempfile, math
+import json, logging, re, shlex, threading, time, uuid, tempfile, math, shutil, socket, subprocess
 import yaml
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from fabric import Connection  
+try:
+    from fabric import Connection
+except ImportError:  # Allows local-only distributed shards without Fabric installed.
+    class Connection:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            raise ImportError("fabric is required for non-local distributed hosts")
 
 class JobStatus:
     PENDING = "PENDING"; RUNNING = "RUNNING"; COMPLETED = "COMPLETED"; FAILED = "FAILED"; TIMEOUT = "TIMEOUT"; CANCELLED = "CANCELLED"
@@ -18,7 +23,11 @@ class RemoteJob:
     yaml_path: str
     log_path: str
     pid_path: str
+    user: Optional[str] = None
+    key_filename: Optional[str] = None
     pid: Optional[int] = None
+    process: Any = None
+    tmux_session: Optional[str] = None
     status: str = JobStatus.PENDING
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
@@ -29,25 +38,74 @@ class RemoteJob:
     heartbeat_interval: int = 120
 
 class RemoteTrainer:
-    def __init__(self, hosts: List[str], user: str, key_filename: Optional[str]=None):
-        self.hosts=hosts
-        self.user=user
-        self.key_filename=key_filename
-        
+    def __init__(
+        self,
+        hosts: List[str],
+        user: str,
+        key_filename: Optional[str] = None,
+        users: Optional[List[str]] = None,
+        key_filenames: Optional[List[Optional[str]]] = None,
+    ):
+        self.hosts = hosts
+        self.user = user
+        self.key_filename = key_filename
+        self.users = users or [user] * len(hosts)
+        self.key_filenames = key_filenames or [key_filename] * len(hosts)
+        if len(self.users) != len(hosts):
+            raise ValueError("users length must match hosts length")
+        if len(self.key_filenames) != len(hosts):
+            raise ValueError("key_filenames length must match hosts length")
+
         self.num_hosts = len(hosts)
         # New: list of jobs we launched
         self.jobs: List[RemoteJob] = []
         self.watchdog_timeout: int = 300
 
+    @staticmethod
+    def _is_local_host(host: str) -> bool:
+        normalized = host.strip().lower()
+        local_names = {
+            "local",
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            socket.gethostname().lower(),
+            socket.getfqdn().lower(),
+        }
+        return normalized in local_names
+
+    def _is_local_index(self, idx: int) -> bool:
+        return self._is_local_host(self.hosts[idx])
+
+    def _is_local_job(self, job: RemoteJob) -> bool:
+        return self._is_local_host(job.host)
+
+    @staticmethod
+    def _tmux_session_name(*parts: str) -> str:
+        raw = "_".join(str(part) for part in parts if part)
+        return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)[:200]
+
+    def _connection_for_index(self, idx: int) -> Connection:
+        key_filename = self.key_filenames[idx]
+        connect_kwargs = {"key_filename": key_filename} if key_filename else {}
+        return Connection(host=self.hosts[idx], user=self.users[idx], connect_kwargs=connect_kwargs)
+
+    def _connection_for_job(self, job: RemoteJob) -> Connection:
+        key_filename = job.key_filename if job.key_filename is not None else self.key_filename
+        connect_kwargs = {"key_filename": key_filename} if key_filename else {}
+        return Connection(host=job.host, user=job.user or self.user, connect_kwargs=connect_kwargs)
 
     def check_connectivity(self) -> bool:
         all_ok = True
         for i, host in enumerate(self.hosts):
+            if self._is_local_index(i):
+                logging.info(f"Connectivity OK: host_{i} ({host}) as local process")
+                continue
             try:
-                conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                conn = self._connection_for_index(i)
                 conn.open()
                 conn.close()
-                logging.info(f"Connectivity OK: host_{i} ({host})")
+                logging.info(f"Connectivity OK: host_{i} ({host}) as {self.users[i]}")
             except Exception as e:
                 logging.error(f"\033[31mConnection to host_{i} ({host}) failed: {e}\033[0m")
                 all_ok = False
@@ -63,7 +121,7 @@ class RemoteTrainer:
         def beater():
             while not stop_event.is_set():
                 try:
-                    conn = Connection(host=job.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+                    conn = self._connection_for_job(job)
                     try:
                         conn.open()
                         if job.lease_path:
@@ -364,12 +422,67 @@ fi
 
     # New: poll job statuses by checking remote PID liveness
     def poll_jobs(self) -> List[RemoteJob]:
+        def _finish_job(job: RemoteJob, exit_code: Optional[int]) -> None:
+            if exit_code == 0:
+                job.status = JobStatus.COMPLETED
+                logging.info(f"\033[32mJob {job.id}@{job.host} completed successfully.\033[0m")
+            else:
+                job.status = JobStatus.FAILED
+                logging.error(f"\033[31mJob {job.id}@{job.host} failed.\033[0m")
+            job.finished_at = time.time()
+            if job.heartbeat_stop:
+                job.heartbeat_stop.set()
+            if job.heartbeat_thread:
+                try:
+                    job.heartbeat_thread.join(timeout=2.0)
+                except Exception:
+                    pass
+
         for job in self.jobs:
             if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.TIMEOUT):
                 continue
-            conn = Connection(host=job.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+
+            if self._is_local_job(job):
+                try:
+                    exit_code: Optional[int] = None
+                    if job.tmux_session:
+                        tmux_alive = subprocess.run(
+                            ["tmux", "has-session", "-t", job.tmux_session],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        ).returncode == 0
+                        if tmux_alive:
+                            job.status = JobStatus.RUNNING
+                            continue
+                    elif job.process is not None:
+                        rc = job.process.poll()
+                        if rc is None:
+                            job.status = JobStatus.RUNNING
+                            continue
+                        exit_code = int(rc)
+
+                    ec_path = Path(job.remote_dir) / "exit_code"
+                    if ec_path.exists():
+                        raw = ec_path.read_text().strip()
+                        if raw.lstrip("-").isdigit():
+                            exit_code = int(raw)
+                    _finish_job(job, exit_code)
+                except Exception as e:
+                    logging.warning(f"\033[33mPoll failed for {job.id}@{job.host}: {e}\033[0m")
+                continue
+
+            conn = self._connection_for_job(job)
             try:
                 conn.open()
+                if job.tmux_session:
+                    r = conn.run(
+                        f"tmux has-session -t {shlex.quote(job.tmux_session)}",
+                        hide=True,
+                        warn=True,
+                    )
+                    if r.ok:
+                        job.status = JobStatus.RUNNING
+                        continue
                 # Ensure we have a PID
                 if job.pid is None:
                     r = conn.run(f"test -f {job.pid_path} && cat {job.pid_path}", hide=True, warn=True)
@@ -384,7 +497,6 @@ fi
                 if alive:
                     job.status = JobStatus.RUNNING
                 else:
-                    # Process exited: check exit_code file
                     ec_path = f"{job.remote_dir}/exit_code"
                     r = conn.run(f"test -f {ec_path} && cat {ec_path}", hide=True, warn=True)
                     exit_code: Optional[int] = None
@@ -392,21 +504,7 @@ fi
                         s = r.stdout.strip()
                         if s.isdigit():
                             exit_code = int(s)
-                    if exit_code == 0:
-                        job.status = JobStatus.COMPLETED
-                        logging.info(f"\033[32mJob {job.id}@{job.host} completed successfully.\033[0m")
-                    else:
-                        job.status = JobStatus.FAILED
-                        logging.error(f"\033[31mJob {job.id}@{job.host} failed.\033[0m")
-                    job.finished_at = time.time()
-                    # stop heartbeat
-                    if job.heartbeat_stop:
-                        job.heartbeat_stop.set()
-                    if job.heartbeat_thread:
-                        try:
-                            job.heartbeat_thread.join(timeout=2.0)
-                        except Exception:
-                            pass
+                    _finish_job(job, exit_code)
             except Exception as e:
                 logging.warning(f"\033[33mPoll failed for {job.id}@{job.host}: {e}\033[0m")
             finally:
@@ -652,6 +750,8 @@ def _remote_trainer_submit_trial_shards(
     runner_results_arg: str,
     result_filename: str = "results.yaml",
     conda_env: str = "reallmforge",
+    remote_work_dirs: Optional[List[str]] = None,
+    conda_envs: Optional[List[str]] = None,
 ) -> bool:
     yaml_path = Path(path_to_yaml)
     with yaml_path.open("r") as f:
@@ -660,6 +760,10 @@ def _remote_trainer_submit_trial_shards(
         raise ValueError(f"Expected a list of trial records in {yaml_path}, got {type(data)}")
 
     n_hosts = max(1, self.num_hosts)
+    if remote_work_dirs is not None and len(remote_work_dirs) != n_hosts:
+        raise ValueError("remote_work_dirs length must match hosts length")
+    if conda_envs is not None and len(conda_envs) != n_hosts:
+        raise ValueError("conda_envs length must match hosts length")
     splits: List[List[dict]] = [[] for _ in range(n_hosts)]
     for idx, cfg in enumerate(data):
         splits[idx % n_hosts].append(cfg)
@@ -688,42 +792,124 @@ def _remote_trainer_submit_trial_shards(
             logging.warning(f"\033[33mNo trials assigned to host_{i} ({host}); skipping upload.\033[0m")
             continue
 
-        conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+        host_remote_work_dir = remote_work_dirs[i] if remote_work_dirs else remote_work_dir
+        host_conda_env = conda_envs[i] if conda_envs else conda_env
+        remote_run_dir = f"{host_remote_work_dir}/distributed_trials/{dir_name}/{base}-{run_id}-host{i}"
+        remote_yaml_path = f"{remote_run_dir}/{slice_file.name}"
+        remote_results_path = f"{remote_run_dir}/{result_filename}"
+        remote_log_path = f"{remote_run_dir}/run.log"
+        remote_pid_path = f"{remote_run_dir}/run.pid"
+        tmux_session_path = f"{remote_run_dir}/tmux_session"
+        lease_path = f"{remote_run_dir}/lease"
+        tmux_session = self._tmux_session_name(dir_name, base, run_id, f"host{i}")
+        conn = None
         try:
-            conn.open()
-            remote_run_dir = f"{remote_work_dir}/distributed_trials/{dir_name}/{base}-{run_id}-host{i}"
-            conn.run(f"mkdir -p {shlex.quote(remote_run_dir)}", hide=True)
-            remote_yaml_path = f"{remote_run_dir}/{slice_file.name}"
-            remote_results_path = f"{remote_run_dir}/{result_filename}"
-            remote_log_path = f"{remote_run_dir}/run.log"
-            remote_pid_path = f"{remote_run_dir}/run.pid"
-            lease_path = f"{remote_run_dir}/lease"
-            conn.put(str(slice_file), remote=remote_yaml_path)
-
             runner_cmd = (
                 f"python -u {shlex.quote(runner_script)} "
                 f"{shlex.quote(runner_yaml_arg)} {shlex.quote(remote_yaml_path)} "
                 f"{shlex.quote(runner_results_arg)} {shlex.quote(remote_results_path)}"
             )
-            cmd = (
-                f"cd {shlex.quote(remote_work_dir)} && "
-                f"setsid bash -lc '\n"
+
+            if self._is_local_index(i):
+                Path(remote_run_dir).mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(slice_file), remote_yaml_path)
+                cmd = "\n".join(
+                    [
+                        'echo "[launcher] $(date) starting on $(hostname) as local process";',
+                        "CONDA_BIN=$(command -v conda || true);",
+                        (
+                            f'if [ -n "$CONDA_BIN" ] && conda run -n {shlex.quote(host_conda_env)} '
+                            "python -V >/dev/null 2>&1; then"
+                        ),
+                        f"  conda run -n {shlex.quote(host_conda_env)} {runner_cmd}; ec=$?;",
+                        "else",
+                        '  if [ -n "$CONDA_BIN" ]; then eval "$(conda shell.bash hook)" >/dev/null 2>&1 || true; fi;',
+                        f"  if command -v conda >/dev/null 2>&1; then conda activate {shlex.quote(host_conda_env)} || true; fi;",
+                        f"  {runner_cmd}; ec=$?;",
+                        "fi;",
+                        f"echo $ec > {shlex.quote(str(Path(remote_run_dir) / 'exit_code'))}",
+                        "exit $ec",
+                    ]
+                )
+                proc = None
+                active_tmux_session = None
+                if shutil.which("tmux"):
+                    tmux_cmd = (
+                        f"cd {shlex.quote(host_remote_work_dir)}\n"
+                        f"({cmd}) 2>&1 | tee -a {shlex.quote(remote_log_path)}"
+                    )
+                    subprocess.run(
+                        ["tmux", "new-session", "-d", "-s", tmux_session, "bash", "-lc", tmux_cmd],
+                        check=True,
+                    )
+                    active_tmux_session = tmux_session
+                    Path(tmux_session_path).write_text(tmux_session)
+                    Path(remote_pid_path).write_text("")
+                else:
+                    log_fh = open(remote_log_path, "a")
+                    proc = subprocess.Popen(
+                        ["bash", "-lc", cmd],
+                        cwd=host_remote_work_dir,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log_fh,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                    log_fh.close()
+                    Path(remote_pid_path).write_text(str(proc.pid))
+                job = RemoteJob(
+                    id=f"{base}-{run_id}-host{i}",
+                    host=host,
+                    remote_dir=remote_run_dir,
+                    yaml_path=remote_yaml_path,
+                    log_path=remote_log_path,
+                    pid_path=remote_pid_path,
+                    user=self.users[i],
+                    key_filename=self.key_filenames[i],
+                    pid=proc.pid if proc is not None else None,
+                    process=proc,
+                    tmux_session=active_tmux_session,
+                    status=JobStatus.RUNNING,
+                    lease_path=lease_path,
+                )
+                self.jobs.append(job)
+                new_jobs.append(job)
+                logging.info(f"\033[32mLaunched local trial shard on host_{i} ({host}), PID={proc.pid if proc is not None else None}, tmux={active_tmux_session}, log: {remote_log_path}\033[0m")
+                continue
+
+            conn = self._connection_for_index(i)
+            conn.open()
+            conn.run(f"mkdir -p {shlex.quote(remote_run_dir)}", hide=True)
+            conn.put(str(slice_file), remote=remote_yaml_path)
+
+            payload = (
                 f"{{\n"
                 f"echo \"[launcher] $(date) starting on $(hostname)\";\n"
                 f"CONDA_BIN=$(command -v conda || true);\n"
-                f"if [ -n \"$CONDA_BIN\" ] && conda run -n {shlex.quote(conda_env)} python -V >/dev/null 2>&1; then\n"
-                f"  conda run -n {shlex.quote(conda_env)} {runner_cmd}; ec=$?;\n"
+                f"if [ -n \"$CONDA_BIN\" ] && conda run -n {shlex.quote(host_conda_env)} python -V >/dev/null 2>&1; then\n"
+                f"  conda run -n {shlex.quote(host_conda_env)} {runner_cmd}; ec=$?;\n"
                 f"else\n"
                 f"  if [ -n \"$CONDA_BIN\" ]; then eval \"$(conda shell.bash hook)\" >/dev/null 2>&1 || true; fi;\n"
-                f"  if command -v conda >/dev/null 2>&1; then conda activate {shlex.quote(conda_env)} || true; fi;\n"
+                f"  if command -v conda >/dev/null 2>&1; then conda activate {shlex.quote(host_conda_env)} || true; fi;\n"
                 f"  {runner_cmd}; ec=$?;\n"
                 f"fi;\n"
                 f"echo $ec > {shlex.quote(remote_run_dir)}/exit_code\n"
-                f"}} >> {shlex.quote(remote_log_path)} 2>&1 < /dev/null &\n"
-                f"echo $! > {shlex.quote(remote_pid_path)}\n"
-                f"' </dev/null >/dev/null 2>&1 &"
+                f"}} >> {shlex.quote(remote_log_path)} 2>&1"
+            )
+            cmd = (
+                f"cd {shlex.quote(host_remote_work_dir)} && "
+                f"if command -v tmux >/dev/null 2>&1; then "
+                f"tmux new-session -d -s {shlex.quote(tmux_session)} -c {shlex.quote(host_remote_work_dir)} bash -lc {shlex.quote(payload)} && "
+                f"echo {shlex.quote(tmux_session)} > {shlex.quote(tmux_session_path)} && "
+                f": > {shlex.quote(remote_pid_path)}; "
+                f"else "
+                f"setsid bash -lc {shlex.quote(payload)} < /dev/null >/dev/null 2>&1 & "
+                f"echo $! > {shlex.quote(remote_pid_path)}; "
+                f"fi"
             )
             conn.run(cmd, hide=True)
+            tmux_out = conn.run(f"cat {shlex.quote(tmux_session_path)}", hide=True, warn=True)
+            active_tmux_session = tmux_out.stdout.strip() if tmux_out.ok else None
             pid_out = conn.run(f"cat {shlex.quote(remote_pid_path)}", hide=True, warn=True)
             pid: Optional[int] = None
             if pid_out.ok and pid_out.stdout.strip().isdigit():
@@ -735,31 +921,51 @@ def _remote_trainer_submit_trial_shards(
                 yaml_path=remote_yaml_path,
                 log_path=remote_log_path,
                 pid_path=remote_pid_path,
+                user=self.users[i],
+                key_filename=self.key_filenames[i],
                 pid=pid,
-                status=JobStatus.RUNNING if pid else JobStatus.PENDING,
+                tmux_session=active_tmux_session,
+                status=JobStatus.RUNNING if pid or active_tmux_session else JobStatus.PENDING,
                 lease_path=lease_path,
             )
             self.jobs.append(job)
             new_jobs.append(job)
-            logging.info(f"\033[32mLaunched trial shard on host_{i} ({host}), PID={pid}, log: {remote_log_path}\033[0m")
+            logging.info(f"\033[32mLaunched trial shard on host_{i} ({host}), PID={pid}, tmux={active_tmux_session}, log: {remote_log_path}\033[0m")
         except Exception as e:
             logging.error(f"\033[31mFailed to launch trial shard on host_{i} ({host}): {e}\033[0m")
             overall_ok = False
             for started in new_jobs:
-                if started.pid is not None:
-                    try:
-                        with Connection(host=started.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {}) as c2:
-                            c2.run(f"kill -9 {started.pid}", hide=True, warn=True)
-                    except Exception:
-                        pass
+                try:
+                    if self._is_local_job(started):
+                        if started.tmux_session:
+                            subprocess.run(
+                                ["tmux", "kill-session", "-t", started.tmux_session],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                        elif started.pid is not None:
+                            started.process.kill() if started.process is not None else os.kill(started.pid, 9)
+                    else:
+                        with self._connection_for_job(started) as c2:
+                            if started.tmux_session:
+                                c2.run(
+                                    f"tmux kill-session -t {shlex.quote(started.tmux_session)}",
+                                    hide=True,
+                                    warn=True,
+                                )
+                            elif started.pid is not None:
+                                c2.run(f"kill -9 {started.pid}", hide=True, warn=True)
+                except Exception:
+                    pass
                 started.status = JobStatus.CANCELLED
                 started.finished_at = time.time()
             break
         finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     if overall_ok:
         for j in new_jobs:
@@ -783,8 +989,11 @@ def _remote_trainer_fetch_job_file(self, remote_filename: str, local_dir: str) -
         local_path = out_dir / f"{job.id}.{Path(remote_filename).name}"
         remote_path = f"{job.remote_dir}/{remote_filename}"
         try:
-            with Connection(host=job.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {}) as conn:
-                conn.get(remote_path, local=str(local_path))
+            if self._is_local_job(job):
+                shutil.copy2(remote_path, local_path)
+            else:
+                with self._connection_for_job(job) as conn:
+                    conn.get(remote_path, local=str(local_path))
             fetched.append(local_path)
         except Exception as exc:
             logging.error(f"\033[31mFailed to fetch {remote_path} from {job.host}: {exc}\033[0m")
