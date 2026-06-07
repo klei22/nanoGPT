@@ -265,6 +265,17 @@ HP_SEARCH_RESULTS_FILE=multimachine_efficiency_results.yaml \
 bash hp_searches/multimachine_efficiency_demo.sh
 ```
 
+To include the controller/present host in the same shard pool, use `local` in
+`HP_SEARCH_HOSTS`. `localhost` or `127.0.0.1` also work, but `local` makes it
+explicit that the shard runs as a local subprocess without requiring SSH to the
+controller. When no local checkout path is supplied, local shards use the current
+repository directory.
+
+```bash
+HP_SEARCH_HOSTS="local 10.0.0.12 10.0.0.13" \
+bash hp_searches/multimachine_efficiency_demo.sh
+```
+
 If users, checkout paths, or conda environments differ by machine, provide
 per-host lists in the same order as `HP_SEARCH_HOSTS`:
 
@@ -322,8 +333,10 @@ then creates one trial record for every candidate/seed pair and round-robin
 shards those records across `--distributed_hosts`. Host-specific users, checkout
 paths, and conda environments are selected by index from `--distributed_users`,
 `--distributed_remote_work_dirs`, and `--distributed_conda_envs` when those lists
-are provided. On each host, the remote runner executes its shard sequentially.
-Every trial gets its own isolated `out_dir` under:
+are provided. Hosts named `local`, `localhost`, `127.0.0.1`, `::1`, or the
+controller hostname run as local subprocesses instead of Fabric/SSH jobs. On each
+host, the runner executes its shard sequentially. Every trial gets its own
+isolated `out_dir` under:
 
 ```text
 <remote_work_dir>/distributed_trials/<run_dir_name>/...

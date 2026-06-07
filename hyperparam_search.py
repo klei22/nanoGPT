@@ -22,6 +22,7 @@ import math
 import os
 import re
 import subprocess
+import socket
 import sys
 from contextlib import contextmanager
 from copy import deepcopy
@@ -198,6 +199,19 @@ def save_log(path: Path, log: Dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(yaml.dump(log, sort_keys=False))
     tmp.replace(path)
+
+
+def _is_local_distributed_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    local_names = {
+        "local",
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        socket.gethostname().lower(),
+        socket.getfqdn().lower(),
+    }
+    return normalized in local_names
 
 
 def _remote_trial_seed_results(
@@ -842,7 +856,22 @@ def main():
             if args.distributed_remote_work_dirs:
                 remote_work_dirs = args.distributed_remote_work_dirs
             elif args.distributed_users and not args.distributed_remote_work_dir:
-                remote_work_dirs = [f"/home/{u}/Evo_GPT" for u in args.distributed_users]
+                remote_work_dirs = [
+                    str(Path.cwd())
+                    if _is_local_distributed_host(host)
+                    else f"/home/{host_user}/Evo_GPT"
+                    for host, host_user in zip(args.distributed_hosts, args.distributed_users)
+                ]
+            elif (
+                any(_is_local_distributed_host(host) for host in args.distributed_hosts)
+                and not args.distributed_remote_work_dir
+            ):
+                remote_work_dirs = [
+                    str(Path.cwd())
+                    if _is_local_distributed_host(host)
+                    else remote_work_dir
+                    for host in args.distributed_hosts
+                ]
             else:
                 remote_work_dirs = None
             conda_envs = args.distributed_conda_envs or None

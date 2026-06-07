@@ -1,10 +1,15 @@
-import json, logging, shlex, threading, time, uuid, tempfile, math
+import json, logging, shlex, threading, time, uuid, tempfile, math, shutil, socket, subprocess
 import yaml
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from fabric import Connection  
+try:
+    from fabric import Connection
+except ImportError:  # Allows local-only distributed shards without Fabric installed.
+    class Connection:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            raise ImportError("fabric is required for non-local distributed hosts")
 
 class JobStatus:
     PENDING = "PENDING"; RUNNING = "RUNNING"; COMPLETED = "COMPLETED"; FAILED = "FAILED"; TIMEOUT = "TIMEOUT"; CANCELLED = "CANCELLED"
@@ -21,6 +26,7 @@ class RemoteJob:
     user: Optional[str] = None
     key_filename: Optional[str] = None
     pid: Optional[int] = None
+    process: Any = None
     status: str = JobStatus.PENDING
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
@@ -54,6 +60,25 @@ class RemoteTrainer:
         self.jobs: List[RemoteJob] = []
         self.watchdog_timeout: int = 300
 
+    @staticmethod
+    def _is_local_host(host: str) -> bool:
+        normalized = host.strip().lower()
+        local_names = {
+            "local",
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            socket.gethostname().lower(),
+            socket.getfqdn().lower(),
+        }
+        return normalized in local_names
+
+    def _is_local_index(self, idx: int) -> bool:
+        return self._is_local_host(self.hosts[idx])
+
+    def _is_local_job(self, job: RemoteJob) -> bool:
+        return self._is_local_host(job.host)
+
     def _connection_for_index(self, idx: int) -> Connection:
         key_filename = self.key_filenames[idx]
         connect_kwargs = {"key_filename": key_filename} if key_filename else {}
@@ -67,6 +92,9 @@ class RemoteTrainer:
     def check_connectivity(self) -> bool:
         all_ok = True
         for i, host in enumerate(self.hosts):
+            if self._is_local_index(i):
+                logging.info(f"Connectivity OK: host_{i} ({host}) as local process")
+                continue
             try:
                 conn = self._connection_for_index(i)
                 conn.open()
@@ -388,9 +416,46 @@ fi
 
     # New: poll job statuses by checking remote PID liveness
     def poll_jobs(self) -> List[RemoteJob]:
+        def _finish_job(job: RemoteJob, exit_code: Optional[int]) -> None:
+            if exit_code == 0:
+                job.status = JobStatus.COMPLETED
+                logging.info(f"\033[32mJob {job.id}@{job.host} completed successfully.\033[0m")
+            else:
+                job.status = JobStatus.FAILED
+                logging.error(f"\033[31mJob {job.id}@{job.host} failed.\033[0m")
+            job.finished_at = time.time()
+            if job.heartbeat_stop:
+                job.heartbeat_stop.set()
+            if job.heartbeat_thread:
+                try:
+                    job.heartbeat_thread.join(timeout=2.0)
+                except Exception:
+                    pass
+
         for job in self.jobs:
             if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.TIMEOUT):
                 continue
+
+            if self._is_local_job(job):
+                try:
+                    exit_code: Optional[int] = None
+                    if job.process is not None:
+                        rc = job.process.poll()
+                        if rc is None:
+                            job.status = JobStatus.RUNNING
+                            continue
+                        exit_code = int(rc)
+
+                    ec_path = Path(job.remote_dir) / "exit_code"
+                    if ec_path.exists():
+                        raw = ec_path.read_text().strip()
+                        if raw.lstrip("-").isdigit():
+                            exit_code = int(raw)
+                    _finish_job(job, exit_code)
+                except Exception as e:
+                    logging.warning(f"\033[33mPoll failed for {job.id}@{job.host}: {e}\033[0m")
+                continue
+
             conn = self._connection_for_job(job)
             try:
                 conn.open()
@@ -408,7 +473,6 @@ fi
                 if alive:
                     job.status = JobStatus.RUNNING
                 else:
-                    # Process exited: check exit_code file
                     ec_path = f"{job.remote_dir}/exit_code"
                     r = conn.run(f"test -f {ec_path} && cat {ec_path}", hide=True, warn=True)
                     exit_code: Optional[int] = None
@@ -416,21 +480,7 @@ fi
                         s = r.stdout.strip()
                         if s.isdigit():
                             exit_code = int(s)
-                    if exit_code == 0:
-                        job.status = JobStatus.COMPLETED
-                        logging.info(f"\033[32mJob {job.id}@{job.host} completed successfully.\033[0m")
-                    else:
-                        job.status = JobStatus.FAILED
-                        logging.error(f"\033[31mJob {job.id}@{job.host} failed.\033[0m")
-                    job.finished_at = time.time()
-                    # stop heartbeat
-                    if job.heartbeat_stop:
-                        job.heartbeat_stop.set()
-                    if job.heartbeat_thread:
-                        try:
-                            job.heartbeat_thread.join(timeout=2.0)
-                        except Exception:
-                            pass
+                    _finish_job(job, exit_code)
             except Exception as e:
                 logging.warning(f"\033[33mPoll failed for {job.id}@{job.host}: {e}\033[0m")
             finally:
@@ -720,23 +770,76 @@ def _remote_trainer_submit_trial_shards(
 
         host_remote_work_dir = remote_work_dirs[i] if remote_work_dirs else remote_work_dir
         host_conda_env = conda_envs[i] if conda_envs else conda_env
-        conn = self._connection_for_index(i)
+        remote_run_dir = f"{host_remote_work_dir}/distributed_trials/{dir_name}/{base}-{run_id}-host{i}"
+        remote_yaml_path = f"{remote_run_dir}/{slice_file.name}"
+        remote_results_path = f"{remote_run_dir}/{result_filename}"
+        remote_log_path = f"{remote_run_dir}/run.log"
+        remote_pid_path = f"{remote_run_dir}/run.pid"
+        lease_path = f"{remote_run_dir}/lease"
+        conn = None
         try:
-            conn.open()
-            remote_run_dir = f"{host_remote_work_dir}/distributed_trials/{dir_name}/{base}-{run_id}-host{i}"
-            conn.run(f"mkdir -p {shlex.quote(remote_run_dir)}", hide=True)
-            remote_yaml_path = f"{remote_run_dir}/{slice_file.name}"
-            remote_results_path = f"{remote_run_dir}/{result_filename}"
-            remote_log_path = f"{remote_run_dir}/run.log"
-            remote_pid_path = f"{remote_run_dir}/run.pid"
-            lease_path = f"{remote_run_dir}/lease"
-            conn.put(str(slice_file), remote=remote_yaml_path)
-
             runner_cmd = (
                 f"python -u {shlex.quote(runner_script)} "
                 f"{shlex.quote(runner_yaml_arg)} {shlex.quote(remote_yaml_path)} "
                 f"{shlex.quote(runner_results_arg)} {shlex.quote(remote_results_path)}"
             )
+
+            if self._is_local_index(i):
+                Path(remote_run_dir).mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(slice_file), remote_yaml_path)
+                cmd = "\n".join(
+                    [
+                        'echo "[launcher] $(date) starting on $(hostname) as local process";',
+                        "CONDA_BIN=$(command -v conda || true);",
+                        (
+                            f'if [ -n "$CONDA_BIN" ] && conda run -n {shlex.quote(host_conda_env)} '
+                            "python -V >/dev/null 2>&1; then"
+                        ),
+                        f"  conda run -n {shlex.quote(host_conda_env)} {runner_cmd}; ec=$?;",
+                        "else",
+                        '  if [ -n "$CONDA_BIN" ]; then eval "$(conda shell.bash hook)" >/dev/null 2>&1 || true; fi;',
+                        f"  if command -v conda >/dev/null 2>&1; then conda activate {shlex.quote(host_conda_env)} || true; fi;",
+                        f"  {runner_cmd}; ec=$?;",
+                        "fi;",
+                        f"echo $ec > {shlex.quote(str(Path(remote_run_dir) / 'exit_code'))}",
+                        "exit $ec",
+                    ]
+                )
+                log_fh = open(remote_log_path, "a")
+                proc = subprocess.Popen(
+                    ["bash", "-lc", cmd],
+                    cwd=host_remote_work_dir,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                log_fh.close()
+                Path(remote_pid_path).write_text(str(proc.pid))
+                job = RemoteJob(
+                    id=f"{base}-{run_id}-host{i}",
+                    host=host,
+                    remote_dir=remote_run_dir,
+                    yaml_path=remote_yaml_path,
+                    log_path=remote_log_path,
+                    pid_path=remote_pid_path,
+                    user=self.users[i],
+                    key_filename=self.key_filenames[i],
+                    pid=proc.pid,
+                    process=proc,
+                    status=JobStatus.RUNNING,
+                    lease_path=lease_path,
+                )
+                self.jobs.append(job)
+                new_jobs.append(job)
+                logging.info(f"\033[32mLaunched local trial shard on host_{i} ({host}), PID={proc.pid}, log: {remote_log_path}\033[0m")
+                continue
+
+            conn = self._connection_for_index(i)
+            conn.open()
+            conn.run(f"mkdir -p {shlex.quote(remote_run_dir)}", hide=True)
+            conn.put(str(slice_file), remote=remote_yaml_path)
+
             cmd = (
                 f"cd {shlex.quote(host_remote_work_dir)} && "
                 f"setsid bash -lc '\n"
@@ -782,18 +885,22 @@ def _remote_trainer_submit_trial_shards(
             for started in new_jobs:
                 if started.pid is not None:
                     try:
-                        with self._connection_for_job(started) as c2:
-                            c2.run(f"kill -9 {started.pid}", hide=True, warn=True)
+                        if self._is_local_job(started):
+                            started.process.kill() if started.process is not None else os.kill(started.pid, 9)
+                        else:
+                            with self._connection_for_job(started) as c2:
+                                c2.run(f"kill -9 {started.pid}", hide=True, warn=True)
                     except Exception:
                         pass
                 started.status = JobStatus.CANCELLED
                 started.finished_at = time.time()
             break
         finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     if overall_ok:
         for j in new_jobs:
@@ -817,8 +924,11 @@ def _remote_trainer_fetch_job_file(self, remote_filename: str, local_dir: str) -
         local_path = out_dir / f"{job.id}.{Path(remote_filename).name}"
         remote_path = f"{job.remote_dir}/{remote_filename}"
         try:
-            with self._connection_for_job(job) as conn:
-                conn.get(remote_path, local=str(local_path))
+            if self._is_local_job(job):
+                shutil.copy2(remote_path, local_path)
+            else:
+                with self._connection_for_job(job) as conn:
+                    conn.get(remote_path, local=str(local_path))
             fetched.append(local_path)
         except Exception as exc:
             logging.error(f"\033[31mFailed to fetch {remote_path} from {job.host}: {exc}\033[0m")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hp_searches/multimachine_efficiency_demo.sh
 # Multi-machine hp_search demo. Run from the repository root after setting:
-#   HP_SEARCH_HOSTS="10.0.0.11 10.0.0.12" bash hp_searches/multimachine_efficiency_demo.sh
+#   HP_SEARCH_HOSTS="local 10.0.0.12" bash hp_searches/multimachine_efficiency_demo.sh
 # Optional shared defaults:
 #   HP_SEARCH_USER=ubuntu
 #   HP_SEARCH_REMOTE_WORK_DIR=/home/ubuntu/Evo_GPT
@@ -26,6 +26,14 @@ EOF
 fi
 
 read -r -a HP_SEARCH_HOST_ARRAY <<< "${HP_SEARCH_HOSTS}"
+HP_SEARCH_HAS_LOCAL_HOST=0
+for host in "${HP_SEARCH_HOST_ARRAY[@]}"; do
+  case "${host}" in
+    local|localhost|127.0.0.1|::1)
+      HP_SEARCH_HAS_LOCAL_HOST=1
+      ;;
+  esac
+done
 HP_SEARCH_EFFECTIVE_USER="${HP_SEARCH_USER:-${USER}}"
 HP_SEARCH_EFFECTIVE_REMOTE_WORK_DIR="${HP_SEARCH_REMOTE_WORK_DIR:-/home/${HP_SEARCH_EFFECTIVE_USER}/Evo_GPT}"
 read -r -a HP_SEARCH_OVERRIDE_CFG_ARRAY <<< "${HP_SEARCH_OVERRIDE_CFG:-}"
@@ -72,7 +80,7 @@ fi
 if [[ -n "${HP_SEARCH_REMOTE_WORK_DIRS:-}" ]]; then
   read -r -a HP_SEARCH_REMOTE_WORK_DIR_ARRAY <<< "${HP_SEARCH_REMOTE_WORK_DIRS}"
   cmd+=(--distributed_remote_work_dirs "${HP_SEARCH_REMOTE_WORK_DIR_ARRAY[@]}")
-elif [[ -n "${HP_SEARCH_REMOTE_WORK_DIR:-}" || -z "${HP_SEARCH_USERS:-}" ]]; then
+elif [[ -n "${HP_SEARCH_REMOTE_WORK_DIR:-}" || ( -z "${HP_SEARCH_USERS:-}" && "${HP_SEARCH_HAS_LOCAL_HOST}" != "1" ) ]]; then
   cmd+=(--distributed_remote_work_dir "${HP_SEARCH_EFFECTIVE_REMOTE_WORK_DIR}")
 fi
 
