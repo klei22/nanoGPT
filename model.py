@@ -379,7 +379,7 @@ class GPT(nn.Module):
             return embeddings + noise
         return embeddings
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
+    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None, return_hidden=False):
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -531,6 +531,8 @@ class GPT(nn.Module):
                     logits = [logit[:, [-1], :] for logit in logits]
                     losses = None
 
+            if return_hidden:
+                raise ValueError("return_hidden is only supported for single-context forward passes.")
             return logits, losses
 
         else:
@@ -633,6 +635,8 @@ class GPT(nn.Module):
 
                 loss = None
 
+            if return_hidden:
+                return logits, loss, x
             return logits, loss
     # ------------------------------------------------------------------
     #  LATENT-CHAINING

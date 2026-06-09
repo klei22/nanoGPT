@@ -24,9 +24,29 @@ from rich.table import Table
 METRICS_FILENAME = "best_val_loss_and_iter.txt"
 METRIC_KEYS = [
     "best_val_loss",
-    "best_val_iter", 
+    "best_val_iter",
     "best_tokens",
     "num_params",
+    "better_than_chance",
+    "btc_per_param",
+    "peak_torch_allocated_mb",
+    "peak_torch_reserved_mb",
+    "peak_process_gpu_mb",
+    "iter_latency_avg",
+    "zeus_best_train_step_energy_j",
+    "avg_top1_prob",
+    "avg_top1_correct",
+    "avg_target_rank",
+    "avg_target_left_prob",
+    "avg_target_prob",
+    "target_rank_95",
+    "left_prob_95",
+    "avg_ln_f_cosine",
+    "ln_f_cosine_95",
+    "rankme",
+    "areq",
+    "target_lm_head_kl_val",
+    "target_lm_head_kl_train",
 ]
 
 def _parse_override_args(arg_list: list[str] | None) -> dict:
@@ -78,12 +98,14 @@ def read_metrics(out_dir: str) -> dict:
     line = path.read_text().strip()
     parts = [p.strip() for p in line.split(',')]
 
-    # Take only the first 4 values and cast them appropriately
-    if len(parts) < len(METRIC_KEYS):
-        raise ValueError(f"Expected at least {len(METRIC_KEYS)} metrics, got {len(parts)}")
-    
-    casts = [float, int, int, int]
-    return {k: typ(v) for k, typ, v in zip(METRIC_KEYS, casts, parts[:len(METRIC_KEYS)])}
+    if len(parts) < 4:
+        raise ValueError(f"Expected at least 4 metrics, got {len(parts)}")
+
+    casts = [float, int, int, int] + [float] * (len(METRIC_KEYS) - 4)
+    metrics = {}
+    for key, typ, value in zip(METRIC_KEYS, casts, parts[:len(METRIC_KEYS)]):
+        metrics[key] = float("nan") if value == "" else typ(value)
+    return metrics
 
 
 def completed_runs(log_file: Path) -> set[str]:

@@ -226,6 +226,45 @@ def parse_args():
         help='Numerical stability epsilon for distillation losses.',
     )
 
+    # Frozen LM-head KL options
+    training_group.add_argument(
+        '--target_lm_head_ckpt',
+        type=str,
+        default=None,
+        help='Path to a checkpoint whose frozen lm_head is used as the KL target.',
+    )
+    training_group.add_argument(
+        '--target_lm_head_kl_mode',
+        type=str,
+        default='off',
+        choices=['off', 'loss', 'monitor'],
+        help="Use the frozen lm_head KL as the training loss ('loss'), compute it only for logging ('monitor'), or disable it.",
+    )
+    training_group.add_argument(
+        '--target_lm_head_kl_weight',
+        type=float,
+        default=1.0,
+        help='Scaling factor applied when target_lm_head_kl_mode=loss.',
+    )
+    training_group.add_argument(
+        '--target_lm_head_kl_temperature',
+        type=float,
+        default=1.0,
+        help='Temperature used for the frozen lm_head KL calculation.',
+    )
+    training_group.add_argument(
+        '--target_lm_head_kl_eps',
+        type=float,
+        default=1e-8,
+        help='Numerical stability epsilon for the frozen lm_head KL calculation.',
+    )
+    training_group.add_argument(
+        '--target_lm_head_dataset_idx',
+        type=int,
+        default=None,
+        help='Optional lm_head_N index to load from a multidataset/multicontext checkpoint. Defaults to the current dataset index when available, else 0.',
+    )
+
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
     training_group.add_argument('--sample_each_eval', default=False, action=argparse.BooleanOptionalAction, help="Produce sample even if the validation loss did not improve. Allows for testing what overtraining looks like.")
