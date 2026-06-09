@@ -252,8 +252,6 @@
     .legend-item { display: flex; align-items: center; gap: 8px; }
     .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 
-
-
     .hotkey-card {
       background: linear-gradient(180deg, rgba(199,125,255,0.105), rgba(255,255,255,0.052));
       border-color: rgba(255,255,255,0.18);
@@ -359,7 +357,7 @@
         <div class="title-card">
           <h1>One-Head Attention: Read → Project Q/K/V → Norm → Activate → Write Values → Wo Output</h1>
           <div class="subtitle">
-            The current token reads through Wq into q. The current token plus prior tokens read through Wk and Wv into k and v. After projection, q/k/v are normalized back to the hypersphere surface, q interacts with every k vector, the selected activation produces coefficients, those coefficients scale value vectors on the v sphere, and Wo rotates the value context into the final output. The quantized path snaps selected W tensors and optional q/k/v activations to the blue grid for direct comparison.
+            The tokens physically reside on the leftmost input (x) sphere. The current token (red) reads through the Wq matrix weights into q. All tokens (current + prior) read through the Wk and Wv matrix weights into k and v. After projection, q/k/v are normalized back to the hypersphere surface, q interacts with every k vector, activation produces coefficients, coefficients scale the value vectors, and Wo rotates the context into the final output.
           </div>
         </div>
       </div>
@@ -596,6 +594,7 @@ const SQRT_D = Math.sqrt(3);
 const TENSOR_KEYS = ['Wq', 'Wk', 'Wv', 'Wo'];
 
 const CENTERS = {
+  Input: new THREE.Vector3(-10.9, 0.0, 0),
   Wq: new THREE.Vector3(-6.05, 3.15, 0),
   Wk: new THREE.Vector3(-6.05, 0.0, 0),
   Wv: new THREE.Vector3(-6.05, -3.15, 0),
@@ -606,10 +605,10 @@ const CENTERS = {
 };
 
 const stageLabels = {
-  0: 'Input tokens on Wq / Wk / Wv read spheres',
+  0: 'Input sequence xᵢ and W weight matrices',
   1: 'Project current token through Wq: raw q = Wq x₀',
-  2: 'Project current + prior tokens through Wk: raw kᵢ = Wk xᵢ',
-  3: 'Project current + prior tokens through Wv: raw vᵢ = Wv xᵢ',
+  2: 'Project all tokens through Wk: raw kᵢ = Wk xᵢ',
+  3: 'Project all tokens through Wv: raw vᵢ = Wv xᵢ',
   4: 'Norm q / k / v: project vectors back onto the hypersphere surface',
   5: 'q interacts with each kᵢ: scoreᵢ = score scale × (q·kᵢ / √d)',
   6: 'Activation produces attention coefficients aᵢ',
@@ -618,13 +617,13 @@ const stageLabels = {
   9: 'Wo rotates / projects the value context into final output',
   10: 'Quantize selected Wq / Wk / Wv / Wo tensors onto the blue grid',
   11: 'Q Wq → q: project with the selected quantized Wq path',
-  12: 'Q Wk → k: project current + prior tokens with the selected quantized Wk path',
-  13: 'Q Wv → v: project current + prior tokens with the selected quantized Wv path',
+  12: 'Q Wk → k: project all tokens with the selected quantized Wk path',
+  13: 'Q Wv → v: project all tokens with the selected quantized Wv path',
   14: 'Q norm q / k / v back onto the hypersphere surface',
   15: 'Post-quantize q / k / v activations according to the checkboxes',
   16: 'Q attention scores: q̃ interacts with each k̃ᵢ',
   17: 'Q activation produces quantized-path coefficients ãᵢ',
-  18: 'Q coefficients scale each ṽ vector',
+  18: 'Q coefficients scale each ṽ vector',
   19: 'Q sum scaled values and apply W̃o',
   20: 'Compare continuous output against selected quantized path',
 };
@@ -1113,12 +1112,12 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG);
 const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 120);
-const INITIAL_CAMERA_POS = new THREE.Vector3(0, 5.6, 15.2);
+const INITIAL_CAMERA_POS = new THREE.Vector3(-3.25, 5.6, 17.5);
 camera.position.copy(INITIAL_CAMERA_POS);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.enablePan = true;
-controls.target.set(-1.2, 0, 0);
+controls.target.set(-3.25, 0, 0);
 controls.update();
 
 scene.add(new THREE.AmbientLight(0xffffff, 1.0));
@@ -1187,9 +1186,12 @@ function addSphere(key, label, color) {
   world.add(axes);
   spheres[key] = { mesh, label: lab, axes, center, color };
 }
-addSphere('Wq', 'Wq read sphere', TENSOR);
-addSphere('Wk', 'Wk read sphere', TENSOR);
-addSphere('Wv', 'Wv read sphere', TENSOR);
+
+// Ensure the new Input sphere is added
+addSphere('Input', 'Input sequence xᵢ', WHITE);
+addSphere('Wq', 'Wq weight rows', TENSOR);
+addSphere('Wk', 'Wk weight rows', TENSOR);
+addSphere('Wv', 'Wv weight rows', TENSOR);
 addSphere('q', 'q sphere', QUERY);
 addSphere('k', 'k sphere', KEY);
 addSphere('v', 'v / context sphere', VALUE);
@@ -1247,7 +1249,7 @@ scene.add(attentionPanel);
 
 const dyn = {
   allGlyphs: [], allLines: [], allLabels: [],
-  inputWq: null, inputWk: [], inputWv: [],
+  inputTokens: [],
   qArrow: null, qArrowQ: null,
   kArrows: [], kArrowsQ: [], vArrows: [], vArrowsQ: [],
   scaledV: [], scaledVQ: [], chainV: [], chainVQ: [],
@@ -1283,33 +1285,28 @@ function clearDynamicVisuals() {
   dyn.allGlyphs = [];
   dyn.allLines = [];
   dyn.allLabels = [];
-  dyn.inputWk = [];
-  dyn.inputWv = [];
-  dyn.kArrows = [];
-  dyn.kArrowsQ = [];
-  dyn.vArrows = [];
-  dyn.vArrowsQ = [];
-  dyn.scaledV = [];
-  dyn.scaledVQ = [];
-  dyn.chainV = [];
-  dyn.chainVQ = [];
-  dyn.scoreLines = [];
-  dyn.scoreLinesQ = [];
-  dyn.transferLines = [];
-  dyn.labels = [];
-  dyn.tensorArrows = {};
-  dyn.tensorArrowsQ = {};
+  dyn.inputTokens = [];
+  dyn.qArrow = null; dyn.qArrowQ = null;
+  dyn.kArrows = []; dyn.kArrowsQ = []; dyn.vArrows = []; dyn.vArrowsQ = [];
+  dyn.scaledV = []; dyn.scaledVQ = []; dyn.chainV = []; dyn.chainVQ = [];
+  dyn.contextArrow = null; dyn.contextArrowQ = null; dyn.outputArrow = null; dyn.outputArrowQ = null; dyn.woContextGhost = null;
+  dyn.scoreLines = []; dyn.scoreLinesQ = []; dyn.transferLines = []; dyn.labels = [];
+  dyn.tensorArrows = {}; dyn.tensorArrowsQ = {};
 }
 function buildDynamicVisuals() {
   clearDynamicVisuals();
-  addGlyph('inputWq', CURRENT, false, 1);
-  addGlyph('qArrow', QUERY, false, 1);
-  addGlyph('qArrowQ', QUANT, true, 1);
-  addGlyph('contextArrow', SUM, false, 1);
-  addGlyph('contextArrowQ', QUANT, true, 1);
-  addGlyph('outputArrow', FINAL, false, 1);
-  addGlyph('outputArrowQ', QUANT_FINAL, true, 1);
-  addGlyph('woContextGhost', VALUE, true, 0.55);
+  
+  for (let i = 0; i < state.priorCount + 1; i++) {
+    dyn.inputTokens.push(addGlyph(null, i === 0 ? CURRENT : PRIOR, false, 0.9));
+  }
+
+  dyn.qArrow = addGlyph('qArrow', QUERY, false, 1);
+  dyn.qArrowQ = addGlyph('qArrowQ', QUANT, true, 1);
+  dyn.contextArrow = addGlyph('contextArrow', SUM, false, 1);
+  dyn.contextArrowQ = addGlyph('contextArrowQ', QUANT, true, 1);
+  dyn.outputArrow = addGlyph('outputArrow', FINAL, false, 1);
+  dyn.outputArrowQ = addGlyph('outputArrowQ', QUANT_FINAL, true, 1);
+  dyn.woContextGhost = addGlyph('woContextGhost', VALUE, true, 0.55);
   for (const key of TENSOR_KEYS) {
     dyn.tensorArrows[key] = [];
     dyn.tensorArrowsQ[key] = [];
@@ -1319,8 +1316,6 @@ function buildDynamicVisuals() {
     }
   }
   for (let i = 0; i < state.priorCount + 1; i++) {
-    dyn.inputWk.push(addGlyph(null, i === 0 ? CURRENT : PRIOR, false, 0.9));
-    dyn.inputWv.push(addGlyph(null, i === 0 ? CURRENT : PRIOR, false, 0.9));
     dyn.kArrows.push(addGlyph(null, KEY, false, 1));
     dyn.kArrowsQ.push(addGlyph(null, QUANT, true, 1));
     dyn.vArrows.push(addGlyph(null, VALUE, false, 1));
@@ -1331,10 +1326,9 @@ function buildDynamicVisuals() {
     dyn.chainVQ.push(addGlyph(null, QUANT_FINAL, true, 1));
     addLineToDyn(dyn.scoreLines, true, KEY);
     addLineToDyn(dyn.scoreLinesQ, true, QUANT);
-    addLineToDyn(dyn.transferLines, true, WHITE);
   }
-  while (dyn.transferLines.length < state.priorCount + 8) addLineToDyn(dyn.transferLines, true, WHITE);
-  while (dyn.labels.length < 44) dyn.labels.push(addLabelToDyn('', WHITE));
+  while (dyn.transferLines.length < 100) addLineToDyn(dyn.transferLines, true, WHITE);
+  while (dyn.labels.length < 120) dyn.labels.push(addLabelToDyn('', WHITE));
 }
 buildDynamicVisuals();
 rebuildQuantDots();
@@ -1483,7 +1477,7 @@ initialViewBtn.addEventListener('click', () => {
   state.stage = 0;
   state.progress = 0;
   state.playing = false;
-  controls.target.set(-1.2, 0, 0);
+  controls.target.set(-3.25, 0, 0);
   camera.position.copy(INITIAL_CAMERA_POS);
   controls.update();
   state.cameraGuideUntil = performance.now() + 1200;
@@ -1645,7 +1639,7 @@ function resetCameraHotkey() {
   state.stage = 0;
   state.progress = 0;
   state.playing = false;
-  controls.target.set(-1.2, 0, 0);
+  controls.target.set(-3.25, 0, 0);
   camera.position.copy(INITIAL_CAMERA_POS);
   controls.update();
   state.cameraGuideUntil = performance.now() + 1200;
@@ -1752,15 +1746,29 @@ function labelAt(label, pos, text, color, opacity = 1) {
 }
 function renderInputTokens(opacity = 1) {
   const tokens = data.tokens;
-  dyn.inputWq.set(CENTERS.Wq, endpoint(CENTERS.Wq, tokens[0]), CURRENT, opacity, 1.0);
-  labelAt(dyn.labels[0], endpoint(CENTERS.Wq, tokens[0], SPHERE_RADIUS + 0.22), 'x₀', CURRENT, opacity);
   for (let i = 0; i < tokens.length; i++) {
     const color = i === 0 ? CURRENT : PRIOR;
     const fade = opacity * (i === 0 ? 0.95 : 0.72);
-    dyn.inputWk[i].set(CENTERS.Wk, endpoint(CENTERS.Wk, tokens[i]), color, fade, 0.82);
-    dyn.inputWv[i].set(CENTERS.Wv, endpoint(CENTERS.Wv, tokens[i]), color, fade, 0.82);
-    if (opacity > 0.65) {
-      labelAt(dyn.labels[i + 1], endpoint(CENTERS.Wk, tokens[i], SPHERE_RADIUS + 0.20), tokenLabel(i), color, fade * 0.85);
+    dyn.inputTokens[i].set(CENTERS.Input, endpoint(CENTERS.Input, tokens[i]), color, fade, 0.82);
+    if (opacity > 0.1) {
+      labelAt(dyn.labels[80 + i], endpoint(CENTERS.Input, tokens[i], SPHERE_RADIUS + 0.20), tokenLabel(i), color, fade * 0.85);
+    }
+  }
+}
+function renderWeights(opacities, quant = false) {
+  const rowsByKey = derived.tensorContinuous;
+  const qRowsByKey = derived.tensorQuantized;
+  for (const key of TENSOR_KEYS) {
+    const opacity = opacities[key] || 0;
+    if (opacity <= 0.002) continue;
+    const isQuant = quant && state[`quant${key}`];
+    const actualRows = isQuant ? qRowsByKey[key] : rowsByKey[key];
+    for (let j = 0; j < 3; j++) {
+      const vec = actualRows[j];
+      const dir = unit(vec);
+      const color = isQuant ? QUANT : TENSOR;
+      const arrow = quant ? dyn.tensorArrowsQ[key][j] : dyn.tensorArrows[key][j];
+      arrow.set(CENTERS[key], endpoint(CENTERS[key], dir), color, opacity * 0.6, 0.72);
     }
   }
 }
@@ -1806,13 +1814,13 @@ function renderNormTransition(pass, progress, quant = false) {
     vGlyphs[i].set(CENTERS.v, lerpVec(rawProjEndpoint(CENTERS.v, pass.vRaw[i]), endpoint(CENTERS.v, pass.vNorm[i]), t), vColor, (i === 0 ? 1 : 0.75), 0.9);
     if (i < 5) {
       labelAt(dyn.labels[i + 1], endpoint(CENTERS.k, pass.kNorm[i], SPHERE_RADIUS + 0.18), `${quant ? 'norm k̃' : 'norm k'}${i}`, kColor, local * 0.7);
-      labelAt(dyn.labels[i + 12], endpoint(CENTERS.v, pass.vNorm[i], SPHERE_RADIUS + 0.18), `${quant ? 'norm ṽ' : 'norm v'}${i}`, vColor, local * 0.7);
+      labelAt(dyn.labels[i + 12], endpoint(CENTERS.v, pass.vNorm[i], SPHERE_RADIUS + 0.18), `${quant ? 'norm ṽ' : 'norm v'}${i}`, vColor, local * 0.7);
     }
   }
 }
 function renderTensorSnap(progress, opacity = 1) {
   setQuantDotsVisible(TENSOR_KEYS, 0.86);
-  renderInputTokens(0.12 * opacity);
+  renderInputTokens(0.25 * opacity);
   const t = smoothstep01(progress);
   const rowsByKey = derived.tensorContinuous;
   const qRowsByKey = derived.tensorQuantized;
@@ -1823,16 +1831,16 @@ function renderTensorSnap(progress, opacity = 1) {
       const target = selected ? qRowsByKey[key][j] : start;
       const dir = selected ? slerpUnit(start, target, t) : unit(start);
       const color = selected ? colorLerp(TENSOR, QUANT, t) : new THREE.Color(TENSOR);
-      dyn.tensorArrows[key][j].set(CENTERS[key], endpoint(CENTERS[key], dir), color, opacity * (selected ? 1 : 0.48), 0.72);
+      dyn.tensorArrows[key][j].set(CENTERS[key], endpoint(CENTERS[key], dir), color, opacity * (selected ? 0.6 : 0.6 * 0.48), 0.72);
       if (selected) {
         const startTip = endpoint(CENTERS[key], unit(start));
         const endTip = endpoint(CENTERS[key], unit(target));
-        setLine(dyn.transferLines[(TENSOR_KEYS.indexOf(key) * 3 + j) % dyn.transferLines.length], startTip, endTip, 0.16 + 0.24 * (1 - t), QUANT);
+        setLine(dyn.transferLines[(TENSOR_KEYS.indexOf(key) * 3 + j)], startTip, endTip, 0.16 + 0.24 * (1 - t), QUANT);
       }
     }
     const delta = derived.matrixDeltas[key].toFixed(2);
     const text = selected ? `${key} snaps to grid  Δ=${delta}` : `${key} unchanged`;
-    labelAt(dyn.labels[24 + TENSOR_KEYS.indexOf(key)], CENTERS[key].clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.42, 0)), text, selected ? QUANT : TENSOR, opacity);
+    labelAt(dyn.labels[60 + TENSOR_KEYS.indexOf(key)], CENTERS[key].clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.42, 0)), text, selected ? QUANT : TENSOR, opacity);
   }
 }
 function renderPostQuant(progress) {
@@ -1894,8 +1902,8 @@ function renderContextAndOutput(pass, contextGlyph, outputGlyph, colorContext, c
   const interp = slerpUnit(startDir, finalDir, smoothstep01(progress));
   const outEnd = CENTERS.Wo.clone().add(interp.multiplyScalar(SPHERE_RADIUS));
   outputGlyph.set(CENTERS.Wo, outEnd, colorLerp(colorContext, colorOutput, progress), opacity);
-  setLine(dyn.transferLines[0], contextEnd, outEnd, opacity * 0.32, quant ? QUANT : FINAL);
-  labelAt(dyn.labels[0], outEnd.clone().add(new THREE.Vector3(0.24, 0.10, 0.12)), quant ? 'quant output' : 'output', colorOutput, opacity);
+  setLine(dyn.transferLines[10], contextEnd, outEnd, opacity * 0.32, quant ? QUANT : FINAL);
+  labelAt(dyn.labels[75], outEnd.clone().add(new THREE.Vector3(0.24, 0.10, 0.12)), quant ? 'quant output' : 'output', colorOutput, opacity);
 }
 function renderCompare() {
   const fade = 0.035;
@@ -1909,10 +1917,10 @@ function renderCompare() {
   const qTip = endpoint(CENTERS.Wo, derived.quantized.output);
   dyn.outputArrow.set(CENTERS.Wo, contTip, FINAL, 1.0);
   dyn.outputArrowQ.set(CENTERS.Wo, qTip, QUANT_FINAL, 1.0);
-  setLine(dyn.transferLines[0], contTip, qTip, 0.48, QUANT_FINAL);
-  labelAt(dyn.labels[0], contTip.clone().add(new THREE.Vector3(0.25, 0.14, 0.12)), 'continuous output', FINAL, 1.0);
-  labelAt(dyn.labels[1], qTip.clone().add(new THREE.Vector3(0.25, -0.14, 0.12)), 'quantized output', QUANT_FINAL, 1.0);
-  labelAt(dyn.labels[2], CENTERS.Wo.clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.50, 0)), `cos=${derived.cos.toFixed(4)}, angle=${derived.angleDeg.toFixed(2)}°`, WHITE, 1.0);
+  setLine(dyn.transferLines[10], contTip, qTip, 0.48, QUANT_FINAL);
+  labelAt(dyn.labels[75], contTip.clone().add(new THREE.Vector3(0.25, 0.14, 0.12)), 'continuous output', FINAL, 1.0);
+  labelAt(dyn.labels[76], qTip.clone().add(new THREE.Vector3(0.25, -0.14, 0.12)), 'quantized output', QUANT_FINAL, 1.0);
+  labelAt(dyn.labels[77], CENTERS.Wo.clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.50, 0)), `cos=${derived.cos.toFixed(4)}, angle=${derived.angleDeg.toFixed(2)}°`, WHITE, 1.0);
 }
 
 function renderStage() {
@@ -1920,53 +1928,93 @@ function renderStage() {
   const t = state.progress;
   hideDynamics();
 
-  if (state.forceOverview || s === 0) setSphereEmphasis(['Wq', 'Wk', 'Wv', 'q', 'k', 'v', 'Wo']);
-  else if (s === 1 || s === 11) setSphereEmphasis(['Wq', 'q']);
-  else if (s === 2 || s === 12) setSphereEmphasis(['Wk', 'k']);
-  else if (s === 3 || s === 13) setSphereEmphasis(['Wv', 'v']);
+  if (state.forceOverview || s === 0) setSphereEmphasis(['Input', 'Wq', 'Wk', 'Wv', 'q', 'k', 'v', 'Wo']);
+  else if (s === 1 || s === 11) setSphereEmphasis(['Input', 'Wq', 'q']);
+  else if (s === 2 || s === 12) setSphereEmphasis(['Input', 'Wk', 'k']);
+  else if (s === 3 || s === 13) setSphereEmphasis(['Input', 'Wv', 'v']);
   else if (s === 4 || s === 14 || s === 15) setSphereEmphasis(['q', 'k', 'v']);
   else if (s === 5 || s === 6 || s === 16 || s === 17) setSphereEmphasis(['q', 'k']);
   else if (s === 7 || s === 8 || s === 18) setSphereEmphasis(['v']);
   else if (s === 9 || s === 19) setSphereEmphasis(['v', 'Wo']);
-  else if (s === 10) setSphereEmphasis(['Wq', 'Wk', 'Wv', 'Wo']);
+  else if (s === 10) setSphereEmphasis(['Input', 'Wq', 'Wk', 'Wv', 'Wo']);
   else if (s === 20) setSphereEmphasis(['Wo']);
 
-  if (s <= 3 || s === 0) renderInputTokens(0.95);
+  if (s <= 3 || s === 0) renderInputTokens(s === 0 ? 0.95 : 0.42);
+  else if (s >= 10 && s <= 13) renderInputTokens(s === 10 ? 0.95 : 0.30);
+  else renderInputTokens(0.12);
+
+  let wOps = { Wq: 0, Wk: 0, Wv: 0, Wo: 0 };
+  let qOps = { Wq: 0, Wk: 0, Wv: 0, Wo: 0 };
+
+  if (s === 0 || state.forceOverview) {
+    wOps = { Wq: 0.9, Wk: 0.9, Wv: 0.9, Wo: 0.9 };
+  } else if (s < 10) {
+    wOps = { Wq: 0.15, Wk: 0.15, Wv: 0.15, Wo: 0.15 };
+    if (s === 1) wOps.Wq = 0.9;
+    if (s === 2) wOps.Wk = 0.9;
+    if (s === 3) wOps.Wv = 0.9;
+    if (s === 9) wOps.Wo = 0.9;
+  } else if (s === 10) {
+    // Handled entirely by renderTensorSnap below
+  } else if (s > 10 && s < 20) {
+    qOps = { Wq: 0.15, Wk: 0.15, Wv: 0.15, Wo: 0.15 };
+    if (s === 11) qOps.Wq = 0.9;
+    if (s === 12) qOps.Wk = 0.9;
+    if (s === 13) qOps.Wv = 0.9;
+    if (s === 19) qOps.Wo = 0.9;
+  } else if (s === 20) {
+    wOps = { Wq: 0.08, Wk: 0.08, Wv: 0.08, Wo: 0.15 };
+    if (state.showQuantOverlay) {
+      qOps = { Wq: 0.08, Wk: 0.08, Wv: 0.08, Wo: 0.15 };
+    }
+  }
+
+  if (s !== 10) {
+    renderWeights(wOps, false);
+    renderWeights(qOps, true);
+  }
+
   if (s === 0) return;
 
   if (s === 1) {
     const local = smoothstep01(t);
-    renderInputTokens(0.45);
-    const start = endpoint(CENTERS.Wq, data.tokens[0]);
+    const start = endpoint(CENTERS.Input, data.tokens[0]);
+    const midIn = CENTERS.Wq.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
+    const midOut = CENTERS.Wq.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
     const end = rawProjEndpoint(CENTERS.q, derived.continuous.qRaw);
-    setLine(dyn.transferLines[0], start, end, 0.38 * local, QUERY);
+    setLine(dyn.transferLines[0], start, midIn, 0.38 * local, CURRENT);
+    setLine(dyn.transferLines[1], midOut, end, 0.38 * local, QUERY);
     dyn.qArrow.set(CENTERS.q, lerpVec(CENTERS.q, end, local), QUERY, local);
     labelAt(dyn.labels[0], end.clone().add(new THREE.Vector3(0.16, 0.12, 0.10)), 'raw q = Wq x₀', QUERY, local);
   }
 
   if (s === 2) {
-    renderInputTokens(0.42);
     dyn.qArrow.set(CENTERS.q, rawProjEndpoint(CENTERS.q, derived.continuous.qRaw), QUERY, 0.18);
     for (let i = 0; i < data.tokens.length; i++) {
       const local = smoothstep01(t * data.tokens.length - i);
-      const start = endpoint(CENTERS.Wk, data.tokens[i]);
+      const start = endpoint(CENTERS.Input, data.tokens[i]);
+      const midIn = CENTERS.Wk.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
+      const midOut = CENTERS.Wk.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
       const end = rawProjEndpoint(CENTERS.k, derived.continuous.kRaw[i]);
-      setLine(dyn.transferLines[i], start, end, 0.26 * local, KEY);
+      setLine(dyn.transferLines[i * 2 + 2], start, midIn, 0.26 * local, i === 0 ? CURRENT : PRIOR);
+      setLine(dyn.transferLines[i * 2 + 3], midOut, end, 0.26 * local, KEY);
       dyn.kArrows[i].set(CENTERS.k, lerpVec(CENTERS.k, end, local), KEY, local * (i === 0 ? 1 : 0.78), 0.9);
-      labelAt(dyn.labels[i], end.clone().add(new THREE.Vector3(0.12, 0.08, 0.10)), `raw k${i}`, KEY, local);
+      labelAt(dyn.labels[i + 1], end.clone().add(new THREE.Vector3(0.12, 0.08, 0.10)), `raw k${i}`, KEY, local);
     }
   }
 
   if (s === 3) {
-    renderInputTokens(0.42);
     renderRawProjections(derived.continuous, 0.15, 0.15, 0.0, false);
     for (let i = 0; i < data.tokens.length; i++) {
       const local = smoothstep01(t * data.tokens.length - i);
-      const start = endpoint(CENTERS.Wv, data.tokens[i]);
+      const start = endpoint(CENTERS.Input, data.tokens[i]);
+      const midIn = CENTERS.Wv.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
+      const midOut = CENTERS.Wv.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
       const end = rawProjEndpoint(CENTERS.v, derived.continuous.vRaw[i]);
-      setLine(dyn.transferLines[i], start, end, 0.26 * local, VALUE);
+      setLine(dyn.transferLines[i * 2 + 30], start, midIn, 0.26 * local, i === 0 ? CURRENT : PRIOR);
+      setLine(dyn.transferLines[i * 2 + 31], midOut, end, 0.26 * local, VALUE);
       dyn.vArrows[i].set(CENTERS.v, lerpVec(CENTERS.v, end, local), VALUE, local * (i === 0 ? 1 : 0.78), 0.9);
-      labelAt(dyn.labels[i], end.clone().add(new THREE.Vector3(0.12, 0.08, 0.10)), `raw v${i}`, VALUE, local);
+      labelAt(dyn.labels[i + 20], end.clone().add(new THREE.Vector3(0.12, 0.08, 0.10)), `raw v${i}`, VALUE, local);
     }
   }
 
@@ -2011,40 +2059,45 @@ function renderStage() {
   if (s === 10) renderTensorSnap(t, 1.0);
 
   if (s === 11) {
-    renderTensorSnap(1.0, 0.22);
-    renderInputTokens(0.30);
     renderRawProjections(derived.continuous, 0.08, 0.08, 0.08, false);
     const local = smoothstep01(t);
-    const start = endpoint(CENTERS.Wq, data.tokens[0]);
+    const start = endpoint(CENTERS.Input, data.tokens[0]);
+    const midIn = CENTERS.Wq.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
+    const midOut = CENTERS.Wq.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
     const end = rawProjEndpoint(CENTERS.q, derived.quantized.qRaw);
-    setLine(dyn.transferLines[0], start, end, 0.42 * local, QUANT);
+    setLine(dyn.transferLines[0], start, midIn, 0.42 * local, CURRENT);
+    setLine(dyn.transferLines[1], midOut, end, 0.42 * local, QUANT);
     dyn.qArrowQ.set(CENTERS.q, lerpVec(CENTERS.q, end, local), QUANT, local);
     labelAt(dyn.labels[0], end.clone().add(new THREE.Vector3(0.16, 0.10, 0.10)), state.quantWq ? 'raw q̃ = W̃q x₀' : 'raw q̃ = Wq x₀', QUANT, local);
   }
 
   if (s === 12) {
-    renderInputTokens(0.30);
     renderRawProjections(derived.quantized, 1.0, 0.0, 0.0, true);
     for (let i = 0; i < data.tokens.length; i++) {
       const local = smoothstep01(t * data.tokens.length - i);
-      const start = endpoint(CENTERS.Wk, data.tokens[i]);
+      const start = endpoint(CENTERS.Input, data.tokens[i]);
+      const midIn = CENTERS.Wk.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
+      const midOut = CENTERS.Wk.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
       const end = rawProjEndpoint(CENTERS.k, derived.quantized.kRaw[i]);
-      setLine(dyn.transferLines[i], start, end, 0.30 * local, QUANT);
+      setLine(dyn.transferLines[i * 2 + 2], start, midIn, 0.30 * local, i === 0 ? CURRENT : PRIOR);
+      setLine(dyn.transferLines[i * 2 + 3], midOut, end, 0.30 * local, QUANT);
       dyn.kArrowsQ[i].set(CENTERS.k, lerpVec(CENTERS.k, end, local), QUANT, local * (i === 0 ? 1 : 0.78), 0.9);
-      labelAt(dyn.labels[i], end.clone().add(new THREE.Vector3(0.12, 0.08, 0.10)), `raw k̃${i}`, QUANT, local);
+      labelAt(dyn.labels[i + 1], end.clone().add(new THREE.Vector3(0.12, 0.08, 0.10)), `raw k̃${i}`, QUANT, local);
     }
   }
 
   if (s === 13) {
-    renderInputTokens(0.30);
     renderRawProjections(derived.quantized, 1.0, 1.0, 0.0, true);
     for (let i = 0; i < data.tokens.length; i++) {
       const local = smoothstep01(t * data.tokens.length - i);
-      const start = endpoint(CENTERS.Wv, data.tokens[i]);
+      const start = endpoint(CENTERS.Input, data.tokens[i]);
+      const midIn = CENTERS.Wv.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
+      const midOut = CENTERS.Wv.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
       const end = rawProjEndpoint(CENTERS.v, derived.quantized.vRaw[i]);
-      setLine(dyn.transferLines[i], start, end, 0.30 * local, QUANT);
+      setLine(dyn.transferLines[i * 2 + 30], start, midIn, 0.30 * local, i === 0 ? CURRENT : PRIOR);
+      setLine(dyn.transferLines[i * 2 + 31], midOut, end, 0.30 * local, QUANT);
       dyn.vArrowsQ[i].set(CENTERS.v, lerpVec(CENTERS.v, end, local), QUANT, local * (i === 0 ? 1 : 0.78), 0.9);
-      labelAt(dyn.labels[i], end.clone().add(new THREE.Vector3(0.12, 0.08, 0.10)), `raw ṽ${i}`, QUANT, local);
+      labelAt(dyn.labels[i + 20], end.clone().add(new THREE.Vector3(0.12, 0.08, 0.10)), `raw ṽ${i}`, QUANT, local);
     }
   }
 
@@ -2086,20 +2139,21 @@ function renderStage() {
 }
 
 function focusCenter(stage) {
-  if (state.forceOverview || stage === 0 || stage === 10) return new THREE.Vector3(-1.25, 0, 0);
-  if (stage === 1 || stage === 11) return new THREE.Vector3(-3.65, 3.15, 0);
-  if (stage === 2 || stage === 12) return new THREE.Vector3(-3.65, 0, 0);
-  if (stage === 3 || stage === 13) return new THREE.Vector3(-3.65, -3.15, 0);
+  if (state.forceOverview || stage === 0 || stage === 10) return new THREE.Vector3(-3.25, 0, 0);
+  if (stage === 1 || stage === 11) return new THREE.Vector3(-6.05, 3.15, 0);
+  if (stage === 2 || stage === 12) return new THREE.Vector3(-6.05, 0, 0);
+  if (stage === 3 || stage === 13) return new THREE.Vector3(-6.05, -3.15, 0);
   if (stage === 4 || stage === 14 || stage === 15) return new THREE.Vector3(-1.2, 0, 0);
   if (stage === 5 || stage === 6 || stage === 16 || stage === 17) return new THREE.Vector3(-1.2, 1.45, 0);
   if (stage === 7 || stage === 8 || stage === 18) return CENTERS.v.clone();
   if (stage === 9 || stage === 19) return new THREE.Vector3(1.6, -1.7, 0);
   if (stage === 20) return CENTERS.Wo.clone();
-  return new THREE.Vector3(-1.2, 0, 0);
+  return new THREE.Vector3(-3.25, 0, 0);
 }
 function desiredCameraDistance(stage) {
-  if (state.forceOverview || stage === 0 || stage === 10) return 15.0;
+  if (state.forceOverview || stage === 0 || stage === 10) return 17.5;
   if (stage === 20) return 4.6;
+  if (stage === 1 || stage === 2 || stage === 3 || stage === 11 || stage === 12 || stage === 13) return 11.5;
   if (stage === 6 || stage === 17) return 8.2;
   if (stage === 9 || stage === 19) return 7.1;
   if (stage === 4 || stage === 14 || stage === 15) return 8.4;
