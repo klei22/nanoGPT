@@ -76,6 +76,7 @@ import numpy as np
 # Torch
 import torch
 import torch.onnx
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -207,6 +208,11 @@ class Trainer:
         self.distillation_weight = getattr(self.args, "distillation_weight", 1.0)
         self.teacher_model = None
         self.latest_distillation_loss = float('nan')
+        self.target_lm_head = None
+        self.target_lm_head_softcap = None
+        self.latest_target_lm_head_kl = float('nan')
+        self.latest_target_lm_head_kl_val = float('nan')
+        self.latest_target_lm_head_kl_train_eval = float('nan')
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
 
@@ -431,6 +437,7 @@ class Trainer:
             self.scheduler = self.create_scheduler()
 
         self._initialize_teacher_if_needed()
+        self._initialize_target_lm_head_if_needed()
 
         if self.args.block_size < self.model.config.block_size:
             self.model.crop_block_size(self.args.block_size)
@@ -541,6 +548,113 @@ class Trainer:
         self.teacher_model = teacher_model
         if self.master_process:
             print(f"Loaded teacher checkpoint from {expanded}")
+
+
+    def _resolve_checkpoint_path(self, path_value):
+        expanded = os.path.expanduser(path_value)
+        if not os.path.exists(expanded):
+            candidate = os.path.join(self.args.out_dir, path_value)
+            if os.path.exists(candidate):
+                expanded = candidate
+        return expanded
+
+
+    def _target_lm_head_key(self, checkpoint_model_args, dataset_idx=None):
+        if checkpoint_model_args.get('multidataset_wte') or checkpoint_model_args.get('multicontext'):
+            idx = dataset_idx
+            if idx is None:
+                idx = getattr(self.args, 'target_lm_head_dataset_idx', None)
+            if idx is None:
+                idx = 0
+            return f"transformer.lm_head_{idx}.weight", idx
+        return 'lm_head.weight', None
+
+
+    def _initialize_target_lm_head_if_needed(self):
+        mode = getattr(self.args, 'target_lm_head_kl_mode', 'off')
+        ckpt_path = getattr(self.args, 'target_lm_head_ckpt', None)
+        if mode == 'off':
+            if ckpt_path:
+                raise ValueError(
+                    "--target_lm_head_ckpt requires --target_lm_head_kl_mode to be 'loss' or 'monitor'."
+                )
+            return
+        if self.args.training_mode == 'multicontext':
+            raise ValueError("Frozen lm_head KL is not supported with multicontext training mode.")
+        if not ckpt_path:
+            raise ValueError("--target_lm_head_kl_mode requires --target_lm_head_ckpt.")
+        if self.args.target_lm_head_kl_temperature <= 0:
+            raise ValueError("target_lm_head_kl_temperature must be positive.")
+        if self.args.target_lm_head_kl_eps <= 0:
+            raise ValueError("target_lm_head_kl_eps must be positive.")
+
+        expanded = self._resolve_checkpoint_path(ckpt_path)
+        checkpoint = torch.load(expanded, map_location='cpu')
+        checkpoint_model_args = checkpoint.get('model_args')
+        if checkpoint_model_args is None:
+            raise ValueError("Target lm_head checkpoint does not contain 'model_args'.")
+
+        requested_idx = getattr(self.args, 'target_lm_head_dataset_idx', None)
+        key, resolved_idx = self._target_lm_head_key(checkpoint_model_args, requested_idx)
+        state_dict = checkpoint['model']
+        clean_state = {}
+        for state_key, value in state_dict.items():
+            if state_key.startswith('_orig_mod.'):
+                state_key = state_key[len('_orig_mod.'):]
+            clean_state[state_key] = value
+
+        if key not in clean_state:
+            fallback_keys = ['lm_head.weight', 'transformer.wte.weight']
+            if resolved_idx is not None:
+                fallback_keys.insert(0, f'transformer.wte_{resolved_idx}.weight')
+            for fallback in fallback_keys:
+                if fallback in clean_state:
+                    key = fallback
+                    break
+            else:
+                available = sorted(
+                    k for k in clean_state
+                    if k == 'lm_head.weight' or k == 'transformer.wte.weight' or '.lm_head_' in k or '.wte_' in k
+                )
+                raise ValueError(
+                    f"Could not find {key!r} in target lm_head checkpoint. Available lm_head/wte keys: {available}"
+                )
+
+        weight = clean_state[key].detach().float()
+        target_head = nn.Linear(weight.shape[1], weight.shape[0], bias=False)
+        target_head.weight.data.copy_(weight)
+        target_head.to(self.device)
+        target_head.eval()
+        for param in target_head.parameters():
+            param.requires_grad_(False)
+
+        self.target_lm_head_softcap = checkpoint_model_args.get('final_logit_softcapping')
+        self.target_lm_head = target_head
+        if self.master_process:
+            idx_msg = f" (dataset index {resolved_idx})" if resolved_idx is not None else ""
+            print(f"Loaded frozen target lm_head{idx_msg} from {expanded} using key {key}")
+
+
+    def _target_lm_head_kl_loss(self, student_logits, hidden):
+        if self.target_lm_head is None:
+            return None
+        if hidden.size(-1) != self.target_lm_head.in_features:
+            raise ValueError(
+                f"Frozen lm_head expects hidden size {self.target_lm_head.in_features}, got {hidden.size(-1)}."
+            )
+        temperature = self.args.target_lm_head_kl_temperature
+        eps = self.args.target_lm_head_kl_eps
+        with torch.no_grad():
+            target_logits = self.target_lm_head(hidden).to(student_logits.dtype)
+            if self.target_lm_head_softcap is not None:
+                target_logits = torch.tanh(target_logits / self.target_lm_head_softcap) * self.target_lm_head_softcap
+        student_log_probs = F.log_softmax(student_logits.float() / temperature, dim=-1)
+        target_probs = F.softmax(target_logits.float() / temperature, dim=-1)
+        target_probs = target_probs.clamp_min(eps)
+        target_probs = target_probs / target_probs.sum(dim=-1, keepdim=True)
+        kl = F.kl_div(student_log_probs, target_probs, reduction='none').sum(dim=-1)
+        kl = torch.clamp(kl, min=0.0)
+        return (kl.mean() * (temperature ** 2) + (student_logits.sum() * 0.0)).to(student_logits.dtype)
 
 
     def create_optimizer(self):
@@ -1006,6 +1120,7 @@ class Trainer:
             for dataset in self.args.dataset_list:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
+                dataset_lm_head_kl_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
                 rankme_vectors = [] if compute_rankme else None
@@ -1018,15 +1133,31 @@ class Trainer:
                         )
                         with self.ctx:
                             idx = self.args.dataset_list.index(dataset)
-                            logits, loss = self.model(
-                                X,
-                                Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
-                            )
+                            if self.target_lm_head is not None:
+                                logits, loss, hidden = self.model(
+                                    X,
+                                    Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                    return_hidden=True,
+                                )
+                            else:
+                                logits, loss = self.model(
+                                    X,
+                                    Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
+                                hidden = None
                         handle.remove()
                         dataset_losses[split][k] = loss.item()
+                        if self.target_lm_head is not None and hidden is not None:
+                            kl_loss = self._target_lm_head_kl_loss(logits, hidden)
+                            dataset_lm_head_kl_losses[split][k] = kl_loss.item()
+                        else:
+                            dataset_lm_head_kl_losses[split][k] = float('nan')
                         if split == 'val':
                             probs = F.softmax(logits, dim=-1)
                             top1_prob, top1_idx = probs.max(dim=-1)
@@ -1064,6 +1195,10 @@ class Trainer:
                         'train_std': dataset_losses['train'].std(),
                         'val': dataset_losses['val'].mean(),
                         'val_std': dataset_losses['val'].std(),
+                        'target_lm_head_kl_train': self._nanmean(dataset_lm_head_kl_losses['train']),
+                        'target_lm_head_kl_val': self._nanmean(dataset_lm_head_kl_losses['val']),
+                        'target_lm_head_kl_train_std': self._nanstd(dataset_lm_head_kl_losses['train']),
+                        'target_lm_head_kl_val_std': self._nanstd(dataset_lm_head_kl_losses['val']),
                         'top1_prob': torch.cat(top1_probs).mean() if top1_probs else torch.tensor(float('nan')),
                         'top1_correct': torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan')),
                         'target_rank': torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan')),
@@ -1090,6 +1225,10 @@ class Trainer:
             out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
             out['ln_f_cosine'] = out['datasets'][self.args.dataset]['ln_f_cosine']
             out['ln_f_cosine_95'] = out['datasets'][self.args.dataset]['ln_f_cosine_95']
+            out['target_lm_head_kl_train'] = out['datasets'][self.args.dataset]['target_lm_head_kl_train']
+            out['target_lm_head_kl_val'] = out['datasets'][self.args.dataset]['target_lm_head_kl_val']
+            out['target_lm_head_kl_train_std'] = out['datasets'][self.args.dataset]['target_lm_head_kl_train_std']
+            out['target_lm_head_kl_val_std'] = out['datasets'][self.args.dataset]['target_lm_head_kl_val_std']
             if compute_rankme:
                 out['rankme'] = out['datasets'][self.args.dataset]['rankme']
                 out['areq'] = out['datasets'][self.args.dataset]['areq']
@@ -1143,6 +1282,7 @@ class Trainer:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
+                lm_head_kl_losses = torch.zeros(self.args.eval_iters)
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
                 rankme_vectors = [] if compute_rankme else None
@@ -1153,15 +1293,31 @@ class Trainer:
                         lambda _m, _i, o: ln_f_out.append(o.detach())
                     )
                     with self.ctx:
-                        logits, loss = self.model(
-                            X,
-                            Y,
-                            iter_num=self.iter_num,
-                            dataset_idx=0 if self.args.multidataset_wte else None,
-                            loss_fn=self.loss_fn,
-                        )
+                        if self.target_lm_head is not None:
+                            logits, loss, hidden = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                                return_hidden=True,
+                            )
+                        else:
+                            logits, loss = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
+                            hidden = None
                     handle.remove()
                     losses[k] = loss.item()
+                    if self.target_lm_head is not None and hidden is not None:
+                        kl_loss = self._target_lm_head_kl_loss(logits, hidden)
+                        lm_head_kl_losses[k] = kl_loss.item()
+                    else:
+                        lm_head_kl_losses[k] = float('nan')
                     if split == 'val':
                         probs = F.softmax(logits, dim=-1)
                         top1_prob, top1_idx = probs.max(dim=-1)
@@ -1191,6 +1347,8 @@ class Trainer:
                             )
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
+                out[f'target_lm_head_kl_{split}'] = self._nanmean(lm_head_kl_losses)
+                out[f'target_lm_head_kl_{split}_std'] = self._nanstd(lm_head_kl_losses)
                 if split == 'val':
                     out['top1_prob'] = torch.cat(top1_probs).mean() if top1_probs else torch.tensor(float('nan'))
                     out['top1_correct'] = torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan'))
@@ -1376,6 +1534,20 @@ class Trainer:
                 f"{target_dataset}/bit_loss_penalty_tokens", penalty_term, tokens_trained
             )
 
+    def _nanmean(self, values: torch.Tensor) -> torch.Tensor:
+        finite = torch.isfinite(values)
+        if not finite.any():
+            return values.new_tensor(float('nan'))
+        return values[finite].mean()
+
+
+    def _nanstd(self, values: torch.Tensor) -> torch.Tensor:
+        finite = torch.isfinite(values)
+        if not finite.any():
+            return values.new_tensor(float('nan'))
+        return values[finite].std()
+
+
     def _safe_better_than_chance(self, vocab_size: float, loss_value: float) -> float:
         """Return vocab_size / exp(loss) without raising overflow for huge losses."""
         if not math.isfinite(loss_value):
@@ -1453,6 +1625,18 @@ class Trainer:
                 self.writer.add_scalar(
                     f"{target_dataset}/distillation_loss",
                     self.latest_distillation_loss,
+                    self.iter_num,
+                )
+
+            if 'target_lm_head_kl_val' in losses:
+                self.writer.add_scalar(
+                    f"{target_dataset}/target_lm_head_kl_val",
+                    losses['target_lm_head_kl_val'],
+                    self.iter_num,
+                )
+                self.writer.add_scalar(
+                    f"{target_dataset}/target_lm_head_kl_train_eval",
+                    losses['target_lm_head_kl_train'],
                     self.iter_num,
                 )
 
@@ -1569,6 +1753,13 @@ class Trainer:
                 self.writer.add_scalar(
                     f"{target_dataset}/distillation_loss",
                     self.latest_distillation_loss,
+                    self.iter_num,
+                )
+
+            if not math.isnan(self.latest_target_lm_head_kl):
+                self.writer.add_scalar(
+                    f"{target_dataset}/target_lm_head_kl_train_step",
+                    self.latest_target_lm_head_kl,
                     self.iter_num,
                 )
 
@@ -1795,6 +1986,8 @@ class Trainer:
         self.latest_left_prob_95 = losses.get('left_prob_95', float('nan'))
         self.latest_ln_f_cosine = losses.get('ln_f_cosine', float('nan'))
         self.latest_ln_f_cosine_95 = losses.get('ln_f_cosine_95', float('nan'))
+        self.latest_target_lm_head_kl_val = self._to_scalar(losses.get('target_lm_head_kl_val', float('nan')))
+        self.latest_target_lm_head_kl_train_eval = self._to_scalar(losses.get('target_lm_head_kl_train', float('nan')))
         self.latest_rankme = self._to_scalar(losses.get('rankme', float('nan')))
         self.latest_areq = self._to_scalar(losses.get('areq', float('nan')))
 
@@ -1831,6 +2024,8 @@ class Trainer:
                 log_message+=f", btc_val_per_param {(better_than_chance/self.model.num_param):.2e}"
                 log_message+=f", val loss {dataset_losses['val']:.4f}"
                 log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
+                if 'target_lm_head_kl_val' in dataset_losses:
+                    log_message+=f", lm_head_kl_val {dataset_losses['target_lm_head_kl_val']:.4f}"
                 if self.args.gns_type is not None:
                     log_message+=f", gns {self.gns:.2f}"
                 log_message+=f", lr {self.lr:.4f}"
@@ -1862,6 +2057,8 @@ class Trainer:
             log_message+=f", btc_val_per_param {(better_than_chance/self.model.num_param):.2e}"
             log_message+=f", val loss {losses['val']:.4f}"
             log_message+=f", val_stdev {losses['val_std']:.4f}"
+            if 'target_lm_head_kl_val' in losses:
+                log_message+=f", lm_head_kl_val {losses['target_lm_head_kl_val']:.4f}"
             if self.args.gns_type is not None:
                 log_message+=f", gns {self.gns:.2f}"
             log_message+=f", batch_size {self.args.batch_size}"
@@ -1916,6 +2113,8 @@ class Trainer:
                             f"{self.latest_ln_f_cosine_95:.6f}",
                             f"{self.latest_rankme:.6f}",
                             f"{self.latest_areq:.6f}",
+                            f"{self.latest_target_lm_head_kl_val:.6f}",
+                            f"{self.latest_target_lm_head_kl_train_eval:.6f}",
                             f"{self.latest_overall_weight_stats['stdev']:.6f}",
                             f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
                             f"{self.latest_overall_weight_stats['max']:.6f}",
@@ -1973,6 +2172,8 @@ class Trainer:
         else:
             better_than_chance = self._safe_better_than_chance(self.model_args['vocab_size'], lossf)
             log_message+= f", loss {lossf:.4f}"
+            if not math.isnan(self.latest_target_lm_head_kl):
+                log_message+= f", lm_head_kl {self.latest_target_lm_head_kl:.4f}"
             if self.args.log_btc_train:
                 log_message+=f", btc_train {better_than_chance:.2e}"
             if self.args.log_btc_per_param:
@@ -2133,13 +2334,24 @@ class Trainer:
                             loss = sum(training_losses) / len(training_losses)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(
-                                self.X,
-                                targets=self.Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
-                            )
+                            if self.target_lm_head is not None:
+                                logits, loss, hidden = self.model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                    return_hidden=True,
+                                )
+                            else:
+                                logits, loss = self.model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
+                                hidden = None
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                         with torch.no_grad():
@@ -2147,6 +2359,18 @@ class Trainer:
                             ent = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
                             ent = ent / math.log(logits.size(-1))
                         self.optimizer.set_entropy(float(ent))
+
+                    target_lm_head_component = None
+                    if self.target_lm_head is not None and hidden is not None:
+                        target_lm_head_component = self._target_lm_head_kl_loss(logits, hidden)
+                        if self.args.target_lm_head_kl_mode == 'loss':
+                            loss = self.args.target_lm_head_kl_weight * target_lm_head_component
+
+                    self.latest_target_lm_head_kl = (
+                        float(target_lm_head_component.detach().float().item())
+                        if target_lm_head_component is not None
+                        else float('nan')
+                    )
 
                     distill_component = None
                     if (
