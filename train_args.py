@@ -225,6 +225,24 @@ def parse_args():
         default=1e-8,
         help='Numerical stability epsilon for distillation losses.',
     )
+    training_group.add_argument(
+        '--passive_distillation_loss_log',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help=(
+            'Compute and log the selected distillation loss without adding it to '
+            'the training objective. Requires --distillation_teacher_ckpt and --distillation_loss.'
+        ),
+    )
+    training_group.add_argument(
+        '--log_ntp_val_loss_during_distillation',
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help=(
+            'When distillation is configured, also log next-token prediction validation '
+            'loss as a baseline metric.'
+        ),
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
