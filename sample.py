@@ -1803,14 +1803,16 @@ def main():
                         model.set_lsv_mode(1)
 
                 token_state = {name: tensor.clone() for name, tensor in initial_tokens.items()}
+                idx_cond_dict = {}
+                for name in dataset_names:
+                    tokens = token_state[name]
+                    idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
 
-                for _ in range(args.max_new_tokens):
-                    idx_cond_dict = {}
-                    for name in dataset_names:
-                        tokens = token_state[name]
-                        idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
+                logits_list, caches = model.generate_multicontext_step(idx_cond_dict)
+                cache_position = next(iter(idx_cond_dict.values())).size(1)
 
-                    logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
+                for step_idx in range(args.max_new_tokens):
+                    next_token_dict = {}
 
                     for i, name in enumerate(dataset_names):
                         if model.config.numerical_multicontext:
@@ -1850,6 +1852,15 @@ def main():
                             idx_next = torch.multinomial(probs, num_samples=1)
 
                         token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
+                        next_token_dict[name] = idx_next
+
+                    if step_idx + 1 < args.max_new_tokens:
+                        logits_list, caches = model.generate_multicontext_step(
+                            next_token_dict,
+                            caches=caches,
+                            position=cache_position,
+                        )
+                        cache_position += 1
 
                 output_dict: Dict[str, str] = {}
                 for name in dataset_names:

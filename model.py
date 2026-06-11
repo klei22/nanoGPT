@@ -634,6 +634,129 @@ class GPT(nn.Module):
                 loss = None
 
             return logits, loss
+
+    @torch.no_grad()
+    def generate_multicontext_step(self, token_dict, caches=None, position=None, iter_num=None):
+        """Run one cached multicontext generation step.
+
+        When ``caches`` is ``None`` this performs the prompt prefill over the full
+        per-context tensors in ``token_dict``.  Subsequent calls should pass the
+        returned caches and may pass either full histories or one-token tensors;
+        only the newest token for each context is embedded and evaluated.
+        """
+        if token_dict is None:
+            raise ValueError("generate_multicontext_step requires token_dict")
+
+        token_list = list(token_dict.values())
+        if len(token_list) == 0:
+            raise ValueError("generate_multicontext_step requires at least one context")
+
+        device = token_list[0].device
+        is_prefill = caches is None
+        if position is None:
+            position = 0 if is_prefill else caches[0][0].size(2)
+
+        x = None
+        for i, tokens in enumerate(token_list):
+            step_tokens = tokens if is_prefill else tokens[:, [-1]]
+            if self.uses_numerical_multicontext:
+                module = self.numerical_embeddings[str(i)]
+                param = next(module.parameters())
+                if self.config.numerical_multicontext_input_format == "fp16_bits":
+                    numeric_tokens = self._fp16bits_to_fp32(step_tokens).to(param.dtype)
+                else:
+                    numeric_tokens = step_tokens.to(param.dtype)
+                token_repr = module(numeric_tokens.unsqueeze(-1))
+            else:
+                token_repr = self.transformer[f'wte_{i}'](step_tokens)
+
+            token_repr = self.add_embedding_gaussian_noise(token_repr, iter_num=iter_num)
+            x = token_repr if x is None else x + token_repr
+
+        if self.config.norm_variant_wte is not None:
+            x = self.transformer.post_embedding_norm(x)
+
+        if self.config.use_embedding_scale:
+            x = x * self.embedding_scale
+
+        if self.config.use_abs_pos_embeddings:
+            t = x.size(1)
+            try:
+                pos_emb = self.transformer.wpe(
+                    t,
+                    device=device,
+                    training=self.training,
+                    start_index=position,
+                )
+            except TypeError:
+                # Backward compatibility for custom absolute-position modules
+                # that have not adopted the optional start_index argument.
+                if position != 0:
+                    raise
+                pos_emb = self.transformer.wpe(t, device=device, training=self.training)
+            x = x + pos_emb
+            if self.config.norm_variant_abs is not None:
+                x = self.transformer.post_abs_norm(x)
+            x = self.transformer.drop(x)
+        else:
+            x = self.transformer.drop(x)
+
+        if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
+            x = self.lsv_matrix(x)
+
+        if self.use_ln_f_input_mixer:
+            if not is_prefill:
+                raise NotImplementedError("Cached multicontext generation does not support ln_f input mixing")
+            layer_outputs = [x]
+
+        next_caches = []
+        layer_idx = 1
+        for cache, block in zip(caches or [None] * len(self.transformer.h), self.transformer.h):
+            x, present = block(
+                x,
+                iter_num,
+                kv_cache=cache,
+                use_cache=True,
+                position_offset=position,
+            )
+            next_caches.append(present)
+
+            if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
+                x = self.lsv_matrix(x)
+            if (self.config.apply_vector_at_layer_idx is not None
+                    and layer_idx == self.config.apply_vector_at_layer_idx):
+                x = self.apply_vector_to_layer_output(x)
+            if (self.config.obtain_vector_at_layer_idx is not None
+                    and layer_idx == self.config.obtain_vector_at_layer_idx):
+                x = self.obtain_vector_from_layer_output(x)
+
+            if self.use_ln_f_input_mixer:
+                layer_outputs.append(x)
+
+            layer_idx += 1
+
+        if self.use_ln_f_input_mixer:
+            x = self.ln_f_mixer(layer_outputs)
+
+        x = self.transformer.ln_f(x)
+
+        if self.n_embd_wte:
+            x = F.linear(x, self.transformer.scale_down.weight.t())
+
+        x_last = x[:, [-1], :]
+        if self.uses_numerical_multicontext:
+            logits = [self.numerical_output_mlps[str(i)](x_last) for i in range(len(token_list))]
+        else:
+            logits = [self.transformer[f'lm_head_{i}'](x_last) for i in range(len(token_list))]
+            if self.config.final_logit_softcapping is not None:
+                logits = [
+                    torch.tanh(logit_var / self.config.final_logit_softcapping)
+                    * self.config.final_logit_softcapping
+                    for logit_var in logits
+                ]
+
+        return logits, next_caches
+
     # ------------------------------------------------------------------
     #  LATENT-CHAINING
     # ------------------------------------------------------------------
