@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Roomba Pose + Grayscale Viewer</title>
+  <title>Roomba / Grid Sequence Viewer</title>
   <style>
     :root {
       color-scheme: dark;
@@ -126,7 +126,7 @@
   </style>
 </head>
 <body>
-  <h1>Roomba Top-Down Pose + Grayscale Viewer</h1>
+  <h1>Roomba / Grid Sequence Viewer</h1>
 
   <section class="panel">
     <div class="controls">
@@ -186,6 +186,14 @@
       </label>
 
       <label>
+        Binary p* display
+        <select id="binaryPixelMode">
+          <option value="auto" selected>auto stretch 0/1 to white</option>
+          <option value="raw">raw grayscale values</option>
+        </select>
+      </label>
+
+      <label>
         Playback FPS
         <input id="fps" type="number" min="1" step="1" value="5" />
       </label>
@@ -193,7 +201,7 @@
 
     <div class="hint">
       Default p* layout is normal image order: p0 at top-left, then p1 to the right, wrapping by width to the next row.
-      For your p0..p8 sample, use width 3 and height 3. Timestamp and distance deltas use forward modulo wrapping.
+      CSVs with width/height columns (for example Conway Life) auto-fill the grid size. Roomba CSVs also show top-down pose; generic p* CSVs show metadata.
     </div>
   </section>
 
@@ -206,7 +214,7 @@
 
   <section class="viewer">
     <div class="panel">
-      <h2 style="margin-top:0;font-size:16px;">top-down robot pose</h2>
+      <h2 id="leftPanelTitle" style="margin-top:0;font-size:16px;">top-down robot pose / metadata</h2>
       <canvas id="robotCanvas" width="620" height="420"></canvas>
       <div id="status" class="status"></div>
     </div>
@@ -227,6 +235,7 @@
     pixelScale: document.getElementById('pixelScale'),
     startCorner: document.getElementById('startCorner'),
     scanDirection: document.getElementById('scanDirection'),
+    binaryPixelMode: document.getElementById('binaryPixelMode'),
     distanceModulo: document.getElementById('distanceModulo'),
     timestampModulo: document.getElementById('timestampModulo'),
     poseScale: document.getElementById('poseScale'),
@@ -239,6 +248,7 @@
     robotCanvas: document.getElementById('robotCanvas'),
     status: document.getElementById('status'),
     pixelStatus: document.getElementById('pixelStatus'),
+    leftPanelTitle: document.getElementById('leftPanelTitle'),
   };
 
   const state = {
@@ -246,6 +256,7 @@
     rows: [],
     pCols: [],
     poses: [],
+    hasPose: false,
     currentFrame: 0,
     timer: null,
   };
@@ -322,14 +333,26 @@
       throw new Error('No p* columns found. Expected columns named p0, p1, p2, ...');
     }
 
-    // Helpful default: square grids such as p0..p8 become 3 x 3.
-    const root = Math.sqrt(state.pCols.length);
-    if (Number.isInteger(root)) {
-      els.gridWidth.value = String(root);
-      els.gridHeight.value = String(root);
+    state.hasPose = ['total_distance_mm', 'heading_deg'].every(col => state.headers.includes(col));
+    els.leftPanelTitle.textContent = state.hasPose ? 'top-down robot pose' : 'sequence metadata';
+
+    // Helpful defaults: explicit width/height metadata wins; otherwise square
+    // grids such as p0..p8 become 3 x 3.
+    const firstRow = state.rows[0] || {};
+    const csvWidth = numberValue(firstRow, 'width', NaN);
+    const csvHeight = numberValue(firstRow, 'height', NaN);
+    if (Number.isInteger(csvWidth) && csvWidth > 0 && Number.isInteger(csvHeight) && csvHeight > 0) {
+      els.gridWidth.value = String(csvWidth);
+      els.gridHeight.value = String(csvHeight);
     } else {
-      els.gridWidth.value = String(state.pCols.length);
-      els.gridHeight.value = '1';
+      const root = Math.sqrt(state.pCols.length);
+      if (Number.isInteger(root)) {
+        els.gridWidth.value = String(root);
+        els.gridHeight.value = String(root);
+      } else {
+        els.gridWidth.value = String(state.pCols.length);
+        els.gridHeight.value = '1';
+      }
     }
 
     state.currentFrame = 0;
@@ -488,7 +511,10 @@
       const position = pixelIndexToRowCol(i, width, height, startCorner, direction);
       if (!position) return;
 
-      const gray = clampByte(numberValue(row, pCol));
+      const rawGray = numberValue(row, pCol);
+      const gray = els.binaryPixelMode.value === 'auto' && rawGray > 0 && rawGray <= 1
+        ? 255
+        : clampByte(rawGray);
       const base = (position.row * width + position.col) * 4;
       image.data[base + 0] = gray;
       image.data[base + 1] = gray;
@@ -502,8 +528,29 @@
     pixelCtx.drawImage(offscreen, 0, 0, els.pixelCanvas.width, els.pixelCanvas.height);
   }
 
+  function rowSummary(row) {
+    const preferred = [
+      'timestamp', 'episode', 'step', 'rule_id', 'pattern_id', 'alive_count',
+      'born_count', 'died_count', 'density_percent', 'mutation_per_mille',
+      'battery_percent', 'heading_deg', 'total_distance_mm', 'action',
+      'bump_left', 'bump_right', 'wheel_dropped',
+    ];
+    const fields = preferred.filter(col => Object.prototype.hasOwnProperty.call(row, col));
+    const fallback = state.headers.filter(col => !/^p\d+$/.test(col)).slice(0, 12);
+    return (fields.length ? fields : fallback).map(col => `${col}: ${row[col]}`);
+  }
+
   function renderPixelStatus(row) {
     const pose = state.poses[state.currentFrame] || {};
+    if (!state.hasPose) {
+      els.pixelStatus.textContent = [
+        `frame: ${state.currentFrame + 1} / ${state.rows.length}`,
+        `p columns: ${state.pCols.length}`,
+        ...rowSummary(row),
+      ].join('\n');
+      return;
+    }
+
     const battery = numberValue(row, 'battery_percent', NaN);
     const batteryText = Number.isFinite(battery) ? `${(battery / 10).toFixed(1)}%` : 'n/a';
 
@@ -534,6 +581,23 @@
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#050505';
     ctx.fillRect(0, 0, width, height);
+
+    if (!state.hasPose) {
+      ctx.save();
+      ctx.font = '15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = '#ddd';
+      const lines = [
+        'Generic p* sequence mode',
+        `frame ${state.currentFrame + 1} / ${state.rows.length}`,
+        `grid ${els.gridWidth.value} x ${els.gridHeight.value}`,
+        '',
+        ...rowSummary(row).slice(0, 18),
+      ];
+      lines.forEach((line, i) => ctx.fillText(line, 18, 18 + i * 22));
+      ctx.restore();
+      return;
+    }
 
     if (path.length === 0) return;
 
@@ -669,6 +733,17 @@
       warnings.push(`NOTE: width * height = ${gridWidth * gridHeight}, but there are only ${state.pCols.length} p* columns. Missing cells render black.`);
     }
 
+    if (!state.hasPose) {
+      els.status.textContent = [
+        `p columns: ${state.pCols[0] ?? 'none'}..${state.pCols[state.pCols.length - 1] ?? 'none'} (${state.pCols.length})`,
+        `frame: ${state.currentFrame + 1} / ${state.rows.length}`,
+        `grid: ${gridWidth} x ${gridHeight}`,
+        ...rowSummary(row),
+        ...warnings,
+      ].join('\n');
+      return;
+    }
+
     els.status.textContent = [
       `p columns: ${state.pCols[0] ?? 'none'}..${state.pCols[state.pCols.length - 1] ?? 'none'} (${state.pCols.length})`,
       `frame: ${state.currentFrame + 1} / ${state.rows.length}`,
@@ -766,6 +841,7 @@
     els.pixelScale,
     els.startCorner,
     els.scanDirection,
+    els.binaryPixelMode,
     els.poseScale,
   ].forEach(el => {
     el.addEventListener('input', render);
