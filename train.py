@@ -207,6 +207,8 @@ class Trainer:
         self.distillation_weight = getattr(self.args, "distillation_weight", 1.0)
         self.teacher_model = None
         self.latest_distillation_loss = float('nan')
+        self.latest_distillation_val_loss = float('nan')
+        self.latest_ntp_val_loss = float('nan')
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
 
@@ -995,6 +997,32 @@ class Trainer:
             x, y = x.to(self.device), y.to(self.device)
         return x, y, dataset
 
+    def _distillation_metrics_enabled(self):
+        return (
+            self.teacher_model is not None
+            and self.distillation_loss_fn is not None
+            and self.args.training_mode != 'multicontext'
+        )
+
+    def _compute_distillation_loss_for_batch(self, logits, X, Y, dataset_idx=None):
+        if not self._distillation_metrics_enabled():
+            return None
+        with torch.no_grad():
+            teacher_logits, _ = self.teacher_model(
+                X,
+                targets=Y,
+                iter_num=self.iter_num,
+                dataset_idx=dataset_idx if self.args.multidataset_wte else None,
+                loss_fn=None,
+            )
+            distill_loss = self.distillation_loss_fn(
+                logits,
+                teacher_logits,
+                Y,
+                iter_num=self.iter_num,
+            )
+        return distill_loss.detach().float()
+
     @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
@@ -1006,6 +1034,7 @@ class Trainer:
             for dataset in self.args.dataset_list:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
+                distillation_losses = torch.zeros(self.args.eval_iters) if self._distillation_metrics_enabled() else None
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
                 rankme_vectors = [] if compute_rankme else None
@@ -1028,6 +1057,18 @@ class Trainer:
                         handle.remove()
                         dataset_losses[split][k] = loss.item()
                         if split == 'val':
+                            if distillation_losses is not None:
+                                distill_loss = self._compute_distillation_loss_for_batch(
+                                    logits,
+                                    X,
+                                    Y,
+                                    dataset_idx=idx,
+                                )
+                                distillation_losses[k] = (
+                                    distill_loss.item()
+                                    if distill_loss is not None
+                                    else float('nan')
+                                )
                             probs = F.softmax(logits, dim=-1)
                             top1_prob, top1_idx = probs.max(dim=-1)
                             top1_probs.append(top1_prob)
@@ -1074,6 +1115,12 @@ class Trainer:
                         'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
                         'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
                         }
+                if distillation_losses is not None:
+                    out['datasets'][dataset]['distillation_val_loss'] = distillation_losses.mean()
+                    out['datasets'][dataset]['distillation_val_loss_std'] = distillation_losses.std()
+                if self._distillation_metrics_enabled() and self.args.log_ntp_val_loss_during_distillation:
+                    out['datasets'][dataset]['ntp_val_loss'] = out['datasets'][dataset]['val']
+                    out['datasets'][dataset]['ntp_val_loss_std'] = out['datasets'][dataset]['val_std']
                 if compute_rankme:
                     out['datasets'][dataset]['rankme'] = rankme
                     out['datasets'][dataset]['areq'] = areq
@@ -1090,6 +1137,12 @@ class Trainer:
             out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
             out['ln_f_cosine'] = out['datasets'][self.args.dataset]['ln_f_cosine']
             out['ln_f_cosine_95'] = out['datasets'][self.args.dataset]['ln_f_cosine_95']
+            if 'distillation_val_loss' in out['datasets'][self.args.dataset]:
+                out['distillation_val_loss'] = out['datasets'][self.args.dataset]['distillation_val_loss']
+                out['distillation_val_loss_std'] = out['datasets'][self.args.dataset]['distillation_val_loss_std']
+            if 'ntp_val_loss' in out['datasets'][self.args.dataset]:
+                out['ntp_val_loss'] = out['datasets'][self.args.dataset]['ntp_val_loss']
+                out['ntp_val_loss_std'] = out['datasets'][self.args.dataset]['ntp_val_loss_std']
             if compute_rankme:
                 out['rankme'] = out['datasets'][self.args.dataset]['rankme']
                 out['areq'] = out['datasets'][self.args.dataset]['areq']
@@ -1143,6 +1196,11 @@ class Trainer:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
+                distillation_losses = (
+                    torch.zeros(self.args.eval_iters)
+                    if split == 'val' and self._distillation_metrics_enabled()
+                    else None
+                )
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
                 rankme_vectors = [] if compute_rankme else None
@@ -1163,6 +1221,18 @@ class Trainer:
                     handle.remove()
                     losses[k] = loss.item()
                     if split == 'val':
+                        if distillation_losses is not None:
+                            distill_loss = self._compute_distillation_loss_for_batch(
+                                logits,
+                                X,
+                                Y,
+                                dataset_idx=0,
+                            )
+                            distillation_losses[k] = (
+                                distill_loss.item()
+                                if distill_loss is not None
+                                else float('nan')
+                            )
                         probs = F.softmax(logits, dim=-1)
                         top1_prob, top1_idx = probs.max(dim=-1)
                         top1_probs.append(top1_prob)
@@ -1192,6 +1262,12 @@ class Trainer:
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
                 if split == 'val':
+                    if distillation_losses is not None:
+                        out['distillation_val_loss'] = distillation_losses.mean()
+                        out['distillation_val_loss_std'] = distillation_losses.std()
+                    if self._distillation_metrics_enabled() and self.args.log_ntp_val_loss_during_distillation:
+                        out['ntp_val_loss'] = out['val']
+                        out['ntp_val_loss_std'] = out['val_std']
                     out['top1_prob'] = torch.cat(top1_probs).mean() if top1_probs else torch.tensor(float('nan'))
                     out['top1_correct'] = torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan'))
                     out['target_rank'] = torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan'))
@@ -1454,6 +1530,36 @@ class Trainer:
                     f"{target_dataset}/distillation_loss",
                     self.latest_distillation_loss,
                     self.iter_num,
+                )
+
+            distillation_val_loss = self._to_scalar(
+                losses.get('distillation_val_loss', self.latest_distillation_val_loss)
+            )
+            if not math.isnan(distillation_val_loss):
+                self.writer.add_scalar(
+                    f"{target_dataset}/distillation_val_loss",
+                    distillation_val_loss,
+                    self.iter_num,
+                )
+                self.writer.add_scalar(
+                    f"{target_dataset}/distillation_val_loss_tokens",
+                    distillation_val_loss,
+                    tokens_trained,
+                )
+
+            ntp_val_loss = self._to_scalar(
+                losses.get('ntp_val_loss', self.latest_ntp_val_loss)
+            )
+            if not math.isnan(ntp_val_loss):
+                self.writer.add_scalar(
+                    f"{target_dataset}/ntp_val_loss",
+                    ntp_val_loss,
+                    self.iter_num,
+                )
+                self.writer.add_scalar(
+                    f"{target_dataset}/ntp_val_loss_tokens",
+                    ntp_val_loss,
+                    tokens_trained,
                 )
 
             if 'top1_prob' in losses:
@@ -1797,6 +1903,8 @@ class Trainer:
         self.latest_ln_f_cosine_95 = losses.get('ln_f_cosine_95', float('nan'))
         self.latest_rankme = self._to_scalar(losses.get('rankme', float('nan')))
         self.latest_areq = self._to_scalar(losses.get('areq', float('nan')))
+        self.latest_distillation_val_loss = self._to_scalar(losses.get('distillation_val_loss', float('nan')))
+        self.latest_ntp_val_loss = self._to_scalar(losses.get('ntp_val_loss', float('nan')))
 
         if self.args.gns_type is not None:
             self.gns = self.gns_ema.get_gns()
@@ -1864,6 +1972,10 @@ class Trainer:
             log_message+=f", val_stdev {losses['val_std']:.4f}"
             if self.args.gns_type is not None:
                 log_message+=f", gns {self.gns:.2f}"
+            if not math.isnan(self.latest_distillation_val_loss):
+                log_message+=f", distill_val_loss {self.latest_distillation_val_loss:.4f}"
+            if not math.isnan(self.latest_ntp_val_loss):
+                log_message+=f", ntp_val_loss {self.latest_ntp_val_loss:.4f}"
             log_message+=f", batch_size {self.args.batch_size}"
             log_message+=f", lr {self.lr:.4f}"
             self.console.print(log_message)
@@ -1916,6 +2028,8 @@ class Trainer:
                             f"{self.latest_ln_f_cosine_95:.6f}",
                             f"{self.latest_rankme:.6f}",
                             f"{self.latest_areq:.6f}",
+                            f"{self.latest_distillation_val_loss:.6f}",
+                            f"{self.latest_ntp_val_loss:.6f}",
                             f"{self.latest_overall_weight_stats['stdev']:.6f}",
                             f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
                             f"{self.latest_overall_weight_stats['max']:.6f}",
@@ -2169,7 +2283,8 @@ class Trainer:
                             iter_num=self.iter_num,
                         )
                         distill_component = distill_component.to(loss.dtype)
-                        loss = loss + self.distillation_weight * distill_component
+                        if not self.args.passive_distillation_loss_log:
+                            loss = loss + self.distillation_weight * distill_component
 
                     self.latest_distillation_loss = (
                         float(distill_component.detach().float().item())
