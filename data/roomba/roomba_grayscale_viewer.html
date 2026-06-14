@@ -194,6 +194,16 @@
       </label>
 
       <label>
+        Prompt row count
+        <input id="promptRows" type="number" min="0" step="1" placeholder="none" />
+      </label>
+
+      <label>
+        Sample start index, 0-based
+        <input id="sampleStartFrame" type="number" min="0" step="1" placeholder="none" />
+      </label>
+
+      <label>
         Playback FPS
         <input id="fps" type="number" min="1" step="1" value="5" />
       </label>
@@ -201,7 +211,7 @@
 
     <div class="hint">
       Default p* layout is normal image order: p0 at top-left, then p1 to the right, wrapping by width to the next row.
-      CSVs with width/height columns (for example Conway Life) auto-fill the grid size. Roomba CSVs also show top-down pose; generic p* CSVs show metadata.
+      CSVs with width/height columns (for example Conway Life) auto-fill the grid size. Roomba CSVs also show top-down pose; generic p* CSVs show metadata. Use prompt/sample boundary fields or URL params to mark generated continuations.
     </div>
   </section>
 
@@ -236,6 +246,8 @@
     startCorner: document.getElementById('startCorner'),
     scanDirection: document.getElementById('scanDirection'),
     binaryPixelMode: document.getElementById('binaryPixelMode'),
+    promptRows: document.getElementById('promptRows'),
+    sampleStartFrame: document.getElementById('sampleStartFrame'),
     distanceModulo: document.getElementById('distanceModulo'),
     timestampModulo: document.getElementById('timestampModulo'),
     poseScale: document.getElementById('poseScale'),
@@ -368,6 +380,20 @@
   function numberValue(row, col, fallback = 0) {
     const value = Number(row[col]);
     return Number.isFinite(value) ? value : fallback;
+  }
+
+  function syncBoundaryControls() {
+    els.promptRows.value = Number.isInteger(state.promptRows) ? String(state.promptRows) : '';
+    els.sampleStartFrame.value = Number.isInteger(state.sampleStartFrame) ? String(state.sampleStartFrame) : '';
+  }
+
+  function updateBoundariesFromControls() {
+    const promptText = els.promptRows.value.trim();
+    const sampleText = els.sampleStartFrame.value.trim();
+    const promptRows = Math.floor(Number(promptText));
+    const sampleStartFrame = Math.floor(Number(sampleText));
+    state.promptRows = promptText !== '' && Number.isFinite(promptRows) && promptRows > 0 ? promptRows : null;
+    state.sampleStartFrame = sampleText !== '' && Number.isFinite(sampleStartFrame) && sampleStartFrame >= 0 ? sampleStartFrame : null;
   }
 
   function forwardModuloDelta(curr, prev, modulo) {
@@ -889,6 +915,17 @@
     setFrame(Number(els.frameSlider.value));
   });
 
+  [els.promptRows, els.sampleStartFrame].forEach(el => {
+    el.addEventListener('input', () => {
+      updateBoundariesFromControls();
+      render();
+    });
+    el.addEventListener('change', () => {
+      updateBoundariesFromControls();
+      render();
+    });
+  });
+
   [
     els.gridWidth,
     els.gridHeight,
@@ -926,6 +963,7 @@
   if (Number.isInteger(sampleStartFrameParam) && sampleStartFrameParam >= 0) {
     state.sampleStartFrame = sampleStartFrameParam;
   }
+  syncBoundaryControls();
   const csvURL = params.get('csv');
   if (csvURL) {
     loadCSVFromURL(csvURL);
