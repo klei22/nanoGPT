@@ -24,12 +24,13 @@ with AdamW, then compares their statistics using `view_model_stats.py`.
 
 ## lm_head Vocab Magnitude Histogram
 
-`lm_head_vocab_histogram_demo.sh` runs a short `shakespeare_char` training job
-with optional `lm_head` vocabulary-vector magnitude histogram logging enabled.
-It writes TensorBoard histogram/distribution data over time and exports an
-interactive HTML report with sortable vocab bars and frame navigation. The HTML
-export keeps a bounded number of snapshots by default to avoid very large files
-for large vocabularies.
+`lm_head_vocab_histogram_demo.sh` runs two short `shakespeare_char` training
+jobs with optional `lm_head` vocabulary-vector magnitude histogram logging
+enabled: a baseline run and a run with `--norm_variant_lm_head
+cappedhyperspherenorm`. It writes TensorBoard histogram/distribution data over
+time and exports an interactive HTML report with sortable vocab bars and frame
+navigation for each experiment. The HTML export keeps a bounded number of
+snapshots by default to avoid very large files for large vocabularies.
 
 ```bash
 bash demos/lm_head_vocab_histogram_demo.sh
