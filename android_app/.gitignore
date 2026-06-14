@@ -1,0 +1,8 @@
+.gradle/
+build/
+local.properties
+*.iml
+.DS_Store
+/app/build/
+/app/src/main/assets/model.onnx
+/app/src/main/assets/model.pte
