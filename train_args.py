@@ -406,6 +406,18 @@ def parse_args():
     # --------  MUON --------------------------------------------------
     training_group.add_argument("--muon_momentum", type=float, default=0.95,
                                 help="Momentum for the Muon optimizer.")
+    training_group.add_argument("--muon_ns_steps", type=int, default=5,
+                                help="Newton-Schulz iteration steps for Muon orthogonalization.")
+    training_group.add_argument("--muon_nesterov", type=bool, default=True, action=argparse.BooleanOptionalAction,
+                                help="Use Nesterov momentum in Muon update.")
+    training_group.add_argument("--muon_include_all_weights", type=bool, default=False, action=argparse.BooleanOptionalAction,
+                                help="If enabled, route all parameters to Muon (instead of the default hidden-layer-only routing).")
+    training_group.add_argument("--muon_min_ndim", type=int, default=2,
+                                help="Minimum tensor ndim eligible for Muon routing (default preserves current behavior).")
+    training_group.add_argument("--muon_exclude_substrings", type=str, nargs="*", default=["embed", "wte", "wpe", "lm_head"],
+                                help="Parameter-name substrings excluded from Muon routing unless force-included.")
+    training_group.add_argument("--muon_force_include_substrings", type=str, nargs="*", default=[],
+                                help="Parameter-name substrings force-included into Muon routing, even if excluded.")
     # --------  ADAMW --------------------------------------------------
     training_group.add_argument("--adamw_betas", type=float, nargs=2, default=[0.9, 0.999], help="Betas for AdamW optimizer.")
     training_group.add_argument("--adamw_eps", type=float, default=1e-8, help="Epsilon for AdamW optimizer.")
