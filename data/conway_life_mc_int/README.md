@@ -78,8 +78,11 @@ data/conway_life_mc_int/demo.sh
 
 The demo runs `get_dataset.sh`, validates the generated manifest, trains a tiny
 multicontext model, uses the first rows of the validation split as the sampling
-prompt, appends the sampled rows to the validation CSV, starts a local HTTP
-server, and opens the viewer with that validation+sample CSV preloaded.
+prompt, samples 100 new frames by default, appends the sampled rows to the
+validation CSV, starts a local HTTP server, and opens the viewer with that
+validation+sample CSV preloaded. The viewer URL includes prompt/sample boundary
+parameters so the HTML overlay marks start-token frames, validation ground truth,
+and sampled continuation frames.
 Pass generation options after `--`, for example:
 
 ```bash
@@ -89,5 +92,5 @@ data/conway_life_mc_int/demo.sh -- --width 16 --height 16 --episodes 8 --steps 3
 For headless checks, avoid opening a browser and stop the server automatically:
 
 ```bash
-data/conway_life_mc_int/demo.sh --no-open --serve-seconds 2 --train-iters 2 --sample-rows 4
+data/conway_life_mc_int/demo.sh --no-open --serve-seconds 2 --train-iters 2 --sample-frames 4
 ```

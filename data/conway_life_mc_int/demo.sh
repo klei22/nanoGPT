@@ -16,7 +16,7 @@ OPEN_VIEWER=1
 SERVE_SECONDS=""
 TRAIN_ITERS=20
 PROMPT_ROWS=4
-SAMPLE_ROWS=16
+SAMPLE_FRAMES=100
 OUT_DIR="${REPO_ROOT}/out/conway_life_demo"
 DEVICE="cpu"
 DTYPE="float32"
@@ -35,7 +35,8 @@ Demo options:
   --serve-seconds N    Stop automatically after N seconds (useful in CI)
   --train-iters N      Tiny demo training iterations before sampling (default: 20)
   --prompt-rows N      Validation rows used as the sampling prompt (default: 4)
-  --sample-rows N      New rows to sample and append after validation (default: 16)
+  --sample-frames N    New frames to sample and append after validation (default: 100)
+  --sample-rows N      Alias for --sample-frames
   --out-dir PATH       Training/sample output directory (default: out/conway_life_demo)
   --device DEVICE      Torch device for train/sample (default: cpu)
   --dtype DTYPE        Torch dtype for train/sample (default: float32)
@@ -46,7 +47,7 @@ Demo options:
 Any arguments after -- are passed to data/conway_life_mc_int/get_dataset.sh.
 Examples:
   $0
-  $0 --no-open --serve-seconds 5 --train-iters 2
+  $0 --no-open --serve-seconds 5 --train-iters 2 --sample-frames 12
   $0 -- --width 16 --height 16 --episodes 8 --steps 32 --seed 2026
 EOF
 }
@@ -59,7 +60,7 @@ while [[ $# -gt 0 ]]; do
     --serve-seconds) SERVE_SECONDS="$2"; shift 2 ;;
     --train-iters) TRAIN_ITERS="$2"; shift 2 ;;
     --prompt-rows) PROMPT_ROWS="$2"; shift 2 ;;
-    --sample-rows) SAMPLE_ROWS="$2"; shift 2 ;;
+    --sample-frames|--sample-rows) SAMPLE_FRAMES="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
     --device) DEVICE="$2"; shift 2 ;;
     --dtype) DTYPE="$2"; shift 2 ;;
@@ -102,6 +103,8 @@ MANIFEST_PATH="${REPO_ROOT}/data/${OUTPUT_ROOT}/manifest.json"
 PROMPT_CSV="${OUT_DIR}/validation_prompt.csv"
 VALIDATION_CSV="${OUT_DIR}/validation.csv"
 EFFECTIVE_BLOCK_SIZE="${BLOCK_SIZE}"
+PROMPT_ROWS_EFFECTIVE="${PROMPT_ROWS}"
+SAMPLE_START_FRAME=""
 SAMPLE_CONTINUATION_CSV="${OUT_DIR}/sample_continuation.csv"
 VIEWER_CSV="${OUT_DIR}/validation_plus_sample.csv"
 
@@ -144,12 +147,14 @@ if max_block_size < 1:
 effective_block_size = max(1, min(requested_block_size, max_block_size))
 print(f"validation rows: {len(validation_rows)}; prompt rows: {prompt_rows}; block_size: {effective_block_size}")
 print(f"EFFECTIVE_BLOCK_SIZE={effective_block_size}")
+print(f"PROMPT_ROWS_EFFECTIVE={prompt_rows}")
 PY
 )
-echo "${PREP_OUTPUT}" | sed '/^EFFECTIVE_BLOCK_SIZE=/d'
+echo "${PREP_OUTPUT}" | sed '/^EFFECTIVE_BLOCK_SIZE=/d' | sed '/^PROMPT_ROWS_EFFECTIVE=/d'
 EFFECTIVE_BLOCK_SIZE="$(echo "${PREP_OUTPUT}" | awk -F= '/^EFFECTIVE_BLOCK_SIZE=/{print $2}' | tail -n 1)"
-if [[ -z "${EFFECTIVE_BLOCK_SIZE}" ]]; then
-  echo "Could not determine effective block size" >&2
+PROMPT_ROWS_EFFECTIVE="$(echo "${PREP_OUTPUT}" | awk -F= '/^PROMPT_ROWS_EFFECTIVE=/{print $2}' | tail -n 1)"
+if [[ -z "${EFFECTIVE_BLOCK_SIZE}" || -z "${PROMPT_ROWS_EFFECTIVE}" ]]; then
+  echo "Could not determine effective block size or prompt row count" >&2
   exit 1
 fi
 
@@ -208,7 +213,7 @@ python3 sample.py \
   --device "${DEVICE}" \
   --dtype "${DTYPE}" \
   --num_samples 1 \
-  --max_new_tokens "${SAMPLE_ROWS}" \
+  --max_new_tokens "${SAMPLE_FRAMES}" \
   --temperature 0.8 \
   --top_k 5 \
   --no-compile \
@@ -219,7 +224,7 @@ python3 sample.py \
   --no-multicontext_csv_output_include_prompt
 
 echo "[6/7] Appending sampled rows to the validation CSV for viewing..."
-VALIDATION_CSV="${VALIDATION_CSV}" SAMPLE_CONTINUATION_CSV="${SAMPLE_CONTINUATION_CSV}" VIEWER_CSV="${VIEWER_CSV}" python3 - <<'PY'
+COMBINE_OUTPUT=$(VALIDATION_CSV="${VALIDATION_CSV}" SAMPLE_CONTINUATION_CSV="${SAMPLE_CONTINUATION_CSV}" VIEWER_CSV="${VIEWER_CSV}" python3 - <<'PY'
 import csv
 import os
 from pathlib import Path
@@ -241,8 +246,17 @@ with viewer_path.open("w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
     writer.writerows(validation_rows)
     writer.writerows(sample_rows[1:])
-print(f"wrote {viewer_path} with {len(validation_rows) - 1} validation rows + {len(sample_rows) - 1} sampled rows")
+sample_start_frame = len(validation_rows) - 1
+print(f"wrote {viewer_path} with {sample_start_frame} validation rows + {len(sample_rows) - 1} sampled rows")
+print(f"SAMPLE_START_FRAME={sample_start_frame}")
 PY
+)
+echo "${COMBINE_OUTPUT}" | sed '/^SAMPLE_START_FRAME=/d'
+SAMPLE_START_FRAME="$(echo "${COMBINE_OUTPUT}" | awk -F= '/^SAMPLE_START_FRAME=/{print $2}' | tail -n 1)"
+if [[ -z "${SAMPLE_START_FRAME}" ]]; then
+  echo "Could not determine sample start frame" >&2
+  exit 1
+fi
 
 CSV_ABS="$(python3 - <<PY
 from pathlib import Path
@@ -260,7 +274,7 @@ except ValueError as exc:
 PY
 )"
 VIEWER_PATH="/data/roomba/roomba_grayscale_viewer.html"
-VIEWER_URL="http://${HOST}:${PORT}${VIEWER_PATH}?csv=${CSV_PATH}"
+VIEWER_URL="http://${HOST}:${PORT}${VIEWER_PATH}?csv=${CSV_PATH}&prompt_rows=${PROMPT_ROWS_EFFECTIVE}&sample_start_frame=${SAMPLE_START_FRAME}"
 
 echo "[7/7] Starting local HTTP server at http://${HOST}:${PORT}/ ..."
 python3 -m http.server "${PORT}" --bind "${HOST}" --directory "${REPO_ROOT}" >/tmp/conway_life_viewer_server.log 2>&1 &
