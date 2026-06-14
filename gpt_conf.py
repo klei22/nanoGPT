@@ -102,6 +102,11 @@ class GPTConfig:
     attn_logit_softcapping: float | None = None
     final_logit_softcapping: float | None = None
 
+    # LM-head manifold options
+    lm_head_manifold: str = "euclidean"  # "euclidean" or "hyperbolic"
+    hyperbolic_curvature: float = 1.0
+    hyperbolic_logit_scale: float = 1.0
+
     # Final ln_f input mixing
     use_ln_f_input_mixer: bool = False
     ln_f_input_mixer_variant: str = "linear"
