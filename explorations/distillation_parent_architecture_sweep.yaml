@@ -1,0 +1,101 @@
+# Train distillation parent checkpoints and consume them in the same run_experiments YAML.
+# Keep --use_timestamp off so distillation_source_run_name resolves to a deterministic out_dir.
+---
+named_static_groups:
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "relu2max"
+    softmax_variant_attn: ["relu2max"]
+
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+  - named_group: "parent_hd_100_h4"
+    run_name_override: ["distill_parent_hd_100_h4"]
+    n_head: [4]
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+    # Parent runs need to write ckpt.pt for children to load.
+    never_save_checkpoint: [false]
+    always_save_checkpoint: [true]
+
+  - named_group: "parent_hd_150_h4"
+    run_name_override: ["distill_parent_hd_150_h4"]
+    n_head: [4]
+    n_qk_head_dim: [150]
+    n_v_head_dim: [150]
+    never_save_checkpoint: [false]
+    always_save_checkpoint: [true]
+
+  - named_group: "student_from_parent_hd_100_h4"
+    run_name_override: ["student_from_distill_parent_hd_100_h4"]
+    n_head: [4]
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+    distillation_source_run_name: ["distill_parent_hd_100_h4"]
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["kl_divergence"]
+    passive_distillation_loss_log: [false]
+    log_ntp_val_loss_during_distillation: [true]
+    never_save_checkpoint: [true]
+
+  - named_group: "student_from_parent_hd_150_h4"
+    run_name_override: ["student_from_distill_parent_hd_150_h4"]
+    n_head: [4]
+    n_qk_head_dim: [150]
+    n_v_head_dim: [150]
+    distillation_source_run_name: ["distill_parent_hd_150_h4"]
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["kl_divergence"]
+    passive_distillation_loss_log: [false]
+    log_ntp_val_loss_during_distillation: [true]
+    never_save_checkpoint: [true]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  # Parent groups run first and create out/distill_parent_*/ckpt.pt.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "relu2max"
+      - "infinite"
+      - "mqa"
+    named_group_alternates:
+      - "parent_hd_100_h4"
+      - "parent_hd_150_h4"
+
+  # Student groups run after parents and resolve ${DISTILLATION_SOURCE}
+  # from distillation_source_run_name to out/<parent_run_name>/ckpt.pt.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "relu2max"
+      - "infinite"
+      - "mqa"
+    named_group_alternates:
+      - "student_from_parent_hd_100_h4"
+      - "student_from_parent_hd_150_h4"

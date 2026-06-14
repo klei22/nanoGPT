@@ -121,7 +121,11 @@ def load_configurations(path: str, fmt: str) -> list[dict]:
 
 RUN_NAME_VAR = "${RUN_NAME}"
 DISTILLATION_SOURCE_VAR = "${DISTILLATION_SOURCE}"
-RESERVED_CONFIG_KEYS = {"distillation_source_path"}
+RESERVED_CONFIG_KEYS = {
+    "distillation_source_path",
+    "distillation_source_run_name",
+    "run_name_override",
+}
 
 
 def expand_range(val):
@@ -725,6 +729,8 @@ def run_experiment(
         named_param_keys=named_param_keys,
         expand_named_group_values=args.expand_named_groups_in_names,
     )
+    if combo.get("run_name_override"):
+        run_name = f"{args.prefix}{combo['run_name_override']}"
     log_file = LOG_DIR / f"{base}.yaml"
     if run_name in completed_runs(log_file):
         print(f"[yellow]Skipping already-run:[/] {run_name}")
@@ -738,11 +744,26 @@ def run_experiment(
     # Prepare tensorboard run name
     combo['tensorboard_run_name'] = run_name
 
+    distillation_source_path = combo.get("distillation_source_path")
+    distillation_source_run_name = combo.get("distillation_source_run_name")
+    if distillation_source_path is None and distillation_source_run_name is not None:
+        if args.use_timestamp:
+            raise ValueError(
+                "distillation_source_run_name cannot be resolved when --use_timestamp "
+                "is enabled; set distillation_source_path explicitly instead."
+            )
+        distillation_source_path = os.path.join(
+            args.output_dir,
+            f"{args.prefix}{distillation_source_run_name}",
+            combo.get("init_from_ckpt", "ckpt.pt"),
+        )
+        combo["distillation_source_path"] = distillation_source_path
+
     # Substitute launcher-only tokens in string parameters
     combo = _substitute_config_vars(
         combo,
         run_name,
-        distillation_source_path=combo.get("distillation_source_path"),
+        distillation_source_path=distillation_source_path,
     )
 
     # Show parameters
