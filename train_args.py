@@ -12,6 +12,18 @@ def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
 
+def positive_int(value):
+    ivalue = int(value)
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} must be an integer >= 1")
+    return ivalue
+
+def non_negative_int(value):
+    ivalue = int(value)
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError(f"{value!r} must be an integer >= 0")
+    return ivalue
+
 def parse_args():
 
     parser = argparse.ArgumentParser()
@@ -1479,6 +1491,12 @@ def parse_args():
     logging_group.add_argument('--log_all_metrics', default=False, action=argparse.BooleanOptionalAction, help='Enable logging of all metrics including gns')
     logging_group.add_argument('--log_rankme', default=True, action=argparse.BooleanOptionalAction, help='Log RankMe representation metric during validation')
     logging_group.add_argument('--log_areq', default=True, action=argparse.BooleanOptionalAction, help='Log aReQ representation metric during validation')
+    logging_group.add_argument('--log_lm_head_vocab_hist', default=False, action=argparse.BooleanOptionalAction, help='Log TensorBoard histograms of per-token lm_head vector magnitudes')
+    logging_group.add_argument('--log_lm_head_vocab_hist_interval', default=100, type=positive_int, help='Training-step interval for lm_head vocab magnitude histogram logging and HTML snapshot capture')
+    logging_group.add_argument('--export_lm_head_vocab_hist_html', default=False, action=argparse.BooleanOptionalAction, help='Export an interactive HTML report for captured lm_head vocab-vector magnitude snapshots')
+    logging_group.add_argument('--lm_head_vocab_hist_html_path', type=str, default=None, help='Optional output path for lm_head vocab histogram HTML (default: <out_dir>/lm_head_vocab_histogram.html)')
+    logging_group.add_argument('--lm_head_vocab_hist_max_snapshots', default=64, type=positive_int, help='Maximum number of lm_head histogram snapshots kept for HTML export')
+    logging_group.add_argument('--lm_head_vocab_hist_top_k', default=0, type=non_negative_int, help='If >0, store only the top-k tokens by lm_head vector magnitude per HTML snapshot')
 
     # Turn activation/weight statistics off to save CPU RAM and wall time.
     training_group.add_argument(
