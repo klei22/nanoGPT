@@ -65,3 +65,26 @@ and stochastic particle interactions in the same `p*` image format.
 next occupancy/visited/frontier grid.
 - **Synthetic sprite physics**: bouncing balls, occlusions, collision metadata,
 and RGB or grayscale `p*` channels for very small video dynamics.
+
+## One-command demo
+
+Run the full flow and open the viewer with the generated CSV preloaded:
+
+```bash
+data/conway_life_mc_int/demo.sh
+```
+
+The demo runs `get_dataset.sh`, validates the generated manifest, starts a local
+HTTP server, and opens
+`data/roomba/roomba_grayscale_viewer.html?csv=/data/conway_life_mc_int/input.csv`.
+Pass generation options after `--`, for example:
+
+```bash
+data/conway_life_mc_int/demo.sh -- --width 16 --height 16 --episodes 8 --steps 32
+```
+
+For headless checks, avoid opening a browser and stop the server automatically:
+
+```bash
+data/conway_life_mc_int/demo.sh --no-open --serve-seconds 2
+```

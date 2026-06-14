@@ -800,6 +800,24 @@
     els.playPause.textContent = 'Pause';
   }
 
+  async function loadCSVFromURL(csvURL) {
+    try {
+      els.status.textContent = `Loading CSV from ${csvURL} ...`;
+      els.pixelStatus.textContent = `Loading CSV from ${csvURL} ...`;
+      const response = await fetch(csvURL);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      }
+      loadCSV(await response.text());
+    } catch (err) {
+      stopPlayback();
+      state.rows = [];
+      state.pCols = [];
+      els.status.textContent = `Error loading ${csvURL}: ${err.message}`;
+      els.pixelStatus.textContent = `Error loading ${csvURL}: ${err.message}`;
+    }
+  }
+
   els.csvFile.addEventListener('change', async event => {
     const file = event.target.files[0];
     if (!file) return;
@@ -862,6 +880,12 @@
   els.fps.addEventListener('change', () => {
     if (state.timer) startPlayback();
   });
+
+  const params = new URLSearchParams(window.location.search);
+  const csvURL = params.get('csv');
+  if (csvURL) {
+    loadCSVFromURL(csvURL);
+  }
 
   render();
 })();
