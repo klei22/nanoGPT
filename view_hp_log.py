@@ -50,6 +50,30 @@ def fnum(val: Any, spec: str) -> str:
     return spec.format(val) if isinstance(val, (int, float)) else str(val)
 
 
+def fnum_or_dash(val: Any, spec: str) -> str:
+    return spec.format(val) if isinstance(val, (int, float)) else "-"
+
+
+def candidate_progress(candidate: Dict[str, Any]) -> str:
+    completed = candidate.get("completed_random_iterations")
+    expected = candidate.get("expected_random_iterations")
+    if isinstance(completed, int) and isinstance(expected, int):
+        return f"{completed}/{expected}"
+
+    seeds = candidate.get("seeds")
+    if isinstance(seeds, list):
+        return str(len(seeds))
+
+    return "-"
+
+
+def is_complete_candidate(candidate: Dict[str, Any]) -> bool:
+    status = candidate.get("status")
+    if status is not None and status != "complete":
+        return False
+    return isinstance(candidate.get("best_val_loss"), (int, float))
+
+
 def metrics_panel(
     current_iter_baseline_metrics: Dict[str, Any],
     prev_iter_baseline_loss: Any = "-",
@@ -203,11 +227,7 @@ class SweepViewer(App):
                 self.base_iter = it
                 self.base_metrics = it.get("baseline_metrics", self.base_metrics)
                 break
-        self.iters = [
-            it
-            for it in data.get("iterations", [])
-            if it.get("iter", 0) >= 0 and "candidates" in it
-        ]
+        self.iters = [it for it in data.get("iterations", []) if it.get("iter", 0) >= 0]
         if self.iters:
             self.idx = len(self.iters) - 1 if initial else min(self.idx, len(self.iters) - 1)
         else:
@@ -254,7 +274,19 @@ class SweepViewer(App):
         if not self.iters:
             return ["iter"], [["-1"]]
 
-        changed = sorted({it["chosen"]["param"] for it in self.iters if it.get("chosen")})
+        complete_iters = [
+            it
+            for it in self.iters
+            if is_complete_candidate(it.get("chosen") or {})
+            or (it.get("status") == "complete" and not it.get("chosen"))
+        ]
+        changed = sorted(
+            {
+                it["chosen"]["param"]
+                for it in complete_iters
+                if is_complete_candidate(it.get("chosen") or {})
+            }
+        )
         hdrs = [
             "iter",
             *changed,
@@ -320,9 +352,9 @@ class SweepViewer(App):
             ]
         )
 
-        for i, it in enumerate(self.iters):
+        for i, it in enumerate(complete_iters):
             ch = it.get("chosen") or {}
-            after = it["baseline_config_after"]
+            after = it.get("baseline_config_after", {})
 
             vals: List[Any] = []
             for p in changed:
@@ -332,24 +364,26 @@ class SweepViewer(App):
                 else:
                     vals.append(str(val))
 
-            if ch:
+            if is_complete_candidate(ch):
                 vals += [
-                    f"{ch['best_val_loss']:.4f}",
+                    fnum_or_dash(ch.get("best_val_loss"), "{:.4f}"),
                     str(ch.get("best_iter", "-")),
                     fnum(ch.get("avg_rankme", "-"), "{:.4f}"),
                     fnum(ch.get("delta_rankme", "-"), "{:+.4f}"),
                     fnum(ch.get("avg_areq", "-"), "{:.4f}"),
                     fnum(ch.get("delta_areq", "-"), "{:+.4f}"),
-                    f"{int(ch['num_params']):,}",
-                    f"{ch.get('peak_torch_allocated_mb', ch.get('peak_gpu_mb', float('nan'))):.1f}",
-                    f"{ch.get('peak_torch_reserved_mb', float('nan')):.1f}",
-                    f"{ch.get('peak_process_gpu_mb', float('nan')):.1f}",
-                    f"{int(ch['delta_params']):,}",
-                    f"{ch.get('delta_torch_allocated_mb', float('nan')):.1f}",
-                    f"{ch.get('delta_torch_reserved_mb', float('nan')):.1f}",
-                    f"{ch.get('delta_process_gpu_mb', float('nan')):.1f}",
-                    f"{ch.get('delta_iter_latency', float('nan')):.2f}",
-                    f"{ch['efficiency']:.2e}",
+                    fnum(ch.get("num_params", "-"), "{:,}"),
+                    fnum_or_dash(
+                        ch.get("peak_torch_allocated_mb", ch.get("peak_gpu_mb")), "{:.1f}"
+                    ),
+                    fnum_or_dash(ch.get("peak_torch_reserved_mb"), "{:.1f}"),
+                    fnum_or_dash(ch.get("peak_process_gpu_mb"), "{:.1f}"),
+                    fnum(ch.get("delta_params", "-"), "{:,}"),
+                    fnum_or_dash(ch.get("delta_torch_allocated_mb"), "{:.1f}"),
+                    fnum_or_dash(ch.get("delta_torch_reserved_mb"), "{:.1f}"),
+                    fnum_or_dash(ch.get("delta_process_gpu_mb"), "{:.1f}"),
+                    fnum_or_dash(ch.get("delta_iter_latency"), "{:.2f}"),
+                    fnum_or_dash(ch.get("efficiency"), "{:.2e}"),
                 ]
             else:
                 baseline_metrics = it.get("baseline_metrics", {})
@@ -402,7 +436,7 @@ class SweepViewer(App):
             return
 
         blk = self.iters[self.idx]
-        current_baseline_metrics = blk["baseline_metrics"]
+        current_baseline_metrics = blk.get("baseline_metrics", {})
 
         prior_loss_val = "-"
         prior_rankme_val = "-"
@@ -415,7 +449,7 @@ class SweepViewer(App):
                 prior_rankme_val = self.base_metrics.get("rankme", "-")
                 prior_areq_val = self.base_metrics.get("areq", "-")
         elif self.idx > 0:
-            prev_iter_baseline_metrics = self.iters[self.idx - 1]["baseline_metrics"]
+            prev_iter_baseline_metrics = self.iters[self.idx - 1].get("baseline_metrics", {})
             prior_loss_val = prev_iter_baseline_metrics.get(
                 "loss", prev_iter_baseline_metrics.get("best_val_loss", "-")
             )
@@ -458,6 +492,8 @@ class SweepViewer(App):
         table.add_columns(
             "param",
             "value",
+            "status",
+            "progress",
             "best_loss",
             "best_iter",
             "rankme",
@@ -477,32 +513,34 @@ class SweepViewer(App):
         )
 
         chosen = blk.get("chosen") or {}
-        for c in blk["candidates"]:
+        for c in blk.get("candidates", []):
             hl = (
                 bool(chosen)
-                and c["param"] == chosen.get("param")
-                and c["value"] == chosen.get("value")
+                and c.get("param") == chosen.get("param")
+                and c.get("value") == chosen.get("value")
             )
             st = "bold yellow" if hl else ""
             table.add_row(
-                Text(str(c["param"]), style=st),
-                Text(str(c["value"]), style=st),
-                f"{c['best_val_loss']:.4f}",
+                Text(str(c.get("param", "-")), style=st),
+                Text(str(c.get("value", "-")), style=st),
+                Text(str(c.get("status", "-")), style=st),
+                Text(candidate_progress(c), style=st),
+                fnum_or_dash(c.get("best_val_loss"), "{:.4f}"),
                 str(c.get("best_iter", "-")),
                 fnum(c.get("avg_rankme", "-"), "{:.4f}"),
                 fnum(c.get("delta_rankme", "-"), "{:+.4f}"),
                 fnum(c.get("avg_areq", "-"), "{:.4f}"),
                 fnum(c.get("delta_areq", "-"), "{:+.4f}"),
-                f"{c.get('peak_torch_allocated_mb', c.get('peak_gpu_mb', float('nan'))):.1f}",
-                f"{c.get('peak_torch_reserved_mb', float('nan')):.1f}",
-                f"{c.get('peak_process_gpu_mb', float('nan')):.1f}",
-                f"{c['delta_score']:.2e}",
-                f"{c['delta_params']:.2e}",
-                f"{c.get('delta_torch_allocated_mb', float('nan')):.1f}",
-                f"{c.get('delta_torch_reserved_mb', float('nan')):.1f}",
-                f"{c.get('delta_process_gpu_mb', float('nan')):.1f}",
-                f"{c.get('delta_iter_latency', float('nan')):.2f}",
-                f"{c['efficiency']:.2e}",
+                fnum_or_dash(c.get("peak_torch_allocated_mb", c.get("peak_gpu_mb")), "{:.1f}"),
+                fnum_or_dash(c.get("peak_torch_reserved_mb"), "{:.1f}"),
+                fnum_or_dash(c.get("peak_process_gpu_mb"), "{:.1f}"),
+                fnum_or_dash(c.get("delta_score"), "{:.2e}"),
+                fnum_or_dash(c.get("delta_params"), "{:.2e}"),
+                fnum_or_dash(c.get("delta_torch_allocated_mb"), "{:.1f}"),
+                fnum_or_dash(c.get("delta_torch_reserved_mb"), "{:.1f}"),
+                fnum_or_dash(c.get("delta_process_gpu_mb"), "{:.1f}"),
+                fnum_or_dash(c.get("delta_iter_latency"), "{:.2f}"),
+                fnum_or_dash(c.get("efficiency"), "{:.2e}"),
             )
 
 
