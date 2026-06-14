@@ -57,14 +57,7 @@ from sample import (
     get_tokenizer_functions,
 )
 
-from rich.progress import (
-        Progress,
-        TextColumn,
-        BarColumn,
-        TimeRemainingColumn,
-        TaskProgressColumn,
-)
-
+from utils.progress_bar import build_progress_fields, build_training_progress
 
 # GNS Related
 import utils.gns_monitoring.gns_utils as gns_utils
@@ -2053,52 +2046,13 @@ class Trainer:
         cli_text = Text(f"CLI: {cli_settings}", style="chartreuse1")
         self.console = Console()
         # Create progress bar with ETA and remaining time display
-        progress = Progress(
-                TextColumn("[bold white]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(compact=False),
-                TextColumn("-- [bold dark_cyan]BestIter:[/bold dark_cyan]{task.fields[best_iter]} [bold dark_cyan]BestValLoss:[/bold dark_cyan]{task.fields[best_val_loss]} [bold dark_cyan]BestTokens:[/bold dark_cyan]{task.fields[best_tokens]}"),
-                TextColumn("-- [bold purple3]ETA:[/bold purple3]{task.fields[eta]}"),
-                TextColumn("[bold purple3]Remaining:[/bold purple3]{task.fields[hour]}h{task.fields[min]}m"),
-                TextColumn("[bold purple3]total_est:[/bold purple3]{task.fields[total_hour]}h{task.fields[total_min]}m"),
-                TextColumn("-- [bold dark_magenta]iter_latency:[/bold dark_magenta]{task.fields[iter_latency]}ms"),
-                TextColumn("[bold dark_magenta]peak_gpu_mb:[/bold dark_magenta]{task.fields[peak_gpu_mb]}MB"),
-                TextColumn("-- [bold dark_cyan]T1P:[/bold dark_cyan]{task.fields[t1p]}"),
-                TextColumn("[bold dark_cyan]T1C:[/bold dark_cyan]{task.fields[t1c]}"),
-                TextColumn("-- [bold dark_magenta]TR:[/bold dark_magenta]{task.fields[tr]}"),
-                TextColumn("[bold dark_magenta]TP:[/bold dark_magenta]{task.fields[tp]}"),
-                TextColumn("[bold dark_magenta]TLP:[/bold dark_magenta]{task.fields[tlp]}"),
-                TextColumn("[bold dark_magenta]R95:[/bold dark_magenta]{task.fields[r95]}"),
-                TextColumn("[bold dark_magenta]P95:[/bold dark_magenta]{task.fields[p95]}"),
-                TextColumn("-- [bold dark_cyan]LnFcos:[/bold dark_cyan]{task.fields[lnf_cos]}"),
-                TextColumn("[bold dark_cyan]LnFcos95:[/bold dark_cyan]{task.fields[lnf_cos95]}") ,
-                console=self.console
-                )
+        progress = build_training_progress(self.console)
 
         with Live(Group(progress.get_renderable(), cli_text), console=self.console, refresh_per_second=10) as live:
             task_id = progress.add_task(
                     "[green]Training...",
                     total=((self.args.max_iters - self.iter_num) + self.evaluations_remaining * self.args.eval_iters),
-                    eta=self.formatted_completion_eta,
-                    total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
-                    total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
-                    hour=f"{int((self.time_remaining_ms // (1000*3600)) % 24):02d}",
-                    min=f"{int((self.time_remaining_ms // 60000) % 60):02d}",
-                    best_val_loss=f"{self.best_val_loss:.3f}",
-                    best_iter=f"{self.best_iter}",
-                    best_tokens=f"{self.best_tokens}",
-                    iter_latency=f"{self.iter_latency_avg:.1f}",
-                    peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
-                    t1p=f"{self.latest_top1_prob:.6f}",
-                    t1c=f"{self.latest_top1_correct:.6f}",
-                    tr=f"{self.latest_target_rank:.2f}",
-                    tp=f"{self.latest_target_prob:.6f}",
-                    tlp=f"{self.latest_target_left_prob:.6f}",
-                    r95=f"{self.latest_rank_95:.2f}",
-                    p95=f"{self.latest_left_prob_95:.6f}",
-                    lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
-                    lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
+                    **build_progress_fields(self),
                     )
 
             if self.zeus_enabled:
@@ -2294,25 +2248,7 @@ class Trainer:
                 progress.update(
                         task_id,
                         advance=progress_advance,
-                        eta=self.formatted_completion_eta,
-                        total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
-                        total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
-                        hour=f"{int((self.time_remaining_ms // 3_600_000) % 24):02d}",
-                        min=f"{int((self.time_remaining_ms // 60_000) % 60):02d}",
-                        best_val_loss=f"{self.best_val_loss:.3f}",
-                        best_iter=f"{self.best_iter}",
-                        best_tokens=f"{self.best_tokens}",
-                        iter_latency=f"{self.iter_latency_avg:.1f}",
-                        peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
-                        t1p=f"{self.latest_top1_prob:.6f}",
-                        t1c=f"{self.latest_top1_correct:.6f}",
-                        tr=f"{self.latest_target_rank:.2f}",
-                        tp=f"{self.latest_target_prob:.6f}",
-                        tlp=f"{self.latest_target_left_prob:.6f}",
-                        r95=f"{self.latest_rank_95:.2f}",
-                        p95=f"{self.latest_left_prob_95:.6f}",
-                        lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
-                        lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
+                        **build_progress_fields(self),
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
