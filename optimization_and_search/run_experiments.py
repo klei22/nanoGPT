@@ -120,6 +120,8 @@ def load_configurations(path: str, fmt: str) -> list[dict]:
 
 
 RUN_NAME_VAR = "${RUN_NAME}"
+DISTILLATION_SOURCE_VAR = "${DISTILLATION_SOURCE}"
+RESERVED_CONFIG_KEYS = {"distillation_source_path"}
 
 
 def expand_range(val):
@@ -135,14 +137,21 @@ def expand_range(val):
     return val
 
 
-def _substitute_run_name(obj, run_name: str):
-    """Recursively substitute the run name placeholder inside ``obj``."""
+def _substitute_config_vars(obj, run_name: str, distillation_source_path: str | None = None):
+    """Recursively substitute launcher-only placeholders inside ``obj``."""
     if isinstance(obj, str):
-        return obj.replace(RUN_NAME_VAR, run_name)
+        substituted = obj.replace(RUN_NAME_VAR, run_name)
+        if DISTILLATION_SOURCE_VAR in substituted:
+            if distillation_source_path is None:
+                raise ValueError(
+                    f"{DISTILLATION_SOURCE_VAR} was used but distillation_source_path was not set."
+                )
+            substituted = substituted.replace(DISTILLATION_SOURCE_VAR, distillation_source_path)
+        return substituted
     if isinstance(obj, list):
-        return [_substitute_run_name(o, run_name) for o in obj]
+        return [_substitute_config_vars(o, run_name, distillation_source_path) for o in obj]
     if isinstance(obj, dict):
-        return {k: _substitute_run_name(v, run_name) for k, v in obj.items()}
+        return {k: _substitute_config_vars(v, run_name, distillation_source_path) for k, v in obj.items()}
     return obj
 
 
@@ -538,9 +547,9 @@ def format_run_name(
     for k, v in combo.items():
         if k in exclude_keys:
             continue
-        if k.startswith('_'):
+        if k.startswith('_') or k in RESERVED_CONFIG_KEYS:
             continue
-        if isinstance(v, str) and RUN_NAME_VAR in v:
+        if isinstance(v, str) and (RUN_NAME_VAR in v or DISTILLATION_SOURCE_VAR in v):
             continue
         parts.append(str(v))
 
@@ -680,7 +689,7 @@ def build_command(combo: dict) -> list[str]:
     """
     cmd = ['python3', 'train.py']
     for k, v in combo.items():
-        if k.startswith('_'):
+        if k.startswith('_') or k in RESERVED_CONFIG_KEYS:
             continue
         if isinstance(v, bool):
             cmd.append(f"--{'' if v else 'no-'}{k}")
@@ -729,14 +738,18 @@ def run_experiment(
     # Prepare tensorboard run name
     combo['tensorboard_run_name'] = run_name
 
-    # Substitute special run-name token in string parameters
-    combo = _substitute_run_name(combo, run_name)
+    # Substitute launcher-only tokens in string parameters
+    combo = _substitute_config_vars(
+        combo,
+        run_name,
+        distillation_source_path=combo.get("distillation_source_path"),
+    )
 
     # Show parameters
     console = Console()
     table = Table("Parameters", show_header=False)
     for k, v in combo.items():
-        if k.startswith('_'):
+        if k.startswith('_') or k in RESERVED_CONFIG_KEYS:
             continue
         table.add_row(k, str(v))
     console.print(table)

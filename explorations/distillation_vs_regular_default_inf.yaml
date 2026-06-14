@@ -1,5 +1,5 @@
 # Compare default_inf-style regular training against knowledge distillation.
-# Replace DISTILLATION_TEACHER_CKPT with the teacher checkpoint path before running.
+# Set distillation_source_path to the teacher checkpoint path before running.
 ---
 named_static_groups:
   # QK Norm
@@ -42,7 +42,7 @@ named_static_groups:
     log_ntp_val_loss_during_distillation: [true]
 
   - named_group: "distillation_training"
-    distillation_teacher_ckpt: ["DISTILLATION_TEACHER_CKPT"]
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
     distillation_loss: ["kl_divergence"]
     distillation_weight: [1.0]
     distillation_temperature: [1.0]
@@ -50,12 +50,15 @@ named_static_groups:
     log_ntp_val_loss_during_distillation: [true]
 
   - named_group: "passive_distillation_logging"
-    distillation_teacher_ckpt: ["DISTILLATION_TEACHER_CKPT"]
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
     distillation_loss: ["kl_divergence"]
     passive_distillation_loss_log: [true]
     log_ntp_val_loss_during_distillation: [true]
 
 common_group:
+  # Launcher-only path variable used by distillation_teacher_ckpt values below.
+  # This key is recorded in exploration_logs but is not passed to train.py.
+  distillation_source_path: ["out/teacher/ckpt.pt"]
   dataset: ["minipile"]
   eval_interval: [2500]
   max_iters: [10000]
