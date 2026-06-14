@@ -948,6 +948,20 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
+    def generate_multicontext_step(self, token_dict, target_dict=None, iter_num=None):
+        """Run one multicontext decode step and return per-context logits.
+
+        This intentionally small wrapper exists so sampling can compile the
+        decode step without compiling every prefill/forward shape observed while
+        prompts grow. ``token_dict`` should contain the current per-context
+        conditioning tensors; callers that maintain a KV cache can pass only the
+        latest token, while callers without one can pass the cropped context.
+        """
+        if not self.config.multicontext:
+            raise ValueError("generate_multicontext_step requires a multicontext model")
+        return self(idx=None, token_dict=token_dict, target_dict=target_dict, iter_num=iter_num)
+
+    @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
