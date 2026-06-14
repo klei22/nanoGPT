@@ -68,15 +68,18 @@ and RGB or grayscale `p*` channels for very small video dynamics.
 
 ## One-command demo
 
-Run the full flow and open the viewer with the generated CSV preloaded:
+Run the full flow and open the viewer with the generated CSV preloaded. The
+training/sampling steps use `train.py` and `sample.py`, so install the repo's
+Python dependencies first, for example `pip install -r requirements_cpu.txt`.
 
 ```bash
 data/conway_life_mc_int/demo.sh
 ```
 
-The demo runs `get_dataset.sh`, validates the generated manifest, starts a local
-HTTP server, and opens
-`data/roomba/roomba_grayscale_viewer.html?csv=/data/conway_life_mc_int/input.csv`.
+The demo runs `get_dataset.sh`, validates the generated manifest, trains a tiny
+multicontext model, uses the first rows of the validation split as the sampling
+prompt, appends the sampled rows to the validation CSV, starts a local HTTP
+server, and opens the viewer with that validation+sample CSV preloaded.
 Pass generation options after `--`, for example:
 
 ```bash
@@ -86,5 +89,5 @@ data/conway_life_mc_int/demo.sh -- --width 16 --height 16 --episodes 8 --steps 3
 For headless checks, avoid opening a browser and stop the server automatically:
 
 ```bash
-data/conway_life_mc_int/demo.sh --no-open --serve-seconds 2
+data/conway_life_mc_int/demo.sh --no-open --serve-seconds 2 --train-iters 2 --sample-rows 4
 ```
