@@ -3,7 +3,9 @@
 head_special_matrix_probe.py
 
 Only generates per-layer/per-head heatmaps for whether W_O^h W_V^h
-resembles identity, inverse/rotation-like, projection-like, etc.
+resembles identity, inverse/rotation-like, projection-like, etc. It also tests
+whether the equivalent head-space value/output map W_V^h W_O^h resembles
+specified block-diagonal 2D rotations.
 
 Examples:
 
@@ -16,6 +18,12 @@ Examples:
     --device cuda \
     --dtype bfloat16 \
     --trust-remote-code
+
+  python head_special_matrix_probe.py \
+    --preset qwen-0.5b \
+    --rotation-min-deg 5 \
+    --rotation-max-deg 45 \
+    --rotation-step-deg 5
 """
 
 import argparse
@@ -27,6 +35,9 @@ import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 from transformers import AutoModelForCausalLM
+
+from model import GPT
+from gpt_conf import GPTConfig
 
 
 def parse_args():
@@ -43,9 +54,23 @@ def parse_args():
                    choices=["float16", "bfloat16", "float32"])
     p.add_argument("--outdir", default="./head_special_matrix_out")
     p.add_argument("--trust-remote-code", action="store_true")
+    p.add_argument("--ckpt", default=None, help="Optional local nanoGPT checkpoint path to probe instead of a HuggingFace model.")
     p.add_argument("--max-layers", type=int, default=None)
     p.add_argument("--show", action="store_true")
     p.add_argument("--dpi", type=int, default=200)
+    p.add_argument(
+        "--rotation-degrees",
+        type=float,
+        nargs="*",
+        default=None,
+        help=(
+            "Explicit head-space rotation angles in degrees to test. "
+            "Overrides --rotation-min-deg/--rotation-max-deg/--rotation-step-deg."
+        ),
+    )
+    p.add_argument("--rotation-min-deg", type=float, default=10.0)
+    p.add_argument("--rotation-max-deg", type=float, default=35.0)
+    p.add_argument("--rotation-step-deg", type=float, default=5.0)
 
     return p.parse_args()
 
@@ -67,6 +92,57 @@ def get_dtype(name):
     if name == "bfloat16":
         return torch.bfloat16
     return torch.float32
+
+
+def format_degree_label(deg):
+    return f"{deg:g}".replace("-", "neg_").replace(".", "p")
+
+
+def get_rotation_degrees(args):
+    if args.rotation_degrees is not None:
+        degrees = args.rotation_degrees
+    else:
+        if args.rotation_step_deg <= 0:
+            raise ValueError("--rotation-step-deg must be positive.")
+        if args.rotation_min_deg > args.rotation_max_deg:
+            raise ValueError("--rotation-min-deg must be <= --rotation-max-deg.")
+
+        degrees = []
+        current = args.rotation_min_deg
+        # Include the max endpoint despite small floating-point accumulation error.
+        while current <= args.rotation_max_deg + (args.rotation_step_deg * 1e-9):
+            degrees.append(current)
+            current += args.rotation_step_deg
+
+    # Preserve order while removing duplicates from equivalent display labels.
+    seen = set()
+    unique = []
+    for degree in degrees:
+        label = format_degree_label(degree)
+        if label not in seen:
+            seen.add(label)
+            unique.append(float(degree))
+    return unique
+
+
+def rotation_matrix_2d_blocks(dim, degrees, device):
+    """Return a block-diagonal 2D rotation target for head-space matrices.
+
+    Each adjacent coordinate pair gets the same 2D rotation. If dim is odd, the
+    final unpaired coordinate is left as identity. This gives a concrete
+    same-dimensional target for V_hO_h that can detect whether the equivalent
+    value/output map acts like a specified rotation inside the head subspace.
+    """
+    theta = torch.tensor(np.deg2rad(degrees), dtype=torch.float32, device=device)
+    c = torch.cos(theta)
+    s = torch.sin(theta)
+    R = torch.eye(dim, dtype=torch.float32, device=device)
+    for i in range(0, dim - 1, 2):
+        R[i, i] = c
+        R[i, i + 1] = -s
+        R[i + 1, i] = s
+        R[i + 1, i + 1] = c
+    return R
 
 
 def save_heatmap(arr, title, xlabel, ylabel, cbar, path, dpi=200, show=False):
@@ -101,6 +177,73 @@ def frob(A, B):
     return torch.linalg.norm(A - B).item()
 
 
+def load_hf_model(args, dtype):
+    print(f"Loading model: {args.model}")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        torch_dtype=dtype,
+        device_map=None,
+        trust_remote_code=args.trust_remote_code,
+    ).to(args.device)
+    model.eval()
+
+    cfg = model.config
+    hidden = cfg.hidden_size
+    config_heads = getattr(cfg, "num_attention_heads", None)
+    config_kv_heads = getattr(cfg, "num_key_value_heads", None)
+    layers = model.model.layers
+    return model, layers, hidden, config_heads, config_kv_heads, "hf"
+
+
+def load_nanogpt_checkpoint(args):
+    print(f"Loading nanoGPT checkpoint: {args.ckpt}")
+    checkpoint = torch.load(args.ckpt, map_location=args.device)
+    model_args = checkpoint["model_args"]
+    config = GPTConfig(**model_args)
+    model = GPT(config)
+
+    state_dict = checkpoint["model"]
+    for key in list(state_dict.keys()):
+        if key.startswith("_orig_mod."):
+            state_dict[key[len("_orig_mod."):]] = state_dict.pop(key)
+    model.load_state_dict(state_dict)
+    model.to(args.device)
+    model.eval()
+
+    hidden = config.n_embd
+    config_heads = config.n_head
+    config_kv_heads = config.n_kv_group if config.n_kv_group is not None else config.n_head
+    layers = model.transformer.h
+    return model, layers, hidden, config_heads, config_kv_heads, "nanogpt"
+
+
+def get_attention_weights(block, model_kind):
+    if model_kind == "hf":
+        attn = block.self_attn
+        return (
+            attn.q_proj.weight.detach().float(),
+            attn.k_proj.weight.detach().float(),
+            attn.v_proj.weight.detach().float(),
+            attn.o_proj.weight.detach().float(),
+        )
+
+    attn = block.attn
+    if not all(hasattr(attn, name) for name in ("c_attn_q", "c_attn_k", "c_attn_v", "c_proj")):
+        raise ValueError(
+            "Local checkpoint attention module must expose c_attn_q, c_attn_k, "
+            "c_attn_v, and c_proj weights for this probe."
+        )
+    if hasattr(attn, "c_proj_list"):
+        raise ValueError("c_proj_list attention variants are not supported by this probe yet.")
+
+    return (
+        attn.c_attn_q.weight.detach().float(),
+        attn.c_attn_k.weight.detach().float(),
+        attn.c_attn_v.weight.detach().float(),
+        attn.c_proj.weight.detach().float(),
+    )
+
+
 def infer_head_shapes(Wq, Wk, Wv, Wo, hidden, config_heads=None):
     if config_heads is not None and Wq.shape[0] % config_heads == 0:
         head_dim = Wq.shape[0] // config_heads
@@ -125,27 +268,18 @@ def main():
         print("CUDA not available; falling back to CPU.")
         args.device = "cpu"
 
-    print(f"Loading model: {args.model}")
+    rotation_degrees = get_rotation_degrees(args)
+    print("rotation degree targets:", rotation_degrees)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=dtype,
-        device_map=None,
-        trust_remote_code=args.trust_remote_code,
-    ).to(args.device)
-
-    model.eval()
-
-    cfg = model.config
-    hidden = cfg.hidden_size
-    config_heads = getattr(cfg, "num_attention_heads", None)
-    config_kv_heads = getattr(cfg, "num_key_value_heads", None)
+    if args.ckpt:
+        model, layers, hidden, config_heads, config_kv_heads, model_kind = load_nanogpt_checkpoint(args)
+    else:
+        model, layers, hidden, config_heads, config_kv_heads, model_kind = load_hf_model(args, dtype)
 
     print("hidden:", hidden)
     print("config num_attention_heads:", config_heads)
     print("config num_key_value_heads:", config_kv_heads)
 
-    layers = model.model.layers
     if args.max_layers is not None:
         layers = layers[:args.max_layers]
 
@@ -176,17 +310,24 @@ def main():
         "cos_headspace_VO_I",
     ]
 
+    rotation_metric_names = []
+    rotation_metric_degrees = []
+    for degree in rotation_degrees:
+        label = format_degree_label(degree)
+        rotation_metric_names.extend([
+            f"rel_frob_headspace_VO_rotation_{label}deg",
+            f"cos_headspace_VO_rotation_{label}deg",
+        ])
+        rotation_metric_degrees.append((degree, label))
+
+    metric_names.extend(rotation_metric_names)
+
     scores = {m: [] for m in metric_names}
     rows = []
 
     with torch.no_grad():
         for layer_idx, block in enumerate(layers):
-            attn = block.self_attn
-
-            Wq = attn.q_proj.weight.detach().float()
-            Wk = attn.k_proj.weight.detach().float()
-            Wv = attn.v_proj.weight.detach().float()
-            Wo = attn.o_proj.weight.detach().float()
+            Wq, Wk, Wv, Wo = get_attention_weights(block, model_kind)
 
             head_dim, q_heads, k_heads, v_heads, o_heads = infer_head_shapes(
                 Wq, Wk, Wv, Wo, hidden, config_heads
@@ -212,6 +353,10 @@ def main():
             I_hidden = torch.eye(hidden, dtype=torch.float32, device=Wv.device)
             neg_I_hidden = -I_hidden
             I_head = torch.eye(head_dim, dtype=torch.float32, device=Wv.device)
+            rotation_targets = {
+                label: rotation_matrix_2d_blocks(head_dim, degree, Wv.device)
+                for degree, label in rotation_metric_degrees
+            }
 
             layer_metric_scores = {m: [] for m in metric_names}
 
@@ -258,6 +403,11 @@ def main():
 
                 values["rel_frob_headspace_VO_I"] = rel_frob(VO, I_head)
                 values["cos_headspace_VO_I"] = cosine_to(VO, I_head)
+
+                for degree, label in rotation_metric_degrees:
+                    R_head = rotation_targets[label]
+                    values[f"rel_frob_headspace_VO_rotation_{label}deg"] = rel_frob(VO, R_head)
+                    values[f"cos_headspace_VO_rotation_{label}deg"] = cosine_to(VO, R_head)
 
                 for m in metric_names:
                     layer_metric_scores[m].append(values[m])
@@ -326,6 +476,16 @@ def main():
         "rel_frob_headspace_VO_I": "V_hO_h relative distance to head identity, lower = more inverse-like in head space",
         "cos_headspace_VO_I": "V_hO_h cosine to head identity, higher = more inverse-like in head space",
     }
+
+    for degree, label in rotation_metric_degrees:
+        descriptions[f"rel_frob_headspace_VO_rotation_{label}deg"] = (
+            f"V_hO_h relative distance to a {degree:g}° block-diagonal head-space rotation, "
+            "lower = more like that equivalent Wv/Wo rotation"
+        )
+        descriptions[f"cos_headspace_VO_rotation_{label}deg"] = (
+            f"V_hO_h cosine to a {degree:g}° block-diagonal head-space rotation, "
+            "higher = more like that equivalent Wv/Wo rotation"
+        )
 
     for m in metric_names:
         arr = np.array(scores[m], dtype=float)
