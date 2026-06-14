@@ -167,8 +167,8 @@ def parse_args():
     )
     p.add_argument("--analysis_layers", default="all", help="Layer selection for analysis: 'all' or comma-separated 1-based layer ids")
     p.add_argument("--analysis_heads", default="all", help="Head selection for attention analysis: 'all' or comma-separated 1-based head ids")
-    p.add_argument("--plot_residual_magnitude", action=argparse.BooleanOptionalAction, default=False,
-                   help="Plot residual magnitude trace across model stages")
+    p.add_argument("--plot_residual_magnitude", action=argparse.BooleanOptionalAction, default=True,
+                   help="Export and plot average residual radius across model stages")
     p.add_argument("--residual_magnitude_file", default="residual_magnitude.html",
                    help="Output HTML file for residual magnitude traces")
     p.add_argument(
@@ -237,6 +237,7 @@ def main():
     heatmap_inputs = None
     attn_head_traces = None
     residual_mag_traces = []
+    residual_radius_samples = {}
 
     def parse_selection(spec: str, max_count: int):
         if spec == "all":
@@ -330,29 +331,43 @@ def main():
                     return hook
                 handles.append(blk.attn.register_forward_hook(make_attn_head_hook(li)))
         if args.plot_residual_magnitude:
-            residual_points = {"after_wte": None, "after_norm_wte": None, "after_attn": {}, "after_mlp": {}, "after_ln_f": None}
+            residual_points = {"after_wte": None, "after_embedding": None, "after_attn": {}, "after_mlp": {}, "after_ln_f": None}
+            patched_combiners = []
+
+            def record_radius(stage_name: str, tensor: torch.Tensor):
+                radii = tensor.detach().float().norm(dim=-1).reshape(-1).cpu().numpy()
+                residual_radius_samples.setdefault(stage_name, []).append(radii)
+
             def wte_hook(module, inp, out):
-                residual_points["after_wte"] = out[0, -1, :].detach().float()
+                residual_points["after_wte"] = out.detach().float()
+                record_radius("after_wte", out)
             handles.append(model.transformer.wte.register_forward_hook(wte_hook))
-            if hasattr(model.transformer, "post_embedding_norm"):
-                def norm_wte_hook(module, inp, out):
-                    residual_points["after_norm_wte"] = out[0, -1, :].detach().float()
-                handles.append(model.transformer.post_embedding_norm.register_forward_hook(norm_wte_hook))
+
+            def embedding_hook(module, inp, out):
+                residual_points["after_embedding"] = out.detach().float()
+                record_radius("after_embedding", out)
+            handles.append(model.transformer.drop.register_forward_hook(embedding_hook))
+
             for li, blk in enumerate(model.transformer.h):
                 if li not in selected_layers:
                     continue
-                def make_attn_mag_hook(layer_idx):
-                    def hook(module, inp, out):
-                        residual_points["after_attn"][layer_idx] = out[0, -1, :].detach().float()
-                    return hook
-                def make_mlp_mag_hook(layer_idx):
-                    def hook(module, inp, out):
-                        residual_points["after_mlp"][layer_idx] = out[0, -1, :].detach().float()
-                    return hook
-                handles.append(blk.attn.register_forward_hook(make_attn_mag_hook(li)))
-                handles.append(blk.mlp.register_forward_hook(make_mlp_mag_hook(li)))
+                original_combine = blk._combine_resid
+
+                def make_recording_combine(layer_idx, combine_fn):
+                    def recording_combine(kind, x, out):
+                        combined = combine_fn(kind, x, out)
+                        if kind in ("attn", "mlp"):
+                            residual_points[f"after_{kind}"][layer_idx] = combined.detach().float()
+                            record_radius(f"after_{kind}_l{layer_idx + 1}", combined)
+                        return combined
+                    return recording_combine
+
+                blk._combine_resid = make_recording_combine(li, original_combine)
+                patched_combiners.append((blk, original_combine))
+
             def lnf_hook(module, inp, out):
-                residual_points["after_ln_f"] = out[0, -1, :].detach().float()
+                residual_points["after_ln_f"] = out.detach().float()
+                record_radius("after_ln_f", out)
             handles.append(model.transformer.ln_f.register_forward_hook(lnf_hook))
         if args.display != "token" and args.activation_view != "none":
             def t0_hook(module, inp, out):
@@ -390,21 +405,23 @@ def main():
         for h in handles:
             h.remove()
         if args.plot_residual_magnitude:
-            stage_names = ["after_wte", "after_norm_wte"]
+            for blk, original_combine in patched_combiners:
+                blk._combine_resid = original_combine
+            stage_names = ["after_wte", "after_embedding"]
             mags = []
             for st in stage_names:
                 v = residual_points[st]
-                mags.append(float(v.norm().item()) if v is not None else np.nan)
+                mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
             for li in selected_layers:
                 stage_names.append(f"after_attn_l{li+1}")
                 v = residual_points["after_attn"].get(li)
-                mags.append(float(v.norm().item()) if v is not None else np.nan)
+                mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
                 stage_names.append(f"after_mlp_l{li+1}")
                 v = residual_points["after_mlp"].get(li)
-                mags.append(float(v.norm().item()) if v is not None else np.nan)
+                mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
             stage_names.append("after_ln_f")
             v = residual_points["after_ln_f"]
-            mags.append(float(v.norm().item()) if v is not None else np.nan)
+            mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
             residual_mag_traces.append((stage_names, mags))
 
         if args.activation_view != "none" and "resid" in args.components and activations["t0"] is not None:
@@ -694,14 +711,66 @@ def main():
     if args.plot_residual_magnitude and residual_mag_traces:
         from plotly.subplots import make_subplots
         import plotly.graph_objects as go
-        fig = make_subplots(rows=1, cols=1)
+
         stage_names = residual_mag_traces[0][0]
         arr = np.array([m for _, m in residual_mag_traces], dtype=np.float32)
-        fig.add_trace(go.Heatmap(z=arr.T, x=list(range(arr.shape[0])), y=stage_names, coloraxis="coloraxis"))
-        fig.update_layout(height=max(320, 22 * len(stage_names)), coloraxis={"colorscale": "Viridis"})
+        means = []
+        stds = []
+        counts = []
+        for stage in stage_names:
+            samples = residual_radius_samples.get(stage, [])
+            if samples:
+                vals = np.concatenate(samples, axis=0).astype(np.float32)
+                means.append(float(vals.mean()))
+                stds.append(float(vals.std(ddof=0)))
+                counts.append(int(vals.size))
+            else:
+                means.append(np.nan)
+                stds.append(np.nan)
+                counts.append(0)
+
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=False,
+            subplot_titles=[
+                "average residual radius by stage (std bars)",
+                "per-window final-token residual radius trace",
+            ],
+            vertical_spacing=0.12,
+        )
+        fig.add_trace(
+            go.Bar(
+                x=stage_names,
+                y=means,
+                error_y={"type": "data", "array": stds, "visible": True},
+                name="mean ± std",
+                customdata=np.array(counts),
+                hovertemplate="%{x}<br>mean=%{y:.6f}<br>std=%{error_y.array:.6f}<br>n=%{customdata}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Heatmap(z=arr.T, x=list(range(arr.shape[0])), y=stage_names, coloraxis="coloraxis", name="trace"),
+            row=2,
+            col=1,
+        )
+        fig.update_yaxes(title_text="radius", row=1, col=1)
+        fig.update_yaxes(title_text="stage", row=2, col=1)
+        fig.update_xaxes(tickangle=45, row=1, col=1)
+        fig.update_xaxes(title_text="window", row=2, col=1)
+        fig.update_layout(height=max(720, 28 * len(stage_names) + 420), coloraxis={"colorscale": "Viridis"})
         fig.write_html(args.residual_magnitude_file)
-        np.savez(Path(args.residual_magnitude_file).with_suffix(".npz"), stage_names=np.array(stage_names, dtype=object), magnitudes=arr)
-        console.print(f"[cyan]Saved residual magnitude traces → {args.residual_magnitude_file}[/cyan]")
+        np.savez(
+            Path(args.residual_magnitude_file).with_suffix(".npz"),
+            stage_names=np.array(stage_names, dtype=object),
+            magnitudes=arr,
+            mean_radius=np.array(means, dtype=np.float32),
+            std_radius=np.array(stds, dtype=np.float32),
+            sample_count=np.array(counts, dtype=np.int64),
+        )
+        console.print(f"[cyan]Saved residual radius summary → {args.residual_magnitude_file}[/cyan]")
 
 if __name__ == "__main__":
     main()
