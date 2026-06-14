@@ -1863,6 +1863,10 @@ _TRANSFORM_TYPE_ALIASES = {
     "mean_offset": "offset",
     "analogy": "offset",
     "analogy_offset": "offset",
+    "rise": "rise",
+    "rotor": "rise",
+    "rotor_invariant": "rise",
+    "geodesic": "rise",
 }
 
 _TRANSFORM_TYPE_DESCRIPTIONS = {
@@ -1890,6 +1894,11 @@ _TRANSFORM_TYPE_DESCRIPTIONS = {
     "offset": (
         "Analogy-style affine offset. With one example result=input+(target-source); with multiple examples it uses the mean "
         "target-source offset. This is useful as a baseline, but it is not a strictly linear map."
+    ),
+    "rise": (
+        "Rotor-Invariant Shift Estimation (RISE). Translates semantics via geodesic rotation on the unit hypersphere. "
+        "Each example is canonicalized using two Householder reflections (preserving parity), its Riemannian logarithm (tangent vector) is averaged, "
+        "and the result is projected and exponentiated back to the input vector. Scale maps to Riemannian arc length."
     ),
 }
 
@@ -2086,6 +2095,116 @@ def _apply_transform_from_examples(
         coefficient = torch.tensor(lam, dtype=torch.float32, device=input_vector.device)
         label = "Ridge λ"
         return transformed, coefficient, label, fitted_sources, lam
+
+    if transform_key == "rise":
+        eps_t = torch.tensor(1e-12, dtype=torch.float32, device=input_vector.device)
+        d = input_vector.shape[0]
+
+        # 1. Project onto the unit hypersphere
+        src_norms = torch.linalg.vector_norm(source_vectors, ord=2, dim=0).clamp_min(eps_t)
+        tgt_norms = torch.linalg.vector_norm(target_vectors, ord=2, dim=0).clamp_min(eps_t)
+        inp_norm = torch.linalg.vector_norm(input_vector, ord=2).clamp_min(eps_t)
+
+        n_i = source_vectors / src_norms
+        v_i = target_vectors / tgt_norms
+        n_star = input_vector / inp_norm
+
+        # Canonical reference axis
+        e1 = torch.zeros(d, 1, dtype=torch.float32, device=input_vector.device)
+        e1[0, 0] = 1.0
+
+        def rotation_n_to_e1(n: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+            """Map from T_n to T_{e1} using two reflections to preserve orientation parity."""
+            n_2d = n.view(d, -1)
+            k = n_2d.shape[1]
+            x_2d = x.view(d, -1)
+            if x_2d.shape[1] == 1 and k > 1:
+                x_2d = x_2d.expand(d, k)
+
+            w = n_2d + e1
+            w_sq = torch.sum(w * w, dim=0, keepdim=True)
+            w_sq_safe = w_sq.clamp_min(eps_t)
+
+            # First reflection: across the w bisector
+            dot_w_x = torch.sum(w * x_2d, dim=0, keepdim=True)
+            x1 = x_2d - 2.0 * w * (dot_w_x / w_sq_safe)
+            x1 = torch.where(w_sq > 1e-8, x1, x_2d) # fallback if n == -e1
+
+            # Second reflection: across e1 (simply negates all dimensions except the first)
+            dot_e1_x1 = x1[0:1, :]
+            out = x1 - 2.0 * e1 * dot_e1_x1
+
+            if n.ndim == 1 and x.ndim == 1:
+                return out.view(d)
+            return out
+
+        def rotation_e1_to_n(n: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+            """Map from T_{e1} to T_n using two reflections (inverse operation)."""
+            n_2d = n.view(d, -1)
+            k = n_2d.shape[1]
+            x_2d = x.view(d, -1)
+            if x_2d.shape[1] == 1 and k > 1:
+                x_2d = x_2d.expand(d, k)
+
+            # First reflection: across e1
+            dot_e1_x = x_2d[0:1, :]
+            x1 = x_2d - 2.0 * e1 * dot_e1_x
+
+            w = n_2d + e1
+            w_sq = torch.sum(w * w, dim=0, keepdim=True)
+            w_sq_safe = w_sq.clamp_min(eps_t)
+
+            # Second reflection: across the w bisector
+            dot_w_x1 = torch.sum(w * x1, dim=0, keepdim=True)
+            out = x1 - 2.0 * w * (dot_w_x1 / w_sq_safe)
+            out = torch.where(w_sq > 1e-8, out, x1)
+
+            if n.ndim == 1 and x.ndim == 1:
+                return out.view(d)
+            return out
+
+        def riemannian_log(n: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+            dot = torch.sum(n * v, dim=0, keepdim=True).clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+            theta = torch.arccos(dot)
+            proj = v - dot * n
+            proj_norm = torch.linalg.vector_norm(proj, ord=2, dim=0, keepdim=True)
+            proj_norm_safe = proj_norm.clamp_min(eps_t)
+            out = theta * (proj / proj_norm_safe)
+            return torch.where(proj_norm > 1e-8, out, torch.zeros_like(proj))
+
+        def riemannian_exp(n: torch.Tensor, xi: torch.Tensor) -> torch.Tensor:
+            norm_xi = torch.linalg.vector_norm(xi, ord=2, dim=0, keepdim=True)
+            norm_xi_safe = norm_xi.clamp_min(eps_t)
+            out = torch.cos(norm_xi) * n + torch.sin(norm_xi) * (xi / norm_xi_safe)
+            return torch.where(norm_xi > 1e-8, out, n)
+
+        # 2. Extract tangent vectors and canonicalize them to e1's tangent space
+        xi = riemannian_log(n_i, v_i)
+        canon_xi = rotation_n_to_e1(n_i, xi)
+
+        # 3. Prototype Learning: Average canonical tangent vectors
+        p = torch.mean(canon_xi, dim=1)
+
+        # Extrapolate/attenuate the geodesic tangent vector using the UI's `transform_scale`
+        p_scaled = p * float(transform_scale)
+
+        # 4. Prediction: Rotate prototype to input's tangent space and project back to sphere
+        xi_star = rotation_e1_to_n(n_star, p_scaled)
+        v_star = riemannian_exp(n_star, xi_star)
+
+        # Restore the input's original vector magnitude
+        transformed = v_star * inp_norm
+
+        # 5. Fit against source examples so the UI can render RMSE / max angle error diagnostics
+        xi_fit = rotation_e1_to_n(n_i, p_scaled)
+        fitted_n = riemannian_exp(n_i, xi_fit)
+        fitted_sources = fitted_n * src_norms
+
+        coefficient = torch.linalg.vector_norm(p, ord=2)
+        label = "Prototype geodesic length (rad)"
+
+        # Return directly; bypassing the Euclidean `scale_effect` closure
+        return transformed, coefficient, label, fitted_sources, None
 
     if transform_key == "least_squares":
         pinv_source = torch.linalg.pinv(source_vectors)
