@@ -20,7 +20,7 @@ SAMPLE_ROWS=16
 OUT_DIR="${REPO_ROOT}/out/conway_life_demo"
 DEVICE="cpu"
 DTYPE="float32"
-BLOCK_SIZE=16
+BLOCK_SIZE=4
 BATCH_SIZE=4
 DATASET_ARGS=()
 
@@ -39,7 +39,7 @@ Demo options:
   --out-dir PATH       Training/sample output directory (default: out/conway_life_demo)
   --device DEVICE      Torch device for train/sample (default: cpu)
   --dtype DTYPE        Torch dtype for train/sample (default: float32)
-  --block-size N       Model context length for the tiny demo (default: 16)
+  --block-size N       Model context length for the tiny demo (default: 4)
   --batch-size N       Training batch size for the tiny demo (default: 4)
   -h, --help           Show this help
 
@@ -101,6 +101,7 @@ done
 MANIFEST_PATH="${REPO_ROOT}/data/${OUTPUT_ROOT}/manifest.json"
 PROMPT_CSV="${OUT_DIR}/validation_prompt.csv"
 VALIDATION_CSV="${OUT_DIR}/validation.csv"
+EFFECTIVE_BLOCK_SIZE="${BLOCK_SIZE}"
 SAMPLE_CONTINUATION_CSV="${OUT_DIR}/sample_continuation.csv"
 VIEWER_CSV="${OUT_DIR}/validation_plus_sample.csv"
 
@@ -108,7 +109,7 @@ echo "[1/7] Generating Conway Life CSV and multicontext dataset..."
 "${SCRIPT_DIR}/get_dataset.sh" "${DATASET_ARGS[@]}"
 
 echo "[2/7] Preparing validation prompt CSV from the validation split..."
-MANIFEST_PATH="${MANIFEST_PATH}" PROMPT_CSV="${PROMPT_CSV}" VALIDATION_CSV="${VALIDATION_CSV}" PROMPT_ROWS="${PROMPT_ROWS}" python3 - <<'PY'
+PREP_OUTPUT=$(MANIFEST_PATH="${MANIFEST_PATH}" PROMPT_CSV="${PROMPT_CSV}" VALIDATION_CSV="${VALIDATION_CSV}" PROMPT_ROWS="${PROMPT_ROWS}" REQUESTED_BLOCK_SIZE="${BLOCK_SIZE}" python3 - <<'PY'
 import csv
 import json
 import os
@@ -136,8 +137,25 @@ for path, selected in ((validation_path, validation_rows), (prompt_path, validat
         writer = csv.writer(f)
         writer.writerow(header)
         writer.writerows(selected)
-print(f"validation rows: {len(validation_rows)}; prompt rows: {prompt_rows}")
+requested_block_size = int(os.environ["REQUESTED_BLOCK_SIZE"])
+max_block_size = min(len(data_rows[:train_rows]) - 1, len(validation_rows) - 1)
+if max_block_size < 1:
+    raise SystemExit("Need at least two train rows and two validation rows for the demo training block.")
+effective_block_size = max(1, min(requested_block_size, max_block_size))
+print(f"validation rows: {len(validation_rows)}; prompt rows: {prompt_rows}; block_size: {effective_block_size}")
+print(f"EFFECTIVE_BLOCK_SIZE={effective_block_size}")
 PY
+)
+echo "${PREP_OUTPUT}" | sed '/^EFFECTIVE_BLOCK_SIZE=/d'
+EFFECTIVE_BLOCK_SIZE="$(echo "${PREP_OUTPUT}" | awk -F= '/^EFFECTIVE_BLOCK_SIZE=/{print $2}' | tail -n 1)"
+if [[ -z "${EFFECTIVE_BLOCK_SIZE}" ]]; then
+  echo "Could not determine effective block size" >&2
+  exit 1
+fi
+
+if [[ "${EFFECTIVE_BLOCK_SIZE}" != "${BLOCK_SIZE}" ]]; then
+  echo "Requested block_size=${BLOCK_SIZE} is too large for the validation split; using block_size=${EFFECTIVE_BLOCK_SIZE}."
+fi
 
 echo "[3/7] Validating generated manifest and collecting context datasets..."
 mapfile -t MULTICONTEXT_DATASETS < <(MANIFEST_PATH="${MANIFEST_PATH}" python3 - <<'PY'
@@ -169,7 +187,7 @@ python3 train.py \
   --out_dir "${OUT_DIR}" \
   --device "${DEVICE}" \
   --dtype "${DTYPE}" \
-  --block_size "${BLOCK_SIZE}" \
+  --block_size "${EFFECTIVE_BLOCK_SIZE}" \
   --batch_size "${BATCH_SIZE}" \
   --n_layer 2 \
   --n_head 2 \
