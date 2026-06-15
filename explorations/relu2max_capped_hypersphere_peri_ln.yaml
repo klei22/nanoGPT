@@ -3,6 +3,14 @@
 ---
 
 named_static_groups:
+  # Optimizer
+  - named_group: "muon"
+    optimizer: ["muon"]
+    weight_decay: [0.0]
+
+  - named_group: "adamw"
+    optimizer: ["adamw"]
+
   # QK Norm
   - named_group: "qk_norm"
     use_qk_norm: [true]
@@ -67,6 +75,8 @@ named_static_groups:
 named_variation_groups:
   - named_group: "wte_norm_var"
     named_group_alternates: ["capped_rmsnorm", "capped_pair", "rmsnorm"]
+  - named_group: "optimizers"
+    named_group_alternates: ["muon", "adamw"]
 
 common_group:
   dataset: ["minipile"]
@@ -91,6 +101,7 @@ parameter_groups:
     hsnorm_radius_learning: [true]
     named_group_variations:
       - "wte_norm_var"
+      - "optimizers"
   # Peri-LN WTE Norm
   - named_group_static:
       - "qk_norm"
@@ -107,6 +118,7 @@ parameter_groups:
     hsnorm_radius_learning: [true]
     named_group_variations:
       - "wte_norm_var"
+      - "optimizers"
   # Pre ln Baseline
   - named_group_static:
       - "qk_norm"
@@ -120,3 +132,4 @@ parameter_groups:
     hsnorm_radius_learning: [true]
     named_group_variations:
       - "wte_norm_var"
+      - "optimizers"
