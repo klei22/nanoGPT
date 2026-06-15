@@ -177,17 +177,80 @@ def write_csv(result: AngleComparison, path: str) -> None:
 def plot_html(result: AngleComparison) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
-    rows = list(selected_pair_rows(result))
-    x = [f"{r['token_i']}-{r['token_j']}" for r in rows]
-    a = [r["angle_a_deg"] for r in rows]; b = [r["angle_b_deg"] for r in rows]; d = [r["diff_deg"] for r in rows]
-    fig = make_subplots(rows=2, cols=2, subplot_titles=("Selected pair angles by canonical vocab-pair order", "Difference histogram", "Checkpoint A pairwise angles", "Angle difference (B - A)"), specs=[[{}, {}], [{"type": "heatmap"}, {"type": "heatmap"}]])
-    fig.add_trace(go.Scatter(x=x, y=a, mode="markers", name="ckpt A", marker={"size": 5}), 1, 1)
-    fig.add_trace(go.Scatter(x=x, y=b, mode="markers", name="ckpt B", marker={"size": 5}), 1, 1)
+
+    rows = sorted(selected_pair_rows(result), key=lambda row: row["angle_a_deg"])
+    sorted_rank = list(range(len(rows)))
+    hover_labels = [
+        f"{r['token_i']}-{r['token_j']} ({r['label_i']!r}, {r['label_j']!r})"
+        for r in rows
+    ]
+    a = [r["angle_a_deg"] for r in rows]
+    b = [r["angle_b_deg"] for r in rows]
+    d = [r["diff_deg"] for r in rows]
+
+    fig = make_subplots(
+        rows=3,
+        cols=2,
+        subplot_titles=(
+            "Selected pair angles sorted by checkpoint A angle",
+            "Difference histogram",
+            "Checkpoint A pairwise angles",
+            "Checkpoint B pairwise angles",
+            "Angle difference (B - A)",
+            "",
+        ),
+        specs=[
+            [{}, {}],
+            [{"type": "heatmap"}, {"type": "heatmap"}],
+            [{"type": "heatmap"}, None],
+        ],
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=sorted_rank,
+            y=a,
+            customdata=hover_labels,
+            mode="markers",
+            name="ckpt A",
+            marker={"size": 5},
+            hovertemplate="A-sorted rank=%{x}<br>pair=%{customdata}<br>angle=%{y:.4f}°<extra></extra>",
+        ),
+        1,
+        1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=sorted_rank,
+            y=b,
+            customdata=hover_labels,
+            mode="markers",
+            name="ckpt B (A order)",
+            marker={"size": 5},
+            hovertemplate="A-sorted rank=%{x}<br>pair=%{customdata}<br>angle=%{y:.4f}°<extra></extra>",
+        ),
+        1,
+        1,
+    )
     fig.add_trace(go.Histogram(x=d, name="B - A diff"), 1, 2)
     labels = [f"{i}:{t}" for i, t in enumerate(result.tokens)]
-    fig.add_trace(go.Heatmap(z=result.angles_a.tolist(), x=labels, y=labels, colorscale="Viridis", colorbar={"title":"deg"}), 2, 1)
-    fig.add_trace(go.Heatmap(z=result.diff.tolist(), x=labels, y=labels, colorscale="RdBu", zmid=0, colorbar={"title":"deg"}), 2, 2)
-    fig.update_layout(height=1000, title="LM head pairwise angle comparison", bargap=0.05)
+    fig.add_trace(
+        go.Heatmap(z=result.angles_a.tolist(), x=labels, y=labels, colorscale="Viridis", colorbar={"title": "deg"}),
+        2,
+        1,
+    )
+    fig.add_trace(
+        go.Heatmap(z=result.angles_b.tolist(), x=labels, y=labels, colorscale="Viridis", colorbar={"title": "deg"}),
+        2,
+        2,
+    )
+    fig.add_trace(
+        go.Heatmap(z=result.diff.tolist(), x=labels, y=labels, colorscale="RdBu", zmid=0, colorbar={"title": "deg"}),
+        3,
+        1,
+    )
+    fig.update_xaxes(title_text="Rank after sorting selected pairs by checkpoint A angle", row=1, col=1)
+    fig.update_yaxes(title_text="Pairwise angle (degrees)", row=1, col=1)
+    fig.update_layout(height=1300, title="LM head pairwise angle comparison", bargap=0.05)
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
 
