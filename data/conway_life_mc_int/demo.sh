@@ -273,11 +273,13 @@ except ValueError as exc:
     raise SystemExit(f"Demo CSV must be inside the repository so the local server can serve it: {csv}") from exc
 PY
 )"
+VIEWER_BASE_URL="http://${HOST}:${PORT}"
 VIEWER_PATH="/data/roomba/roomba_grayscale_viewer.html"
 COMPARE_VIEWER_PATH="/data/roomba/grid_sequence_compare_viewer.html"
 VIEWER_QUERY="?csv=${CSV_PATH}&prompt_rows=${PROMPT_ROWS_EFFECTIVE}&sample_start_frame=${SAMPLE_START_FRAME}"
-VIEWER_URL="http://${HOST}:${PORT}${VIEWER_PATH}${VIEWER_QUERY}"
-COMPARE_VIEWER_URL="http://${HOST}:${PORT}${COMPARE_VIEWER_PATH}${VIEWER_QUERY}"
+VIEWER_URL="${VIEWER_BASE_URL}${VIEWER_PATH}${VIEWER_QUERY}"
+COMPARE_VIEWER_URL="${VIEWER_BASE_URL}${COMPARE_VIEWER_PATH}${VIEWER_QUERY}"
+: "${COMPARE_VIEWER_URL:?failed to build comparison viewer URL}"
 
 echo "[7/7] Starting local HTTP server at http://${HOST}:${PORT}/ ..."
 python3 -m http.server "${PORT}" --bind "${HOST}" --directory "${REPO_ROOT}" >/tmp/conway_life_viewer_server.log 2>&1 &
