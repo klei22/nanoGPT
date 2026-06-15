@@ -139,7 +139,11 @@ def compare_lm_head_pairwise_angles(
     metrics.update(summarize(selected_b, "ckpt_b_angle_deg"))
     metrics.update(summarize(selected_diff, "diff_deg"))
     if selected_diff.numel():
-        metrics["mae_deg"] = float(selected_diff.abs().mean().item())
+        selected_abs_diff = selected_diff.abs()
+        metrics["mae_deg"] = float(selected_abs_diff.mean().item())
+        metrics["avg_abs_degrees_difference"] = metrics["mae_deg"]
+        metrics["stddev_abs_degrees_difference"] = float(selected_abs_diff.std(unbiased=False).item())
+        metrics["median_abs_degrees_difference"] = float(selected_abs_diff.median().item())
         metrics["rmse_deg"] = float(torch.sqrt((selected_diff ** 2).mean()).item())
         if selected_a.numel() > 1 and selected_a.std() > 0 and selected_b.std() > 0:
             metrics["pearson_r"] = float(torch.corrcoef(torch.stack([selected_a, selected_b]))[0, 1].item())

@@ -24,3 +24,19 @@ python3 analysis/lm_head_pairwise_angles/app.py --ckpt-root . --host 127.0.0.1 -
 ```
 
 The webapp scans for checkpoint files, lets you choose two checkpoints, set an angle window, and renders angle/difference histograms and heatmaps.
+
+## Trend across training iterations
+
+The demo saves major checkpoints every 200 iterations, including the initial
+iteration-0 checkpoint when training starts. To plot how pairwise-angle
+preservation changes over time:
+
+```bash
+python3 analysis/lm_head_pairwise_angles/plot_lm_head_pairwise_angle_trend.py \
+  out/shakespeare_lm_head_pairwise_angles_demo/seed_1337 \
+  out/shakespeare_lm_head_pairwise_angles_demo/seed_2024 \
+  --iterations 0,200,400,600,800 \
+  --meta data/shakespeare_char/meta.pkl \
+  --csv out/shakespeare_lm_head_pairwise_angles_demo/analysis/trend.csv \
+  --html out/shakespeare_lm_head_pairwise_angles_demo/analysis/trend.html
+```
