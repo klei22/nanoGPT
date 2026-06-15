@@ -11,7 +11,9 @@ Examples:
 
   python head_special_matrix_probe.py --preset qwen-0.5b --device cuda
 
-  python head_special_matrix_probe.py --preset gemma-3-270m --device cuda --dtype bfloat16
+  python head_special_matrix_probe.py --preset gemma-3-270m-it --device cuda --dtype bfloat16
+
+  python head_special_matrix_probe.py --preset smollm2-135m-instruct --device cuda --dtype bfloat16
 
   python head_special_matrix_probe.py \
     --model google/gemma-3-270m \
@@ -47,7 +49,12 @@ def parse_args():
     p.add_argument(
         "--preset",
         default=None,
-        choices=["qwen-0.5b", "gemma-3-270m"],
+        choices=[
+            "qwen-0.5b",
+            "gemma-3-270m",
+            "gemma-3-270m-it",
+            "smollm2-135m-instruct",
+        ],
     )
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu", "mps"])
     p.add_argument("--dtype", default="float16",
@@ -82,6 +89,13 @@ def apply_preset(args):
     elif args.preset == "gemma-3-270m":
         args.model = "google/gemma-3-270m"
         args.trust_remote_code = True
+
+    elif args.preset == "gemma-3-270m-it":
+        args.model = "google/gemma-3-270m-it"
+        args.trust_remote_code = True
+
+    elif args.preset == "smollm2-135m-instruct":
+        args.model = "HuggingFaceTB/SmolLM2-135M-Instruct"
 
     return args
 
@@ -177,6 +191,34 @@ def frob(A, B):
     return torch.linalg.norm(A - B).item()
 
 
+def get_hf_decoder_layers(model):
+    layer_roots = [
+        getattr(model, "model", None),
+        getattr(getattr(model, "model", None), "language_model", None),
+        getattr(model, "language_model", None),
+        getattr(getattr(model, "transformer", None), "h", None),
+    ]
+    for root in layer_roots:
+        if root is None:
+            continue
+        if hasattr(root, "layers"):
+            return root.layers
+        if hasattr(root, "h"):
+            return root.h
+        if isinstance(root, (list, torch.nn.ModuleList)):
+            return root
+    raise ValueError("Could not find decoder layers on the HuggingFace model.")
+
+
+def get_hf_config_value(config, name, default=None):
+    if hasattr(config, name):
+        return getattr(config, name)
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None and hasattr(text_config, name):
+        return getattr(text_config, name)
+    return default
+
+
 def load_hf_model(args, dtype):
     print(f"Loading model: {args.model}")
     model = AutoModelForCausalLM.from_pretrained(
@@ -188,10 +230,10 @@ def load_hf_model(args, dtype):
     model.eval()
 
     cfg = model.config
-    hidden = cfg.hidden_size
-    config_heads = getattr(cfg, "num_attention_heads", None)
-    config_kv_heads = getattr(cfg, "num_key_value_heads", None)
-    layers = model.model.layers
+    hidden = get_hf_config_value(cfg, "hidden_size")
+    config_heads = get_hf_config_value(cfg, "num_attention_heads")
+    config_kv_heads = get_hf_config_value(cfg, "num_key_value_heads")
+    layers = get_hf_decoder_layers(model)
     return model, layers, hidden, config_heads, config_kv_heads, "hf"
 
 
