@@ -360,7 +360,18 @@ def main():
 
     if log["iterations"]:
         last = log["iterations"][-1]
-        baseline_cfg = deepcopy(last["baseline_config_after"])
+        resume_running_iter = (
+            last.get("iter", -1) >= 0 and last.get("status") == "running"
+        )
+        baseline_cfg_key = (
+            "baseline_config_before" if resume_running_iter else "baseline_config_after"
+        )
+        baseline_cfg = deepcopy(
+            last.get(
+                baseline_cfg_key,
+                last.get("baseline_config_after", log["baseline_config"]),
+            )
+        )
         base_loss = last["baseline_metrics"]["loss"]
         base_score = last["baseline_metrics"]["score"]
         base_rankme = last["baseline_metrics"].get("rankme", float("nan"))
@@ -373,7 +384,7 @@ def main():
         base_torch_reserved = last["baseline_metrics"].get("peak_torch_reserved_mb", 0.0)
         base_process_gpu = last["baseline_metrics"].get("peak_process_gpu_mb", 0.0)
         base_iter_ms = last["baseline_metrics"].get("iter_latency_avg", 0.0)
-        cur_iter = last["iter"] + 1
+        cur_iter = last["iter"] if resume_running_iter else last["iter"] + 1
         _apply_overrides_to_active_config(
             baseline_cfg, args.override_cfg, "resumed baseline_cfg"
         )
@@ -424,7 +435,14 @@ def main():
         candidates: List[Dict[str, Any]] = []
         best_choice: Tuple[float, Dict[str, Any]] | None = None
         previous_best_iter = log["iterations"][-1]["baseline_metrics"].get("best_iter")
-        iter_started_at = utc_now_iso()
+        existing_iter_block = next(
+            (it for it in log["iterations"] if it.get("iter") == cur_iter), None
+        )
+        iter_started_at = (
+            existing_iter_block.get("started_at")
+            if existing_iter_block and existing_iter_block.get("status") == "running"
+            else utc_now_iso()
+        )
         iter_block = {
             "iter": cur_iter,
             "baseline_metrics": {
