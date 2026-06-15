@@ -238,6 +238,7 @@ def main():
     attn_head_traces = None
     residual_mag_traces = []
     residual_radius_samples = {}
+    residual_mag_token_info = []
 
     def parse_selection(spec: str, max_count: int):
         if spec == "all":
@@ -295,6 +296,7 @@ def main():
             break  # not enough tokens to predict next
 
         ctx_tok = torch.from_numpy(seq[:-1].astype(np.int64))[None].to(args.device)
+        tgt_token = int(seq[-1])  # ground-truth next token associated with this window
 
         activations = {"t0": None, "attn": [], "mlp": [], "ar": [], "mr": []}
         handles = []
@@ -418,6 +420,8 @@ def main():
             v = residual_points["ln_f"]
             mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
             residual_mag_traces.append((stage_names, mags))
+            token_text = decode([tgt_token])
+            residual_mag_token_info.append((tgt_token, token_text, _escape_ws(token_text)))
 
         if args.activation_view != "none" and "resid" in args.components and activations["t0"] is not None:
             resid = activations["t0"].float().clone()
@@ -429,7 +433,6 @@ def main():
 
         logits = logits.squeeze(0)  # (ctx_len, vocab)
         ctx_len = logits.size(0)
-        tgt_token = int(seq[-1])  # ground-truth next token
 
         layer_texts: List[Text] = []
         if args.activation_view != "none" and activations["t0"] is not None:
@@ -747,8 +750,25 @@ def main():
             row=1,
             col=1,
         )
+        heatmap_customdata = np.array(
+            [[info for info in residual_mag_token_info] for _ in stage_names],
+            dtype=object,
+        )
         fig.add_trace(
-            go.Heatmap(z=arr.T, x=list(range(arr.shape[0])), y=stage_names, coloraxis="coloraxis", name="trace"),
+            go.Heatmap(
+                z=arr.T,
+                x=list(range(arr.shape[0])),
+                y=stage_names,
+                customdata=heatmap_customdata,
+                coloraxis="coloraxis",
+                name="trace",
+                hovertemplate=(
+                    "window=%{x}<br>location=%{y}<br>magnitude=%{z:.6f}"
+                    "<br>token id=%{customdata[0]}"
+                    "<br>token=%{customdata[1]}"
+                    "<br>token rendering=%{customdata[2]}<extra></extra>"
+                ),
+            ),
             row=2,
             col=1,
         )
@@ -767,6 +787,9 @@ def main():
             mean_magnitude=np.array(means, dtype=np.float32),
             std_magnitude=np.array(stds, dtype=np.float32),
             sample_count=np.array(counts, dtype=np.int64),
+            token_ids=np.array([info[0] for info in residual_mag_token_info], dtype=np.int64),
+            token_texts=np.array([info[1] for info in residual_mag_token_info], dtype=object),
+            token_renderings=np.array([info[2] for info in residual_mag_token_info], dtype=object),
         )
         console.print(f"[cyan]Saved residual magnitude summary → {args.residual_magnitude_file}[/cyan]")
 
