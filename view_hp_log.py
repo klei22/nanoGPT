@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -64,6 +64,15 @@ def human_duration(seconds: Any) -> str:
     return f"{secs}s"
 
 
+def hms_duration(seconds: Any) -> str:
+    if not isinstance(seconds, (int, float)) or seconds < 0:
+        return "-"
+    seconds = int(round(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 def parse_iso_time(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -100,6 +109,72 @@ def progress_text(candidate: Dict[str, Any] | None) -> str:
     done = candidate.get("completed_random_iterations", len(candidate.get("seeds", [])))
     expected = candidate.get("expected_random_iterations", "?")
     return f"{done}/{expected} seeds"
+
+
+def iteration_progress(blk: Dict[str, Any]) -> str:
+    completed = blk.get("completed_experiments")
+    expected = blk.get("expected_experiments")
+    if not isinstance(completed, int):
+        completed = sum(
+            int(
+                candidate.get(
+                    "completed_random_iterations", len(candidate.get("seeds", []))
+                )
+            )
+            for candidate in blk.get("candidates", [])
+        )
+    if not isinstance(expected, int):
+        candidate_expectations = [
+            candidate.get("expected_random_iterations")
+            for candidate in blk.get("candidates", [])
+        ]
+        expected = sum(v for v in candidate_expectations if isinstance(v, int))
+    return f"{completed}/{expected}" if expected else f"{completed}/?"
+
+
+def iteration_elapsed_seconds(blk: Dict[str, Any]) -> Any:
+    if blk.get("status") == "running" and blk.get("started_at"):
+        return elapsed_since(blk.get("started_at"))
+    elapsed = blk.get("elapsed_seconds")
+    if isinstance(elapsed, (int, float)):
+        return elapsed
+    started = parse_iso_time(blk.get("started_at"))
+    updated = parse_iso_time(blk.get("last_updated_at"))
+    if started and updated:
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        return (
+            updated.astimezone(timezone.utc) - started.astimezone(timezone.utc)
+        ).total_seconds()
+    return "-"
+
+
+def iteration_remaining_seconds(blk: Dict[str, Any]) -> Any:
+    remaining = blk.get("estimated_remaining_seconds")
+    if isinstance(remaining, (int, float)):
+        return remaining
+    completed = blk.get("completed_experiments")
+    expected = blk.get("expected_experiments")
+    elapsed = iteration_elapsed_seconds(blk)
+    if (
+        isinstance(completed, int)
+        and isinstance(expected, int)
+        and completed > 0
+        and expected >= completed
+        and isinstance(elapsed, (int, float))
+    ):
+        return (elapsed / completed) * (expected - completed)
+    return "-"
+
+
+def eta_completion_time(seconds: Any) -> str:
+    if not isinstance(seconds, (int, float)) or seconds < 0:
+        return "-"
+    return (datetime.now().astimezone() + timedelta(seconds=seconds)).strftime(
+        "%Y-%m-%d %H:%M:%S %Z"
+    )
 
 
 def metrics_panel(
@@ -326,6 +401,10 @@ class SweepViewer(App):
         changed = sorted({it["chosen"]["param"] for it in self.iters if it.get("chosen")})
         hdrs = [
             "iter",
+            "elapsed",
+            "progress",
+            "ETA",
+            "ETA done",
             *changed,
             "best_loss",
             "best_iter",
@@ -363,6 +442,10 @@ class SweepViewer(App):
         rows.append(
             [
                 "-1",
+                "-",
+                "-",
+                "-",
+                "-",
                 *base_vals,
                 fnum(self.base_metrics.get("loss", "-"), "{:.4f}"),
                 str(self.base_metrics.get("best_iter", "-")),
@@ -446,7 +529,17 @@ class SweepViewer(App):
                     "-",
                     "-",
                 ]
-            rows.append([str(it.get("iter", i)), *vals])
+            remaining = iteration_remaining_seconds(it)
+            rows.append(
+                [
+                    str(it.get("iter", i)),
+                    hms_duration(iteration_elapsed_seconds(it)),
+                    iteration_progress(it),
+                    hms_duration(remaining),
+                    eta_completion_time(remaining),
+                    *vals,
+                ]
+            )
         return hdrs, rows
 
     def _refresh_view(self):

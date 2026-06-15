@@ -199,6 +199,18 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def elapsed_since_iso(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+
+
 def save_log(path: Path, log: Dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(yaml.dump(log, sort_keys=False))
@@ -358,6 +370,28 @@ def main():
                 src = min(dup_idx, len(val) - 1)
                 val.insert(src + 1, deepcopy(val[src]))
 
+    def _expected_candidate_count(cfg: Dict[str, Any]) -> int:
+        total = 0
+        for pname in args.param_names:
+            if pname not in cfg:
+                continue
+            base_val = cfg[pname]
+            if pname == "n_layer":
+                total += int(cfg["n_layer"]) if args.nlayer_dup_mode == "dup_each" else 1
+            elif isinstance(base_val, (int, float)):
+                total += args.iterations
+            elif isinstance(base_val, list):
+                total += sum(
+                    args.iterations for elem in base_val if isinstance(elem, (int, float))
+                )
+        return total
+
+    def _completed_experiment_count(candidates: List[Dict[str, Any]]) -> int:
+        return sum(
+            int(candidate.get("completed_random_iterations", len(candidate.get("seeds", []))))
+            for candidate in candidates
+        )
+
     if log["iterations"]:
         last = log["iterations"][-1]
         resume_running_iter = (
@@ -438,6 +472,9 @@ def main():
         existing_iter_block = next(
             (it for it in log["iterations"] if it.get("iter") == cur_iter), None
         )
+        expected_experiments = (
+            _expected_candidate_count(baseline_cfg) * args.random_iterations
+        )
         iter_started_at = (
             existing_iter_block.get("started_at")
             if existing_iter_block and existing_iter_block.get("status") == "running"
@@ -462,6 +499,10 @@ def main():
             "status": "running",
             "started_at": iter_started_at,
             "last_updated_at": iter_started_at,
+            "elapsed_seconds": 0.0,
+            "estimated_remaining_seconds": None,
+            "completed_experiments": 0,
+            "expected_experiments": expected_experiments,
             "baseline_config_before": deepcopy(baseline_cfg),
             "baseline_config_after": deepcopy(baseline_cfg),
         }
@@ -477,6 +518,20 @@ def main():
                     candidates[idx] = candidate
                     return
             candidates.append(candidate)
+
+        def _refresh_iteration_progress() -> None:
+            completed = _completed_experiment_count(candidates)
+            elapsed = elapsed_since_iso(iter_block.get("started_at"))
+            iter_block["completed_experiments"] = completed
+            iter_block["expected_experiments"] = expected_experiments
+            if elapsed is not None:
+                iter_block["elapsed_seconds"] = elapsed
+                remaining_experiments = max(expected_experiments - completed, 0)
+                iter_block["estimated_remaining_seconds"] = (
+                    (elapsed / completed) * remaining_experiments if completed > 0 else None
+                )
+            if completed >= expected_experiments and expected_experiments > 0:
+                iter_block["estimated_remaining_seconds"] = 0.0
 
         for pname in args.param_names:
             if pname not in baseline_cfg:
@@ -523,6 +578,7 @@ def main():
                         }
                     )
                     iter_block["last_updated_at"] = utc_now_iso()
+                    _refresh_iteration_progress()
                     upsert_iteration(log, cur_iter, iter_block)
                     save_log(log_path, log)
 
@@ -583,6 +639,7 @@ def main():
                         }
                     )
                     iter_block["last_updated_at"] = utc_now_iso()
+                    _refresh_iteration_progress()
                     upsert_iteration(log, cur_iter, iter_block)
                     save_log(log_path, log)
 
@@ -695,6 +752,7 @@ def main():
                 }
                 _upsert_candidate(cand)
                 iter_block["last_updated_at"] = utc_now_iso()
+                _refresh_iteration_progress()
                 upsert_iteration(log, cur_iter, iter_block)
                 save_log(log_path, log)
 
@@ -790,6 +848,7 @@ def main():
                             "baseline_config_after": deepcopy(baseline_cfg),
                         }
                     )
+                    _refresh_iteration_progress()
                     upsert_iteration(log, cur_iter, iter_block)
                     log["baseline_config"] = deepcopy(baseline_cfg)
                     save_log(log_path, log)
@@ -806,6 +865,7 @@ def main():
             iter_block["last_updated_at"] = utc_now_iso()
             iter_block["chosen"] = None
             iter_block["baseline_config_after"] = deepcopy(baseline_cfg)
+            _refresh_iteration_progress()
             upsert_iteration(log, cur_iter, iter_block)
             log["stop_reason"] = "no_positive_efficiency"
             log["baseline_config"] = deepcopy(baseline_cfg)
@@ -869,6 +929,7 @@ def main():
                 "baseline_config_after": deepcopy(baseline_cfg),
             }
         )
+        _refresh_iteration_progress()
         upsert_iteration(log, cur_iter, iter_block)
         log["baseline_config"] = deepcopy(baseline_cfg)
         save_log(log_path, log)
