@@ -738,13 +738,26 @@ def main():
             vertical_spacing=0.12,
         )
         fig.add_trace(
-            go.Scatter(
+            go.Bar(
                 x=stage_names,
                 y=means,
-                mode="lines+markers",
-                error_y={"type": "data", "array": stds, "visible": True},
+                error_y={
+                    "type": "data",
+                    "array": stds,
+                    "visible": True,
+                    "thickness": 1.5,
+                    "width": 3,
+                    "color": "rgba(30, 30, 30, 0.75)",
+                },
                 name="average magnitude ± std",
                 customdata=np.array(counts),
+                marker={
+                    "color": means,
+                    "colorscale": "Viridis",
+                    "showscale": False,
+                    "line": {"color": "rgba(30, 30, 30, 0.65)", "width": 0.8},
+                },
+                opacity=0.9,
                 hovertemplate="%{x}<br>avg magnitude=%{y:.6f}<br>std=%{error_y.array:.6f}<br>n=%{customdata}<extra></extra>",
             ),
             row=1,
@@ -772,11 +785,11 @@ def main():
             row=2,
             col=1,
         )
-        fig.update_yaxes(title_text="average magnitude", row=1, col=1)
+        fig.update_yaxes(title_text="average magnitude", gridcolor="rgba(0,0,0,0.12)", row=1, col=1)
         fig.update_yaxes(title_text="location", row=2, col=1)
-        fig.update_xaxes(title_text="location", tickangle=45, row=1, col=1)
+        fig.update_xaxes(title_text="location", tickangle=45, showgrid=False, row=1, col=1)
         fig.update_xaxes(title_text="window", row=2, col=1)
-        fig.update_layout(height=max(720, 28 * len(stage_names) + 420), coloraxis={"colorscale": "Viridis"})
+        fig.update_layout(height=max(720, 28 * len(stage_names) + 420), bargap=0.18, plot_bgcolor="white", coloraxis={"colorscale": "Viridis"})
         fig.write_html(args.residual_magnitude_file)
         np.savez(
             Path(args.residual_magnitude_file).with_suffix(".npz"),
