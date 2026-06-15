@@ -66,6 +66,32 @@ named_static_groups:
     log_ntp_val_loss_during_distillation: [true]
     never_save_checkpoint: [true]
 
+  - named_group: "ntp_monitor_parent_hd_100_h4"
+    run_name_override: ["ntp_monitor_distill_parent_hd_100_h4"]
+    n_head: [4]
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+    distillation_source_run_name: ["distill_parent_hd_100_h4"]
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["kl_divergence"]
+    # Regular NTP objective, but compute/log teacher distillation loss for comparison.
+    passive_distillation_loss_log: [true]
+    log_ntp_val_loss_during_distillation: [true]
+    never_save_checkpoint: [true]
+
+  - named_group: "ntp_monitor_parent_hd_150_h4"
+    run_name_override: ["ntp_monitor_distill_parent_hd_150_h4"]
+    n_head: [4]
+    n_qk_head_dim: [150]
+    n_v_head_dim: [150]
+    distillation_source_run_name: ["distill_parent_hd_150_h4"]
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["kl_divergence"]
+    # Regular NTP objective, but compute/log teacher distillation loss for comparison.
+    passive_distillation_loss_log: [true]
+    log_ntp_val_loss_during_distillation: [true]
+    never_save_checkpoint: [true]
+
 common_group:
   dataset: ["minipile"]
   eval_interval: [2500]
@@ -89,6 +115,8 @@ parameter_groups:
 
   # Student groups run after parents and resolve ${DISTILLATION_SOURCE}
   # from distillation_source_run_name to out/<parent_run_name>/ckpt.pt.
+  # The student_from_* groups optimize distillation loss; the ntp_monitor_*
+  # groups optimize regular NTP while passively logging distillation loss.
   - named_group_static:
       - "qk_norm"
       - "peri_ln"
@@ -99,3 +127,5 @@ parameter_groups:
     named_group_alternates:
       - "student_from_parent_hd_100_h4"
       - "student_from_parent_hd_150_h4"
+      - "ntp_monitor_parent_hd_100_h4"
+      - "ntp_monitor_parent_hd_150_h4"
