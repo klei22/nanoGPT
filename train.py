@@ -27,6 +27,7 @@ from train_variations.loss_variants import build_loss_function
 from train_variations.distillation_loss_variants import build_distillation_loss
 
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
+from utils.min_angle_graph_export import export_min_angle_graph as write_min_angle_graph_export
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated, max_memory_reserved
 
 try:
@@ -1797,6 +1798,26 @@ class Trainer:
                 }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
+    def export_min_angle_graph(self, losses):
+        """Export the current LM-head minimum-angle graph using the configured writer."""
+        export_dir = getattr(self.args, "export_min_angle_graph_dir", None)
+        if not export_dir:
+            return
+
+        weight = self.raw_model.apply_lm_head_norm(self.raw_model.lm_head.weight).detach()
+        label = getattr(self.args, "export_min_angle_graph_label", None) or "min_angle_graph"
+        val_loss = losses["val"].item() if hasattr(losses["val"], "item") else float(losses["val"])
+        csv_path, _ = write_min_angle_graph_export(
+            weight=weight,
+            export_dir=export_dir,
+            label=label,
+            iter_num=self.iter_num,
+            val_loss=val_loss,
+            block_size=getattr(self.args, "export_min_angle_graph_block_size", 2048),
+            compute_device=getattr(self.args, "export_min_angle_graph_device", "auto"),
+        )
+        print(f"Minimum-angle graph exported to {csv_path}")
+
     def run_validation_step(self, running_mfu, current_epoch, current_dataset, num_steps_with_worse_loss, live=None):
         losses = self.estimate_loss()
 
@@ -1887,6 +1908,13 @@ class Trainer:
             with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
                 print("Exiting with nan")
                 file.write(str(self.iter_num))
+
+        if self.args.export_min_angle_graph_each_eval:
+            if live:
+                live.stop()
+            self.export_min_angle_graph(losses)
+            if live:
+                live.start()
 
         if (not self.args.never_save_checkpoint and
             self.args.save_major_ckpt_interval is not None):

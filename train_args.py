@@ -73,6 +73,17 @@ def parse_args():
     model_group.add_argument('--export_scale_matrices_npz', default=None, type=str, help='Path to export the scale matrices as a .npz file')
     model_group.add_argument('--export_scale_matrices_each_eval', default=False, action=argparse.BooleanOptionalAction, help="Requires --export_scale_matrices_npz is not None. If this is so, will always export to npz after evaluation")
     model_group.add_argument('--import_scale_matrices_freeze', default=False, action=argparse.BooleanOptionalAction, help="Whether to freeze scaled_matrices")
+    model_group.add_argument('--export_min_angle_graph_dir', default=None, type=str,
+                             help='Optional directory for per-validation LM-head minimum-angle graph exports.')
+    model_group.add_argument('--export_min_angle_graph_each_eval', default=False,
+                             action=argparse.BooleanOptionalAction,
+                             help='Export the LM-head minimum-angle graph after every validation loss.')
+    model_group.add_argument('--export_min_angle_graph_block_size', default=2048, type=int,
+                             help='Row/column block size used when exporting the minimum-angle graph.')
+    model_group.add_argument('--export_min_angle_graph_device', default='auto', type=str,
+                             help="Compute device for minimum-angle graph export: 'auto', 'cpu', or a CUDA device such as 'cuda:0'.")
+    model_group.add_argument('--export_min_angle_graph_label', default=None, type=str,
+                             help='Optional label inserted into minimum-angle graph export filenames.')
 
     # I/O args
     training_group.add_argument('--out_dir', default='out', type=str)
