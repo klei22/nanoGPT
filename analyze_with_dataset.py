@@ -168,7 +168,7 @@ def parse_args():
     p.add_argument("--analysis_layers", default="all", help="Layer selection for analysis: 'all' or comma-separated 1-based layer ids")
     p.add_argument("--analysis_heads", default="all", help="Head selection for attention analysis: 'all' or comma-separated 1-based head ids")
     p.add_argument("--plot_residual_magnitude", action=argparse.BooleanOptionalAction, default=True,
-                   help="Export and plot average residual radius across model stages")
+                   help="Export and plot average residual magnitude across model locations")
     p.add_argument("--residual_magnitude_file", default="residual_magnitude.html",
                    help="Output HTML file for residual magnitude traces")
     p.add_argument(
@@ -331,7 +331,7 @@ def main():
                     return hook
                 handles.append(blk.attn.register_forward_hook(make_attn_head_hook(li)))
         if args.plot_residual_magnitude:
-            residual_points = {"after_wte": None, "after_embedding": None, "after_attn": {}, "after_mlp": {}, "after_ln_f": None}
+            residual_points = {"after wte": None, "after_attn": {}, "after_mlp": {}, "ln_f": None}
             patched_combiners = []
 
             def record_radius(stage_name: str, tensor: torch.Tensor):
@@ -339,14 +339,9 @@ def main():
                 residual_radius_samples.setdefault(stage_name, []).append(radii)
 
             def wte_hook(module, inp, out):
-                residual_points["after_wte"] = out.detach().float()
-                record_radius("after_wte", out)
+                residual_points["after wte"] = out.detach().float()
+                record_radius("after wte", out)
             handles.append(model.transformer.wte.register_forward_hook(wte_hook))
-
-            def embedding_hook(module, inp, out):
-                residual_points["after_embedding"] = out.detach().float()
-                record_radius("after_embedding", out)
-            handles.append(model.transformer.drop.register_forward_hook(embedding_hook))
 
             for li, blk in enumerate(model.transformer.h):
                 if li not in selected_layers:
@@ -358,7 +353,7 @@ def main():
                         combined = combine_fn(kind, x, out)
                         if kind in ("attn", "mlp"):
                             residual_points[f"after_{kind}"][layer_idx] = combined.detach().float()
-                            record_radius(f"after_{kind}_l{layer_idx + 1}", combined)
+                            record_radius(f"after {kind[0]}{layer_idx + 1}", combined)
                         return combined
                     return recording_combine
 
@@ -366,8 +361,8 @@ def main():
                 patched_combiners.append((blk, original_combine))
 
             def lnf_hook(module, inp, out):
-                residual_points["after_ln_f"] = out.detach().float()
-                record_radius("after_ln_f", out)
+                residual_points["ln_f"] = out.detach().float()
+                record_radius("ln_f", out)
             handles.append(model.transformer.ln_f.register_forward_hook(lnf_hook))
         if args.display != "token" and args.activation_view != "none":
             def t0_hook(module, inp, out):
@@ -407,20 +402,20 @@ def main():
         if args.plot_residual_magnitude:
             for blk, original_combine in patched_combiners:
                 blk._combine_resid = original_combine
-            stage_names = ["after_wte", "after_embedding"]
+            stage_names = ["after wte"]
             mags = []
             for st in stage_names:
                 v = residual_points[st]
                 mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
             for li in selected_layers:
-                stage_names.append(f"after_attn_l{li+1}")
+                stage_names.append(f"after a{li+1}")
                 v = residual_points["after_attn"].get(li)
                 mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
-                stage_names.append(f"after_mlp_l{li+1}")
+                stage_names.append(f"after m{li+1}")
                 v = residual_points["after_mlp"].get(li)
                 mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
-            stage_names.append("after_ln_f")
-            v = residual_points["after_ln_f"]
+            stage_names.append("ln_f")
+            v = residual_points["ln_f"]
             mags.append(float(v[0, -1, :].norm().item()) if v is not None else np.nan)
             residual_mag_traces.append((stage_names, mags))
 
@@ -734,19 +729,20 @@ def main():
             cols=1,
             shared_xaxes=False,
             subplot_titles=[
-                "average residual radius by stage (std bars)",
-                "per-window final-token residual radius trace",
+                "average residual magnitude by location (std bars)",
+                "per-window final-token residual magnitude trace",
             ],
             vertical_spacing=0.12,
         )
         fig.add_trace(
-            go.Bar(
+            go.Scatter(
                 x=stage_names,
                 y=means,
+                mode="lines+markers",
                 error_y={"type": "data", "array": stds, "visible": True},
-                name="mean ± std",
+                name="average magnitude ± std",
                 customdata=np.array(counts),
-                hovertemplate="%{x}<br>mean=%{y:.6f}<br>std=%{error_y.array:.6f}<br>n=%{customdata}<extra></extra>",
+                hovertemplate="%{x}<br>avg magnitude=%{y:.6f}<br>std=%{error_y.array:.6f}<br>n=%{customdata}<extra></extra>",
             ),
             row=1,
             col=1,
@@ -756,9 +752,9 @@ def main():
             row=2,
             col=1,
         )
-        fig.update_yaxes(title_text="radius", row=1, col=1)
-        fig.update_yaxes(title_text="stage", row=2, col=1)
-        fig.update_xaxes(tickangle=45, row=1, col=1)
+        fig.update_yaxes(title_text="average magnitude", row=1, col=1)
+        fig.update_yaxes(title_text="location", row=2, col=1)
+        fig.update_xaxes(title_text="location", tickangle=45, row=1, col=1)
         fig.update_xaxes(title_text="window", row=2, col=1)
         fig.update_layout(height=max(720, 28 * len(stage_names) + 420), coloraxis={"colorscale": "Viridis"})
         fig.write_html(args.residual_magnitude_file)
@@ -768,9 +764,11 @@ def main():
             magnitudes=arr,
             mean_radius=np.array(means, dtype=np.float32),
             std_radius=np.array(stds, dtype=np.float32),
+            mean_magnitude=np.array(means, dtype=np.float32),
+            std_magnitude=np.array(stds, dtype=np.float32),
             sample_count=np.array(counts, dtype=np.int64),
         )
-        console.print(f"[cyan]Saved residual radius summary → {args.residual_magnitude_file}[/cyan]")
+        console.print(f"[cyan]Saved residual magnitude summary → {args.residual_magnitude_file}[/cyan]")
 
 if __name__ == "__main__":
     main()
