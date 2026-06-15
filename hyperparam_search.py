@@ -23,6 +23,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
@@ -193,10 +195,24 @@ def load_log(path: Path) -> Dict[str, Any]:
     return data or {}
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def save_log(path: Path, log: Dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(yaml.dump(log, sort_keys=False))
     tmp.replace(path)
+
+
+def upsert_iteration(log: Dict[str, Any], iter_idx: int, block: Dict[str, Any]) -> None:
+    """Replace the iteration block for *iter_idx*, or append it if missing."""
+    iterations = log.setdefault("iterations", [])
+    for idx, existing in enumerate(iterations):
+        if existing.get("iter") == iter_idx:
+            iterations[idx] = block
+            return
+    iterations.append(block)
 
 
 # ───────────────────────── search controller ─────────────────────────
@@ -407,6 +423,42 @@ def main():
         print(f"========== Iteration {cur_iter} ==========")
         candidates: List[Dict[str, Any]] = []
         best_choice: Tuple[float, Dict[str, Any]] | None = None
+        previous_best_iter = log["iterations"][-1]["baseline_metrics"].get("best_iter")
+        iter_started_at = utc_now_iso()
+        iter_block = {
+            "iter": cur_iter,
+            "baseline_metrics": {
+                "loss": base_loss,
+                "score": base_score,
+                "params": base_params,
+                "peak_torch_allocated_mb": base_torch_alloc,
+                "peak_torch_reserved_mb": base_torch_reserved,
+                "peak_process_gpu_mb": base_process_gpu,
+                "iter_latency_avg": base_iter_ms,
+                "best_iter": previous_best_iter,
+                "rankme": base_rankme,
+                "areq": base_areq,
+            },
+            "candidates": candidates,
+            "chosen": None,
+            "status": "running",
+            "started_at": iter_started_at,
+            "last_updated_at": iter_started_at,
+            "baseline_config_before": deepcopy(baseline_cfg),
+            "baseline_config_after": deepcopy(baseline_cfg),
+        }
+        upsert_iteration(log, cur_iter, iter_block)
+        save_log(log_path, log)
+
+        def _upsert_candidate(candidate: Dict[str, Any]) -> None:
+            for idx, existing in enumerate(candidates):
+                if (
+                    existing.get("param") == candidate.get("param")
+                    and existing.get("value") == candidate.get("value")
+                ):
+                    candidates[idx] = candidate
+                    return
+            candidates.append(candidate)
 
         for pname in args.param_names:
             if pname not in baseline_cfg:
@@ -422,17 +474,39 @@ def main():
             def _evaluate(
                 cfg_template: Dict[str, Any], label_for_log: str, value_for_log: Any
             ) -> None:
-                nonlocal best_choice, candidates
+                nonlocal best_choice, candidates, iter_block
 
                 seed0 = int(cfg_template.get("seed", 1337))
                 if args.randomize_seed:
                     seed0 = random.randint(0, 2**31 - 1)
                 seed_runs: List[Dict[str, Any]] = []
                 scores: List[float] = []
+                candidate_started_at = utc_now_iso()
+                candidate_start_time = time.monotonic()
 
                 for r in range(args.random_iterations):
                     cfg_run = deepcopy(cfg_template)
                     cfg_run["seed"] = seed0 + r
+
+                    candidate_elapsed = time.monotonic() - candidate_start_time
+                    _upsert_candidate(
+                        {
+                            "param": label_for_log,
+                            "value": value_for_log,
+                            "status": "running",
+                            "started_at": candidate_started_at,
+                            "last_updated_at": utc_now_iso(),
+                            "elapsed_seconds": candidate_elapsed,
+                            "estimated_remaining_seconds": None,
+                            "current_seed": cfg_run["seed"],
+                            "seeds": seed_runs,
+                            "completed_random_iterations": len(seed_runs),
+                            "expected_random_iterations": args.random_iterations,
+                        }
+                    )
+                    iter_block["last_updated_at"] = utc_now_iso()
+                    upsert_iteration(log, cur_iter, iter_block)
+                    save_log(log_path, log)
 
                     print(f"[TEST] {label_for_log}={value_for_log}  seed={cfg_run['seed']}")
                     try:
@@ -467,6 +541,32 @@ def main():
                         }
                     )
                     scores.append(score)
+                    candidate_elapsed = time.monotonic() - candidate_start_time
+                    completed_runs = len(seed_runs)
+                    expected_runs = args.random_iterations
+                    estimated_remaining = (
+                        (candidate_elapsed / completed_runs) * (expected_runs - completed_runs)
+                        if completed_runs > 0
+                        else None
+                    )
+                    _upsert_candidate(
+                        {
+                            "param": label_for_log,
+                            "value": value_for_log,
+                            "status": "running",
+                            "started_at": candidate_started_at,
+                            "last_updated_at": utc_now_iso(),
+                            "elapsed_seconds": candidate_elapsed,
+                            "estimated_remaining_seconds": estimated_remaining,
+                            "current_seed": None,
+                            "seeds": seed_runs,
+                            "completed_random_iterations": completed_runs,
+                            "expected_random_iterations": expected_runs,
+                        }
+                    )
+                    iter_block["last_updated_at"] = utc_now_iso()
+                    upsert_iteration(log, cur_iter, iter_block)
+                    save_log(log_path, log)
 
                 avg_score = sum(scores) / len(scores)
                 avg_torch_alloc = (
@@ -567,8 +667,18 @@ def main():
                     "target_delta": objective_delta,
                     "target_improvement": objective_improvement,
                     "seeds": seed_runs,
+                    "completed_random_iterations": len(seed_runs),
+                    "expected_random_iterations": args.random_iterations,
+                    "status": "complete",
+                    "started_at": candidate_started_at,
+                    "last_updated_at": utc_now_iso(),
+                    "elapsed_seconds": time.monotonic() - candidate_start_time,
+                    "estimated_remaining_seconds": 0.0,
                 }
-                candidates.append(cand)
+                _upsert_candidate(cand)
+                iter_block["last_updated_at"] = utc_now_iso()
+                upsert_iteration(log, cur_iter, iter_block)
+                save_log(log_path, log)
 
                 if eff > 0:
                     if best_choice is None:
@@ -653,27 +763,16 @@ def main():
                         f"'max_iters' from {current_max_iters} to {new_max_iters}."
                     )
                     baseline_cfg["max_iters"] = new_max_iters
-                    log["iterations"].append(
+                    iter_block.update(
                         {
-                            "iter": cur_iter,
-                            "baseline_metrics": {
-                                "loss": base_loss,
-                                "score": base_score,
-                                "params": base_params,
-                                "peak_torch_allocated_mb": base_torch_alloc,
-                                "peak_torch_reserved_mb": base_torch_reserved,
-                                "peak_process_gpu_mb": base_process_gpu,
-                                "iter_latency_avg": base_iter_ms,
-                                "best_iter": log["iterations"][-1]["baseline_metrics"]["best_iter"],
-                                "rankme": base_rankme,
-                                "areq": base_areq,
-                            },
-                            "candidates": candidates,
+                            "status": "complete",
+                            "last_updated_at": utc_now_iso(),
                             "chosen": None,
                             "action": f"max_iters_increased_to_{new_max_iters}",
                             "baseline_config_after": deepcopy(baseline_cfg),
                         }
                     )
+                    upsert_iteration(log, cur_iter, iter_block)
                     log["baseline_config"] = deepcopy(baseline_cfg)
                     save_log(log_path, log)
                     cur_iter += 1
@@ -685,6 +784,11 @@ def main():
                     )
 
             print("No positive-efficiency candidate — stopping.")
+            iter_block["status"] = "complete"
+            iter_block["last_updated_at"] = utc_now_iso()
+            iter_block["chosen"] = None
+            iter_block["baseline_config_after"] = deepcopy(baseline_cfg)
+            upsert_iteration(log, cur_iter, iter_block)
             log["stop_reason"] = "no_positive_efficiency"
             log["baseline_config"] = deepcopy(baseline_cfg)
             save_log(log_path, log)
@@ -727,9 +831,11 @@ def main():
         base_rankme = chosen.get("avg_rankme", base_rankme)
         base_areq = chosen.get("avg_areq", base_areq)
 
-        log["iterations"].append(
+        iter_block.update(
             {
-                "iter": cur_iter,
+                "status": "complete",
+                "last_updated_at": utc_now_iso(),
+                "chosen": chosen,
                 "baseline_metrics": {
                     "loss": base_loss,
                     "score": base_score,
@@ -742,11 +848,10 @@ def main():
                     "rankme": base_rankme,
                     "areq": base_areq,
                 },
-                "candidates": candidates,
-                "chosen": chosen,
                 "baseline_config_after": deepcopy(baseline_cfg),
             }
         )
+        upsert_iteration(log, cur_iter, iter_block)
         log["baseline_config"] = deepcopy(baseline_cfg)
         save_log(log_path, log)
         cur_iter += 1
