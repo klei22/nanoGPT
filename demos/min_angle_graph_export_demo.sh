@@ -1,5 +1,4 @@
 #!/bin/bash
-set -euo pipefail
 
 # Demo the per-validation LM-head minimum-angle graph export on the small
 # exploration config, then point the user at the local Plotly viewer.

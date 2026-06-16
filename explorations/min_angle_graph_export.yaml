@@ -12,17 +12,17 @@
 ---
 
 common_group:
-  n_layer: [1]
-  n_head: [1]
-  n_embd: [64]
+  n_layer: [3]
+  n_head: [3]
+  n_embd: [150]
   block_size: [64]
   batch_size: [4]
-  max_iters: [20]
+  max_iters: [2000]
   eval_interval: [20]
-  eval_iters: [2]
+  eval_iters: [20]
   device: ["cuda:0"]
   dtype: ["float16"]
-  compile: [false]
+  compile: [true]
   never_save_checkpoint: [true]
   export_min_angle_graph_each_eval: [true]
   export_min_angle_graph_device: ["cuda:0"]

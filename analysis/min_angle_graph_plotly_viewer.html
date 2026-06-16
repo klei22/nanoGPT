@@ -411,6 +411,16 @@
         stopPlayback();
         return;
       }
+      if (!state.snapshots.length) {
+        return;
+      }
+      if (state.currentIndex >= state.snapshots.length - 1) {
+        state.currentIndex = 0;
+        plotSnapshot();
+      }
+      if (state.snapshots.length === 1) {
+        return;
+      }
       playBtn.textContent = "Pause";
       state.playTimer = setInterval(() => {
         if (state.currentIndex >= state.snapshots.length - 1) {
