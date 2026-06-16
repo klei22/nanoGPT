@@ -7,8 +7,6 @@
 # different language code to the demo script, update the dataset entries below.
 ---
 common_group:
-  eval_interval: [250]
-  max_epochs: [10]
   training_limiters: [["max_epochs"]]
   log_bits_per_byte: [true]
   tensorboard_log: [true]
@@ -27,8 +25,11 @@ common_group:
 
 parameter_groups:
   - dataset: ["flores200-res/tiktoken_eng_Latn"]
-    named_group_variations: ["tiktoken"]
+    eval_interval: [10]
+    max_epochs: [30]
   - dataset: ["flores200-res/byte_eng_Latn"]
-    named_group_variations: ["byte"]
+    eval_interval: [50]
+    max_epochs: [60]
   - dataset: ["flores200-res/custom_char_byte_fallback_ipa_eng_Latn"]
-    named_group_variations: ["ipa_byte_fallback"]
+    eval_interval: [50]
+    max_epochs: [60]
