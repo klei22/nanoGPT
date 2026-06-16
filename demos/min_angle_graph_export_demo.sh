@@ -18,6 +18,19 @@ VIEWER="analysis/min_angle_graph_plotly_viewer.html"
 
 before_csv_count="$(find "${EXPORT_ROOT}" -type f -name "${PREFIX}*.csv" 2>/dev/null | wc -l | tr -d ' ')"
 
+cat <<EOF
+Starting LM-head minimum-angle graph export demo.
+
+Config:      ${CONFIG}
+Output dir:  ${OUTPUT_DIR}
+Export root: ${EXPORT_ROOT}
+Run prefix:  ${PREFIX}
+
+This runs the shakespeare_char and minipile smoke-test configurations. The
+minipile export scans a much larger vocabulary, so it can take noticeably
+longer than the shakespeare_char run even though the training run is tiny.
+EOF
+
 python3 optimization_and_search/run_experiments.py \
   --config "${CONFIG}" \
   --config_format yaml \

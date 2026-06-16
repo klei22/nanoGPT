@@ -7,9 +7,8 @@
 #     --config_format yaml \
 #     --prefix min_angle_export_
 #
-# The minipile run has a much larger vocabulary than shakespeare_char, so its
-# export is intentionally configured with a smaller block size to keep peak
-# temporary matrix memory bounded while still exercising the same export path.
+# The minipile run has a much larger vocabulary than shakespeare_char, so the
+# default smoke settings use CUDA/float16 and a GPU-friendly export block size.
 ---
 
 common_group:
@@ -21,12 +20,12 @@ common_group:
   max_iters: [20]
   eval_interval: [20]
   eval_iters: [2]
-  device: ["cpu"]
-  dtype: ["float32"]
+  device: ["cuda:0"]
+  dtype: ["float16"]
   compile: [false]
   never_save_checkpoint: [true]
   export_min_angle_graph_each_eval: [true]
-  export_min_angle_graph_device: ["cpu"]
+  export_min_angle_graph_device: ["cuda:0"]
 
 parameter_groups:
   - dataset: ["shakespeare_char"]
@@ -35,6 +34,6 @@ parameter_groups:
     export_min_angle_graph_dir: ["out/min_angle_graph_exports/${RUN_NAME}"]
 
   - dataset: ["minipile"]
-    export_min_angle_graph_block_size: [128]
+    export_min_angle_graph_block_size: [2048]
     export_min_angle_graph_label: ["${RUN_NAME}"]
     export_min_angle_graph_dir: ["out/min_angle_graph_exports/${RUN_NAME}"]
