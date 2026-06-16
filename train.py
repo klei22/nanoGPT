@@ -12,6 +12,22 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 
+# Some user worktrees may contain helper files named like Python stdlib modules
+# (for example copy.py). Preload stdlib modules that Rich/dataclasses need
+# before third-party imports so local helper files cannot shadow them during
+# interpreter startup.
+_repo_dir = os.path.dirname(os.path.abspath(__file__))
+_removed_sys_path_entries = []
+for _entry in ("", _repo_dir):
+    while _entry in sys.path:
+        sys.path.remove(_entry)
+        _removed_sys_path_entries.append(_entry)
+import copy as _stdlib_copy
+import dataclasses as _stdlib_dataclasses
+for _entry in reversed(_removed_sys_path_entries):
+    sys.path.insert(0, _entry)
+del _entry, _removed_sys_path_entries, _repo_dir, _stdlib_copy, _stdlib_dataclasses
+
 from rich.console import Group
 from rich.console import Console
 from rich.text import Text
