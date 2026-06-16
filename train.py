@@ -1826,6 +1826,43 @@ class Trainer:
         abbr = ''.join([part[0] for part in parts])
         return abbr
 
+
+    def _active_training_limiters(self) -> set[str]:
+        limiters = getattr(self.args, "training_limiters", None) or ["max_iters"]
+        if isinstance(limiters, str):
+            limiters = [limiters]
+        return set(limiters)
+
+    def _selected_training_limit_reasons(self, current_epoch: float, elapsed_seconds: float) -> list[str]:
+        reasons = []
+        limiters = self._active_training_limiters()
+        if "max_iters" in limiters and self.args.max_iters is not None and self.iter_num > self.args.max_iters:
+            reasons.append(f"max_iters={self.args.max_iters}")
+        if "max_epochs" in limiters and self.args.max_epochs is not None and current_epoch >= self.args.max_epochs:
+            reasons.append(f"max_epochs={self.args.max_epochs}")
+        if "max_seconds" in limiters and self.args.max_seconds is not None and elapsed_seconds >= self.args.max_seconds:
+            reasons.append(f"max_seconds={self.args.max_seconds}")
+        if "max_tokens" in limiters and self.args.max_tokens is not None and self.tokens_trained >= self.args.max_tokens:
+            reasons.append(f"max_tokens={self.args.max_tokens}")
+        return reasons
+
+    def _estimated_limiter_iters_remaining(self, current_epoch: float) -> int:
+        batch_tokens = max(1, self.args.batch_size * self.args.block_size)
+        estimates = []
+        limiters = self._active_training_limiters()
+        if "max_iters" in limiters and self.args.max_iters is not None:
+            estimates.append(max(0, self.args.max_iters - self.iter_num))
+        if "max_tokens" in limiters and self.args.max_tokens is not None:
+            estimates.append(max(0, math.ceil((self.args.max_tokens - self.tokens_trained) / batch_tokens)))
+        if "max_epochs" in limiters and self.args.max_epochs is not None:
+            if isinstance(self.dataset_size_tokens, dict):
+                size = min(self.dataset_size_tokens.values()) if self.dataset_size_tokens else 0
+            else:
+                size = self.dataset_size_tokens
+            remaining_tokens = max(0.0, (self.args.max_epochs - current_epoch) * size)
+            estimates.append(max(0, math.ceil(remaining_tokens / batch_tokens)))
+        return min(estimates) if estimates else max(0, self.args.max_iters - self.iter_num)
+
     def save_checkpoint(self, filename):
         if self.args.never_save_checkpoint:
             return
@@ -2085,7 +2122,8 @@ class Trainer:
         local_iter_num = 0
         running_mfu = -1.0
         current_epoch = 0.0
-        self.evaluations_remaining = (self.args.max_iters - self.iter_num) // self.args.eval_interval + 1
+        estimated_iters_remaining = self._estimated_limiter_iters_remaining(current_epoch)
+        self.evaluations_remaining = estimated_iters_remaining // self.args.eval_interval + 1
         self.eta = build_eta_estimator(self.args, t_start, self.evaluations_remaining, self.formatted_completion_eta)
         num_steps_with_worse_loss = 0
         losses = {"val": float("inf")}
@@ -2125,7 +2163,7 @@ class Trainer:
         with Live(Group(progress.get_renderable(), cli_text), console=self.console, refresh_per_second=10) as live:
             task_id = progress.add_task(
                     "[green]Training...",
-                    total=((self.args.max_iters - self.iter_num) + self.evaluations_remaining * self.args.eval_iters),
+                    total=(estimated_iters_remaining + self.evaluations_remaining * self.args.eval_iters),
                     eta=self.formatted_completion_eta,
                     total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
                     total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
@@ -2248,12 +2286,12 @@ class Trainer:
                     else:
                         self.tokens_trained += tokens_trained_this_batch
 
-                    # Compute epoch for logging:
-                        if self.args.dataset_list:
-                            current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
-                            self.epochs_trained_dict[current_dataset] = current_epoch
-                        else:
-                            current_epoch = self.tokens_trained / self.dataset_size_tokens
+                    # Compute epoch for logging and optional max_epochs limiting.
+                    if self.args.dataset_list:
+                        current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                        self.epochs_trained_dict[current_dataset] = current_epoch
+                    else:
+                        current_epoch = self.tokens_trained / self.dataset_size_tokens
 
                     self.scaler.scale(loss).backward()
 
@@ -2363,7 +2401,9 @@ class Trainer:
                 live.update(Group(progress.get_renderable(), cli_text))
 
                 # End of training actions
-                if self.iter_num > self.args.max_iters:
+                stop_reasons = self._selected_training_limit_reasons(current_epoch, t1 - t_start)
+                if stop_reasons:
+                    print(f"Stopping training due to: {', '.join(stop_reasons)}")
                     print(self.best_val_loss, self.best_iter, self.best_tokens)
                     if self.args.only_save_checkpoint_at_end:
                         if not self.args.never_save_checkpoint:
