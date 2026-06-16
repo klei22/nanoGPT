@@ -184,6 +184,7 @@ class MonitorApp(App):
         # Base columns: metrics + parameters
         base_cols = [
             "best_val_loss",
+            "best_val_bits_per_byte",
             "best_val_iter",
             "best_val_tokens",
             "num_params",
@@ -588,7 +589,7 @@ class MonitorApp(App):
                 row: List[str] = []
                 for col in self.columns:
                     val = self.get_cell(entry, col)
-                    if col == "best_val_loss" and isinstance(val, float):
+                    if col in {"best_val_loss", "best_val_bits_per_byte"} and isinstance(val, float):
                         row.append(f"{val:.6f}")
                     else:
                         row.append(str(val))

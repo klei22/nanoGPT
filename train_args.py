@@ -1423,6 +1423,16 @@ def parse_args():
 
     # Optimizer args
     training_group.add_argument('--max_iters', default=3500, type=int)
+    training_group.add_argument('--max_epochs', default=None, type=float, help='Optional epoch limit. Active only when selected by --training_limiters.')
+    training_group.add_argument('--max_seconds', default=None, type=float, help='Optional wall-clock training time limit in seconds. Active only when selected by --training_limiters.')
+    training_group.add_argument('--max_tokens', default=None, type=int, help='Optional trained-token limit. Active only when selected by --training_limiters.')
+    training_group.add_argument(
+        '--training_limiters',
+        nargs='+',
+        default=['max_iters'],
+        choices=['max_iters', 'max_epochs', 'max_seconds', 'max_tokens'],
+        help='One or more stopping limiters to enforce. Defaults to only max_iters for backward compatibility.',
+    )
     training_group.add_argument('--weight_decay', default=1e-1, type=float)
     training_group.add_argument('--beta1', default=0.9, type=float)
     training_group.add_argument('--beta2', default=0.99, type=float)
@@ -1474,6 +1484,7 @@ def parse_args():
     # Metric logging toggles
     logging_group.add_argument('--log_btc_train', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance training metrics')
     logging_group.add_argument('--log_btc_per_param', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance-per-parameter metrics')
+    logging_group.add_argument('--log_bits_per_byte', default=True, action=argparse.BooleanOptionalAction, help='Log validation loss converted to bits per original UTF-8 byte when dataset metadata includes byte counts')
     logging_group.add_argument('--log_grad_norm', default=False, action=argparse.BooleanOptionalAction, help='Log gradient norm metrics')
     logging_group.add_argument('--log_grad_std', default=False, action=argparse.BooleanOptionalAction, help='Log gradient std metrics')
     logging_group.add_argument('--log_all_metrics', default=False, action=argparse.BooleanOptionalAction, help='Enable logging of all metrics including gns')
