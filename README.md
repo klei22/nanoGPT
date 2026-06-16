@@ -298,6 +298,12 @@ device such as `cuda:0`. In `auto` mode, the export uses the LM-head tensor's
 current CUDA device when possible, otherwise streams blocks to `cuda:0` if CUDA
 is available, and falls back to CPU.
 
+To review a sequence of exports visually, open
+`analysis/min_angle_graph_plotly_viewer.html` in a browser and select the CSV
+files from one export directory. The page sorts snapshots by the iteration in
+their filenames and provides previous/next/play controls plus a slider to step
+from the first validation export to the last.
+
 ## TODO Section:
 
 TODO: Add links and descriptions to other Readme's and Demos.
