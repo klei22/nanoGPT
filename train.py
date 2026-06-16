@@ -136,6 +136,8 @@ class Trainer:
         self.latest_ln_f_cosine_95 = float('nan')
         self.latest_rankme = float('nan')
         self.latest_areq = float('nan')
+        self.latest_bits_per_byte = float('nan')
+        self.bits_per_byte_scales = {}
 
         # store overall statistics for weights and activations
         self.latest_overall_weight_stats = {
@@ -598,6 +600,37 @@ class Trainer:
         else:
             raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
 
+    def _bits_per_byte_scale_from_meta(self, meta):
+        if not getattr(self.args, "log_bits_per_byte", True):
+            return None
+        byte_metrics = meta.get("byte_metrics", {}) if isinstance(meta, dict) else {}
+        tokens_per_byte = byte_metrics.get("val_tokens_per_byte")
+        if tokens_per_byte is None:
+            tokens_per_byte = meta.get("tokens_per_byte")
+        if tokens_per_byte is None:
+            return None
+        try:
+            tokens_per_byte = float(tokens_per_byte)
+        except (TypeError, ValueError):
+            return None
+        if tokens_per_byte <= 0 or not math.isfinite(tokens_per_byte):
+            return None
+        return tokens_per_byte / math.log(2)
+
+    def _val_bits_per_byte(self, loss_value, target_dataset=None):
+        if not getattr(self.args, "log_bits_per_byte", True):
+            return float('nan')
+        dataset = target_dataset or self.args.dataset
+        scale = self.bits_per_byte_scales.get(dataset)
+        if scale is None:
+            scale = self.bits_per_byte_scales.get(self.args.dataset)
+        if scale is None:
+            return float('nan')
+        loss_float = self._to_scalar(loss_value)
+        if not math.isfinite(loss_float):
+            return float('nan')
+        return loss_float * scale
+
     def load_tokenizer(self):
         if self.args.dataset_list is not None and self.args.multidataset_wte:
             self.encode_dict = {}
@@ -609,6 +642,9 @@ class Trainer:
                 with open(meta_path, 'rb') as f:
                     meta = pickle.load(f)
                 encode, decode = get_tokenizer_functions(meta)
+                scale = self._bits_per_byte_scale_from_meta(meta)
+                if scale is not None:
+                    self.bits_per_byte_scales[dataset] = scale
                 self.encode_dict[dataset] = encode
                 self.decode_dict[dataset] = decode
             self.encode = self.encode_dict[self.args.dataset_list[0]]
@@ -620,6 +656,9 @@ class Trainer:
                     meta = pickle.load(f)
 
                 self.encode, self.decode = get_tokenizer_functions(meta)
+                scale = self._bits_per_byte_scale_from_meta(meta)
+                if scale is not None:
+                    self.bits_per_byte_scales[self.args.dataset] = scale
 
                 if 'tokenizer' in meta:
                     if meta['tokenizer'] == 'sentencepiece':
@@ -1420,6 +1459,12 @@ class Trainer:
                     tokens_trained
                     )
 
+            bits_per_byte = self._val_bits_per_byte(losses['val'], target_dataset)
+            self.latest_bits_per_byte = bits_per_byte
+            if self.args.log_bits_per_byte and math.isfinite(bits_per_byte):
+                self.writer.add_scalar(f"{target_dataset}/bits_per_byte_iters", bits_per_byte, self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/bits_per_byte_tokens", bits_per_byte, tokens_trained)
+
             # vocab agnostic, cross tokenizer comparison
             if self.args.log_btc_train:
                 self.writer.add_scalars(
@@ -1909,6 +1954,7 @@ class Trainer:
                     chance_ratio = self._safe_better_than_chance(self.model_args['vocab_size'], self.best_val_loss.item())
                     metrics = [
                             f"{self.best_val_loss.item()}",
+                            f"{self._val_bits_per_byte(self.best_val_loss, self.args.dataset):.6f}",
                             f"{self.iter_num}",
                             f"{self.best_tokens}",
                             f"{self.model.num_param}",

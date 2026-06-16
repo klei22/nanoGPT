@@ -20,6 +20,7 @@ METRICS_FILENAME = "best_val_loss_and_iter.txt"
 ZEUS_SUMMARY_FILENAME = "zeus_summary.json"
 METRIC_KEYS = [
     "best_val_loss",
+    "best_val_bits_per_byte",
     "best_val_iter",
     "best_val_tokens",
     "num_params",
@@ -564,6 +565,7 @@ def read_metrics(out_dir: str) -> dict:
 
     base_metric_keys = [
         "best_val_loss",
+        "best_val_bits_per_byte",
         "best_val_iter",
         "best_val_tokens",
         "num_params",
@@ -587,6 +589,7 @@ def read_metrics(out_dir: str) -> dict:
         "areq",
     ]
     casts = [
+        float,
         float,
         int,
         int,
@@ -615,6 +618,9 @@ def read_metrics(out_dir: str) -> dict:
         raise ValueError(
             f"Metric schema mismatch: {len(base_metric_keys)} keys vs {len(casts)} casts."
         )
+    if len(parts) == len(base_metric_keys) - 1:
+        # Backward compatibility for runs created before best_val_bits_per_byte.
+        parts.insert(1, "")
     if len(parts) < len(base_metric_keys):
         raise ValueError(
             f"Expected at least {len(base_metric_keys)} metrics in {path}, got {len(parts)}."

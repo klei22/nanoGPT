@@ -1474,6 +1474,7 @@ def parse_args():
     # Metric logging toggles
     logging_group.add_argument('--log_btc_train', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance training metrics')
     logging_group.add_argument('--log_btc_per_param', default=False, action=argparse.BooleanOptionalAction, help='Log better-than-chance-per-parameter metrics')
+    logging_group.add_argument('--log_bits_per_byte', default=True, action=argparse.BooleanOptionalAction, help='Log validation loss converted to bits per original UTF-8 byte when dataset metadata includes byte counts')
     logging_group.add_argument('--log_grad_norm', default=False, action=argparse.BooleanOptionalAction, help='Log gradient norm metrics')
     logging_group.add_argument('--log_grad_std', default=False, action=argparse.BooleanOptionalAction, help='Log gradient std metrics')
     logging_group.add_argument('--log_all_metrics', default=False, action=argparse.BooleanOptionalAction, help='Enable logging of all metrics including gns')
