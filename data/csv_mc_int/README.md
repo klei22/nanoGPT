@@ -58,3 +58,37 @@ data/csv_mc_int/get_dataset.sh readings.csv --default_range 0:65535
 ```
 
 Per-column `--range` values override `--default_range`.
+
+## Viewing p* CSV samples and sample boundaries
+
+CSV outputs that contain pixel columns named `p0`, `p1`, ... can be opened in
+`data/roomba/roomba_grayscale_viewer.html`, even if they were produced by the
+generic `csv_mc_int` flow rather than the Conway helper. The viewer accepts the
+same CSV file-picker workflow and also URL parameters when served over HTTP:
+
+```text
+data/roomba/roomba_grayscale_viewer.html?csv=/path/to/sample.csv&prompt_rows=4&sample_start_frame=64
+```
+
+- `prompt_rows` marks the first N frames as start-token / prompt frames.
+- `sample_start_frame` is a zero-based frame index where generated sample frames
+  begin.
+
+The viewer also exposes manual `Prompt row count` and `Sample start index,
+0-based` controls, so boundary overlays work for any `csv_mc_int` p* sample CSV
+without needing a custom dataset wrapper.
+
+
+For side-by-side evaluation of a CSV laid out as `prompt rows -> optional
+validation ground-truth rows -> sampled rows`, open the comparison viewer instead:
+
+```text
+data/roomba/grid_sequence_compare_viewer.html?csv=/path/to/sample.csv&prompt_rows=4&sample_start_frame=64
+```
+
+The comparison viewer uses `prompt_rows` for the shared start-token region and
+`sample_start_frame` for the first sampled row. If there is no validation
+ground-truth segment, set `sample_start_frame` equal to `prompt_rows` or leave it
+blank. Its export panel records the prompt+sample inference timeline as a WebM
+video over a selected frame range.
+
