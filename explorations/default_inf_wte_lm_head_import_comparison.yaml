@@ -46,13 +46,10 @@ named_static_groups:
     n_qk_head_dim: [200]
     n_v_head_dim: [200]
 
-  # MQA
-  - named_group: "mqa"
-    n_kv_group: [1]
-
   # WTE/lm_head import modes
   - named_group: "default_wte_lm_head"
 
+  # CHANGE THIS TO THE TARGET CHECKPOINT NAME
   - named_group: "import_wte_lm_head"
     import_wte_lm_head_ckpt: &prior_wte_lm_head_ckpt ["out/default_inf_prior/ckpt.pt"]
     import_wte_lm_head_freeze: [false]
@@ -79,23 +76,17 @@ common_group:
   compile: [true]
   log_rankme: [true]
   log_areq: [true]
+  n_head: [3]
 
 parameter_groups:
   - named_group_static:
       - "qk_norm"
-      - "peri_ln"
       - "rotary"
       - "relu2max"
       - "infinite"
-      - "mqa"
     named_group_variations:
       - "head_dim"
       - "wte_lm_head_import_mode"
-    n_head:
-      range:
-        start: 1
-        end: 12
-        step: 1
 
   - named_group_static:
       - "qk_norm"
@@ -103,12 +94,6 @@ parameter_groups:
       - "rotary"
       - "softmax"
       - "infinite"
-      - "mqa"
     named_group_variations:
       - "head_dim"
       - "wte_lm_head_import_mode"
-    n_head:
-      range:
-        start: 1
-        end: 12
-        step: 1
