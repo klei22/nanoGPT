@@ -145,6 +145,7 @@ def compare_lm_head_pairwise_angles(
         metrics["stddev_abs_degrees_difference"] = float(selected_abs_diff.std(unbiased=False).item())
         metrics["median_abs_degrees_difference"] = float(selected_abs_diff.median().item())
         metrics["rmse_deg"] = float(torch.sqrt((selected_diff ** 2).mean()).item())
+        metrics["angle_alignment_score_pct"] = max(0.0, 100.0 * (1.0 - metrics["mae_deg"] / 180.0))
         if selected_a.numel() > 1 and selected_a.std() > 0 and selected_b.std() > 0:
             metrics["pearson_r"] = float(torch.corrcoef(torch.stack([selected_a, selected_b]))[0, 1].item())
         else:
@@ -197,12 +198,12 @@ def plot_html(result: AngleComparison) -> str:
             "Checkpoint A pairwise angles",
             "Checkpoint B pairwise angles",
             "Angle difference (B - A)",
-            "",
+            "Alignment vs baseline A",
         ),
         specs=[
             [{}, {}],
             [{"type": "heatmap"}, {"type": "heatmap"}],
-            [{"type": "heatmap"}, None],
+            [{"type": "heatmap"}, {}],
         ],
     )
     fig.add_trace(
@@ -276,11 +277,40 @@ def plot_html(result: AngleComparison) -> str:
         3,
         1,
     )
+    alignment_min = min(a + b) if a and b else 0.0
+    alignment_max = max(a + b) if a and b else 180.0
+    fig.add_trace(
+        go.Scatter(
+            x=a,
+            y=b,
+            customdata=hover_labels,
+            mode="markers",
+            name="B vs baseline A",
+            marker={"size": 5, "opacity": 0.65, "color": d, "colorscale": "RdBu", "cmid": 0, "showscale": False},
+            hovertemplate="pair=%{customdata}<br>A=%{x:.4f}°<br>B=%{y:.4f}°<extra></extra>",
+        ),
+        3,
+        2,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[alignment_min, alignment_max],
+            y=[alignment_min, alignment_max],
+            mode="lines",
+            name="perfect alignment",
+            line={"dash": "dash", "color": "#111827"},
+            hoverinfo="skip",
+        ),
+        3,
+        2,
+    )
     fig.update_xaxes(title_text="Rank after sorting selected pairs by checkpoint A angle", row=1, col=1)
     fig.update_yaxes(title_text="Pairwise angle (degrees)", row=1, col=1)
     for row, col in [(2, 1), (2, 2), (3, 1)]:
         fig.update_xaxes(tickangle=90, row=row, col=col)
         fig.update_yaxes(autorange="reversed", scaleanchor=f"x{(row - 1) * 2 + col}", scaleratio=1, row=row, col=col)
+    fig.update_xaxes(title_text="Baseline A pairwise angle (degrees)", row=3, col=2)
+    fig.update_yaxes(title_text="Checkpoint B pairwise angle (degrees)", scaleanchor="x6", scaleratio=1, row=3, col=2)
     fig.update_layout(
         height=1750,
         width=1800,

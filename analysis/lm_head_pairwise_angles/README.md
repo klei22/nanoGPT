@@ -23,7 +23,7 @@ Use `--device cuda` for CUDA acceleration when available, or `--device auto` to 
 python3 analysis/lm_head_pairwise_angles/app.py --ckpt-root . --host 127.0.0.1 --port 7860
 ```
 
-The webapp scans for checkpoint files, lets you choose two checkpoints, set an angle window, and renders A-sorted pair-angle plots, difference histograms, larger square A/B pairwise-angle heatmaps, difference heatmaps, and heatmap color/direction toggle menus.
+The webapp scans for checkpoint files, lets you choose two checkpoints, set an angle window, and renders A-sorted pair-angle plots, difference histograms, larger square A/B pairwise-angle heatmaps, difference heatmaps, a baseline-alignment scatter, metric cards, and heatmap color/direction toggle menus.
 
 ## Trend across training iterations
 
