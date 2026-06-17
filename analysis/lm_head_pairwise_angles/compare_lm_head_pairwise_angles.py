@@ -233,24 +233,109 @@ def plot_html(result: AngleComparison) -> str:
     )
     fig.add_trace(go.Histogram(x=d, name="B - A diff"), 1, 2)
     labels = [f"{i}:{t}" for i, t in enumerate(result.tokens)]
+    angle_colorbar = {"title": "angle deg", "len": 0.26, "thickness": 14}
+    diff_colorbar = {"title": "diff deg", "len": 0.26, "thickness": 14}
     fig.add_trace(
-        go.Heatmap(z=result.angles_a.tolist(), x=labels, y=labels, colorscale="Viridis", colorbar={"title": "deg"}),
+        go.Heatmap(
+            z=result.angles_a.tolist(),
+            x=labels,
+            y=labels,
+            colorscale="Viridis",
+            zmin=0,
+            zmax=180,
+            colorbar={**angle_colorbar, "x": 0.455, "y": 0.50},
+        ),
         2,
         1,
     )
     fig.add_trace(
-        go.Heatmap(z=result.angles_b.tolist(), x=labels, y=labels, colorscale="Viridis", colorbar={"title": "deg"}),
+        go.Heatmap(
+            z=result.angles_b.tolist(),
+            x=labels,
+            y=labels,
+            colorscale="Viridis",
+            zmin=0,
+            zmax=180,
+            colorbar={**angle_colorbar, "x": 1.0, "y": 0.50},
+        ),
         2,
         2,
     )
+    max_abs_diff = max(abs(float(result.diff.min())), abs(float(result.diff.max())), 1e-12)
     fig.add_trace(
-        go.Heatmap(z=result.diff.tolist(), x=labels, y=labels, colorscale="RdBu", zmid=0, colorbar={"title": "deg"}),
+        go.Heatmap(
+            z=result.diff.tolist(),
+            x=labels,
+            y=labels,
+            colorscale="RdBu",
+            zmid=0,
+            zmin=-max_abs_diff,
+            zmax=max_abs_diff,
+            colorbar={**diff_colorbar, "x": 0.455, "y": 0.16},
+        ),
         3,
         1,
     )
     fig.update_xaxes(title_text="Rank after sorting selected pairs by checkpoint A angle", row=1, col=1)
     fig.update_yaxes(title_text="Pairwise angle (degrees)", row=1, col=1)
-    fig.update_layout(height=1300, title="LM head pairwise angle comparison", bargap=0.05)
+    for row, col in [(2, 1), (2, 2), (3, 1)]:
+        fig.update_xaxes(tickangle=90, row=row, col=col)
+        fig.update_yaxes(autorange="reversed", scaleanchor=f"x{(row - 1) * 2 + col}", scaleratio=1, row=row, col=col)
+    fig.update_layout(
+        height=1750,
+        width=1800,
+        title="LM head pairwise angle comparison",
+        bargap=0.05,
+        margin={"l": 80, "r": 160, "t": 130, "b": 80},
+        updatemenus=[
+            {
+                "buttons": [
+                    {"label": "Viridis", "method": "restyle", "args": [{"colorscale": ["Viridis", "Viridis"]}, [3, 4]]},
+                    {"label": "Cividis", "method": "restyle", "args": [{"colorscale": ["Cividis", "Cividis"]}, [3, 4]]},
+                    {"label": "YlGnBu", "method": "restyle", "args": [{"colorscale": ["YlGnBu", "YlGnBu"]}, [3, 4]]},
+                    {"label": "Greens", "method": "restyle", "args": [{"colorscale": ["Greens", "Greens"]}, [3, 4]]},
+                    {"label": "Plasma", "method": "restyle", "args": [{"colorscale": ["Plasma", "Plasma"]}, [3, 4]]},
+                ],
+                "direction": "down",
+                "showactive": True,
+                "x": 0.00,
+                "xanchor": "left",
+                "y": 1.08,
+                "yanchor": "top",
+                "pad": {"r": 8, "t": 8},
+            },
+            {
+                "buttons": [
+                    {"label": "Angle high = bright", "method": "restyle", "args": [{"reversescale": [False, False]}, [3, 4]]},
+                    {"label": "Angle high = dark", "method": "restyle", "args": [{"reversescale": [True, True]}, [3, 4]]},
+                ],
+                "direction": "down",
+                "showactive": True,
+                "x": 0.12,
+                "xanchor": "left",
+                "y": 1.08,
+                "yanchor": "top",
+                "pad": {"r": 8, "t": 8},
+            },
+            {
+                "buttons": [
+                    {"label": "Diff red→blue", "method": "restyle", "args": [{"colorscale": ["RdBu"], "reversescale": [False]}, [5]]},
+                    {"label": "Diff blue→red", "method": "restyle", "args": [{"colorscale": ["RdBu"], "reversescale": [True]}, [5]]},
+                    {"label": "Diff balance", "method": "restyle", "args": [{"colorscale": ["Balance"], "reversescale": [False]}, [5]]},
+                ],
+                "direction": "down",
+                "showactive": True,
+                "x": 0.29,
+                "xanchor": "left",
+                "y": 1.08,
+                "yanchor": "top",
+                "pad": {"r": 8, "t": 8},
+            },
+        ],
+    )
+    fig.add_annotation(text="Angle colors", x=0.00, xref="paper", y=1.105, yref="paper", showarrow=False, xanchor="left")
+    fig.add_annotation(text="Angle direction", x=0.12, xref="paper", y=1.105, yref="paper", showarrow=False, xanchor="left")
+    fig.add_annotation(text="Difference colors", x=0.29, xref="paper", y=1.105, yref="paper", showarrow=False, xanchor="left")
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
 
