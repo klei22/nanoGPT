@@ -78,3 +78,8 @@ This file gives coding agents the minimum repository-specific rules needed to co
 ## PR/Commit Notes
 - Commit title format: `<type(scope): summary>`
 
+## Variation Workflow Addendum
+- Whenever adding a new model variation (e.g., a new option under `variations/...`),
+  also add a corresponding YAML exploration file in `explorations/` based on
+  `explorations/default_inf.yaml` so the new variation can be compared directly
+  against default settings.
