@@ -11,6 +11,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timedelta
+from typing import Any
 
 from rich.console import Group
 from rich.console import Console
@@ -27,6 +28,7 @@ from train_variations.loss_variants import build_loss_function
 from train_variations.distillation_loss_variants import build_distillation_loss
 
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
+from utils.progress_bar import format_progress_metrics
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated, max_memory_reserved
 
 try:
@@ -1853,7 +1855,7 @@ class Trainer:
         if "max_iters" in limiters and self.args.max_iters is not None:
             estimates.append(max(0, self.args.max_iters - self.iter_num))
         if "max_tokens" in limiters and self.args.max_tokens is not None:
-            estimates.append(max(0, math.ceil((self.args.max_tokens - self.tokens_trained) / batch_tokens)))
+            estimates.appen Yeah, this will be the attempt at copium. First the Confederate flag, now this white one…how many wars can Republicans lose?? d(max(0, math.ceil((self.args.max_tokens - self.tokens_trained) / batch_tokens)))
         if "max_epochs" in limiters and self.args.max_epochs is not None:
             if isinstance(self.dataset_size_tokens, dict):
                 size = min(self.dataset_size_tokens.values()) if self.dataset_size_tokens else 0
@@ -1878,6 +1880,29 @@ class Trainer:
                 'config': vars(self.args),
                 }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
+
+
+    def get_progress_metrics(self) -> dict[str, Any]:
+        """Return raw values backing all Rich progress-bar task fields."""
+        return {
+            "best_iter": self.best_iter,
+            "best_val_loss": self.best_val_loss,
+            "best_tokens": self.best_tokens,
+            "eta": self.formatted_completion_eta,
+            "time_remaining_ms": self.time_remaining_ms,
+            "total_time_est_ms": self.total_time_est_ms,
+            "iter_latency_avg": self.iter_latency_avg,
+            "peak_torch_allocated": self.peak_torch_allocated,
+            "latest_top1_prob": self.latest_top1_prob,
+            "latest_top1_correct": self.latest_top1_correct,
+            "latest_target_rank": self.latest_target_rank,
+            "latest_target_prob": self.latest_target_prob,
+            "latest_target_left_prob": self.latest_target_left_prob,
+            "latest_rank_95": self.latest_rank_95,
+            "latest_left_prob_95": self.latest_left_prob_95,
+            "latest_ln_f_cosine": self.latest_ln_f_cosine,
+            "latest_ln_f_cosine_95": self.latest_ln_f_cosine_95,
+        }
 
     def run_validation_step(self, running_mfu, current_epoch, current_dataset, num_steps_with_worse_loss, live=None):
         losses = self.estimate_loss()
@@ -2116,7 +2141,6 @@ class Trainer:
             self.mc_btc_train = {}
         else:
             self.X, self.Y, current_dataset = self.get_batch('train')
-        self.X, self.Y, current_dataset = self.get_batch('train')
         t_start = time.time()
         t0 = t_start
         local_iter_num = 0
@@ -2164,25 +2188,7 @@ class Trainer:
             task_id = progress.add_task(
                     "[green]Training...",
                     total=(estimated_iters_remaining + self.evaluations_remaining * self.args.eval_iters),
-                    eta=self.formatted_completion_eta,
-                    total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
-                    total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
-                    hour=f"{int((self.time_remaining_ms // (1000*3600)) % 24):02d}",
-                    min=f"{int((self.time_remaining_ms // 60000) % 60):02d}",
-                    best_val_loss=f"{self.best_val_loss:.3f}",
-                    best_iter=f"{self.best_iter}",
-                    best_tokens=f"{self.best_tokens}",
-                    iter_latency=f"{self.iter_latency_avg:.1f}",
-                    peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
-                    t1p=f"{self.latest_top1_prob:.6f}",
-                    t1c=f"{self.latest_top1_correct:.6f}",
-                    tr=f"{self.latest_target_rank:.2f}",
-                    tp=f"{self.latest_target_prob:.6f}",
-                    tlp=f"{self.latest_target_left_prob:.6f}",
-                    r95=f"{self.latest_rank_95:.2f}",
-                    p95=f"{self.latest_left_prob_95:.6f}",
-                    lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
-                    lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
+                    **format_progress_metrics(self.get_progress_metrics()),
                     )
 
             if self.zeus_enabled:
@@ -2378,25 +2384,7 @@ class Trainer:
                 progress.update(
                         task_id,
                         advance=progress_advance,
-                        eta=self.formatted_completion_eta,
-                        total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
-                        total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
-                        hour=f"{int((self.time_remaining_ms // 3_600_000) % 24):02d}",
-                        min=f"{int((self.time_remaining_ms // 60_000) % 60):02d}",
-                        best_val_loss=f"{self.best_val_loss:.3f}",
-                        best_iter=f"{self.best_iter}",
-                        best_tokens=f"{self.best_tokens}",
-                        iter_latency=f"{self.iter_latency_avg:.1f}",
-                        peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
-                        t1p=f"{self.latest_top1_prob:.6f}",
-                        t1c=f"{self.latest_top1_correct:.6f}",
-                        tr=f"{self.latest_target_rank:.2f}",
-                        tp=f"{self.latest_target_prob:.6f}",
-                        tlp=f"{self.latest_target_left_prob:.6f}",
-                        r95=f"{self.latest_rank_95:.2f}",
-                        p95=f"{self.latest_left_prob_95:.6f}",
-                        lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
-                        lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
+                        **format_progress_metrics(self.get_progress_metrics()),
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
