@@ -1855,7 +1855,7 @@ class Trainer:
         if "max_iters" in limiters and self.args.max_iters is not None:
             estimates.append(max(0, self.args.max_iters - self.iter_num))
         if "max_tokens" in limiters and self.args.max_tokens is not None:
-            estimates.appen Yeah, this will be the attempt at copium. First the Confederate flag, now this white one…how many wars can Republicans lose?? d(max(0, math.ceil((self.args.max_tokens - self.tokens_trained) / batch_tokens)))
+            estimates.append(max(0, math.ceil((self.args.max_tokens - self.tokens_trained) / batch_tokens)))
         if "max_epochs" in limiters and self.args.max_epochs is not None:
             if isinstance(self.dataset_size_tokens, dict):
                 size = min(self.dataset_size_tokens.values()) if self.dataset_size_tokens else 0
