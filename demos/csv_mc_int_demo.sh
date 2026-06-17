@@ -31,15 +31,15 @@ python3 train.py \
   --dataset "${DATASETS[0]}" \
   --multicontext \
   --multicontext_datasets "${DATASETS[@]}" \
-  --n_layer 10 \
+  --n_layer 6 \
   --n_head 6 \
   --attention_variant infinite \
   --use_concat_heads \
   --n_qk_head_dim 200 \
   --n_v_head_dim 112 \
   --n_embd 128 \
-  --block_size 256 \
-  --batch_size 16 \
+  --block_size 100 \
+  --batch_size 2 \
   --max_iters "$MAX_ITERS" \
   --eval_interval 50 \
   --eval_iters 10 \
@@ -47,7 +47,6 @@ python3 train.py \
   --dropout 0.0 \
   --device "${CSV_MC_DEVICE:-cuda:0}" \
   --dtype bfloat16 \
-  --compile \
   --optimizer muon \
   --weight_decay 0.0 \
   --softmax_variant_attn relu2max \
@@ -55,17 +54,18 @@ python3 train.py \
   --use_qk_norm_scale \
   --use_rotary_embeddings \
   --no-use_abs_pos_embeddings \
+  --compile \
   --out_dir "$OUT_DIR"
 
 python3 sample.py \
   --out_dir "$OUT_DIR" \
   --device "${CSV_MC_DEVICE:-cuda:0}" \
   --dtype bfloat16 \
-  --compile \
   --multicontext \
   --multicontext_datasets "${DATASETS[@]}" \
   --multicontext_csv_input "$CSV_INPUT" \
   --multicontext_csv_output_dir "$OUT_DIR/csv_samples" \
   --max_new_tokens 10000 \
   --top_k 5 \
+  --compile \
   --num_samples 1

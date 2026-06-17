@@ -123,12 +123,12 @@ def main() -> None:
     parser.add_argument("--manifest", default="data/csv_mc_int/manifest.json", help="Prepared dataset manifest.json.")
     parser.add_argument("--out_dir", default="out/csv_mc_int", help="Checkpoint directory passed to sample.py.")
     parser.add_argument("--work_dir", default="out/csv_mc_int/cone_monitor", help="Snapshots, samples, and plot output directory.")
-    parser.add_argument("--cone_width", type=int, default=5, help="Number of sampled futures per update.")
+    parser.add_argument("--cone_width", type=int, default=1, help="Number of sampled futures per update.")
     parser.add_argument("--max_new_tokens", type=int, default=32, help="Rows to generate beyond the prompt.")
-    parser.add_argument("--poll_seconds", type=float, default=2.0, help="Polling interval.")
+    parser.add_argument("--poll_seconds", type=float, default=10.0, help="Polling interval.")
     parser.add_argument("--iterations", type=int, default=0, help="Maximum updates; 0 means run forever.")
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--no_header", dest="has_header", action="store_false", help="Target CSV has no header row.")
     args = parser.parse_args()
 
@@ -162,7 +162,7 @@ def main() -> None:
                 args.device,
                 "--dtype",
                 args.dtype,
-                "--no-compile",
+                "--compile",
                 "--multicontext",
                 "--multicontext_datasets",
                 *datasets,

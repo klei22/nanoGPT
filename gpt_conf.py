@@ -406,6 +406,12 @@ class GPTConfig:
     norm_abs_gain: bool | None = None
     norm_abs_radius_learning: bool | None = None
 
+    norm_variant_lm_head: str | None = None
+    norm_lm_head_radius: float | None = None
+    norm_lm_head_scale: float | None = None
+    norm_lm_head_gain: bool | None = None
+    norm_lm_head_radius_learning: bool | None = None
+
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     prmsnorm_pct: float = 0.0625
     krmsnorm_num: float = 10
