@@ -156,6 +156,10 @@
           <input id="maxRows" type="number" min="10" max="10000" step="10" value="250">
         </div>
         <div>
+          <label for="maxPlotPoints">Max plotted points</label>
+          <input id="maxPlotPoints" type="number" min="500" max="100000" step="500" value="5000">
+        </div>
+        <div>
           <label for="angleCap">Highlight angle cap (degrees)</label>
           <input id="angleCap" type="number" min="0" max="180" step="0.1" value="10">
         </div>
@@ -216,6 +220,7 @@
 
     const csvInput = document.getElementById("csvFiles");
     const maxRowsInput = document.getElementById("maxRows");
+    const maxPlotPointsInput = document.getElementById("maxPlotPoints");
     const angleCapInput = document.getElementById("angleCap");
     const sortModeInput = document.getElementById("sortMode");
     const slider = document.getElementById("snapshotSlider");
@@ -293,19 +298,32 @@
       return value;
     }
 
-    function readFile(file) {
+    function snapshotFromFile(file) {
+      return {
+        ...parseSnapshotName(file.name),
+        file,
+        rows: null,
+      };
+    }
+
+    function readSnapshotRows(snapshot) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => {
-          const parsedName = parseSnapshotName(file.name);
-          resolve({
-            ...parsedName,
-            rows: parseCsv(String(reader.result)),
-          });
+          snapshot.rows = parseCsv(String(reader.result));
+          resolve(snapshot.rows);
         };
         reader.onerror = () => reject(reader.error);
-        reader.readAsText(file);
+        reader.readAsText(snapshot.file);
       });
+    }
+
+    async function ensureSnapshotRows(snapshot) {
+      if (snapshot.rows !== null) {
+        return snapshot.rows;
+      }
+      statusBox.textContent = `Parsing ${snapshot.name}...`;
+      return readSnapshotRows(snapshot);
     }
 
     function enableControls(enabled) {
@@ -318,11 +336,12 @@
     function snapshotLabel(snapshot, index) {
       const iter = Number.isFinite(snapshot.iter) ? snapshot.iter : "unknown";
       const valLoss = Number.isFinite(snapshot.valLoss) ? snapshot.valLoss.toFixed(6) : "unknown";
-      const hasTokenText = snapshot.rows.some((row) => row.token_text_escaped || row.nearest_token_text_escaped);
+      const rows = snapshot.rows || [];
+      const hasTokenText = rows.some((row) => row.token_text_escaped || row.nearest_token_text_escaped);
       const tokenTextNote = hasTokenText
         ? ""
         : "\nToken text columns are empty/missing; regenerate CSV exports with the latest exporter to show actual token strings.";
-      return `Snapshot ${index + 1}/${state.snapshots.length}: ${snapshot.name}\niteration=${iter}, val_loss=${valLoss}, rows=${snapshot.rows.length}${tokenTextNote}`;
+      return `Snapshot ${index + 1}/${state.snapshots.length}: ${snapshot.name}\niteration=${iter}, val_loss=${valLoss}, rows=${rows.length}${tokenTextNote}`;
     }
 
     function currentRowsForTable(snapshot) {
@@ -336,6 +355,23 @@
         rows.sort((a, b) => a.min_angle_rank - b.min_angle_rank);
       }
       return rows.slice(0, Number(maxRowsInput.value || 250));
+    }
+
+    function downsampleRowsByRank(rows, maxPoints) {
+      const limit = Math.max(1, Number(maxPoints || 5000));
+      if (rows.length <= limit) {
+        return rows;
+      }
+      const sortedRows = [...rows].sort((a, b) => a.min_angle_rank - b.min_angle_rank);
+      if (limit === 1) {
+        return [sortedRows[0]];
+      }
+      const step = (sortedRows.length - 1) / (limit - 1);
+      const sampled = [];
+      for (let index = 0; index < limit; index += 1) {
+        sampled.push(sortedRows[Math.round(index * step)]);
+      }
+      return sampled;
     }
 
     function formatNumber(value, digits = 6) {
@@ -356,14 +392,15 @@
       ].join("<br>");
     }
 
-    function plotSnapshot() {
+    async function plotSnapshot() {
       if (!state.snapshots.length) {
         return;
       }
       const snapshot = state.snapshots[state.currentIndex];
-      const rows = snapshot.rows;
+      const rows = await ensureSnapshotRows(snapshot);
+      const plotRows = downsampleRowsByRank(rows, maxPlotPointsInput.value);
       const cap = Number(angleCapInput.value || 10);
-      const colors = rows.map((row) => row.min_angle_deg <= cap ? "#f97316" : "#60a5fa");
+      const colors = plotRows.map((row) => row.min_angle_deg <= cap ? "#f97316" : "#60a5fa");
       const commonLayout = {
         paper_bgcolor: "#1f2937",
         plot_bgcolor: "#111827",
@@ -374,10 +411,10 @@
       Plotly.react("angleScatter", [{
         type: "scattergl",
         mode: "markers",
-        x: rows.map((row) => row.min_angle_rank),
-        y: rows.map((row) => row.min_angle_deg),
+        x: plotRows.map((row) => row.min_angle_rank),
+        y: plotRows.map((row) => row.min_angle_deg),
         marker: {size: 5, color: colors, opacity: 0.75},
-        text: rows.map((row) => formatRowHover(row, "rank")),
+        text: plotRows.map((row) => formatRowHover(row, "rank")),
         hovertemplate: "%{text}<extra></extra>",
       }], {
         ...commonLayout,
@@ -401,14 +438,14 @@
 
       Plotly.react("magnitudeByRank", [{
         type: "bar",
-        x: rows.map((row) => row.min_angle_rank),
-        y: rows.map((row) => row.token_vector_length),
+        x: plotRows.map((row) => row.min_angle_rank),
+        y: plotRows.map((row) => row.token_vector_length),
         marker: {
-          color: rows.map((row) => row.min_angle_deg),
+          color: plotRows.map((row) => row.min_angle_deg),
           colorscale: "Viridis",
           colorbar: {title: "angle°"},
         },
-        text: rows.map((row) => formatRowHover(row, "rank")),
+        text: plotRows.map((row) => formatRowHover(row, "rank")),
         hovertemplate: "%{text}<extra></extra>",
       }], {
         ...commonLayout,
@@ -420,16 +457,16 @@
       Plotly.react("edgeMap", [{
         type: "scattergl",
         mode: "markers",
-        x: rows.map((row) => row.token_id),
-        y: rows.map((row) => row.nearest_token_id),
+        x: plotRows.map((row) => row.token_id),
+        y: plotRows.map((row) => row.nearest_token_id),
         marker: {
           size: 5,
-          color: rows.map((row) => row.min_angle_deg),
+          color: plotRows.map((row) => row.min_angle_deg),
           colorscale: "Viridis",
           colorbar: {title: "angle°"},
           opacity: 0.75,
         },
-        text: rows.map((row) => formatRowHover(row, "rank")),
+        text: plotRows.map((row) => formatRowHover(row, "rank")),
         hovertemplate: "%{text}<extra></extra>",
       }], {
         ...commonLayout,
@@ -453,7 +490,10 @@
       `).join("");
 
       slider.value = state.currentIndex;
-      statusBox.textContent = snapshotLabel(snapshot, state.currentIndex);
+      const plotPointNote = plotRows.length < rows.length
+        ? `\nPlots are downsampled to ${plotRows.length} of ${rows.length} rows for responsiveness; table and histogram still use the active CSV rows.`
+        : "";
+      statusBox.textContent = `${snapshotLabel(snapshot, state.currentIndex)}${plotPointNote}`;
     }
 
     async function loadSnapshots(files) {
@@ -461,8 +501,8 @@
         return;
       }
       stopPlayback();
-      statusBox.textContent = "Loading CSV snapshots...";
-      const snapshots = await Promise.all([...files].map(readFile));
+      statusBox.textContent = "Registering CSV snapshots...";
+      const snapshots = [...files].map(snapshotFromFile);
       snapshots.sort((a, b) => {
         const iterA = Number.isFinite(a.iter) ? a.iter : Number.MAX_SAFE_INTEGER;
         const iterB = Number.isFinite(b.iter) ? b.iter : Number.MAX_SAFE_INTEGER;
@@ -472,15 +512,15 @@
       state.currentIndex = 0;
       slider.max = Math.max(0, snapshots.length - 1);
       enableControls(snapshots.length > 0);
-      plotSnapshot();
+      await plotSnapshot();
     }
 
-    function step(delta) {
+    async function step(delta) {
       if (!state.snapshots.length) {
         return;
       }
       state.currentIndex = Math.max(0, Math.min(state.snapshots.length - 1, state.currentIndex + delta));
-      plotSnapshot();
+      await plotSnapshot();
     }
 
     function stopPlayback() {
@@ -491,7 +531,7 @@
       playBtn.textContent = "Play";
     }
 
-    function togglePlayback() {
+    async function togglePlayback() {
       if (state.playTimer) {
         stopPlayback();
         return;
@@ -501,7 +541,7 @@
       }
       if (state.currentIndex >= state.snapshots.length - 1) {
         state.currentIndex = 0;
-        plotSnapshot();
+        await plotSnapshot();
       }
       if (state.snapshots.length === 1) {
         return;
@@ -529,6 +569,7 @@
       plotSnapshot();
     });
     maxRowsInput.addEventListener("input", plotSnapshot);
+    maxPlotPointsInput.addEventListener("input", plotSnapshot);
     angleCapInput.addEventListener("input", plotSnapshot);
     sortModeInput.addEventListener("change", plotSnapshot);
   </script>
