@@ -103,7 +103,10 @@
       color: var(--muted);
       font-size: 0.9rem;
       margin-top: 0.75rem;
-      white-space: pre-wrap;
+      height: 1.25rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .plots {
       display: grid;
@@ -164,10 +167,6 @@
         <div>
           <label for="maxRows">Table rows</label>
           <input id="maxRows" type="number" min="10" max="10000" step="10" value="250">
-        </div>
-        <div>
-          <label for="maxPlotPoints">Max plotted points</label>
-          <input id="maxPlotPoints" type="number" min="500" max="100000" step="500" value="5000">
         </div>
         <div>
           <label for="showMagnitudePlot">Optional plots</label>
@@ -237,7 +236,6 @@
 
     const csvInput = document.getElementById("csvFiles");
     const maxRowsInput = document.getElementById("maxRows");
-    const maxPlotPointsInput = document.getElementById("maxPlotPoints");
     const showMagnitudePlotInput = document.getElementById("showMagnitudePlot");
     const angleCapInput = document.getElementById("angleCap");
     const sortModeInput = document.getElementById("sortMode");
@@ -358,8 +356,8 @@
       const hasTokenText = rows.some((row) => row.token_text_escaped || row.nearest_token_text_escaped);
       const tokenTextNote = hasTokenText
         ? ""
-        : "\nToken text columns are empty/missing; regenerate CSV exports with the latest exporter to show actual token strings.";
-      return `Snapshot ${index + 1}/${state.snapshots.length}: ${snapshot.name}\niteration=${iter}, val_loss=${valLoss}, rows=${rows.length}${tokenTextNote}`;
+        : " | Token text columns are empty/missing; regenerate CSV exports with the latest exporter to show actual token strings.";
+      return `Snapshot ${index + 1}/${state.snapshots.length}: ${snapshot.name} | iteration=${iter}, val_loss=${valLoss}, rows=${rows.length}${tokenTextNote}`;
     }
 
     function currentRowsForTable(snapshot) {
@@ -373,23 +371,6 @@
         rows.sort((a, b) => a.min_angle_rank - b.min_angle_rank);
       }
       return rows.slice(0, Number(maxRowsInput.value || 250));
-    }
-
-    function downsampleRowsByRank(rows, maxPoints) {
-      const limit = Math.max(1, Number(maxPoints || 5000));
-      if (rows.length <= limit) {
-        return rows;
-      }
-      const sortedRows = [...rows].sort((a, b) => a.min_angle_rank - b.min_angle_rank);
-      if (limit === 1) {
-        return [sortedRows[0]];
-      }
-      const step = (sortedRows.length - 1) / (limit - 1);
-      const sampled = [];
-      for (let index = 0; index < limit; index += 1) {
-        sampled.push(sortedRows[Math.round(index * step)]);
-      }
-      return sampled;
     }
 
     function formatNumber(value, digits = 6) {
@@ -416,9 +397,8 @@
       }
       const snapshot = state.snapshots[state.currentIndex];
       const rows = await ensureSnapshotRows(snapshot);
-      const plotRows = downsampleRowsByRank(rows, maxPlotPointsInput.value);
       const cap = Number(angleCapInput.value || 10);
-      const colors = plotRows.map((row) => row.min_angle_deg <= cap ? "#f97316" : "#60a5fa");
+      const colors = rows.map((row) => row.min_angle_deg <= cap ? "#f97316" : "#60a5fa");
       const commonLayout = {
         paper_bgcolor: "#1f2937",
         plot_bgcolor: "#111827",
@@ -429,10 +409,10 @@
       Plotly.react("angleScatter", [{
         type: "scattergl",
         mode: "markers",
-        x: plotRows.map((row) => row.min_angle_rank),
-        y: plotRows.map((row) => row.min_angle_deg),
+        x: rows.map((row) => row.min_angle_rank),
+        y: rows.map((row) => row.min_angle_deg),
         marker: {size: 5, color: colors, opacity: 0.75},
-        text: plotRows.map((row) => formatRowHover(row, "rank")),
+        text: rows.map((row) => formatRowHover(row, "rank")),
         hovertemplate: "%{text}<extra></extra>",
       }], {
         ...commonLayout,
@@ -459,14 +439,14 @@
         magnitudePlot.style.display = "";
         Plotly.react("magnitudeByRank", [{
           type: "bar",
-          x: plotRows.map((row) => row.min_angle_rank),
-          y: plotRows.map((row) => row.token_vector_length),
+          x: rows.map((row) => row.min_angle_rank),
+          y: rows.map((row) => row.token_vector_length),
           marker: {
-            color: plotRows.map((row) => row.min_angle_deg),
+            color: rows.map((row) => row.min_angle_deg),
             colorscale: "Viridis",
             colorbar: {title: "angle°"},
           },
-          text: plotRows.map((row) => formatRowHover(row, "rank")),
+          text: rows.map((row) => formatRowHover(row, "rank")),
           hovertemplate: "%{text}<extra></extra>",
         }], {
           ...commonLayout,
@@ -482,16 +462,16 @@
       Plotly.react("edgeMap", [{
         type: "scattergl",
         mode: "markers",
-        x: plotRows.map((row) => row.token_id),
-        y: plotRows.map((row) => row.nearest_token_id),
+        x: rows.map((row) => row.token_id),
+        y: rows.map((row) => row.nearest_token_id),
         marker: {
           size: 5,
-          color: plotRows.map((row) => row.min_angle_deg),
+          color: rows.map((row) => row.min_angle_deg),
           colorscale: "Viridis",
           colorbar: {title: "angle°"},
           opacity: 0.75,
         },
-        text: plotRows.map((row) => formatRowHover(row, "rank")),
+        text: rows.map((row) => formatRowHover(row, "rank")),
         hovertemplate: "%{text}<extra></extra>",
       }], {
         ...commonLayout,
@@ -515,10 +495,7 @@
       `).join("");
 
       slider.value = state.currentIndex;
-      const plotPointNote = plotRows.length < rows.length
-        ? `\nPlots are downsampled to ${plotRows.length} of ${rows.length} rows for responsiveness; table and histogram still use the active CSV rows.`
-        : "";
-      statusBox.textContent = `${snapshotLabel(snapshot, state.currentIndex)}${plotPointNote}`;
+      statusBox.textContent = snapshotLabel(snapshot, state.currentIndex);
     }
 
     async function loadSnapshots(files) {
@@ -594,7 +571,6 @@
       plotSnapshot();
     });
     maxRowsInput.addEventListener("input", plotSnapshot);
-    maxPlotPointsInput.addEventListener("input", plotSnapshot);
     showMagnitudePlotInput.addEventListener("change", plotSnapshot);
     angleCapInput.addEventListener("input", plotSnapshot);
     sortModeInput.addEventListener("change", plotSnapshot);
