@@ -68,6 +68,16 @@
       padding: 0;
       accent-color: var(--accent);
     }
+    input[type="checkbox"] {
+      width: auto;
+      accent-color: var(--accent);
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 2.4rem;
+    }
     button {
       cursor: pointer;
       background: #2563eb;
@@ -160,6 +170,13 @@
           <input id="maxPlotPoints" type="number" min="500" max="100000" step="500" value="5000">
         </div>
         <div>
+          <label for="showMagnitudePlot">Optional plots</label>
+          <div class="checkbox-row">
+            <input id="showMagnitudePlot" type="checkbox">
+            <span>Show magnitude-by-rank plot</span>
+          </div>
+        </div>
+        <div>
           <label for="angleCap">Highlight angle cap (degrees)</label>
           <input id="angleCap" type="number" min="0" max="180" step="0.1" value="10">
         </div>
@@ -184,7 +201,7 @@
     <section class="plots">
       <div class="panel plot" id="angleScatter"></div>
       <div class="panel plot" id="angleHistogram"></div>
-      <div class="panel plot" id="magnitudeByRank"></div>
+      <div class="panel plot" id="magnitudeByRank" style="display: none;"></div>
       <div class="panel plot wide" id="edgeMap"></div>
     </section>
 
@@ -221,6 +238,7 @@
     const csvInput = document.getElementById("csvFiles");
     const maxRowsInput = document.getElementById("maxRows");
     const maxPlotPointsInput = document.getElementById("maxPlotPoints");
+    const showMagnitudePlotInput = document.getElementById("showMagnitudePlot");
     const angleCapInput = document.getElementById("angleCap");
     const sortModeInput = document.getElementById("sortMode");
     const slider = document.getElementById("snapshotSlider");
@@ -436,23 +454,30 @@
         yaxis: {title: "token count", type: "log", autorange: true},
       }, {responsive: true});
 
-      Plotly.react("magnitudeByRank", [{
-        type: "bar",
-        x: plotRows.map((row) => row.min_angle_rank),
-        y: plotRows.map((row) => row.token_vector_length),
-        marker: {
-          color: plotRows.map((row) => row.min_angle_deg),
-          colorscale: "Viridis",
-          colorbar: {title: "angle°"},
-        },
-        text: plotRows.map((row) => formatRowHover(row, "rank")),
-        hovertemplate: "%{text}<extra></extra>",
-      }], {
-        ...commonLayout,
-        title: "Token magnitude by minimum-angle rank",
-        xaxis: {title: "minimum-angle rank"},
-        yaxis: {title: "token vector magnitude"},
-      }, {responsive: true});
+      const magnitudePlot = document.getElementById("magnitudeByRank");
+      if (showMagnitudePlotInput.checked) {
+        magnitudePlot.style.display = "";
+        Plotly.react("magnitudeByRank", [{
+          type: "bar",
+          x: plotRows.map((row) => row.min_angle_rank),
+          y: plotRows.map((row) => row.token_vector_length),
+          marker: {
+            color: plotRows.map((row) => row.min_angle_deg),
+            colorscale: "Viridis",
+            colorbar: {title: "angle°"},
+          },
+          text: plotRows.map((row) => formatRowHover(row, "rank")),
+          hovertemplate: "%{text}<extra></extra>",
+        }], {
+          ...commonLayout,
+          title: "Token magnitude by minimum-angle rank",
+          xaxis: {title: "minimum-angle rank"},
+          yaxis: {title: "token vector magnitude"},
+        }, {responsive: true});
+      } else {
+        magnitudePlot.style.display = "none";
+        Plotly.purge("magnitudeByRank");
+      }
 
       Plotly.react("edgeMap", [{
         type: "scattergl",
@@ -570,6 +595,7 @@
     });
     maxRowsInput.addEventListener("input", plotSnapshot);
     maxPlotPointsInput.addEventListener("input", plotSnapshot);
+    showMagnitudePlotInput.addEventListener("change", plotSnapshot);
     angleCapInput.addEventListener("input", plotSnapshot);
     sortModeInput.addEventListener("change", plotSnapshot);
   </script>
