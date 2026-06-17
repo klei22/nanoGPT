@@ -90,7 +90,12 @@ def safe_filename_label(label):
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in label)
 
 
-def write_min_angle_graph_export(graph, export_dir, label, iter_num, val_loss):
+def escape_token_text(text):
+    """Escape token text for CSV/HTML display while preserving visible escapes."""
+    return str(text).encode("unicode_escape").decode("ascii")
+
+
+def write_min_angle_graph_export(graph, export_dir, label, iter_num, val_loss, token_texts=None):
     """Write a minimum-angle graph CSV plus JSON sidecar and return both paths."""
     export_dir = os.path.expanduser(export_dir)
     os.makedirs(export_dir, exist_ok=True)
@@ -106,12 +111,21 @@ def write_min_angle_graph_export(graph, export_dir, label, iter_num, val_loss):
     min_angles = graph["min_angles"]
     rank_by_token = graph["rank_by_token"]
     vocab_size = graph["vocab_size"]
+    escaped_token_texts = None
+    if token_texts is not None:
+        if len(token_texts) != vocab_size:
+            raise ValueError(
+                f"Expected {vocab_size} token strings, got {len(token_texts)}."
+            )
+        escaped_token_texts = [escape_token_text(text) for text in token_texts]
 
     with open(csv_path, "w", newline="") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow([
             "token_id",
+            "token_text_escaped",
             "nearest_token_id",
+            "nearest_token_text_escaped",
             "min_angle_deg",
             "cosine",
             "token_vector_length",
@@ -122,7 +136,9 @@ def write_min_angle_graph_export(graph, export_dir, label, iter_num, val_loss):
             other_id = int(best_other_token_id[token_id])
             writer.writerow([
                 token_id,
+                escaped_token_texts[token_id] if escaped_token_texts is not None else "",
                 other_id,
+                escaped_token_texts[other_id] if escaped_token_texts is not None and other_id >= 0 else "",
                 f"{float(min_angles[token_id]):.9f}",
                 f"{float(best_cosine[token_id]):.9f}",
                 f"{float(norms[token_id]):.9f}",
@@ -138,6 +154,7 @@ def write_min_angle_graph_export(graph, export_dir, label, iter_num, val_loss):
         "vocab_size": vocab_size,
         "block_size": graph["block_size"],
         "compute_device": graph["compute_device"],
+        "has_token_text_escaped": escaped_token_texts is not None,
         "angle_definition": "signed 0-180 degrees, closest non-self token by maximum cosine",
     }
     with open(json_path, "w") as json_file:
@@ -146,7 +163,23 @@ def write_min_angle_graph_export(graph, export_dir, label, iter_num, val_loss):
     return csv_path, json_path
 
 
-def export_min_angle_graph(weight, export_dir, label, iter_num, val_loss, block_size=2048, compute_device="auto"):
+def export_min_angle_graph(
+    weight,
+    export_dir,
+    label,
+    iter_num,
+    val_loss,
+    block_size=2048,
+    compute_device="auto",
+    token_texts=None,
+):
     """Compute and write the LM-head minimum-angle graph export."""
     graph = compute_min_angle_graph(weight, block_size=block_size, compute_device=compute_device)
-    return write_min_angle_graph_export(graph, export_dir, label, iter_num, val_loss)
+    return write_min_angle_graph_export(
+        graph,
+        export_dir,
+        label,
+        iter_num,
+        val_loss,
+        token_texts=token_texts,
+    )

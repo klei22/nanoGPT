@@ -289,7 +289,7 @@ out/min_angle_graphs/shakespeare_char_baseline_iter_00000250_val_1.234567.json
 The CSV is an edge list with one directed nearest-neighbor edge per token:
 
 ```text
-token_id,nearest_token_id,min_angle_deg,cosine,token_vector_length,nearest_token_vector_length,min_angle_rank
+token_id,token_text_escaped,nearest_token_id,nearest_token_text_escaped,min_angle_deg,cosine,token_vector_length,nearest_token_vector_length,min_angle_rank
 ```
 
 Use `--export_min_angle_graph_block_size` to tune temporary matrix multiply

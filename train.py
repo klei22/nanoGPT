@@ -1821,6 +1821,10 @@ class Trainer:
             return
 
         weight = self.raw_model.apply_lm_head_norm(self.raw_model.lm_head.weight).detach()
+        if not hasattr(self, "_min_angle_graph_token_texts"):
+            self._min_angle_graph_token_texts = [
+                self.decode([token_id]) for token_id in range(weight.shape[0])
+            ]
         label = getattr(self.args, "export_min_angle_graph_label", None) or "min_angle_graph"
         val_loss = losses["val"].item() if hasattr(losses["val"], "item") else float(losses["val"])
         csv_path, _ = write_min_angle_graph_export(
@@ -1831,6 +1835,7 @@ class Trainer:
             val_loss=val_loss,
             block_size=getattr(self.args, "export_min_angle_graph_block_size", 2048),
             compute_device=getattr(self.args, "export_min_angle_graph_device", "auto"),
+            token_texts=self._min_angle_graph_token_texts,
         )
         print(f"Minimum-angle graph exported to {csv_path}")
 
