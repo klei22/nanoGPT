@@ -284,6 +284,14 @@
         .replaceAll("'", "&#39;");
     }
 
+    function tokenTextOrMissing(row, textKey) {
+      const value = row[textKey];
+      if (value === undefined || value === null || value === "") {
+        return "[token text missing: regenerate CSV exports]";
+      }
+      return value;
+    }
+
     function readFile(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -309,7 +317,11 @@
     function snapshotLabel(snapshot, index) {
       const iter = Number.isFinite(snapshot.iter) ? snapshot.iter : "unknown";
       const valLoss = Number.isFinite(snapshot.valLoss) ? snapshot.valLoss.toFixed(6) : "unknown";
-      return `Snapshot ${index + 1}/${state.snapshots.length}: ${snapshot.name}\niteration=${iter}, val_loss=${valLoss}, rows=${snapshot.rows.length}`;
+      const hasTokenText = snapshot.rows.some((row) => row.token_text_escaped || row.nearest_token_text_escaped);
+      const tokenTextNote = hasTokenText
+        ? ""
+        : "\nToken text columns are empty/missing; regenerate CSV exports with the latest exporter to show actual token strings.";
+      return `Snapshot ${index + 1}/${state.snapshots.length}: ${snapshot.name}\niteration=${iter}, val_loss=${valLoss}, rows=${snapshot.rows.length}${tokenTextNote}`;
     }
 
     function currentRowsForTable(snapshot) {
@@ -331,8 +343,8 @@
     }
 
     function formatRowHover(row, rankLabel) {
-      const tokenText = escapedCell(row.token_text_escaped || "");
-      const nearestText = escapedCell(row.nearest_token_text_escaped || "");
+      const tokenText = escapedCell(tokenTextOrMissing(row, "token_text_escaped"));
+      const nearestText = escapedCell(tokenTextOrMissing(row, "nearest_token_text_escaped"));
       return [
         `${rankLabel}=${escapedCell(row.min_angle_rank)}`,
         `angle=${formatNumber(row.min_angle_deg)}°`,
@@ -411,9 +423,9 @@
         <tr>
           <td>${row.min_angle_rank}</td>
           <td>${row.token_id}</td>
-          <td>${escapedCell(row.token_text_escaped)}</td>
+          <td>${escapedCell(tokenTextOrMissing(row, "token_text_escaped"))}</td>
           <td>${row.nearest_token_id}</td>
-          <td>${escapedCell(row.nearest_token_text_escaped)}</td>
+          <td>${escapedCell(tokenTextOrMissing(row, "nearest_token_text_escaped"))}</td>
           <td>${Number(row.min_angle_deg).toFixed(6)}° / ${Number(row.token_vector_length).toFixed(6)} → ${Number(row.nearest_token_vector_length).toFixed(6)}</td>
           <td>${Number(row.cosine).toFixed(6)}</td>
           <td>${Number(row.token_vector_length).toFixed(6)}</td>
