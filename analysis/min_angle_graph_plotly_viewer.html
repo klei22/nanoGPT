@@ -180,6 +180,7 @@
     <section class="plots">
       <div class="panel plot" id="angleScatter"></div>
       <div class="panel plot" id="angleHistogram"></div>
+      <div class="panel plot" id="magnitudeByRank"></div>
       <div class="panel plot wide" id="edgeMap"></div>
     </section>
 
@@ -396,6 +397,24 @@
         title: "Minimum-angle distribution",
         xaxis: {title: "minimum angle (degrees)"},
         yaxis: {title: "token count", type: "log", autorange: true},
+      }, {responsive: true});
+
+      Plotly.react("magnitudeByRank", [{
+        type: "bar",
+        x: rows.map((row) => row.min_angle_rank),
+        y: rows.map((row) => row.token_vector_length),
+        marker: {
+          color: rows.map((row) => row.min_angle_deg),
+          colorscale: "Viridis",
+          colorbar: {title: "angle°"},
+        },
+        text: rows.map((row) => formatRowHover(row, "rank")),
+        hovertemplate: "%{text}<extra></extra>",
+      }], {
+        ...commonLayout,
+        title: "Token magnitude by minimum-angle rank",
+        xaxis: {title: "minimum-angle rank"},
+        yaxis: {title: "token vector magnitude"},
       }, {responsive: true});
 
       Plotly.react("edgeMap", [{
