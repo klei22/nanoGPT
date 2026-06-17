@@ -224,7 +224,7 @@ python3 sample.py \
   --no-multicontext_csv_output_include_prompt
 
 echo "[6/7] Appending sampled rows to the validation CSV for viewing..."
-COMBINE_OUTPUT=$(VALIDATION_CSV="${VALIDATION_CSV}" SAMPLE_CONTINUATION_CSV="${SAMPLE_CONTINUATION_CSV}" VIEWER_CSV="${VIEWER_CSV}" python3 - <<'PY'
+COMBINE_OUTPUT=$(VALIDATION_CSV="${VALIDATION_CSV}" SAMPLE_CONTINUATION_CSV="${SAMPLE_CONTINUATION_CSV}" VIEWER_CSV="${VIEWER_CSV}" PROMPT_ROWS_EFFECTIVE="${PROMPT_ROWS_EFFECTIVE}" python3 - <<'PY'
 import csv
 import os
 from pathlib import Path
@@ -232,6 +232,7 @@ from pathlib import Path
 validation_path = Path(os.environ["VALIDATION_CSV"])
 sample_path = Path(os.environ["SAMPLE_CONTINUATION_CSV"])
 viewer_path = Path(os.environ["VIEWER_CSV"])
+prompt_rows = int(os.environ["PROMPT_ROWS_EFFECTIVE"])
 
 with validation_path.open(newline="", encoding="utf-8") as f:
     validation_rows = list(csv.reader(f))
@@ -246,8 +247,16 @@ with viewer_path.open("w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
     writer.writerows(validation_rows)
     writer.writerows(sample_rows[1:])
-sample_start_frame = len(validation_rows) - 1
-print(f"wrote {viewer_path} with {sample_start_frame} validation rows + {len(sample_rows) - 1} sampled rows")
+validation_data_rows = len(validation_rows) - 1
+sampled_data_rows = len(sample_rows) - 1
+sample_start_frame = validation_data_rows
+ground_truth_rows = max(0, validation_data_rows - prompt_rows)
+print(f"wrote {viewer_path} with {validation_data_rows} validation rows + {sampled_data_rows} sampled rows")
+print(
+    "comparison layout: "
+    f"{prompt_rows} prompt rows + {ground_truth_rows} validation ground-truth continuation rows + "
+    f"{sampled_data_rows} sampled continuation rows"
+)
 print(f"SAMPLE_START_FRAME={sample_start_frame}")
 PY
 )
