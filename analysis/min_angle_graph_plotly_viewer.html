@@ -325,6 +325,24 @@
       return rows.slice(0, Number(maxRowsInput.value || 250));
     }
 
+    function formatNumber(value, digits = 6) {
+      const numberValue = Number(value);
+      return Number.isFinite(numberValue) ? numberValue.toFixed(digits) : "";
+    }
+
+    function formatRowHover(row, rankLabel) {
+      const tokenText = escapedCell(row.token_text_escaped || "");
+      const nearestText = escapedCell(row.nearest_token_text_escaped || "");
+      return [
+        `${rankLabel}=${escapedCell(row.min_angle_rank)}`,
+        `angle=${formatNumber(row.min_angle_deg)}°`,
+        `token=${escapedCell(row.token_id)} (${tokenText})`,
+        `nearest=${escapedCell(row.nearest_token_id)} (${nearestText})`,
+        `magnitudes=${formatNumber(row.token_vector_length)} → ${formatNumber(row.nearest_token_vector_length)}`,
+        `cosine=${formatNumber(row.cosine)}`,
+      ].join("<br>");
+    }
+
     function plotSnapshot() {
       if (!state.snapshots.length) {
         return;
@@ -346,16 +364,8 @@
         x: rows.map((row) => row.min_angle_rank),
         y: rows.map((row) => row.min_angle_deg),
         marker: {size: 5, color: colors, opacity: 0.75},
-        customdata: rows.map((row) => [
-          row.token_id,
-          row.token_text_escaped,
-          row.nearest_token_id,
-          row.nearest_token_text_escaped,
-          row.cosine,
-          row.token_vector_length,
-          row.nearest_token_vector_length,
-        ]),
-        hovertemplate: "rank=%{x}<br>angle=%{y:.6f}°<br>token=%{customdata[0]} (%{customdata[1]})<br>nearest=%{customdata[2]} (%{customdata[3]})<br>magnitudes=%{customdata[5]:.6f} → %{customdata[6]:.6f}<br>cosine=%{customdata[4]:.6f}<extra></extra>",
+        text: rows.map((row) => formatRowHover(row, "rank")),
+        hovertemplate: "%{text}<extra></extra>",
       }], {
         ...commonLayout,
         title: "Minimum angle by sorted rank",
@@ -388,16 +398,8 @@
           colorbar: {title: "angle°"},
           opacity: 0.75,
         },
-        customdata: rows.map((row) => [
-          row.min_angle_rank,
-          row.cosine,
-          row.token_text_escaped,
-          row.nearest_token_text_escaped,
-          row.min_angle_deg,
-          row.token_vector_length,
-          row.nearest_token_vector_length,
-        ]),
-        hovertemplate: "token=%{x} (%{customdata[2]})<br>nearest=%{y} (%{customdata[3]})<br>rank=%{customdata[0]}<br>angle=%{customdata[4]:.6f}°<br>magnitudes=%{customdata[5]:.6f} → %{customdata[6]:.6f}<br>cosine=%{customdata[1]:.6f}<extra></extra>",
+        text: rows.map((row) => formatRowHover(row, "rank")),
+        hovertemplate: "%{text}<extra></extra>",
       }], {
         ...commonLayout,
         title: "Nearest-neighbor edge map",
