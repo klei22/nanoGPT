@@ -28,7 +28,11 @@ from utils.bit_usage import compute_total_bit_usage
 
 def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
     """Standard cross-entropy loss used by the original codebase."""
-    return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+    return F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)),
+        targets.reshape(-1),
+        ignore_index=-1,
+    )
 
 
 class BitBalancedCrossEntropy:
@@ -670,4 +674,3 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
 
     loss_name = getattr(args, "loss_fn", "cross_entropy")
     return built_losses.get(loss_name, LOSS_VARIANTS["cross_entropy"])
-
