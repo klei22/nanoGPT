@@ -47,6 +47,16 @@ def lerp_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: 
     return (1 - alpha) * x + alpha * (x + out)
 
 
+def lerp_to_out_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
+    return (1 - alpha) * x + alpha * out
+
+
+def lerp_to_out_norm_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
+    blended = (1 - alpha) * x + alpha * out
+    norm_factor = 1 - 2 * alpha + 2 * alpha * alpha
+    return blended * norm_factor
+
+
 def slerp_residual(x: torch.Tensor, out: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
     return slerp(x, x + out, alpha, eps)
 
@@ -55,6 +65,8 @@ residual_combine_dict = {
     "add": add_residual,
     "rezero": rezero_residual,
     "lerp": lerp_residual,
+    "lerp_to_out": lerp_to_out_residual,
+    "lerp_to_out_norm": lerp_to_out_norm_residual,
     "slerp": slerp_residual,
 }
 
