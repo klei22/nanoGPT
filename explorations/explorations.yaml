@@ -1,0 +1,67 @@
+# explorations/explorations.yaml
+---
+# Sweep comparing gradient fake-quantization formats for quantized linear layers.
+
+common_group:
+  dataset: ["shakespeare_char"]
+  max_iters: [2000]
+  eval_interval: [200]
+  n_layer: [4]
+  n_head: [4]
+  n_embd: [256]
+  block_size: [256]
+  batch_size: [16]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  never_save_checkpoint: [true]
+
+named_static_groups:
+  - named_group: "quantized_linear_defaults"
+    named_group_settings:
+      linear_variant_attn: ["quantized_linear"]
+      linear_variant_mlp: ["quantized_linear"]
+      quantize_linear_method: ["affine_quant"]
+      quantize_linear_bits: [8]
+      quantize_attn_act: [true]
+      quantize_mlp_act: [true]
+      quantize_attn_act_bits: [8]
+      quantize_mlp_act_bits: [8]
+      quantization_warmup_iters: [0]
+      quant_scheduler: ["linear"]
+      start_quant_level: [0.0]
+      full_quant_iteration: [100]
+  - named_group: "grad_fake_quant_e4m3"
+    named_group_settings:
+      quantize_linear_grad_exponent_bits: [4]
+      quantize_linear_grad_mantissa_bits: [3]
+  - named_group: "grad_fake_quant_e5m2"
+    named_group_settings:
+      quantize_linear_grad_exponent_bits: [5]
+      quantize_linear_grad_mantissa_bits: [2]
+  - named_group: "grad_fake_quant_float16"
+    named_group_settings:
+      quantize_linear_grad_exponent_bits: [5]
+      quantize_linear_grad_mantissa_bits: [10]
+  - named_group: "grad_fake_quant_bfloat16"
+    named_group_settings:
+      quantize_linear_grad_exponent_bits: [8]
+      quantize_linear_grad_mantissa_bits: [7]
+
+named_variation_groups:
+  - named_group: "grad_fake_quant_modes"
+    named_group_alternates:
+      - "grad_fake_quant_e4m3"
+      - "grad_fake_quant_e5m2"
+      - "grad_fake_quant_float16"
+      - "grad_fake_quant_bfloat16"
+
+parameter_groups:
+  # Baseline without gradient fake quantization for comparison.
+  - named_group_static:
+      - "quantized_linear_defaults"
+  # Apply the quantized linear defaults with each fake quantization format.
+  - named_group_static:
+      - "quantized_linear_defaults"
+    named_group_variations:
+      - "grad_fake_quant_modes"
