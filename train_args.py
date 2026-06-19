@@ -280,6 +280,12 @@ def parse_args():
     model_group.add_argument('--numerical_mapping_weight_tying', default=True, action=argparse.BooleanOptionalAction,
                                     help="Tie numerical embedding/output mapping weights when supported")
     model_group.add_argument(
+        '--numerical_scaled_vector_attenuation',
+        default=1.0,
+        type=float,
+        help="Global attenuation coefficient applied by the attenuated scaled-vector numerical embedding.",
+    )
+    model_group.add_argument(
         '--numerical_multicontext_input_format',
         default='scalar',
         choices=['scalar', 'fp16_bits'],
