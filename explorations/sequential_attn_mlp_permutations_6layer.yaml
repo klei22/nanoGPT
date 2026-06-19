@@ -1,0 +1,31 @@
+# Permutation exploration for 6-layer model.
+---
+max_iters: [20000]
+eval_interval: [500]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["float16"]
+compile: [true]
+
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_pre_ln: [true]
+
+use_sequential_ops: [true]
+sequence_intermediate_skip_connections: [true]
+sequence_final_skip_connection: [true]
+match_sequential_mlp_param_budget: [true]
+
+# Permute order for same multiset: 2x attn + 2x mlp
+block_operation_sequence:
+  - ["attn", "attn", "mlp", "mlp"]
+  - ["attn", "mlp", "attn", "mlp"]
+  - ["attn", "mlp", "mlp", "attn"]
+  - ["mlp", "attn", "attn", "mlp"]
+  - ["mlp", "attn", "mlp", "attn"]
+  - ["mlp", "mlp", "attn", "attn"]
