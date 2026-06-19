@@ -28,7 +28,7 @@ PY
   fi
 fi
 
-python3 ../template/utils/korean/extract_multicontext_streams.py input.txt .
+python3 ../template/utils/korean/extract_multicontext_streams.py input.txt . --metadata-json '' --metadata-yaml ''
 
 lanes=(script choseong jungseong jongseong jung_base1 jung_base2 jung_has_w jung_has_y jung_has_i jong_base1 jong_base2 jong_base3 choseong_tense choseong_aspirated choseong_nasal_liquid choseong_place jung_height jung_backness jung_round jong_complex has_batchim syllable_index_mod codepoint_mod char)
 for lane in "${lanes[@]}"; do

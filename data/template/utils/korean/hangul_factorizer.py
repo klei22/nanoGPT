@@ -86,6 +86,7 @@ class HangulFactorizedTokenizer:
     def __init__(self) -> None:
         self.value_to_id = [{v: i for i, v in enumerate(lane.values)} for lane in LANES]
         self.id_to_value = [list(lane.values) for lane in LANES]
+        self._encode_cache: Dict[str, tuple[int, ...]] = {}
 
     @staticmethod
     def is_hangul_syllable(char: str) -> bool:
@@ -109,8 +110,12 @@ class HangulFactorizedTokenizer:
         return ["HANGUL", cho, jung, jong, vb1, vb2, str(int(jung in {"WA","WAE","OE","WEO","WE","WI"})), str(int(jung.startswith("Y"))), str(int("I" in (vb1, vb2) or jung in {"AE","E","OE","WE","WI","YI","I"})), jb1, jb2, jb3, str(int(cho in {"GG","DD","BB","SS","JJ"})), str(int(cho in {"CH","K","T","P","H"})), str(int(cho in {"N","R","M","NG"})), place, height, back, str(int(jung in {"O","WA","WAE","OE","YO","U","WEO","WE","WI","YU"})), str(int(t in {2,3,5,6,9,10,11,12,13,14,15,18,20})), str(int(t != 0)), str(t), str(ord(char) % 64)]
 
     def encode_char(self, char: str) -> List[int]:
-        vals = self._features(char)
-        return [self.value_to_id[i].get(v, 0) for i, v in enumerate(vals)]
+        cached = self._encode_cache.get(char)
+        if cached is None:
+            vals = self._features(char)
+            cached = tuple(self.value_to_id[i].get(v, 0) for i, v in enumerate(vals))
+            self._encode_cache[char] = cached
+        return list(cached)
 
     def decode_indices(self, indices: Sequence[int]) -> str:
         vals = [self.id_to_value[i][idx] if 0 <= idx < len(self.id_to_value[i]) else PAD for i, idx in enumerate(indices[:23])]

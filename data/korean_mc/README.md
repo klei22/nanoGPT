@@ -11,7 +11,8 @@ This dataset layout is intended for English-to-Korean experiments using the Kore
 1. Download English-Korean OPUS-100 parallel data.
 2. Extract Korean target segments into `input.txt`.
 3. Run `../template/utils/korean/extract_multicontext_streams.py input.txt .`.
-4. The extractor writes one aligned `input.txt` stream for each of the 23 Hangul factor lanes plus `char/input.txt` containing the original character stream.
-5. Run `../template/prepare.py --method char -s -S <lane_name>` for every lane directory so nanoGPT can train with `--training_mode multicontext --multicontext`.
+4. The extractor streams through `input.txt` in chunks, so it does not keep the full corpus, all lane streams, or all per-character metadata in memory.
+5. The extractor writes one aligned `input.txt` stream for each of the 23 Hangul factor lanes plus `char/input.txt` containing the original character stream.
+6. Run `../template/prepare.py --method char -s -S <lane_name>` for every lane directory so nanoGPT can train with `--training_mode multicontext --multicontext`.
 
-Non-Hangul characters are preserved in `char/input.txt` and the metadata sidecars. Their feature lanes use `NON_HANGUL` in the `script` lane and `PAD` markers elsewhere.
+Non-Hangul characters are preserved in `char/input.txt` and the metadata sidecars. Their feature lanes use `NON_HANGUL` in the `script` lane and `PAD` markers elsewhere. For very large corpora, pass `--metadata-json '' --metadata-yaml ''` to skip full per-character sidecars and keep only `lane_metadata.json`.
