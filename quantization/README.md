@@ -181,3 +181,37 @@ python3 quantization/visualize.py \
     - **Purpose**: Allows the model to stabilize before introducing quantization, which can improve training convergence.
 
 ---
+
+## KurTail Rotation
+
+KurTail is an optional rotation step that can be applied to activations
+before quantization. It learns an orthogonal matrix that minimizes the
+kurtosis of the activation distribution which helps mitigate outliers for
+extreme bit-widths.
+
+```python
+from quantization.kurtail import apply_kurtail_quantization
+zpt, scale, q, R = apply_kurtail_quantization(tensor, bits=4)
+```
+
+The learned rotation matrix `R` can be fused into the model weights or
+stored for later use during inference. KurTail relies only on PyTorch and
+does not require multiple GPUs to train the rotation.
+
+## Post-Training Quantization
+
+`quantization/ptq_quantize_ckpt.py` converts a standard checkpoint
+produced by `train.py` into a quantized checkpoint using any of the
+available quantization methods. The quantized checkpoint can then be
+used with `sample.py` for inference.
+
+```bash
+python3 quantization/ptq_quantize_ckpt.py \
+  --ckpt_path out/ckpt.pt \
+  --out_ckpt out/ckpt_ptq.pt \
+  --bits 4 \
+  --quant_method kurtail_quant
+```
+
+See `demos/ptq_quantization_demo.sh` for a complete example.
+
