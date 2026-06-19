@@ -678,6 +678,22 @@ class Squareplus(nn.Module):
 
         return result
 
+
+class IdentitySoftmax(nn.Module):
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.div_by_seq_len = config.div_by_seq_len
+
+    def forward(self, x):
+        result = x
+
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
 # ------------------------------------------------------------------------- #
 #  PFLA‑Softmax  –  two interpolation modes (linear vs. quadratic)          #
 # ------------------------------------------------------------------------- #
@@ -876,6 +892,7 @@ softmax_dictionary = {
     "softplus": Softplus,
     "softplus2max": Softplus2Max,
     "squareplus": Squareplus,
+    "identity": IdentitySoftmax,
     "pfla_softmax": PFLASoftmax,
     "ste_argmax_softmax": STEArgmaxSoftmax,
 }
