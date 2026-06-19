@@ -118,6 +118,20 @@ Train from scratch:
 python3 train_mezo.py --dataset shakespeare_char --max_iters 2000 --batch_size 64 --block_size 256
 ```
 
+### Train Model with a Custom Loss Wrapper
+
+If you want to implement custom training behavior without editing the core loop
+in `train.py`, use `train_custom.py`. This example wraps the base loss function
+with an additional z-loss regularizer:
+
+```bash
+python3 train_custom.py --dataset shakespeare_char --compile=False
+```
+
+To implement the same idea directly in `train.py`, copy the wrapper logic from
+`CustomTrainer.__init__` and assign your wrapped callable back to
+`self.loss_fn`.
+
 Resume from an existing checkpoint:
 
 ```bash
