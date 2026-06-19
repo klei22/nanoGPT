@@ -206,3 +206,43 @@ With the resulting data, we can try to find the curve of parametesr per mlp
 size, nad vest val loss vs different characteristics, and ratios of differnet
 ones via curve fitting. This could yield insights on balancing parameters
 especially towards small language models.
+
+## Distributed candidate evaluation
+
+`hyperparam_search.py` can now keep the greedy controller local while sending the
+expensive candidate seed trials for each outer iteration to multiple machines.
+This reuses the same `RemoteTrainer` machinery used by the existing NSGA/grid
+search code: the controller writes a YAML shard of trial configs, uploads one
+shard per host, launches a remote runner under `distributed_trials/`, polls the
+remote PIDs, fetches `hp_results.yaml`, and then applies the normal greedy
+selection logic locally.
+
+Example:
+
+```bash
+python3 hyperparam_search.py \
+  --orig_settings ./hp_searches/shakespeare_char.yaml \
+  --param_names n_layer n_head n_embd mlp_size \
+  --increments 1 1 32 32 \
+  --iterations 2 \
+  --random_iterations 3 \
+  --num_iterations 20 \
+  --results_file results.yaml \
+  --distributed_hosts 10.0.0.11 10.0.0.12 10.0.0.13 \
+  --distributed_user ubuntu \
+  --distributed_remote_work_dir /home/ubuntu/Evo_GPT \
+  --distributed_conda_env reallmforge \
+  --distributed_run_dir_name hp_search_shakespeare
+```
+
+Notes:
+
+- The baseline measurement still runs on the controller. Distribution starts
+  after candidates have been generated for an outer greedy step.
+- Every candidate/seed pair is a separate trial record, so `--random_iterations`
+  also parallelizes across machines.
+- Remote hosts must already have the repository checkout and matching data paths.
+  Use the same remote work directory convention as NSGA search, or override it
+  with `--distributed_remote_work_dir`.
+- Each remote trial gets an isolated `out_dir` under the remote shard directory
+  to avoid collisions when many candidates run on the same host.

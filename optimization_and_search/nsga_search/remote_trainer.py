@@ -1,4 +1,4 @@
-import json, logging, threading, time, uuid, tempfile, math
+import json, logging, shlex, threading, time, uuid, tempfile, math
 import yaml
 import os
 from dataclasses import dataclass, field
@@ -638,3 +638,158 @@ fi
         except Exception as re:
             logging.error(f"\033[31mFailed to reorder gen CSV {gen_csv_path}: {re}\033[0m")
         return str(gen_csv_path)
+
+# Generic helpers used by search controllers that already have per-trial YAML
+# payloads. These are attached to RemoteTrainer to reuse the connection,
+# heartbeat, polling, and cleanup machinery built for NSGA/grid search.
+def _remote_trainer_submit_trial_shards(
+    self,
+    path_to_yaml: str,
+    remote_work_dir: str,
+    dir_name: str,
+    runner_script: str,
+    runner_yaml_arg: str,
+    runner_results_arg: str,
+    result_filename: str = "results.yaml",
+    conda_env: str = "reallmforge",
+) -> bool:
+    yaml_path = Path(path_to_yaml)
+    with yaml_path.open("r") as f:
+        data = yaml.safe_load(f) or []
+    if not isinstance(data, list):
+        raise ValueError(f"Expected a list of trial records in {yaml_path}, got {type(data)}")
+
+    n_hosts = max(1, self.num_hosts)
+    splits: List[List[dict]] = [[] for _ in range(n_hosts)]
+    for idx, cfg in enumerate(data):
+        splits[idx % n_hosts].append(cfg)
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="trial_shards_"))
+    local_slice_files: List[Optional[Path]] = [None] * n_hosts
+    base = yaml_path.stem
+    for i, split in enumerate(splits):
+        if not split:
+            continue
+        slice_path = tmp_dir / f"{base}.host{i}.yaml"
+        with slice_path.open("w") as f:
+            yaml.safe_dump(split, f, sort_keys=False, width=4096)
+        local_slice_files[i] = slice_path
+        logging.info(f"Prepared trial shard for host_{i}: {slice_path} ({len(split)} trials)")
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    short_uuid = uuid.uuid4().hex[:4]
+    run_id = f"{timestamp}_{short_uuid}"
+    new_jobs: List[RemoteJob] = []
+    overall_ok = True
+
+    for i, host in enumerate(self.hosts):
+        slice_file = local_slice_files[i]
+        if slice_file is None:
+            logging.warning(f"\033[33mNo trials assigned to host_{i} ({host}); skipping upload.\033[0m")
+            continue
+
+        conn = Connection(host=host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {})
+        try:
+            conn.open()
+            remote_run_dir = f"{remote_work_dir}/distributed_trials/{dir_name}/{base}-{run_id}-host{i}"
+            conn.run(f"mkdir -p {shlex.quote(remote_run_dir)}", hide=True)
+            remote_yaml_path = f"{remote_run_dir}/{slice_file.name}"
+            remote_results_path = f"{remote_run_dir}/{result_filename}"
+            remote_log_path = f"{remote_run_dir}/run.log"
+            remote_pid_path = f"{remote_run_dir}/run.pid"
+            lease_path = f"{remote_run_dir}/lease"
+            conn.put(str(slice_file), remote=remote_yaml_path)
+
+            runner_cmd = (
+                f"python -u {shlex.quote(runner_script)} "
+                f"{shlex.quote(runner_yaml_arg)} {shlex.quote(remote_yaml_path)} "
+                f"{shlex.quote(runner_results_arg)} {shlex.quote(remote_results_path)}"
+            )
+            cmd = (
+                f"cd {shlex.quote(remote_work_dir)} && "
+                f"setsid bash -lc '\n"
+                f"{{\n"
+                f"echo \"[launcher] $(date) starting on $(hostname)\";\n"
+                f"CONDA_BIN=$(command -v conda || true);\n"
+                f"if [ -n \"$CONDA_BIN\" ] && conda run -n {shlex.quote(conda_env)} python -V >/dev/null 2>&1; then\n"
+                f"  conda run -n {shlex.quote(conda_env)} {runner_cmd}; ec=$?;\n"
+                f"else\n"
+                f"  if [ -n \"$CONDA_BIN\" ]; then eval \"$(conda shell.bash hook)\" >/dev/null 2>&1 || true; fi;\n"
+                f"  if command -v conda >/dev/null 2>&1; then conda activate {shlex.quote(conda_env)} || true; fi;\n"
+                f"  {runner_cmd}; ec=$?;\n"
+                f"fi;\n"
+                f"echo $ec > {shlex.quote(remote_run_dir)}/exit_code\n"
+                f"}} >> {shlex.quote(remote_log_path)} 2>&1 < /dev/null &\n"
+                f"echo $! > {shlex.quote(remote_pid_path)}\n"
+                f"' </dev/null >/dev/null 2>&1 &"
+            )
+            conn.run(cmd, hide=True)
+            pid_out = conn.run(f"cat {shlex.quote(remote_pid_path)}", hide=True, warn=True)
+            pid: Optional[int] = None
+            if pid_out.ok and pid_out.stdout.strip().isdigit():
+                pid = int(pid_out.stdout.strip())
+            job = RemoteJob(
+                id=f"{base}-{run_id}-host{i}",
+                host=host,
+                remote_dir=remote_run_dir,
+                yaml_path=remote_yaml_path,
+                log_path=remote_log_path,
+                pid_path=remote_pid_path,
+                pid=pid,
+                status=JobStatus.RUNNING if pid else JobStatus.PENDING,
+                lease_path=lease_path,
+            )
+            self.jobs.append(job)
+            new_jobs.append(job)
+            logging.info(f"\033[32mLaunched trial shard on host_{i} ({host}), PID={pid}, log: {remote_log_path}\033[0m")
+        except Exception as e:
+            logging.error(f"\033[31mFailed to launch trial shard on host_{i} ({host}): {e}\033[0m")
+            overall_ok = False
+            for started in new_jobs:
+                if started.pid is not None:
+                    try:
+                        with Connection(host=started.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {}) as c2:
+                            c2.run(f"kill -9 {started.pid}", hide=True, warn=True)
+                    except Exception:
+                        pass
+                started.status = JobStatus.CANCELLED
+                started.finished_at = time.time()
+            break
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    if overall_ok:
+        for j in new_jobs:
+            self._start_heartbeat(j)
+
+    try:
+        for p in local_slice_files:
+            if p and p.exists():
+                p.unlink(missing_ok=True)
+        tmp_dir.rmdir()
+    except Exception:
+        pass
+    return overall_ok
+
+
+def _remote_trainer_fetch_job_file(self, remote_filename: str, local_dir: str) -> List[Path]:
+    out_dir = Path(local_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fetched: List[Path] = []
+    for job in self.jobs:
+        local_path = out_dir / f"{job.id}.{Path(remote_filename).name}"
+        remote_path = f"{job.remote_dir}/{remote_filename}"
+        try:
+            with Connection(host=job.host, user=self.user, connect_kwargs={"key_filename": self.key_filename} if self.key_filename else {}) as conn:
+                conn.get(remote_path, local=str(local_path))
+            fetched.append(local_path)
+        except Exception as exc:
+            logging.error(f"\033[31mFailed to fetch {remote_path} from {job.host}: {exc}\033[0m")
+    return fetched
+
+
+RemoteTrainer.submit_trial_shards = _remote_trainer_submit_trial_shards
+RemoteTrainer.fetch_job_file = _remote_trainer_fetch_job_file
