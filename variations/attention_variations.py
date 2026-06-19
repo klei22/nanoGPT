@@ -229,6 +229,12 @@ class CausalSelfAttention(nn.Module):
         if self.disable_flash_attention:
             self.flash = False
 
+        # No-diagonal causal mask
+        self.use_no_diag_mask = config.use_no_diag_mask
+        if self.use_no_diag_mask:
+            self.flash = False
+            print("flash attention removed due to no-diagonal mask")
+
         # Softmax Variant Selection
         self.softmax_variant_attn = config.softmax_variant_attn
         if self.softmax_variant_attn == "softmax":
@@ -248,12 +254,16 @@ class CausalSelfAttention(nn.Module):
         if (not self.flash) and (not self.use_flex_attn):
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+            tril_diag = -1 if self.use_no_diag_mask else 0
+            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size), diagonal=tril_diag)
                                         .view(1, 1, config.block_size, config.block_size))
 
     # Flex Attention Related
     def sliding_window_causal(self, b, h, q_idx, kv_idx):
-        causal_mask = q_idx >= kv_idx
+        if self.use_no_diag_mask:
+            causal_mask = q_idx > kv_idx
+        else:
+            causal_mask = q_idx >= kv_idx
         window_mask = q_idx - kv_idx <= self.window_size
         return causal_mask & window_mask
 
@@ -603,9 +613,13 @@ class EdgeLLMASICAttention(nn.Module):
             g0 = math.log2(L*L - L)
             self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
 
+        # No-diagonal causal mask
+        self.use_no_diag_mask = config.use_no_diag_mask
+
         print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
         # causal mask to ensure that attention is only applied to the left in the input sequence
-        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+        tril_diag = -1 if self.use_no_diag_mask else 0
+        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size), diagonal=tril_diag)
                                     .view(1, 1, config.block_size, config.block_size))
 
     def _expand_kv(self, tensor: torch.Tensor) -> torch.Tensor:
@@ -1142,6 +1156,13 @@ class InfiniteHeadAttention(nn.Module):
             g0 = math.log2(L*L - L)
             self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
 
+        # No-diagonal causal mask
+        self.use_no_diag_mask = config.use_no_diag_mask
+        if self.use_no_diag_mask:
+            if not self.disable_flash_attention:
+                print("flash attention removed due to no-diagonal mask")
+            self.disable_flash_attention = True
+
         # Softmax Variant Selection
         self.softmax_variant_attn = config.softmax_variant_attn
         if self.softmax_variant_attn != 'softmax':
@@ -1150,7 +1171,8 @@ class InfiniteHeadAttention(nn.Module):
                 print("flash attention removed due to softmax alternative")
             self.disable_flash_attention = True
 
-        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+        tril_diag = -1 if self.use_no_diag_mask else 0
+        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size), diagonal=tril_diag)
                              .view(1, 1, config.block_size, config.block_size))
 
     def _maybe_print_attn_norm(self, name, weight, dim):
@@ -1375,10 +1397,14 @@ class MultiHeadLatentAttention(nn.Module):
         else:
             self.register_parameter("lobo_log", None)
 
+        # No-diagonal causal mask
+        self.use_no_diag_mask = config.use_no_diag_mask
+
         # Pre-build causal mask for the worst-case block_size
+        tril_diag = -1 if self.use_no_diag_mask else 0
         self.register_buffer(
             "causal_mask",
-            torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size),
+            torch.tril(torch.ones(config.block_size, config.block_size), diagonal=tril_diag).view(1, 1, config.block_size, config.block_size),
             persistent=False,
         )
 
