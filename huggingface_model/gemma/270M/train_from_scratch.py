@@ -1,6 +1,8 @@
 # huggingface_model/gemma/270M/train_from_scratch.py
 """Train a Gemma 270M model from scratch on the FineWeb internet corpus."""
 import os
+import sys
+from pathlib import Path
 
 # Prevent GPU OOM on some systems
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -8,8 +10,10 @@ os.environ.setdefault("WANDB_MODE", "offline")
 
 import argparse
 from typing import Dict, List
+from types import SimpleNamespace
 
 import torch
+import torch.nn as nn
 from datasets import Dataset, load_dataset, load_dataset_builder
 from transformers import (
     AutoConfig,
@@ -20,6 +24,53 @@ from transformers import (
     TrainerCallback,
     TrainingArguments,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
+
+from variations.norm_variations import HyperSphereNorm, RMSNorm
+
+
+class EmbeddingWithNorm(nn.Module):
+    """Wrap an embedding layer with an optional normalization module."""
+
+    def __init__(self, embedding: nn.Module, norm: nn.Module) -> None:
+        super().__init__()
+        self.embedding = embedding
+        self.norm = norm
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+        embeddings = self.embedding(input_ids)
+        return self.norm(embeddings)
+
+    @property
+    def weight(self) -> torch.nn.Parameter:
+        return self.embedding.weight
+
+    @property
+    def embedding_dim(self) -> int:
+        return self.embedding.embedding_dim
+
+    @property
+    def num_embeddings(self) -> int:
+        return self.embedding.num_embeddings
+
+
+def _build_embedding_norm(norm_type: str, embedding_dim: int) -> nn.Module:
+    if norm_type == "rmsnorm":
+        config = SimpleNamespace(n_embd=embedding_dim)
+        return RMSNorm(config)
+    if norm_type == "hyperspherenorm":
+        config = SimpleNamespace(
+            n_embd=embedding_dim,
+            hsnorm_gain=True,
+            hsnorm_radius=None,
+            hsnorm_scale=1.0,
+            hsnorm_radius_learning=False,
+        )
+        return HyperSphereNorm(config)
+    raise ValueError(f"Unsupported embedding norm: {norm_type}")
 
 
 class SampleOutputCallback(TrainerCallback):
@@ -82,6 +133,12 @@ def main(args: argparse.Namespace) -> None:
     config = AutoConfig.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_config(config, attn_implementation="eager")
     model.resize_token_embeddings(len(tokenizer))
+
+    if args.embedding_norm != "none":
+        print(f"Attaching {args.embedding_norm} after token embeddings...")
+        base_embeddings = model.get_input_embeddings()
+        norm_layer = _build_embedding_norm(args.embedding_norm, base_embeddings.embedding_dim)
+        model.set_input_embeddings(EmbeddingWithNorm(base_embeddings, norm_layer))
 
     print("Loading FineWeb dataset...")
     subset = args.fineweb_subset or None
@@ -265,6 +322,13 @@ if __name__ == "__main__":
             "Mixed precision mode to use. Set to 'fp16' or 'bf16' to enable the corresponding"
             " autocast, or leave as 'none' for full float32 training."
         ),
+    )
+    parser.add_argument(
+        "--embedding_norm",
+        type=str,
+        choices=("none", "rmsnorm", "hyperspherenorm"),
+        default="none",
+        help="Optional normalization layer to insert immediately after the token embeddings.",
     )
     parser.add_argument(
         "--sample_prompt",
