@@ -1,0 +1,24 @@
+{
+  "description": "Tiny OPUS-100 translation check using BLEU and exact match.",
+  "max_new_tokens": 48,
+  "temperature": 0.0,
+  "top_k": [null, 50],
+  "scorers": ["bleu", "exact"],
+  "tasks": [
+    {
+      "start_tokens": "en: The weather is nice today.\nzh: ",
+      "answer_string": "今天天气很好。",
+      "references": ["今天天气不错。", "今天天气很好。"]
+    },
+    {
+      "start_tokens": "en: Thank you for your help.\nzh: ",
+      "answer_string": "谢谢你的帮助。",
+      "references": ["感谢你的帮助。", "谢谢你的帮助。"]
+    },
+    {
+      "start_tokens": "en: Our models are trained on OPUS-100.\nzh: ",
+      "answer_string": "我们的模型是在OPUS-100上训练的。",
+      "references": ["我们的模型是在OPUS-100数据集上训练的。"]
+    }
+  ]
+}
