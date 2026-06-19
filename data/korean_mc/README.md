@@ -16,3 +16,7 @@ This dataset layout is intended for English-to-Korean experiments using the Kore
 6. Run `../template/prepare.py --method char -s -S <lane_name>` for every lane directory, then copy the generated `char_<lane_name>/meta.pkl`, `train.bin`, and `val.bin` to the lane directory root because multicontext loading expects `data/korean_mc/<lane>/meta.pkl`.
 
 Non-Hangul characters are preserved in `char/input.txt` and the metadata sidecars. Their feature lanes use `NON_HANGUL` in the `script` lane and `PAD` markers elsewhere. For very large corpora, pass `--metadata-json '' --metadata-yaml ''` to skip full per-character sidecars and keep only `lane_metadata.json`.
+
+## Sampling prompts
+
+Lane datasets use private-use factor tokens, so rendered text such as `English: Hello Korean: ` should not be passed directly to every lane with `--multicontext_start`. Use `../template/utils/korean/make_multicontext_prompt.py` after running `get_dataset.sh` to encode the rendered prompt into per-lane `.bin` start files, then pass those files to `sample.py` with `--multicontext_start_files`.
