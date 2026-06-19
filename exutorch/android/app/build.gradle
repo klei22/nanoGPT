@@ -1,0 +1,71 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.example.nanogptbench"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.example.nanogptbench"
+        minSdk        = 26   // Android 8.0 – needed for BatteryManager energy counter
+        targetSdk     = 34
+        versionCode   = 1
+        versionName   = "1.0"
+
+        ndk {
+            // XNNPack / ExecuTorch only ships arm64-v8a and x86_64 prebuilts
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+    }
+
+    buildFeatures {
+        viewBinding = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    // Bundle the .pte model + vocab assets into the APK
+    sourceSets["main"].assets.srcDirs("src/main/assets")
+
+    packaging {
+        // ExecuTorch AAR bundles native .so files; don't strip them
+        jniLibs.keepDebugSymbols.add("**/*.so")
+    }
+}
+
+dependencies {
+    // ---------------------------------------------------------------
+    // ExecuTorch Android SDK
+    // Provides: com.facebook.executorch.Module, EValue, Tensor, etc.
+    //
+    // Option A (recommended): use the pre-built Maven release AAR
+    //   implementation("com.facebook.executorch:executorch-android:0.4.0")
+    //
+    // Option B: local AAR built from source
+    //   Place the AAR at app/libs/executorch-android.aar and uncomment:
+    //   implementation(files("libs/executorch-android.aar"))
+    //
+    // The AAR includes XNNPack, the core ExecuTorch runtime, and JNI
+    // bindings for arm64-v8a and x86_64.
+    // ---------------------------------------------------------------
+    implementation("com.facebook.executorch:executorch-android:0.4.0")
+
+    // AndroidX / UI
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.cardview:cardview:1.0.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
+
+    // Kotlin coroutines for off-main-thread inference
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+}
