@@ -32,5 +32,12 @@ python3 ../template/utils/korean/extract_multicontext_streams.py input.txt . --m
 
 lanes=(script choseong jungseong jongseong jung_base1 jung_base2 jung_has_w jung_has_y jung_has_i jong_base1 jong_base2 jong_base3 choseong_tense choseong_aspirated choseong_nasal_liquid choseong_place jung_height jung_backness jung_round jong_complex has_batchim syllable_index_mod codepoint_mod char)
 for lane in "${lanes[@]}"; do
-  ( cd "$lane" && python3 ../../template/prepare.py -t input.txt --method char -s -S "$lane" )
+  (
+    cd "$lane"
+    python3 ../../template/prepare.py -t input.txt --method char -s -S "$lane"
+    prepared_dir="char_${lane}"
+    cp "${prepared_dir}/meta.pkl" meta.pkl
+    cp "${prepared_dir}/train.bin" train.bin
+    cp "${prepared_dir}/val.bin" val.bin
+  )
 done

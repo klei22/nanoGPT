@@ -6,6 +6,7 @@ bash data/korean_mc/get_dataset.sh
 lanes=(korean_mc/script korean_mc/choseong korean_mc/jungseong korean_mc/jongseong korean_mc/jung_base1 korean_mc/jung_base2 korean_mc/jung_has_w korean_mc/jung_has_y korean_mc/jung_has_i korean_mc/jong_base1 korean_mc/jong_base2 korean_mc/jong_base3 korean_mc/choseong_tense korean_mc/choseong_aspirated korean_mc/choseong_nasal_liquid korean_mc/choseong_place korean_mc/jung_height korean_mc/jung_backness korean_mc/jung_round korean_mc/jong_complex korean_mc/has_batchim korean_mc/syllable_index_mod korean_mc/codepoint_mod korean_mc/char)
 
 python3 train.py \
+  --dataset korean_mc/char \
   --training_mode multicontext \
   --multicontext \
   --multicontext_datasets "${lanes[@]}" \
