@@ -1556,7 +1556,7 @@ function replayStageHotkey() {
   state.progress = 0;
   state.playing = true;
   state.stageStartedAt = performance.now();
-  state.cameraGuideUntil = performance.now() + 1400;
+  state.cameraGuideUntil = 0;
   refreshUi();
   showHotkeyToast(`Replay: ${stageLabels[state.stage]}`);
 }
@@ -2157,17 +2157,25 @@ function focusCenter(stage) {
   if (stage === 4 || stage === 14 || stage === 15) return new THREE.Vector3(-1.2, 0, 0);
   if (stage === 5 || stage === 6 || stage === 16 || stage === 17) return new THREE.Vector3(-1.2, 1.45, 0);
   if (stage === 7 || stage === 8 || stage === 18) return CENTERS.v.clone();
-  if (stage === 9 || stage === 19) return new THREE.Vector3(4.9, -1.1, 0);
+  if (stage === 9 || stage === 19) return new THREE.Vector3(3.5, -1.0, 0);
   if (stage === 20) return CENTERS.Output.clone();
   return new THREE.Vector3(-3.25, 0, 0);
+}
+
+function desiredCameraPosition(stage, target) {
+  if (stage === 9 || stage === 19) {
+    // Front-on composition: Wv/context on the left, Wo centered, output sphere on the right.
+    return target.clone().add(new THREE.Vector3(0, 0.45, desiredCameraDistance(stage)));
+  }
+  return null;
 }
 function desiredCameraDistance(stage) {
   if (state.forceOverview || stage === 0 || stage === 10) return 17.5;
   if (stage === 20) return 4.6;
   if (stage === 1 || stage === 2 || stage === 3 || stage === 11 || stage === 12 || stage === 13) return 11.5;
-  if (stage === 6 || stage === 17) return 8.2;
-  if (stage === 9 || stage === 19) return 7.1;
-  if (stage === 4 || stage === 14 || stage === 15) return 8.4;
+  if (stage === 5 || stage === 6 || stage === 16 || stage === 17) return 9.8;
+  if (stage === 9 || stage === 19) return 11.0;
+  if (stage === 4 || stage === 14 || stage === 15) return 9.8;
   return 6.8;
 }
 
@@ -2184,10 +2192,15 @@ function animate(ts) {
   const target = focusCenter(state.stage);
   controls.target.lerp(target, 0.08);
   if (ts < state.cameraGuideUntil && !state.autoRotate) {
-    const offset = camera.position.clone().sub(controls.target);
-    if (offset.length() > 0.001) {
-      const desired = controls.target.clone().add(offset.normalize().multiplyScalar(desiredCameraDistance(state.stage)));
-      camera.position.lerp(desired, 0.055);
+    const guidedPosition = desiredCameraPosition(state.stage, target);
+    if (guidedPosition) {
+      camera.position.lerp(guidedPosition, 0.055);
+    } else {
+      const offset = camera.position.clone().sub(controls.target);
+      if (offset.length() > 0.001) {
+        const desired = controls.target.clone().add(offset.normalize().multiplyScalar(desiredCameraDistance(state.stage)));
+        camera.position.lerp(desired, 0.055);
+      }
     }
   }
   if (state.autoRotate) {
