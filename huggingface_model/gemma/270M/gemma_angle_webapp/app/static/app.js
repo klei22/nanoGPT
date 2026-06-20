@@ -10,6 +10,7 @@ const state = {
   pairwiseSelectedBinIndex: null,
   pairwiseBinTokens: [],
   minDistanceRows: [],
+  minDistanceHighlightedRows: [],
   recursiveGroup: null,
   recursiveGroupNetwork: null,
   recursiveGroupNetworkData: null,
@@ -138,6 +139,40 @@ function exportHtmlTableAsCsv(tableId, filename) {
 
   const csv = [headers, ...rows].map((row) => row.map(csvEscape).join(',')).join('\n') + '\n';
   downloadBlob(csv, filename, 'text/csv;charset=utf-8');
+}
+
+function minDistanceRowsToCsv(rows) {
+  const headers = [
+    'Min-angle rank',
+    'Token ID',
+    'Raw token',
+    'Display',
+    'Vector length',
+    'Min angle °',
+    'Other token ID',
+    'Other raw token',
+    'Other display',
+    'Other vector length',
+  ];
+  const body = rows.map((row) => [
+    row.min_angle_rank,
+    row.token_id,
+    row.token_raw,
+    row.token_display,
+    row.magnitude,
+    row.min_angle_deg,
+    row.other_token_id,
+    row.other_token_raw,
+    row.other_token_display,
+    row.other_magnitude,
+  ]);
+  return [headers, ...body].map((csvRow) => csvRow.map(csvEscape).join(',')).join('\n') + '\n';
+}
+
+function exportHighlightedMinDistanceRowsCsv() {
+  const rows = highlightedMinDistanceRows();
+  if (rows.length === 0) return;
+  downloadBlob(minDistanceRowsToCsv(rows), 'highlighted_minimum_angular_distances.csv', 'text/csv;charset=utf-8');
 }
 
 function exportCanvasAsPng(canvasId, filename) {
@@ -1175,21 +1210,66 @@ function buildAngleTicks(maxAngle) {
   return { ticks, yMax };
 }
 
-function getMinDistanceHighlightRange() {
+function getMinDistanceHighlightSpec() {
   const startInput = byId('minDistanceHighlightStart');
   const endInput = byId('minDistanceHighlightEnd');
-  if (!startInput || !endInput) return null;
+  const idsInput = byId('minDistanceHighlightIds');
+  if (!startInput || !endInput || !idsInput) return null;
   const startText = startInput.value.trim();
   const endText = endInput.value.trim();
-  if (startText === '' && endText === '') return null;
+  const idsText = idsInput.value.trim();
+  if (startText === '' && endText === '' && idsText === '') return null;
 
+  let range = null;
   const startValue = startText === '' ? Number(endText) : Number(startText);
   const endValue = endText === '' ? Number(startText) : Number(endText);
-  if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) return null;
+  if (startText !== '' || endText !== '') {
+    if (Number.isFinite(startValue) && Number.isFinite(endValue)) {
+      range = {
+        low: Math.max(0, Math.floor(Math.min(startValue, endValue))),
+        high: Math.max(0, Math.floor(Math.max(startValue, endValue))),
+      };
+    }
+  }
 
-  const low = Math.max(0, Math.floor(Math.min(startValue, endValue)));
-  const high = Math.max(0, Math.floor(Math.max(startValue, endValue)));
-  return { low, high };
+  const exactIds = new Set();
+  for (const part of idsText.split(/[,\s]+/)) {
+    if (!part) continue;
+    const value = Number(part);
+    if (Number.isFinite(value) && value >= 0) exactIds.add(Math.floor(value));
+  }
+
+  if (!range && exactIds.size === 0) return null;
+  return { range, exactIds };
+}
+
+function minDistanceRowMatchesHighlight(row, highlightSpec) {
+  if (!highlightSpec) return false;
+  const tokenId = Number(row.token_id);
+  if (!Number.isFinite(tokenId)) return false;
+  if (highlightSpec.exactIds.has(tokenId)) return true;
+  return Boolean(highlightSpec.range && tokenId >= highlightSpec.range.low && tokenId <= highlightSpec.range.high);
+}
+
+function minDistanceHighlightDescription(highlightSpec) {
+  if (!highlightSpec) return '';
+  const parts = [];
+  if (highlightSpec.range) {
+    parts.push(`IDs ${highlightSpec.range.low.toLocaleString()}–${highlightSpec.range.high.toLocaleString()}`);
+  }
+  if (highlightSpec.exactIds.size > 0) {
+    const ids = Array.from(highlightSpec.exactIds).sort((a, b) => a - b);
+    const preview = ids.slice(0, 12).map((id) => id.toLocaleString()).join(', ');
+    const suffix = ids.length > 12 ? `, … +${(ids.length - 12).toLocaleString()} more` : '';
+    parts.push(`exact IDs ${preview}${suffix}`);
+  }
+  return parts.join(' and ');
+}
+
+function highlightedMinDistanceRows() {
+  const highlightSpec = getMinDistanceHighlightSpec();
+  if (!highlightSpec) return [];
+  return sortedMinDistanceRowsForTable().filter((row) => minDistanceRowMatchesHighlight(row, highlightSpec));
 }
 
 function drawMinDistancePlot(rows) {
@@ -1313,16 +1393,15 @@ function drawMinDistancePlot(rows) {
     }
   }
 
-  const highlightRange = getMinDistanceHighlightRange();
-  let highlightCount = 0;
-  if (highlightRange) {
+  const highlightSpec = getMinDistanceHighlightSpec();
+  state.minDistanceHighlightedRows = [];
+  if (highlightSpec) {
     ctx.fillStyle = highlightColor;
     const highlightRadius = rowCount > 20000 ? 2.5 : 4.5;
     for (let index = 0; index < rowCount; index += 1) {
       const row = sortedRows[index];
-      const tokenId = Number(row.token_id);
-      if (!Number.isFinite(tokenId) || tokenId < highlightRange.low || tokenId > highlightRange.high) continue;
-      highlightCount += 1;
+      if (!minDistanceRowMatchesHighlight(row, highlightSpec)) continue;
+      state.minDistanceHighlightedRows.push(row);
       const x = xForRank(index);
       const y = yForAngle(Number(row.min_angle_deg || 0));
       if (rowCount > 20000) {
@@ -1336,12 +1415,15 @@ function drawMinDistancePlot(rows) {
   }
 
   let caption = 'Y axis is the minimum non-self angle. X axis is rank after sorting tokens from lowest to highest minimum angle.';
-  if (highlightRange) {
-    caption += ` Orange dots highlight ${highlightCount.toLocaleString()} token${highlightCount === 1 ? '' : 's'} with IDs ${highlightRange.low.toLocaleString()}–${highlightRange.high.toLocaleString()}.`;
+  if (highlightSpec) {
+    const highlightCount = state.minDistanceHighlightedRows.length;
+    const description = minDistanceHighlightDescription(highlightSpec);
+    caption += ` Orange dots highlight ${highlightCount.toLocaleString()} token${highlightCount === 1 ? '' : 's'} matching ${description}.`;
   } else {
-    caption += ' Enter a token ID range above to overlay matching tokens as orange dots.';
+    caption += ' Enter a token ID range or comma-separated token IDs above to overlay matching tokens as orange dots.';
   }
   byId('minDistancePlotCaption').textContent = caption;
+  setExportVisible('exportMinDistanceHighlightCsv', state.minDistanceHighlightedRows.length > 0);
 }
 
 function sortedMinDistanceRowsForTable() {
@@ -1388,6 +1470,7 @@ function renderMinDistanceTable() {
 
 function resetMinDistancesOutput() {
   state.minDistanceRows = [];
+  state.minDistanceHighlightedRows = [];
   const output = byId('minDistancesOutput');
   if (!output) return;
   setOutput('minDistancesOutput', 'Load a model, then compute each token’s closest non-self angular neighbor. CUDA is used automatically when available.', true);
@@ -1396,6 +1479,7 @@ function resetMinDistancesOutput() {
   table.classList.add('hidden');
   table.querySelector('tbody').innerHTML = '';
   setExportVisible('exportMinDistancesCsv', false);
+  setExportVisible('exportMinDistanceHighlightCsv', false);
 }
 
 function refreshMinDistanceHighlight() {
@@ -1410,10 +1494,12 @@ async function computeMinAngularDistances() {
   const computeDevice = byId('minDistanceComputeDevice').value.trim() || 'auto';
 
   state.minDistanceRows = [];
+  state.minDistanceHighlightedRows = [];
   byId('minDistancePlotCard').classList.add('hidden');
   byId('minDistancesTable').classList.add('hidden');
   byId('minDistancesTable').querySelector('tbody').innerHTML = '';
   setExportVisible('exportMinDistancesCsv', false);
+  setExportVisible('exportMinDistanceHighlightCsv', false);
   setOutput('minDistancesOutput', 'Computing closest non-self angular neighbor for every token… The full pairwise matrix is not cached or written to disk.', true);
   button.disabled = true;
   button.textContent = 'Computing…';
@@ -1444,7 +1530,9 @@ async function computeMinAngularDistances() {
     renderMinDistanceTable();
   } catch (error) {
     state.minDistanceRows = [];
+    state.minDistanceHighlightedRows = [];
     setExportVisible('exportMinDistancesCsv', false);
+    setExportVisible('exportMinDistanceHighlightCsv', false);
     setOutput('minDistancesOutput', `<strong>Minimum-distance computation failed:</strong> ${escapeHtml(error.message)}`);
   } finally {
     button.disabled = false;
@@ -2645,6 +2733,7 @@ function setupExportButtons() {
   byId('exportPairwiseBinTokensCsv').addEventListener('click', () => exportHtmlTableAsCsv('pairwiseBinTokensTable', `pairwise_bin_${filenamePart(state.pairwiseSelectedBinIndex, 'selected')}_tokens.csv`));
   byId('exportMinDistancePlotPng').addEventListener('click', () => exportCanvasAsPng('minDistancePlot', 'minimum_angular_distances.png'));
   byId('exportMinDistancesCsv').addEventListener('click', () => exportHtmlTableAsCsv('minDistancesTable', 'minimum_angular_distances.csv'));
+  byId('exportMinDistanceHighlightCsv').addEventListener('click', exportHighlightedMinDistanceRowsCsv);
   byId('exportRecursiveGroupGraphSvg').addEventListener('click', exportRecursiveGroupGraphSvg);
   byId('exportRecursiveGroupGraphPng').addEventListener('click', exportRecursiveGroupGraphPng);
   byId('exportRecursiveGroupAdjacencyCsv').addEventListener('click', exportRecursiveGroupAdjacencyCsv);
@@ -2710,7 +2799,7 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('minDistanceSort').addEventListener('change', () => {
     if (state.minDistanceRows.length > 0) renderMinDistanceTable();
   });
-  for (const controlId of ['minDistanceHighlightStart', 'minDistanceHighlightEnd']) {
+  for (const controlId of ['minDistanceHighlightStart', 'minDistanceHighlightEnd', 'minDistanceHighlightIds']) {
     byId(controlId).addEventListener('input', refreshMinDistanceHighlight);
     byId(controlId).addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
@@ -2722,6 +2811,7 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('clearMinDistanceHighlight').addEventListener('click', () => {
     byId('minDistanceHighlightStart').value = '';
     byId('minDistanceHighlightEnd').value = '';
+    byId('minDistanceHighlightIds').value = '';
     refreshMinDistanceHighlight();
   });
 
