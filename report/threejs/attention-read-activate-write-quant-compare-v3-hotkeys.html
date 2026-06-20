@@ -357,12 +357,12 @@
         <div class="title-card">
           <h1>One-Head Attention: Read → Project Q/K/V → Norm → Activate → Write Values → Wo Output</h1>
           <div class="subtitle">
-            The tokens physically reside on the leftmost input (x) sphere. The current token (red) reads through the Wq matrix weights into q. All tokens (current + prior) read through the Wk and Wv matrix weights into k and v. After projection, q/k/v are normalized back to the hypersphere surface, q interacts with every k vector, activation produces coefficients, coefficients scale the value vectors, and Wo rotates the context into the final output.
+            The tokens physically reside on the leftmost input (x) sphere. The current token (red) reads through the Wq matrix weights into q. All tokens (current + prior) read through the Wk and Wv matrix weights into k and v. After projection, q/k/v are normalized back to the hypersphere surface, q interacts with every k vector, activation produces coefficients, coefficients scale the value vectors, and Wo acts as a separate output-projection matrix: the final context/v vector interacts with Wo, then the output sphere displays the result as a rotation from the initial context direction to the final output direction.
           </div>
         </div>
       </div>
       <div class="overlay-bottom">
-        Drag to rotate • Scroll to zoom • Right-drag to pan • Hotkeys: <span class="mono">j/→</span> next, <span class="mono">k/←</span> previous, <span class="mono">;/Space</span> play, <span class="mono">m</span> hotkey card. Red is the current token, slate arrows are prior tokens, cyan is the quantized comparison path. Compare zooms to the output sphere.
+        Drag to rotate • Scroll to zoom • Right-drag to pan • Hotkeys: <span class="mono">j/→</span> next, <span class="mono">k/←</span> previous, <span class="mono">;/Space</span> play, <span class="mono">m</span> hotkey card. Red is the current token, slate arrows are prior tokens, cyan is the quantized comparison path. Compare zooms to the separated output sphere.
       </div>
       <div id="hotkeyToast" aria-live="polite"></div>
     </div>
@@ -601,7 +601,8 @@ const CENTERS = {
   q: new THREE.Vector3(-1.2, 3.15, 0),
   k: new THREE.Vector3(-1.2, 0.0, 0),
   v: new THREE.Vector3(-1.2, -3.15, 0),
-  Wo: new THREE.Vector3(4.35, -0.25, 0),
+  Wo: new THREE.Vector3(4.05, -0.25, 0),
+  Output: new THREE.Vector3(8.2, -0.25, 0),
 };
 
 const stageLabels = {
@@ -614,7 +615,7 @@ const stageLabels = {
   6: 'Activation produces attention coefficients aᵢ',
   7: 'Attention coefficients scale each value vector aᵢ vᵢ',
   8: 'Write and sum scaled values into one context vector',
-  9: 'Wo rotates / projects the value context into final output',
+  9: 'Final v/context interacts with Wo, then rotates onto the output sphere',
   10: 'Quantize selected Wq / Wk / Wv / Wo tensors onto the blue grid',
   11: 'Q Wq → q: project with the selected quantized Wq path',
   12: 'Q Wk → k: project all tokens with the selected quantized Wk path',
@@ -1195,7 +1196,8 @@ addSphere('Wv', 'Wv weight rows', TENSOR);
 addSphere('q', 'q sphere', QUERY);
 addSphere('k', 'k sphere', KEY);
 addSphere('v', 'v / context sphere', VALUE);
-addSphere('Wo', 'Wo output sphere', FINAL);
+addSphere('Wo', 'Wo output matrix', TENSOR);
+addSphere('Output', 'output sphere', FINAL);
 
 const QUANT_DOT_KEYS = ['Wq', 'Wk', 'Wv', 'Wo', 'q', 'k', 'v'];
 const quantDotGroups = {};
@@ -1895,15 +1897,27 @@ function renderChain(pass, glyphs, color, opacity, progress) {
   }
 }
 function renderContextAndOutput(pass, contextGlyph, outputGlyph, colorContext, colorOutput, opacity, progress, quant = false) {
+  const t = smoothstep01(progress);
   const contextEnd = rawEndpoint(CENTERS.v, pass.context, derived.chainScale);
   contextGlyph.set(CENTERS.v, contextEnd, colorContext, opacity);
+
+  // Keep Wo visually distinct from the output sphere: first carry the final v/context
+  // direction into the Wo matrix, then display Wo's result as a rotation on Output.
+  const contextAtWoEnd = endpoint(CENTERS.Wo, pass.context);
   const startDir = pass.context.length() > 1e-9 ? pass.context : new THREE.Vector3(0, 1, 0);
   const finalDir = pass.output.length() > 1e-9 ? pass.output : new THREE.Vector3(0, 1, 0);
-  const interp = slerpUnit(startDir, finalDir, smoothstep01(progress));
-  const outEnd = CENTERS.Wo.clone().add(interp.multiplyScalar(SPHERE_RADIUS));
-  outputGlyph.set(CENTERS.Wo, outEnd, colorLerp(colorContext, colorOutput, progress), opacity);
-  setLine(dyn.transferLines[10], contextEnd, outEnd, opacity * 0.32, quant ? QUANT : FINAL);
-  labelAt(dyn.labels[75], outEnd.clone().add(new THREE.Vector3(0.24, 0.10, 0.12)), quant ? 'quant output' : 'output', colorOutput, opacity);
+  const interp = slerpUnit(startDir, finalDir, t);
+  const outputStart = endpoint(CENTERS.Output, startDir);
+  const outEnd = CENTERS.Output.clone().add(interp.multiplyScalar(SPHERE_RADIUS));
+
+  dyn.woContextGhost.set(CENTERS.Wo, contextAtWoEnd, quant ? QUANT : VALUE, opacity * 0.52);
+  outputGlyph.set(CENTERS.Output, outEnd, colorLerp(colorContext, colorOutput, t), opacity);
+  setLine(dyn.transferLines[10], contextEnd, contextAtWoEnd, opacity * 0.26, colorContext);
+  setLine(dyn.transferLines[11], contextAtWoEnd, outputStart, opacity * 0.18, quant ? QUANT : FINAL);
+  setLine(dyn.transferLines[12], outputStart, outEnd, opacity * 0.34, quant ? QUANT_FINAL : FINAL);
+  labelAt(dyn.labels[74], contextAtWoEnd.clone().add(new THREE.Vector3(0.20, -0.12, 0.10)), quant ? 'ṽ/context meets W̃o' : 'v/context meets Wo', quant ? QUANT : VALUE, opacity * 0.75);
+  labelAt(dyn.labels[75], outEnd.clone().add(new THREE.Vector3(0.24, 0.10, 0.12)), quant ? 'rotated q-output' : 'rotated output', colorOutput, opacity);
+  labelAt(dyn.labels[76], outputStart.clone().add(new THREE.Vector3(0.20, -0.14, 0.12)), quant ? 'initial ṽ dir' : 'initial v dir', colorContext, opacity * (1 - 0.35 * t));
 }
 function renderCompare() {
   const fade = 0.035;
@@ -1913,14 +1927,14 @@ function renderCompare() {
   renderChain(derived.quantized, dyn.chainVQ, QUANT_FINAL, fade, 1.0);
   dyn.contextArrow.set(CENTERS.v, rawEndpoint(CENTERS.v, derived.continuous.context, derived.chainScale), SUM, 0.22);
   dyn.contextArrowQ.set(CENTERS.v, rawEndpoint(CENTERS.v, derived.quantized.context, derived.chainScale), QUANT, 0.28);
-  const contTip = endpoint(CENTERS.Wo, derived.continuous.output);
-  const qTip = endpoint(CENTERS.Wo, derived.quantized.output);
-  dyn.outputArrow.set(CENTERS.Wo, contTip, FINAL, 1.0);
-  dyn.outputArrowQ.set(CENTERS.Wo, qTip, QUANT_FINAL, 1.0);
+  const contTip = endpoint(CENTERS.Output, derived.continuous.output);
+  const qTip = endpoint(CENTERS.Output, derived.quantized.output);
+  dyn.outputArrow.set(CENTERS.Output, contTip, FINAL, 1.0);
+  dyn.outputArrowQ.set(CENTERS.Output, qTip, QUANT_FINAL, 1.0);
   setLine(dyn.transferLines[10], contTip, qTip, 0.48, QUANT_FINAL);
   labelAt(dyn.labels[75], contTip.clone().add(new THREE.Vector3(0.25, 0.14, 0.12)), 'continuous output', FINAL, 1.0);
   labelAt(dyn.labels[76], qTip.clone().add(new THREE.Vector3(0.25, -0.14, 0.12)), 'quantized output', QUANT_FINAL, 1.0);
-  labelAt(dyn.labels[77], CENTERS.Wo.clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.50, 0)), `cos=${derived.cos.toFixed(4)}, angle=${derived.angleDeg.toFixed(2)}°`, WHITE, 1.0);
+  labelAt(dyn.labels[77], CENTERS.Output.clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.50, 0)), `cos=${derived.cos.toFixed(4)}, angle=${derived.angleDeg.toFixed(2)}°`, WHITE, 1.0);
 }
 
 function renderStage() {
@@ -1928,16 +1942,16 @@ function renderStage() {
   const t = state.progress;
   hideDynamics();
 
-  if (state.forceOverview || s === 0) setSphereEmphasis(['Input', 'Wq', 'Wk', 'Wv', 'q', 'k', 'v', 'Wo']);
+  if (state.forceOverview || s === 0) setSphereEmphasis(['Input', 'Wq', 'Wk', 'Wv', 'q', 'k', 'v', 'Wo', 'Output']);
   else if (s === 1 || s === 11) setSphereEmphasis(['Input', 'Wq', 'q']);
   else if (s === 2 || s === 12) setSphereEmphasis(['Input', 'Wk', 'k']);
   else if (s === 3 || s === 13) setSphereEmphasis(['Input', 'Wv', 'v']);
   else if (s === 4 || s === 14 || s === 15) setSphereEmphasis(['q', 'k', 'v']);
   else if (s === 5 || s === 6 || s === 16 || s === 17) setSphereEmphasis(['q', 'k']);
   else if (s === 7 || s === 8 || s === 18) setSphereEmphasis(['v']);
-  else if (s === 9 || s === 19) setSphereEmphasis(['v', 'Wo']);
+  else if (s === 9 || s === 19) setSphereEmphasis(['v', 'Wo', 'Output']);
   else if (s === 10) setSphereEmphasis(['Input', 'Wq', 'Wk', 'Wv', 'Wo']);
-  else if (s === 20) setSphereEmphasis(['Wo']);
+  else if (s === 20) setSphereEmphasis(['Output']);
 
   if (s <= 3 || s === 0) renderInputTokens(s === 0 ? 0.95 : 0.42);
   else if (s >= 10 && s <= 13) renderInputTokens(s === 10 ? 0.95 : 0.30);
@@ -2051,9 +2065,6 @@ function renderStage() {
     renderFinalProjections(derived.continuous, 0.04, 0.04, 0.08, false);
     renderChain(derived.continuous, dyn.chainV, SUM, 0.25, 1.0);
     renderContextAndOutput(derived.continuous, dyn.contextArrow, dyn.outputArrow, SUM, FINAL, 1.0, t, false);
-    const ghostEnd = CENTERS.Wo.clone().add(displayDir(derived.continuous.context));
-    dyn.woContextGhost.set(CENTERS.Wo, ghostEnd, VALUE, 0.42);
-    labelAt(dyn.labels[1], ghostEnd.clone().add(new THREE.Vector3(0.20, -0.10, 0.10)), 'context before Wo', VALUE, 0.55);
   }
 
   if (s === 10) renderTensorSnap(t, 1.0);
@@ -2146,8 +2157,8 @@ function focusCenter(stage) {
   if (stage === 4 || stage === 14 || stage === 15) return new THREE.Vector3(-1.2, 0, 0);
   if (stage === 5 || stage === 6 || stage === 16 || stage === 17) return new THREE.Vector3(-1.2, 1.45, 0);
   if (stage === 7 || stage === 8 || stage === 18) return CENTERS.v.clone();
-  if (stage === 9 || stage === 19) return new THREE.Vector3(1.6, -1.7, 0);
-  if (stage === 20) return CENTERS.Wo.clone();
+  if (stage === 9 || stage === 19) return new THREE.Vector3(4.9, -1.1, 0);
+  if (stage === 20) return CENTERS.Output.clone();
   return new THREE.Vector3(-3.25, 0, 0);
 }
 function desiredCameraDistance(stage) {
