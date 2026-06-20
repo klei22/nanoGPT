@@ -1175,6 +1175,23 @@ function buildAngleTicks(maxAngle) {
   return { ticks, yMax };
 }
 
+function getMinDistanceHighlightRange() {
+  const startInput = byId('minDistanceHighlightStart');
+  const endInput = byId('minDistanceHighlightEnd');
+  if (!startInput || !endInput) return null;
+  const startText = startInput.value.trim();
+  const endText = endInput.value.trim();
+  if (startText === '' && endText === '') return null;
+
+  const startValue = startText === '' ? Number(endText) : Number(startText);
+  const endValue = endText === '' ? Number(startText) : Number(endText);
+  if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) return null;
+
+  const low = Math.max(0, Math.floor(Math.min(startValue, endValue)));
+  const high = Math.max(0, Math.floor(Math.max(startValue, endValue)));
+  return { low, high };
+}
+
 function drawMinDistancePlot(rows) {
   const canvas = byId('minDistancePlot');
   const card = byId('minDistancePlotCard');
@@ -1184,6 +1201,7 @@ function drawMinDistancePlot(rows) {
   const mutedColor = style.getPropertyValue('--muted').trim() || '#9ca3af';
   const borderColor = style.getPropertyValue('--border').trim() || '#374151';
   const accentColor = style.getPropertyValue('--accent-strong').trim() || '#60a5fa';
+  const highlightColor = '#f97316';
 
   const sortedRows = [...(rows || [])].sort((a, b) => (
     Number(a.min_angle_deg) - Number(b.min_angle_deg)
@@ -1295,7 +1313,35 @@ function drawMinDistancePlot(rows) {
     }
   }
 
-  byId('minDistancePlotCaption').textContent = 'Y axis is the minimum non-self angle. X axis is rank after sorting tokens from lowest to highest minimum angle.';
+  const highlightRange = getMinDistanceHighlightRange();
+  let highlightCount = 0;
+  if (highlightRange) {
+    ctx.fillStyle = highlightColor;
+    const highlightRadius = rowCount > 20000 ? 2.5 : 4.5;
+    for (let index = 0; index < rowCount; index += 1) {
+      const row = sortedRows[index];
+      const tokenId = Number(row.token_id);
+      if (!Number.isFinite(tokenId) || tokenId < highlightRange.low || tokenId > highlightRange.high) continue;
+      highlightCount += 1;
+      const x = xForRank(index);
+      const y = yForAngle(Number(row.min_angle_deg || 0));
+      if (rowCount > 20000) {
+        ctx.fillRect(x - highlightRadius / 2, y - highlightRadius / 2, highlightRadius, highlightRadius);
+      } else {
+        ctx.beginPath();
+        ctx.arc(x, y, highlightRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  let caption = 'Y axis is the minimum non-self angle. X axis is rank after sorting tokens from lowest to highest minimum angle.';
+  if (highlightRange) {
+    caption += ` Orange dots highlight ${highlightCount.toLocaleString()} token${highlightCount === 1 ? '' : 's'} with IDs ${highlightRange.low.toLocaleString()}–${highlightRange.high.toLocaleString()}.`;
+  } else {
+    caption += ' Enter a token ID range above to overlay matching tokens as orange dots.';
+  }
+  byId('minDistancePlotCaption').textContent = caption;
 }
 
 function sortedMinDistanceRowsForTable() {
@@ -1350,6 +1396,12 @@ function resetMinDistancesOutput() {
   table.classList.add('hidden');
   table.querySelector('tbody').innerHTML = '';
   setExportVisible('exportMinDistancesCsv', false);
+}
+
+function refreshMinDistanceHighlight() {
+  if (state.minDistanceRows.length > 0) {
+    drawMinDistancePlot(state.minDistanceRows);
+  }
 }
 
 async function computeMinAngularDistances() {
@@ -2657,6 +2709,20 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('recursiveGroupHighlightMinEdges').addEventListener('change', refreshRecursiveGroupMinEdgeHighlight);
   byId('minDistanceSort').addEventListener('change', () => {
     if (state.minDistanceRows.length > 0) renderMinDistanceTable();
+  });
+  for (const controlId of ['minDistanceHighlightStart', 'minDistanceHighlightEnd']) {
+    byId(controlId).addEventListener('input', refreshMinDistanceHighlight);
+    byId(controlId).addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        refreshMinDistanceHighlight();
+      }
+    });
+  }
+  byId('clearMinDistanceHighlight').addEventListener('click', () => {
+    byId('minDistanceHighlightStart').value = '';
+    byId('minDistanceHighlightEnd').value = '';
+    refreshMinDistanceHighlight();
   });
 
   for (const controlId of ['recursiveGroupLimit', 'recursiveGroupMaxAngle', 'recursiveGroupBlockSize', 'recursiveGroupComputeDevice']) {
