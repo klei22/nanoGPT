@@ -1277,6 +1277,23 @@ class InfiniteHeadAttention(nn.Module):
         if self.cproj_scale is not None and self.cproj_scale != 1.0:
             y = y / self.cproj_scale
 
+        # Optional analysis payload consumed by analyze_with_dataset.py.  For
+        # InfiniteHeadAttention with summed heads, this exposes each head after
+        # its value path and corresponding output projection (Wv -> Wo / c_proj)
+        # but before the attention module sums the projected head contributions.
+        # Bias is split evenly so summing the saved per-head vectors reconstructs
+        # the normal c_proj(sum(heads)) value for the common n_cproj == 1 case.
+        self._analysis_head_cproj_outputs = None
+        if (not self.use_concat_heads) and self.n_cproj == 1:
+            if self.l2_norm_attn_cproj:
+                cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
+            else:
+                cproj_weight = self.c_proj.weight
+            cproj_bias = self.c_proj.bias
+            if cproj_bias is not None:
+                cproj_bias = cproj_bias / max(self.n_head, 1)
+            self._analysis_head_cproj_outputs = F.linear(y, cproj_weight, cproj_bias)
+
         # Concat Heads or Inf Concat Heads
         if self.use_concat_heads:
             # (B, nh, T, v_dim) → (B, T, nh*v_dim); avoid extra .contiguous()
