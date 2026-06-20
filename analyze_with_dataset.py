@@ -30,10 +30,10 @@ python analyze_with_dataset.py \
 """
 from __future__ import annotations
 
-import argparse, io, pickle, math
+import argparse, html, io, json, pickle, math
 import numpy as np
 from pathlib import Path
-from typing import Callable, List, Sequence
+from typing import Callable, Dict, List, Sequence
 
 import torch, torch.nn.functional as F
 from rich.console import Console
@@ -171,6 +171,17 @@ def parse_args():
                    help="Plot residual magnitude trace across model stages")
     p.add_argument("--residual_magnitude_file", default="residual_magnitude.html",
                    help="Output HTML file for residual magnitude traces")
+
+    p.add_argument("--save_topk_json", default=None,
+                   help="Save the top-k table rows and captured vectors to this JSON file for posthoc viewing/analysis")
+    p.add_argument("--topk_viewer_file", default="topk_viewer.html",
+                   help="HTML viewer/controller generated next to --save_topk_json")
+    p.add_argument("--save_attention_head_cproj", action=argparse.BooleanOptionalAction, default=False,
+                   help="Capture InfiniteHeadAttention per-head Wv->Wo/c_proj contributions before the head-sum")
+    p.add_argument("--saved_vector_components", nargs="+",
+                   choices=["wte_raw", "wte_norm", "ln_f_input", "ln_f_output", "attn", "mlp", "attn_head_cproj"],
+                   default=["wte_raw", "wte_norm", "ln_f_input", "ln_f_output", "attn", "mlp", "attn_head_cproj"],
+                   help="Vector families to store in --save_topk_json for posthoc analysis")
     p.add_argument(
         "--components",
         choices=["wte", "attn", "mlp", "resid"],
@@ -192,6 +203,79 @@ def load_tok(meta: Path):
     if tk == "custom_char_with_byte_fallback":
         return lambda s: _ccwb_encode(s, stoi), lambda l: _ccwb_decode(l, itos)
     return lambda s: [stoi[c] for c in s], lambda l: "".join(itos[i] for i in l)
+
+def _vector_payload(name: str, vec: torch.Tensor, lm_weight: torch.Tensor, target_vec: torch.Tensor, decode: Callable[[Sequence[int]], str], topn: int = 3) -> Dict:
+    v = vec.detach().float().cpu()
+    emb = lm_weight.detach().float().cpu()
+    dots = emb @ v
+    vals, idxs = torch.topk(dots, k=min(topn, dots.numel()))
+    cos = torch.dot(v, target_vec) / (v.norm() * target_vec.norm() + 1e-12)
+    return {
+        "name": name,
+        "vector": v.tolist(),
+        "top_vocab": [
+            {"token_id": int(i), "token": _escape_ws(decode([int(i)])), "dot": float(val)}
+            for val, i in zip(vals.tolist(), idxs.tolist())
+        ],
+        "cosine_to_target": float(cos),
+    }
+
+
+def _apply_final_ln_to_vec(model: GPT, vec: torch.Tensor) -> torch.Tensor:
+    return model.transformer.ln_f(vec.detach().view(1, 1, -1))[0, 0, :].detach()
+
+
+def _write_topk_viewer(json_path: Path, html_path: Path) -> None:
+    rel_json = html.escape(json_path.name)
+    html_text = """<!doctype html>
+<meta charset="utf-8">
+<title>nanoGPT top-k vector viewer</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 1rem; }
+.controls { position: sticky; top: 0; background: white; border-bottom: 1px solid #ddd; padding: .75rem 0; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th, td { border: 1px solid #ddd; padding: 4px 6px; vertical-align: top; }
+th { background: #f6f6f6; position: sticky; top: 78px; }
+.vec { max-width: 24rem; white-space: pre-wrap; }
+.small { color: #555; font-size: 11px; }
+.token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+<div class="controls">
+  <b>nanoGPT top-k vector viewer</b>
+  <label><input id="show-attn" type="checkbox" checked> all attention</label>
+  <label><input id="show-mlp" type="checkbox" checked> all MLP</label>
+  <label><input id="show-vectors" type="checkbox" checked> vector analyses</label>
+  <label>compare target id <input id="custom-target" size="8" placeholder="saved token id"></label>
+  <span class="small">Custom cosine works for the target/top-k token ids saved in each row.</span>
+</div>
+<table id="tbl"></table>
+<script>
+let payload;
+function esc(s){return String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function dot(a,b){let s=0; for(let i=0;i<a.length;i++) s+=a[i]*b[i]; return s;}
+function norm(a){return Math.sqrt(dot(a,a));}
+function vectorCell(v,r){
+  const top = (v.top_vocab||[]).map(x=>`${esc(x.token)}:${x.dot.toFixed(3)}`).join(' | ');
+  const cid = document.getElementById('custom-target').value.trim();
+  const cv = cid && r.lm_head_vectors ? r.lm_head_vectors[cid] : null;
+  const ctext = cv ? `<br>cos(custom ${esc(cid)}): ${(dot(v.vector, cv)/(norm(v.vector)*norm(cv)+1e-12)).toFixed(4)}` : '';
+  return `<div title="${esc(top)}"><b>${esc(v.name)}</b><br>top: ${top}<br>cos(target): ${v.cosine_to_target.toFixed(4)}${ctext}<br><span class="small">raw[0:6]=${v.vector.slice(0,6).map(x=>x.toFixed(3)).join(', ')}</span></div>`;
+}
+function wanted(v){
+  if(!document.getElementById('show-attn').checked && (v.name.includes('attn') || v.name.includes('head'))) return false;
+  if(!document.getElementById('show-mlp').checked && v.name.includes('mlp')) return false;
+  return true;
+}
+function render(){
+ const showVec=document.getElementById('show-vectors').checked;
+ document.getElementById('tbl').innerHTML='<tr><th>#</th><th>target</th><th>rank</th><th>p(target)</th><th>top-k</th><th class="vec">vectors / analyses</th></tr>'+
+ payload.rows.map((r,i)=>`<tr><td>${i}</td><td class="token">${esc(r.target.token)}</td><td>${r.rank}</td><td>${r.p_target.toFixed(4)}</td><td>${r.topk.map(x=>`<span class="token" title="logit ${x.logit.toFixed(4)}">${esc(x.token)}</span>`).join('<br>')}</td><td class="vec">${showVec ? r.vectors.filter(wanted).map(v=>vectorCell(v,r)).join('<hr>') : ''}</td></tr>`).join('');
+}
+fetch('@@JSON@@').then(r=>r.json()).then(j=>{payload=j; render();});
+document.querySelectorAll('input').forEach(x=>x.onchange=render);
+</script>
+""".replace("@@JSON@@", rel_json)
+    html_path.write_text(html_text, encoding="utf-8")
 
 ################################################################################
 # main
@@ -237,6 +321,7 @@ def main():
     heatmap_inputs = None
     attn_head_traces = None
     residual_mag_traces = []
+    topk_rows = []
 
     def parse_selection(spec: str, max_count: int):
         if spec == "all":
@@ -295,7 +380,7 @@ def main():
 
         ctx_tok = torch.from_numpy(seq[:-1].astype(np.int64))[None].to(args.device)
 
-        activations = {"t0": None, "attn": [], "mlp": [], "ar": [], "mr": []}
+        activations = {"t0": None, "wte_raw": None, "wte_norm": None, "ln_f_input": None, "ln_f_output": None, "attn": [], "mlp": [], "ar": [], "mr": [], "attn_head_cproj": []}
         handles = []
         act_call_counts = {}
         if args.activation_heatmap:
@@ -383,6 +468,40 @@ def main():
 
                 handles.append(blk.attn.register_forward_hook(make_attn_hook(blk)))
                 handles.append(blk.mlp.register_forward_hook(make_mlp_hook(blk)))
+
+        if args.save_topk_json:
+            if "wte_raw" in args.saved_vector_components:
+                def save_wte_raw_hook(module, inp, out):
+                    activations["wte_raw"] = out[0, -1, :].detach()
+                handles.append(model.transformer.wte.register_forward_hook(save_wte_raw_hook))
+            if "wte_norm" in args.saved_vector_components and hasattr(model.transformer, "post_embedding_norm"):
+                def save_wte_norm_hook(module, inp, out):
+                    activations["wte_norm"] = out[0, -1, :].detach()
+                handles.append(model.transformer.post_embedding_norm.register_forward_hook(save_wte_norm_hook))
+            if "ln_f_input" in args.saved_vector_components or "ln_f_output" in args.saved_vector_components:
+                def save_lnf_hook(module, inp, out):
+                    activations["ln_f_input"] = inp[0][0, -1, :].detach()
+                    activations["ln_f_output"] = out[0, -1, :].detach()
+                handles.append(model.transformer.ln_f.register_forward_hook(save_lnf_hook))
+            if "attn" in args.saved_vector_components or "mlp" in args.saved_vector_components:
+                for blk in model.transformer.h:
+                    if "attn" in args.saved_vector_components:
+                        def save_attn_hook(module, inp, out):
+                            activations["attn"].append(out[0, -1, :].detach())
+                        handles.append(blk.attn.register_forward_hook(save_attn_hook))
+                    if "mlp" in args.saved_vector_components:
+                        def save_mlp_hook(module, inp, out):
+                            activations["mlp"].append(out[0, -1, :].detach())
+                        handles.append(blk.mlp.register_forward_hook(save_mlp_hook))
+            if args.save_attention_head_cproj and "attn_head_cproj" in args.saved_vector_components:
+                for li, blk in enumerate(model.transformer.h):
+                    def make_head_cproj_hook(layer_idx):
+                        def hook(module, inp, out):
+                            head_out = getattr(module, "_analysis_head_cproj_outputs", None)
+                            if head_out is not None:
+                                activations["attn_head_cproj"].append((layer_idx, head_out[0, :, -1, :].detach()))
+                        return hook
+                    handles.append(blk.attn.register_forward_hook(make_head_cproj_hook(li)))
 
         with autocast_ctx:
             logits, _ = model(ctx_tok)
@@ -539,6 +658,34 @@ def main():
             if args.bold_target:
                 target_style = f"bold {target_style}" if target_style else "bold"
 
+            if args.save_topk_json:
+                lm_w = model.lm_head.weight.detach().float().cpu()
+                target_vec = lm_w[tgt_token]
+                vecs = []
+                for key in ["wte_raw", "wte_norm", "ln_f_input", "ln_f_output"]:
+                    if activations.get(key) is not None and key in args.saved_vector_components:
+                        vecs.append(_vector_payload(key, activations[key], model.lm_head.weight, target_vec, decode))
+                if "attn" in args.saved_vector_components:
+                    for i, vact in enumerate(activations["attn"][:model.config.n_layer]):
+                        vecs.append(_vector_payload(f"attn_l{i+1}_raw", vact, model.lm_head.weight, target_vec, decode))
+                        vecs.append(_vector_payload(f"attn_l{i+1}_after_final_ln", _apply_final_ln_to_vec(model, vact), model.lm_head.weight, target_vec, decode))
+                if "mlp" in args.saved_vector_components:
+                    for i, vact in enumerate(activations["mlp"][:model.config.n_layer]):
+                        vecs.append(_vector_payload(f"mlp_l{i+1}_raw", vact, model.lm_head.weight, target_vec, decode))
+                        vecs.append(_vector_payload(f"mlp_l{i+1}_after_final_ln", _apply_final_ln_to_vec(model, vact), model.lm_head.weight, target_vec, decode))
+                for layer_idx, heads in activations.get("attn_head_cproj", []):
+                    for hi in range(heads.size(0)):
+                        vecs.append(_vector_payload(f"attn_l{layer_idx+1}_head{hi+1}_cproj_presum_raw", heads[hi], model.lm_head.weight, target_vec, decode))
+                        vecs.append(_vector_payload(f"attn_l{layer_idx+1}_head{hi+1}_cproj_presum_after_final_ln", _apply_final_ln_to_vec(model, heads[hi]), model.lm_head.weight, target_vec, decode))
+                topk_rows.append({
+                    "position": int(pos),
+                    "target": {"token_id": tgt_token, "token": target_word},
+                    "rank": rank, "p_target": tgt_prob, "cross_entropy": ce,
+                    "topk": [{"token_id": int(i), "token": _escape_ws(decode([int(i)])), "logit": float(v)} for v, i in zip(topv.tolist(), topi.tolist())],
+                    "lm_head_vectors": {str(int(i)): lm_w[int(i)].tolist() for i in [tgt_token] + topi.tolist()},
+                    "vectors": vecs,
+                })
+
             row = [Text(target_word, style=target_style), f"{ce:.4f}", rank_text, p_tgt_text, p_left_text] + layer_texts + words
             table.add_row(*row)
 
@@ -559,6 +706,25 @@ def main():
         Path(args.output_file).write_text("".join(lines), "utf-8", errors="replace")
         console.print(f"[cyan]Saved → {args.output_file}[/cyan]")
 
+
+    if args.save_topk_json:
+        json_path = Path(args.save_topk_json)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "metadata": {
+                "out_dir": args.out_dir, "dataset": args.dataset, "split": args.split,
+                "offset": args.offset, "num_tokens": args.num_tokens, "topk": args.topk,
+                "saved_vector_components": args.saved_vector_components,
+            },
+            "rows": topk_rows,
+        }
+        json_path.write_text(json.dumps(payload), encoding="utf-8")
+        viewer_path = Path(args.topk_viewer_file)
+        if not viewer_path.is_absolute():
+            viewer_path = json_path.parent / viewer_path
+        _write_topk_viewer(json_path, viewer_path)
+        console.print(f"[cyan]Saved top-k JSON → {json_path}[/cyan]")
+        console.print(f"[cyan]Saved top-k viewer → {viewer_path}[/cyan]")
     if args.plot_metrics:
         from plotly.subplots import make_subplots
         import plotly.graph_objects as go
