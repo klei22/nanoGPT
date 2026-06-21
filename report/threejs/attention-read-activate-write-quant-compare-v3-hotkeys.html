@@ -1907,16 +1907,15 @@ function renderMatrixDotComposition({ inputTip, matrixKey, matrixCenter, outputC
   let cumulative = new THREE.Vector3();
   for (let i = 0; i < 3; i++) {
     const local = smoothstep01(t * 3 - i + 0.15);
-    const rowTip = endpoint(matrixCenter, rows[i]);
-    setLine(dyn.transferLines[lineBase + i], inputTip, rowTip, 0.22 * local, lineColor);
-
     const component = basisVector(i).multiplyScalar(components[i] * componentScale);
     const segStart = outputCenter.clone().add(cumulative);
     cumulative.add(component);
-    const segEnd = lerpVec(segStart, outputCenter.clone().add(cumulative), local);
+    const componentTip = outputCenter.clone().add(cumulative);
+    const segEnd = lerpVec(segStart, componentTip, local);
+    setLine(dyn.transferLines[lineBase + i], inputTip, componentTip, 0.18 * local, lineColor);
     setLine(dyn.transferLines[lineBase + 3 + i], segStart, segEnd, 0.62 * local, outputColor);
 
-    labelAt(dyn.labels[labelBase + i], rowTip.clone().add(new THREE.Vector3(0.14, 0.10 - 0.09 * i, 0.12)), `${matrixKey}${componentLabel(i)}=${components[i].toFixed(2)}`, lineColor, local);
+    labelAt(dyn.labels[labelBase + i], componentTip.clone().add(new THREE.Vector3(0.14, 0.10 - 0.09 * i, 0.12)), `${matrixKey}${componentLabel(i)}=${components[i].toFixed(2)}`, lineColor, local);
   }
   outputGlyph.set(outputCenter, lerpVec(outputCenter, finalEnd, t), outputColor, 0.22 + 0.78 * t);
   labelAt(dyn.labels[labelBase + 3], finalEnd.clone().add(new THREE.Vector3(0.22, 0.12, 0.12)), outputLabel, outputColor, t);
@@ -1935,7 +1934,6 @@ function renderContextAndOutput(pass, contextGlyph, outputGlyph, colorContext, c
   const outputLen = Math.max(pass.output.length(), 1e-9);
   const components = [pass.output.x, pass.output.y, pass.output.z];
 
-  setLine(dyn.transferLines[10], contextEnd, midIn, opacity * 0.28 * t, colorContext);
   setLine(dyn.transferLines[11], midOut, CENTERS.Output.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0)), opacity * 0.20 * t, quant ? QUANT_FINAL : colorOutput);
   renderMatrixDotComposition({
     inputTip: contextEnd,
@@ -2033,7 +2031,6 @@ function renderStage() {
     const midIn = CENTERS.Wq.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
     const midOut = CENTERS.Wq.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
     const end = rawProjEndpoint(CENTERS.q, derived.continuous.qRaw);
-    setLine(dyn.transferLines[0], start, midIn, 0.38 * local, CURRENT);
     setLine(dyn.transferLines[1], midOut, end, 0.38 * local, QUERY);
     renderMatrixDotComposition({
       inputTip: start,
