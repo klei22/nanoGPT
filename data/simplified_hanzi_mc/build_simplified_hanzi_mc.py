@@ -11,7 +11,7 @@ from pathlib import Path
 
 PLACEHOLDER = "∅"
 NON_HANZI = "⧆"
-LANES = ["char", "whole", "left", "right", "top", "bottom", "enclosure", "inside", "corner", "overlay", "other"]
+LANES = ["char", "non_hanzi", "whole", "left", "right", "top", "bottom", "enclosure", "inside", "corner", "overlay", "other"]
 
 # Demonstration lookup table: enough cases to cover the location categories and
 # corner cases in input.txt. Values are radical/location signals, not full IDS.
@@ -34,14 +34,21 @@ DECOMP = {
 TRADITIONAL_ONLY = set("體龍門馬愛學國風書樂車東長萬與興貓鳥魚")
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
+def line_escape(value: str) -> str:
+    """Encode one lane value so each timestep stays on one physical line."""
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
 def is_simplified_hanzi(ch: str) -> bool:
     return len(ch) == 1 and bool(CJK_RE.fullmatch(ch)) and ch not in TRADITIONAL_ONLY
 
 def encode_char(ch: str) -> dict[str, str]:
     if not is_simplified_hanzi(ch):
-        return {lane: NON_HANZI for lane in LANES}
+        row = {lane: NON_HANZI for lane in LANES}
+        row["non_hanzi"] = ch
+        return row
     row = {lane: PLACEHOLDER for lane in LANES}
     row["char"] = ch
+    row["non_hanzi"] = PLACEHOLDER
     for lane, value in DECOMP.get(ch, {"other": ch}).items():
         row[lane] = value
     return row
@@ -66,11 +73,12 @@ def main() -> None:
     for lane in LANES:
         lane_dir = out_root / lane
         lane_dir.mkdir(parents=True, exist_ok=True)
-        (lane_dir / "input.txt").write_text("\n".join(row[lane] for row in rows) + "\n", encoding="utf-8")
+        lane_values = [line_escape(row[lane]) if lane == "non_hanzi" else row[lane] for row in rows]
+        (lane_dir / "input.txt").write_text("\n".join(lane_values) + "\n", encoding="utf-8")
         datasets.append(f"simplified_hanzi_mc/{lane}/char_{args.label}")
     manifest = {"tokenizer":"simplified_hanzi_radical_location_multicontext", "source":str(in_path), "lanes":LANES,
                 "multicontext_datasets":datasets, "placeholder":PLACEHOLDER, "non_hanzi":NON_HANZI,
-                "bijection":"The char lane stores the original simplified Hanzi, while aligned lanes store radical-location labels.",
+                "bijection":"The char lane stores simplified Hanzi; the non_hanzi lane stores original non-Hanzi/non-simplified code points; aligned radical lanes store location labels.",
                 "rows":len(rows)}
     (out_root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
     print(json.dumps(manifest, ensure_ascii=False, indent=2))

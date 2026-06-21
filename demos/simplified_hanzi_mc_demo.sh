@@ -41,7 +41,7 @@ python3 sample.py \
   --no-compile \
   --multicontext \
   --multicontext_datasets "${DATASETS[@]}" \
-  --multicontext_start "明" "∅" "日" "月" "∅" "∅" "∅" "∅" "∅" "∅" "∅" \
+  --multicontext_start "明" "∅" "∅" "日" "月" "∅" "∅" "∅" "∅" "∅" "∅" "∅" \
   --max_new_tokens 16 \
   --top_k 1 \
   --num_samples 1 | tee "${OUT_DIR}/sample.txt"
