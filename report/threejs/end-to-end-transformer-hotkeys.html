@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>End-to-End Transformer Path: Attention + MLP</title>
+  <title>Transformer Train: One Layer + LM Head</title>
   <style>
-    :root { --bg:#151829; --panel:rgba(255,255,255,.07); --border:rgba(255,255,255,.14); --text:#fff; --muted:rgba(255,255,255,.68); --token:#ff7b72; --res:#94a3b8; --norm:#7dd3fc; --attn:#52b788; --mlp:#ffd166; --plus:#f4a261; --out:#c77dff; }
+    :root { --bg:#151829; --panel:rgba(255,255,255,.07); --border:rgba(255,255,255,.14); --text:#fff; --muted:rgba(255,255,255,.68); --token:#ff7b72; --res:#94a3b8; --norm:#7dd3fc; --attn:#52b788; --mlp:#ffd166; --plus:#f4a261; --out:#c77dff; --soft:#58c4dd; }
     * { box-sizing:border-box; }
     html, body { margin:0; width:100%; height:100%; overflow:hidden; background:var(--bg); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    #app { display:grid; grid-template-columns:1fr 420px; width:100vw; height:100vh; }
+    #app { display:grid; grid-template-columns:1fr 430px; width:100vw; height:100vh; }
     #scene-wrap { position:relative; min-width:0; }
     #scene { width:100%; height:100%; display:block; }
-    .title { position:absolute; left:20px; top:18px; max-width:920px; padding:15px 17px; border:1px solid var(--border); border-radius:20px; background:rgba(0,0,0,.28); backdrop-filter:blur(8px); pointer-events:none; }
+    .title { position:absolute; left:20px; top:18px; max-width:980px; padding:15px 17px; border:1px solid var(--border); border-radius:20px; background:rgba(0,0,0,.28); backdrop-filter:blur(8px); pointer-events:none; }
     h1 { margin:0; font-size:28px; line-height:1.08; letter-spacing:-.035em; }
     .subtitle { margin-top:8px; color:var(--muted); font-size:14px; line-height:1.48; }
     .hint { position:absolute; left:18px; bottom:18px; padding:10px 12px; border:1px solid var(--border); border-radius:16px; background:rgba(0,0,0,.30); color:rgba(255,255,255,.84); font-size:13px; pointer-events:none; }
@@ -33,35 +33,34 @@
   <div id="scene-wrap">
     <canvas id="scene"></canvas>
     <div class="title">
-      <h1>End-to-End Transformer: x → Attention → MLP → y</h1>
-      <div class="subtitle">Pick a word to create an input vector. The vector shuttles down the residual stream, clones into norm spheres, enters spinning 3D Attention/MLP blocks, produces an output sphere, and is added back at residual “+” stations.</div>
+      <h1>Transformer Train: residual sphere through one layer</h1>
+      <div class="subtitle">Choose a word, then watch the residual vector travel like a train through Attention, MLP, output norm, LM-head read vectors, softmax, top-1 selection, and beam back to the start for the next token.</div>
     </div>
-    <div class="hint">Drag to rotate • Scroll to zoom • <span class="kbd">j/→</span> next • <span class="kbd">k/←</span> previous • <span class="kbd">Space</span> play/pause • <span class="kbd">r</span> replay • <span class="kbd">s</span> spin</div>
+    <div class="hint">Drag to rotate • Scroll to zoom • Right-drag to pan • <span class="kbd">j/→</span> next • <span class="kbd">k/←</span> previous • <span class="kbd">Space</span> play/pause • <span class="kbd">r</span> replay • <span class="kbd">c</span> camera guide</div>
   </div>
   <aside>
     <div class="panel">
-      <h2>Token</h2>
+      <h2>Input word</h2>
       <select id="wordSelect"></select>
-      <div class="small" style="margin-top:10px;">Each word deterministically seeds a 3D representation so the same word always follows the same end-to-end path.</div>
+      <div class="small" style="margin-top:10px;">The start sphere uses the same word directions as the LM-head read sphere: cat, dog, owl, horse, hamster.</div>
     </div>
     <div class="panel">
       <h2>Current stage</h2>
       <div class="stage" id="stageName"></div>
       <div class="grid"><button id="prevBtn">Previous</button><button id="nextBtn">Next</button><button id="playBtn">Play</button><button id="replayBtn">Replay</button></div>
       <div style="margin-top:12px;"><input id="progress" type="range" min="0" max="100" value="0" /></div>
-      <label class="row" style="margin-top:8px;"><span>Spin modules / camera</span><input id="spinToggle" type="checkbox" checked /></label>
+      <label class="row" style="margin-top:8px;"><span>Guided camera</span><input id="cameraToggle" type="checkbox" checked /></label>
     </div>
     <div class="panel">
-      <h2>Path</h2>
-      <div id="pathRows"></div>
+      <h2>Readout</h2>
+      <div id="readout"></div>
     </div>
     <div class="panel">
       <h2>Legend</h2>
-      <div class="row"><span>Residual stream</span><span style="color:var(--res)">x,r,+,h,y</span></div>
-      <div class="row"><span>Norm clone</span><span style="color:var(--norm)">n1…n5</span></div>
-      <div class="row"><span>Attention blocks</span><span style="color:var(--attn)">3D rectangles</span></div>
-      <div class="row"><span>MLP blocks</span><span style="color:var(--mlp)">3D rectangles</span></div>
-      <div class="row"><span>Module outputs</span><span style="color:var(--out)">output spheres</span></div>
+      <div class="row"><span>Residual train</span><span style="color:var(--token)">moving sphere</span></div>
+      <div class="row"><span>Norm copies</span><span style="color:var(--norm)">project to surface</span></div>
+      <div class="row"><span>Blocks</span><span style="color:var(--attn)">3D rectangles</span></div>
+      <div class="row"><span>LM Head</span><span style="color:var(--soft)">read dots + softmax</span></div>
     </div>
   </aside>
 </div>
@@ -69,153 +68,120 @@
 import * as THREE from 'https://esm.sh/three@0.160.0';
 import { OrbitControls } from 'https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
-const COLORS = { bg:'#151829', token:'#ff7b72', res:'#94a3b8', norm:'#7dd3fc', attn:'#52b788', mlp:'#ffd166', plus:'#f4a261', out:'#c77dff', white:'#ffffff' };
-const R = 0.58;
-const STAGE_SECONDS = 1.35;
-const words = ['transformer', 'attention', 'residual', 'sphere', 'token', 'gradient', 'matrix', 'context', 'logit'];
-const path = [
-  {key:'x', label:'x input', kind:'res', p:[-3.8,5.4,0]},
-  {key:'r0', label:'r0 residual', kind:'res', p:[-3.8,4.2,0]},
-  {key:'n1', label:'n1 norm clone', kind:'norm', p:[-1.75,4.2,0]},
-  {key:'a1', label:'a1 attention block', kind:'attn', p:[0.35,4.2,0]},
-  {key:'a1o', label:'a1 output sphere', kind:'modout', p:[2.2,4.2,0]},
-  {key:'plus1', label:'+ add attention', kind:'plus', p:[-3.8,3.0,0]},
-  {key:'r1', label:'r1 residual', kind:'res', p:[-3.8,1.8,0]},
-  {key:'n2', label:'n2 norm clone', kind:'norm', p:[-1.75,1.8,0]},
-  {key:'m1', label:'m1 MLP block', kind:'mlp', p:[0.35,1.8,0]},
-  {key:'m1o', label:'m1 output sphere', kind:'modout', p:[2.2,1.8,0]},
-  {key:'plus2', label:'+ add MLP', kind:'plus', p:[-3.8,0.6,0]},
-  {key:'r2', label:'r2 residual', kind:'res', p:[-3.8,-0.6,0]},
-  {key:'n3', label:'n3 norm clone', kind:'norm', p:[-1.75,-0.6,0]},
-  {key:'a2', label:'a2 attention block', kind:'attn', p:[0.35,-0.6,0]},
-  {key:'a2o', label:'a2 output sphere', kind:'modout', p:[2.2,-0.6,0]},
-  {key:'plus3', label:'+ add attention', kind:'plus', p:[-3.8,-1.8,0]},
-  {key:'r3', label:'r3 residual', kind:'res', p:[-3.8,-3.0,0]},
-  {key:'n4', label:'n4 norm clone', kind:'norm', p:[-1.75,-3.0,0]},
-  {key:'m2', label:'m2 MLP block', kind:'mlp', p:[0.35,-3.0,0]},
-  {key:'m2o', label:'m2 output sphere', kind:'modout', p:[2.2,-3.0,0]},
-  {key:'plus4', label:'+ add MLP', kind:'plus', p:[-3.8,-4.2,0]},
-  {key:'r4', label:'r4 residual', kind:'res', p:[-3.8,-5.4,0]},
-  {key:'n5', label:'n5 final norm', kind:'norm', p:[-3.8,-6.6,0]},
-  {key:'h', label:'h hidden state', kind:'out', p:[-3.8,-7.8,0]},
-  {key:'y', label:'y logits', kind:'out', p:[-3.8,-9.0,0]},
+const COLORS = { bg:'#151829', token:'#ff7b72', res:'#94a3b8', norm:'#7dd3fc', attn:'#52b788', mlp:'#ffd166', plus:'#f4a261', out:'#c77dff', soft:'#58c4dd', white:'#ffffff' };
+const R = 0.72;
+const STAGE_SECONDS = 1.55;
+const WORDS = ['cat', 'dog', 'owl', 'horse', 'hamster'];
+const STAGES = [
+  'Start: choose a word vector on the input sphere',
+  'Residual train moves forward to Attention input',
+  'Attention norm: copy residual, then project to sphere surface',
+  'Attention block: norm vector enters rectangle and emits output sphere',
+  'Residual add: attention output vector adds back into residual',
+  'Residual train moves forward to MLP input',
+  'MLP norm: copy residual, then project to sphere surface',
+  'MLP block: norm vector enters rectangle and emits output sphere',
+  'Residual add: MLP output vector adds back into residual',
+  'Residual train moves forward to output norm',
+  'Output norm projects residual to the sphere surface',
+  'LM Head read sphere: dot hidden state with word vectors',
+  'Softmax output sphere: scale word vectors by probabilities',
+  'Top-1 selection beams back and becomes the next input',
 ];
-const stages = path.map((p, i) => `${i + 1}. ${p.label}`);
+const P = {
+  start: new THREE.Vector3(-6.0, 0, 0),
+  attnIn: new THREE.Vector3(-2.8, 0, 0),
+  mlpIn: new THREE.Vector3(0.6, 0, 0),
+  outNorm: new THREE.Vector3(3.8, 0, 0),
+  lmHead: new THREE.Vector3(6.8, 0, 0),
+  softmax: new THREE.Vector3(9.5, 0, 0),
+  attnNorm: new THREE.Vector3(-2.8, 2.15, 0),
+  attnBlock: new THREE.Vector3(-.75, 2.15, 0),
+  attnOut: new THREE.Vector3(1.15, 2.15, 0),
+  mlpNorm: new THREE.Vector3(.6, -2.15, 0),
+  mlpBlock: new THREE.Vector3(2.65, -2.15, 0),
+  mlpOut: new THREE.Vector3(4.55, -2.15, 0),
+};
+
 const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
-renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
 renderer.setClearColor(COLORS.bg, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 const world = new THREE.Group(); scene.add(world);
 const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 100);
-camera.position.set(3.7, -2.3, 13.5);
-const controls = new OrbitControls(camera, canvas); controls.target.set(-2.1, -2.2, 0); controls.update();
-scene.add(new THREE.HemisphereLight(0xffffff, 0x223355, 1.4));
+camera.position.set(1.2, 1.4, 11.5);
+const controls = new OrbitControls(camera, canvas); controls.target.set(1.0, 0, 0); controls.update();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x223355, 1.5));
 
-function colorFor(kind) { return kind === 'modout' ? COLORS.out : (COLORS[kind] || COLORS.white); }
-function v3(a) { return new THREE.Vector3(a[0], a[1], a[2]); }
-function clamp01(x) { return Math.max(0, Math.min(1, x)); }
-function smoothstep01(x) { const t = clamp01(x); return t*t*(3-2*t); }
-function unit(v) { const n = v.length(); return n > 1e-9 ? v.clone().multiplyScalar(1/n) : new THREE.Vector3(0,1,0); }
-function lerpVec(a,b,t) { return a.clone().lerp(b, clamp01(t)); }
-function hashWord(w) { let h=2166136261; for (const ch of w) { h^=ch.charCodeAt(0); h=Math.imul(h,16777619); } return h>>>0; }
-function rand(seed) { let s=seed>>>0; return () => { s = Math.imul(1664525, s) + 1013904223 | 0; return ((s>>>0)/4294967296); }; }
-function wordVector(word) { const r=rand(hashWord(word)); return unit(new THREE.Vector3(r()*2-1, r()*2-1, r()*2-1)); }
-function transformVec(v, key) {
-  const angle = key.startsWith('a') ? 0.68 : key.startsWith('m') ? -0.52 : key.endsWith('o') ? 0.34 : key === 'n5' ? 0.25 : 0.12;
-  const axis = unit(new THREE.Vector3(key.length + 1, key.charCodeAt(0)%7 + 1, 3));
-  return unit(v.clone().applyAxisAngle(axis, angle));
-}
-function stateVectorAt(index, base) {
-  let v = base.clone();
-  for (let i=1; i<=index; i++) {
-    const key = path[i].key;
-    if (key.startsWith('a') || key.startsWith('m') || key === 'n5' || key === 'h' || key === 'y') v = transformVec(v, key);
-  }
-  return v;
-}
+function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+function smoothstep01(x){ const t=clamp01(x); return t*t*(3-2*t); }
+function unit(v){ const n=v.length(); return n>1e-9 ? v.clone().multiplyScalar(1/n) : new THREE.Vector3(0,1,0); }
+function lerpVec(a,b,t){ return a.clone().lerp(b, clamp01(t)); }
+function endpoint(center, dir, radius=R){ return center.clone().add(unit(dir).multiplyScalar(radius)); }
+function hashWord(w){ let h=2166136261; for(const ch of w){ h^=ch.charCodeAt(0); h=Math.imul(h,16777619); } return h>>>0; }
+function rand(seed){ let s=seed>>>0; return () => { s = Math.imul(1664525, s) + 1013904223 | 0; return (s>>>0)/4294967296; }; }
+function wordDir(word){ const r=rand(hashWord(word)); return unit(new THREE.Vector3(r()*2-1, r()*2-1, r()*2-1)); }
+function rotateVec(v, label, amount){ const axis=unit(new THREE.Vector3(label.length+1, label.charCodeAt(0)%5+1, 3)); return unit(v.clone().applyAxisAngle(axis, amount)); }
+function addVec(a,b,scale=.45){ return unit(a.clone().add(b.clone().multiplyScalar(scale))); }
+function wordColor(i){ return ['#ff7b72','#f4a261','#ffd166','#52b788','#7dd3fc'][i % 5]; }
+function softmax(vals){ const m=Math.max(...vals); const ex=vals.map(v=>Math.exp(4*(v-m))); const s=ex.reduce((a,b)=>a+b,0); return ex.map(v=>v/s); }
+function stateVectors(base){ const attnNorm=unit(base); const attnOut=rotateVec(attnNorm,'attention',.72); const afterAttn=addVec(base, attnOut, .50); const mlpNorm=unit(afterAttn); const mlpOut=rotateVec(mlpNorm,'mlp',-.58); const afterMlp=addVec(afterAttn, mlpOut, .44); const hidden=unit(afterMlp); const logits=WORDS.map(w=>hidden.dot(wordDir(w))); const probs=softmax(logits); const top=probs.reduce((best,p,i)=>p>probs[best]?i:best,0); return {base, attnNorm, attnOut, afterAttn, mlpNorm, mlpOut, afterMlp, hidden, logits, probs, top}; }
+function residualCenter(stage,t){ if(stage<=0) return P.start; if(stage===1) return lerpVec(P.start,P.attnIn,smoothstep01(t)); if(stage<5) return P.attnIn; if(stage===5) return lerpVec(P.attnIn,P.mlpIn,smoothstep01(t)); if(stage<9) return P.mlpIn; if(stage===9) return lerpVec(P.mlpIn,P.outNorm,smoothstep01(t)); return P.outNorm; }
+function residualVecFor(stage, sv){ if(stage<4) return sv.base; if(stage<8) return stage===4 ? unit(sv.base.clone().lerp(sv.afterAttn, smoothstep01(appState.progress))) : sv.afterAttn; if(stage===8) return unit(sv.afterAttn.clone().lerp(sv.afterMlp, smoothstep01(appState.progress))); return sv.afterMlp; }
 
-function makeText(text, color=COLORS.white, w=220, h=64, font=26) {
-  const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d');
-  ctx.clearRect(0,0,w,h); ctx.font=`700 ${font}px Inter, sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillStyle=color; ctx.fillText(text, w/2, h/2);
-  const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace;
-  const mat=new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false});
-  const sp=new THREE.Sprite(mat); sp.scale.set(w/120, h/120, 1); return sp;
-}
-function makeLine(color, dashed=false) {
-  const g=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-  const m=dashed ? new THREE.LineDashedMaterial({color, transparent:true, opacity:.45, dashSize:.06, gapSize:.05, depthWrite:false}) : new THREE.LineBasicMaterial({color, transparent:true, opacity:.5, depthWrite:false});
-  const l=new THREE.Line(g,m); l.visible=false; world.add(l); return l;
-}
-function setLine(l,a,b,opacity,color) { l.geometry.setFromPoints([a,b]); l.material.opacity=opacity; if(color) l.material.color.set(color); l.computeLineDistances?.(); l.visible=opacity>.005; }
+function makeText(text, color=COLORS.white, w=220, h=64, font=25){ const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d'); ctx.font=`700 ${font}px Inter, sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle=color; ctx.fillText(text,w/2,h/2); const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; const mat=new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false}); const sp=new THREE.Sprite(mat); sp.scale.set(w/120,h/120,1); return sp; }
+function makeLine(color=COLORS.white,dashed=true){ const g=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]); const m=dashed ? new THREE.LineDashedMaterial({color,transparent:true,opacity:.45,dashSize:.08,gapSize:.06,depthWrite:false}) : new THREE.LineBasicMaterial({color,transparent:true,opacity:.55,depthWrite:false}); const l=new THREE.Line(g,m); l.visible=false; world.add(l); return l; }
+function setLine(l,a,b,op=.45,color){ l.geometry.setFromPoints([a,b]); l.material.opacity=op; if(color) l.material.color.set(color); l.computeLineDistances?.(); l.visible=op>.004; }
+class Arrow{ constructor(color){ this.group=new THREE.Group(); this.line=makeLine(color,false); world.remove(this.line); this.group.add(this.line); this.cone=new THREE.Mesh(new THREE.ConeGeometry(.075,.20,18),new THREE.MeshBasicMaterial({color,transparent:true,opacity:1})); this.group.add(this.cone); world.add(this.group); } set(a,b,color,op=1){ const d=b.clone().sub(a); this.group.visible=op>.005&&d.length()>.001; setLine(this.line,a,b,op,color); this.cone.position.copy(b); this.cone.material.opacity=op; this.cone.material.color.set(color); this.cone.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),unit(d)); } hide(){ this.group.visible=false; } }
 
-class Arrow {
-  constructor(color) { this.group=new THREE.Group(); this.line=makeLine(color,false); world.remove(this.line); this.group.add(this.line); const geom=new THREE.ConeGeometry(.07,.18,18); const mat=new THREE.MeshBasicMaterial({color, transparent:true, opacity:1}); this.cone=new THREE.Mesh(geom,mat); this.group.add(this.cone); world.add(this.group); }
-  set(a,b,color,opacity=1) { const dir=b.clone().sub(a); const len=dir.length(); this.group.visible=opacity>.005 && len>.001; setLine(this.line,a,b,opacity,color); this.line.material.opacity=opacity; this.cone.material.opacity=opacity; this.cone.material.color.set(color); this.cone.position.copy(b); this.cone.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), unit(dir)); }
-}
+const labels=[]; function label(text,pos,color=COLORS.white,w=180){ const s=makeText(text,color,w,56,24); s.position.copy(pos); world.add(s); labels.push(s); return s; }
+function sphere(name,pos,color=COLORS.white){ const mesh=new THREE.Mesh(new THREE.SphereGeometry(R,32,18),new THREE.MeshBasicMaterial({color:COLORS.white,wireframe:true,transparent:true,opacity:.11,depthWrite:false})); mesh.position.copy(pos); world.add(mesh); label(name,pos.clone().add(new THREE.Vector3(0,R+.32,0)),color); return mesh; }
+function block(name,pos,color){ const geom=new THREE.BoxGeometry(1.35,.82,.58); const mesh=new THREE.Mesh(geom,new THREE.MeshBasicMaterial({color,transparent:true,opacity:.38,depthWrite:false})); mesh.position.copy(pos); const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geom),new THREE.LineBasicMaterial({color,transparent:true,opacity:.95})); mesh.add(edges); world.add(mesh); label(name,pos.clone().add(new THREE.Vector3(0,R+.26,0)),color,190); return mesh; }
+const stationMeshes=[sphere('word input',P.start,COLORS.token),sphere('attn in',P.attnIn,COLORS.res),sphere('mlp in',P.mlpIn,COLORS.res),sphere('out norm',P.outNorm,COLORS.norm),sphere('LM Head',P.lmHead,COLORS.soft),sphere('softmax',P.softmax,COLORS.out),sphere('attn norm',P.attnNorm,COLORS.norm),block('attention',P.attnBlock,COLORS.attn),sphere('attn output',P.attnOut,COLORS.out),sphere('mlp norm',P.mlpNorm,COLORS.norm),block('mlp',P.mlpBlock,COLORS.mlp),sphere('mlp output',P.mlpOut,COLORS.out)];
+const blockMeshes=[stationMeshes[7],stationMeshes[10]];
+const trackLines=[]; for(let i=0;i<18;i++) trackLines.push(makeLine(COLORS.res,true));
+const dynLines=[]; for(let i=0;i<30;i++) dynLines.push(makeLine(COLORS.white,true));
+const arrows=[]; for(let i=0;i<20;i++) arrows.push(new Arrow(COLORS.token));
+const residualBall=new THREE.Mesh(new THREE.SphereGeometry(.16,24,14),new THREE.MeshBasicMaterial({color:COLORS.token})); world.add(residualBall);
+const beamLine=makeLine(COLORS.token,false);
+const wordMarkers=WORDS.map((w,i)=>{ const m=new THREE.Mesh(new THREE.SphereGeometry(.055,12,8),new THREE.MeshBasicMaterial({color:wordColor(i),transparent:true,opacity:.9})); world.add(m); label(w,P.start.clone().add(wordDir(w).multiplyScalar(R+.25)),wordColor(i),120); return m; });
+const readMarkers=WORDS.map((w,i)=>{ const m=new THREE.Mesh(new THREE.SphereGeometry(.06,12,8),new THREE.MeshBasicMaterial({color:wordColor(i),transparent:true,opacity:.9})); world.add(m); label(w,P.lmHead.clone().add(wordDir(w).multiplyScalar(R+.25)),wordColor(i),120); return m; });
 
-const stationMeshes = new Map();
-const stationLabels = new Map();
-const moduleMeshes = [];
-for (const node of path) {
-  const pos=v3(node.p);
-  let mesh;
-  if (node.kind === 'attn' || node.kind === 'mlp') {
-    const geom = new THREE.BoxGeometry(1.05, 0.78, 0.52);
-    const mat = new THREE.MeshBasicMaterial({color:colorFor(node.kind), transparent:true, opacity:.34, wireframe:false, depthWrite:false});
-    mesh = new THREE.Mesh(geom, mat);
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom), new THREE.LineBasicMaterial({color:colorFor(node.kind), transparent:true, opacity:.9}));
-    mesh.add(edges);
-    moduleMeshes.push(mesh);
-  } else {
-    mesh=new THREE.Mesh(new THREE.SphereGeometry(R,24,14), new THREE.MeshBasicMaterial({color:COLORS.white, wireframe:true, transparent:true, opacity:.12, depthWrite:false}));
-  }
-  mesh.position.copy(pos); world.add(mesh); stationMeshes.set(node.key, mesh);
-  const label=makeText(node.key, colorFor(node.kind), 170, 58, node.key.startsWith('plus') ? 32 : 27); label.position.copy(pos.clone().add(new THREE.Vector3(0,R+.33,0))); world.add(label); stationLabels.set(node.key,label);
-}
-const pathLines=[]; for (let i=0;i<path.length-1;i++) pathLines.push(makeLine(COLORS.res,true));
-const branchPairs = [['r0','n1'],['n1','a1'],['a1','a1o'],['a1o','plus1'],['r1','n2'],['n2','m1'],['m1','m1o'],['m1o','plus2'],['r2','n3'],['n3','a2'],['a2','a2o'],['a2o','plus3'],['r3','n4'],['n4','m2'],['m2','m2o'],['m2o','plus4']];
-const branchLines = branchPairs.map(() => makeLine(COLORS.white,true));
-const arrows = path.map(() => new Arrow(COLORS.token));
-const shuttle = new THREE.Mesh(new THREE.SphereGeometry(.11,18,12), new THREE.MeshBasicMaterial({color:COLORS.token})); world.add(shuttle);
+const appState={stage:0,progress:0,playing:false,word:WORDS[0],started:performance.now(),cameraGuide:true};
+const stageNameEl=document.getElementById('stageName'), progressEl=document.getElementById('progress'), playBtn=document.getElementById('playBtn'), wordSelect=document.getElementById('wordSelect'), cameraToggle=document.getElementById('cameraToggle'), readout=document.getElementById('readout');
+WORDS.forEach(w=>{ const o=document.createElement('option'); o.value=w; o.textContent=w; wordSelect.appendChild(o); });
+function refreshUi(sv=stateVectors(wordDir(appState.word))){ stageNameEl.textContent=STAGES[appState.stage]; progressEl.value=Math.round(appState.progress*100); playBtn.textContent=appState.playing?'Pause':'Play'; wordSelect.value=appState.word; cameraToggle.checked=appState.cameraGuide; readout.innerHTML=WORDS.map((w,i)=>`<div class="row"><span style="color:${wordColor(i)}">${w}</span><span>${sv.probs[i].toFixed(3)}${i===sv.top?' ← top':''}</span></div>`).join(''); }
+function go(d){ appState.stage=Math.max(0,Math.min(STAGES.length-1,appState.stage+d)); appState.progress=0; appState.playing=false; appState.started=performance.now(); refreshUi(); }
+document.getElementById('prevBtn').onclick=()=>go(-1); document.getElementById('nextBtn').onclick=()=>go(1); playBtn.onclick=()=>{ appState.playing=!appState.playing; appState.started=performance.now()-appState.progress*STAGE_SECONDS*1000; refreshUi(); }; document.getElementById('replayBtn').onclick=()=>{ appState.progress=0; appState.playing=true; appState.started=performance.now(); refreshUi(); };
+progressEl.oninput=e=>{ appState.progress=Number(e.target.value)/100; appState.playing=false; refreshUi(); }; wordSelect.onchange=e=>{ appState.word=e.target.value; appState.stage=0; appState.progress=0; refreshUi(); }; cameraToggle.onchange=e=>{ appState.cameraGuide=e.target.checked; refreshUi(); };
+window.addEventListener('keydown',e=>{ if(['j','ArrowRight'].includes(e.key)){go(1);e.preventDefault();} else if(['k','ArrowLeft'].includes(e.key)){go(-1);e.preventDefault();} else if(e.key===' '){playBtn.onclick();e.preventDefault();} else if(e.key==='r'){document.getElementById('replayBtn').onclick();e.preventDefault();} else if(e.key==='c'){appState.cameraGuide=!appState.cameraGuide;refreshUi();e.preventDefault();} });
 
-const state = { stage:0, progress:0, playing:false, word:words[0], started:performance.now(), spin:true };
-const stageNameEl=document.getElementById('stageName'); const progressEl=document.getElementById('progress'); const playBtn=document.getElementById('playBtn'); const spinToggle=document.getElementById('spinToggle');
-const wordSelect=document.getElementById('wordSelect'); words.forEach(w=>{ const o=document.createElement('option'); o.value=w; o.textContent=w; wordSelect.appendChild(o); });
-const pathRows=document.getElementById('pathRows'); pathRows.innerHTML=path.map((p,i)=>`<div class="row"><span>${i+1}. ${p.key}</span><span style="color:${colorFor(p.kind)}">${p.label}</span></div>`).join('');
-function refreshUi(){ stageNameEl.textContent=stages[state.stage]; progressEl.value=Math.round(state.progress*100); playBtn.textContent=state.playing?'Pause':'Play'; wordSelect.value=state.word; spinToggle.checked=state.spin; }
-function go(delta){ state.stage=Math.max(0,Math.min(path.length-1,state.stage+delta)); state.progress=0; state.playing=false; state.started=performance.now(); refreshUi(); }
-document.getElementById('prevBtn').onclick=()=>go(-1); document.getElementById('nextBtn').onclick=()=>go(1);
-playBtn.onclick=()=>{ state.playing=!state.playing; state.started=performance.now()-state.progress*STAGE_SECONDS*1000; refreshUi(); };
-document.getElementById('replayBtn').onclick=()=>{ state.progress=0; state.playing=true; state.started=performance.now(); refreshUi(); };
-progressEl.oninput=e=>{ state.progress=Number(e.target.value)/100; state.playing=false; refreshUi(); };
-wordSelect.onchange=e=>{ state.word=e.target.value; state.progress=0; state.stage=0; refreshUi(); };
-spinToggle.onchange=e=>{ state.spin=e.target.checked; refreshUi(); };
-window.addEventListener('keydown', e=>{ if(['ArrowRight','j'].includes(e.key)){go(1);e.preventDefault();} else if(['ArrowLeft','k'].includes(e.key)){go(-1);e.preventDefault();} else if(e.key===' '){playBtn.onclick();e.preventDefault();} else if(e.key==='r'){document.getElementById('replayBtn').onclick();e.preventDefault();} else if(e.key==='s'){state.spin=!state.spin; refreshUi(); e.preventDefault();} });
-
-function render() {
-  const base=wordVector(state.word);
-  for (let i=0;i<path.length-1;i++) {
-    const a=v3(path[i].p), b=v3(path[i+1].p);
-    const active = i === state.stage-1 || i === state.stage;
-    setLine(pathLines[i], a, b, active ? .42 : .16, COLORS.res);
-  }
-  branchPairs.forEach((pair,i)=>{ const a=v3(path.find(p=>p.key===pair[0]).p), b=v3(path.find(p=>p.key===pair[1]).p); setLine(branchLines[i], a,b,.22, COLORS.white); });
-  arrows.forEach(a=>a.group.visible=false);
-  for (let i=0;i<=state.stage;i++) {
-    const node=path[i]; const center=v3(node.p); const vec=stateVectorAt(i, base); const end=center.clone().add(vec.multiplyScalar(R));
-    arrows[i].set(center,end,colorFor(node.kind), i===state.stage ? 1 : .30);
-  }
-  const current=v3(path[state.stage].p); const prev=state.stage>0 ? v3(path[state.stage-1].p) : current;
-  shuttle.position.copy(lerpVec(prev,current,state.progress));
-  stationMeshes.forEach((mesh,key)=>{ const i=path.findIndex(p=>p.key===key); const node=path[i]; const active=i===state.stage; if (node.kind === 'attn' || node.kind === 'mlp') { mesh.material.opacity = active ? .48 : .28; mesh.scale.setScalar(active ? 1.12 : 1.0); } else { mesh.material.opacity = active ? .22 : .08; } });
-  if (state.spin) moduleMeshes.forEach((m,i)=>{ m.rotation.y += 0.012 + i * 0.001; m.rotation.x = Math.sin(performance.now()*0.001 + i) * 0.10; });
-}
+function drawStaticTracks(){ const pairs=[[P.start,P.attnIn],[P.attnIn,P.mlpIn],[P.mlpIn,P.outNorm],[P.outNorm,P.lmHead],[P.lmHead,P.softmax],[P.attnIn,P.attnNorm],[P.attnNorm,P.attnBlock],[P.attnBlock,P.attnOut],[P.attnOut,P.attnIn],[P.mlpIn,P.mlpNorm],[P.mlpNorm,P.mlpBlock],[P.mlpBlock,P.mlpOut],[P.mlpOut,P.mlpIn]]; pairs.forEach((p,i)=>setLine(trackLines[i],p[0],p[1],.20,i<5?COLORS.res:COLORS.white)); }
+function clearDyn(){ dynLines.forEach(l=>l.visible=false); arrows.forEach(a=>a.hide()); beamLine.visible=false; }
+function renderNormCopy(sourceCenter,normCenter,sourceVec,normVec,t,lineIndex,arrowIndex){ const copyT=smoothstep01(t/.45); const projectT=smoothstep01((t-.35)/.65); const ghost=lerpVec(sourceCenter,normCenter,copyT); setLine(dynLines[lineIndex],sourceCenter,ghost,.35*copyT,COLORS.norm); arrows[arrowIndex].set(normCenter,lerpVec(normCenter,endpoint(normCenter,normVec),projectT),COLORS.norm,.35+.65*projectT); }
+function renderBlockFlow(normCenter,blockCenter,outCenter,inVec,outVec,t,lineIndex,arrowIndex,color){ const inT=smoothstep01(t/.50); const outT=smoothstep01((t-.35)/.65); setLine(dynLines[lineIndex],endpoint(normCenter,inVec),blockCenter,.42*inT,color); setLine(dynLines[lineIndex+1],blockCenter,endpoint(outCenter,outVec),.42*outT,color); arrows[arrowIndex].set(outCenter,endpoint(outCenter,outVec),COLORS.out,outT); }
+function renderAdd(resCenter,resVec,outCenter,outVec,newVec,t,lineIndex,arrowBase){ arrows[arrowBase].set(resCenter,endpoint(resCenter,resVec),COLORS.token,1); arrows[arrowBase+1].set(outCenter,endpoint(outCenter,outVec),COLORS.out,1); const chainStart=endpoint(resCenter,resVec); const chainEnd=chainStart.clone().add(outVec.clone().multiplyScalar(R*.55)); setLine(dynLines[lineIndex],chainStart,lerpVec(chainStart,chainEnd,smoothstep01(t)),.55,COLORS.plus); arrows[arrowBase+2].set(resCenter,endpoint(resCenter,newVec),COLORS.plus,smoothstep01(t)); }
+function renderLmHead(hidden,t,sv){ arrows[0].set(P.outNorm,endpoint(P.outNorm,hidden),COLORS.norm,1); WORDS.forEach((w,i)=>{ const tip=endpoint(P.lmHead,wordDir(w)); setLine(dynLines[i],endpoint(P.outNorm,hidden),tip,.16+.40*smoothstep01(t*WORDS.length-i),wordColor(i)); }); }
+function renderSoftmax(sv,t){ WORDS.forEach((w,i)=>{ const dir=wordDir(w); const p=sv.probs[i]; const end=P.softmax.clone().add(dir.multiplyScalar(R*(.18+p*1.8)*smoothstep01(t))); arrows[i].set(P.softmax,end,wordColor(i),.25+.75*smoothstep01(t)); if(i===sv.top){ readMarkers[i].scale.setScalar(1.7+.25*Math.sin(performance.now()*.01)); } else readMarkers[i].scale.setScalar(1); }); }
+function cameraFocus(){ const s=appState.stage; if(s<=1) return P.start.clone().lerp(P.attnIn,.55); if(s<=4) return new THREE.Vector3(-.85,1.15,0); if(s<=8) return new THREE.Vector3(2.1,-1.1,0); if(s<=10) return P.outNorm; if(s<=12) return new THREE.Vector3(6.9,.15,0); return new THREE.Vector3(1.4,.3,0); }
+function render(){ drawStaticTracks(); clearDyn(); const sv=stateVectors(wordDir(appState.word)); const t=appState.progress; const resC=residualCenter(appState.stage,t); const resV=residualVecFor(appState.stage,sv); residualBall.position.copy(endpoint(resC,resV,.08)); arrows[19].set(resC,endpoint(resC,resV),COLORS.token,1);
+  wordMarkers.forEach((m,i)=>{m.position.copy(P.start.clone().add(wordDir(WORDS[i]).multiplyScalar(R))); m.material.opacity=WORDS[i]===appState.word?1:.35; m.scale.setScalar(WORDS[i]===appState.word?1.7:1);}); readMarkers.forEach((m,i)=>{m.position.copy(P.lmHead.clone().add(wordDir(WORDS[i]).multiplyScalar(R))); m.material.opacity=.85;});
+  if(appState.stage===2) renderNormCopy(P.attnIn,P.attnNorm,sv.base,sv.attnNorm,t,0,0); if(appState.stage>=3) arrows[0].set(P.attnNorm,endpoint(P.attnNorm,sv.attnNorm),COLORS.norm,.75);
+  if(appState.stage===3) renderBlockFlow(P.attnNorm,P.attnBlock,P.attnOut,sv.attnNorm,sv.attnOut,t,1,1,COLORS.attn); if(appState.stage>=4) arrows[1].set(P.attnOut,endpoint(P.attnOut,sv.attnOut),COLORS.out,.85);
+  if(appState.stage===4) renderAdd(P.attnIn,sv.base,P.attnOut,sv.attnOut,sv.afterAttn,t,3,2);
+  if(appState.stage===6) renderNormCopy(P.mlpIn,P.mlpNorm,sv.afterAttn,sv.mlpNorm,t,5,5); if(appState.stage>=7) arrows[5].set(P.mlpNorm,endpoint(P.mlpNorm,sv.mlpNorm),COLORS.norm,.75);
+  if(appState.stage===7) renderBlockFlow(P.mlpNorm,P.mlpBlock,P.mlpOut,sv.mlpNorm,sv.mlpOut,t,6,6,COLORS.mlp); if(appState.stage>=8) arrows[6].set(P.mlpOut,endpoint(P.mlpOut,sv.mlpOut),COLORS.out,.85);
+  if(appState.stage===8) renderAdd(P.mlpIn,sv.afterAttn,P.mlpOut,sv.mlpOut,sv.afterMlp,t,8,7);
+  if(appState.stage===10) renderNormCopy(P.outNorm,P.outNorm,sv.afterMlp,sv.hidden,t,11,10); if(appState.stage>=11) arrows[10].set(P.outNorm,endpoint(P.outNorm,sv.hidden),COLORS.norm,1);
+  if(appState.stage===11) renderLmHead(sv.hidden,t,sv); if(appState.stage>=12) renderSoftmax(sv,t);
+  if(appState.stage===13){ const topWord=WORDS[sv.top]; setLine(beamLine,endpoint(P.softmax,wordDir(topWord)),endpoint(P.start,wordDir(topWord)),.72,COLORS.token); if(t>.96 && appState.word!==topWord){ appState.word=topWord; wordSelect.value=topWord; } }
+  blockMeshes.forEach((b,i)=>{ b.rotation.y += .01+i*.003; b.rotation.x = .08*Math.sin(performance.now()*.001+i); }); refreshUi(sv); }
 function resize(){ const w=canvas.clientWidth,h=canvas.clientHeight; renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); }
-window.addEventListener('resize', resize); resize(); refreshUi();
-let last=performance.now(); function animate(ts){ if(state.playing){ state.progress=clamp01((ts-state.started)/(STAGE_SECONDS*1000)); if(state.progress>=1){ state.playing=false; if(state.stage<path.length-1){ state.stage++; state.progress=0; state.playing=true; state.started=ts; } } refreshUi(); } render(); if(state.spin){ const center=controls.target.clone(); camera.position.sub(center).applyAxisAngle(new THREE.Vector3(0,1,0),0.0018).add(center); } controls.update(); renderer.render(scene,camera); requestAnimationFrame(animate); last=ts; } requestAnimationFrame(animate);
+window.addEventListener('resize',resize); resize(); refreshUi();
+function animate(ts){ if(appState.playing){ appState.progress=clamp01((ts-appState.started)/(STAGE_SECONDS*1000)); if(appState.progress>=1){ appState.playing=false; if(appState.stage<STAGES.length-1){ appState.stage++; appState.progress=0; appState.playing=true; appState.started=ts; } } } render(); if(appState.cameraGuide){ const focus=cameraFocus(); controls.target.lerp(focus,.065); const off=camera.position.clone().sub(controls.target); if(off.length()>0.01){ const desired=controls.target.clone().add(off.normalize().multiplyScalar(appState.stage>=11?7.6:6.4)); camera.position.lerp(desired,.035); } } controls.update(); renderer.render(scene,camera); requestAnimationFrame(animate); }
+requestAnimationFrame(animate);
 </script>
 </body>
 </html>
