@@ -1896,27 +1896,65 @@ function renderChain(pass, glyphs, color, opacity, progress) {
     glyphs[i].set(start, end, color, opacity * (localT > 0.01 ? 1 : 0), 0.75);
   }
 }
+function basisVector(index) {
+  if (index === 0) return new THREE.Vector3(1, 0, 0);
+  if (index === 1) return new THREE.Vector3(0, 1, 0);
+  return new THREE.Vector3(0, 0, 1);
+}
+function componentLabel(index) { return index === 0 ? 'x' : index === 1 ? 'y' : 'z'; }
+function renderMatrixDotComposition({ inputTip, matrixKey, matrixCenter, outputCenter, rows, components, outputGlyph, outputColor, lineColor, labelBase, lineBase, progress, componentScale, finalEnd, outputLabel }) {
+  const t = smoothstep01(progress);
+  let cumulative = new THREE.Vector3();
+  for (let i = 0; i < 3; i++) {
+    const local = smoothstep01(t * 3 - i + 0.15);
+    const rowTip = endpoint(matrixCenter, rows[i]);
+    setLine(dyn.transferLines[lineBase + i], inputTip, rowTip, 0.22 * local, lineColor);
+
+    const component = basisVector(i).multiplyScalar(components[i] * componentScale);
+    const segStart = outputCenter.clone().add(cumulative);
+    cumulative.add(component);
+    const segEnd = lerpVec(segStart, outputCenter.clone().add(cumulative), local);
+    setLine(dyn.transferLines[lineBase + 3 + i], segStart, segEnd, 0.62 * local, outputColor);
+
+    labelAt(dyn.labels[labelBase + i], rowTip.clone().add(new THREE.Vector3(0.14, 0.10 - 0.09 * i, 0.12)), `${matrixKey}${componentLabel(i)}=${components[i].toFixed(2)}`, lineColor, local);
+  }
+  outputGlyph.set(outputCenter, lerpVec(outputCenter, finalEnd, t), outputColor, 0.22 + 0.78 * t);
+  labelAt(dyn.labels[labelBase + 3], finalEnd.clone().add(new THREE.Vector3(0.22, 0.12, 0.12)), outputLabel, outputColor, t);
+}
 function renderContextAndOutput(pass, contextGlyph, outputGlyph, colorContext, colorOutput, opacity, progress, quant = false) {
   const t = smoothstep01(progress);
-  const local = smoothstep01(t);
   const contextEnd = rawEndpoint(CENTERS.v, pass.context, derived.chainScale);
   contextGlyph.set(CENTERS.v, contextEnd, colorContext, opacity);
 
-  // Mirror the Wq stage: vector enters the Wo matrix, exits as Wo·context,
-  // and the transformed vector is then shown on the separate Output sphere.
+  // Mirror the Wq stage: draw the final v/context tip to the Wo rows, then show
+  // the x/y/z dot-product components adding up to the vector on Output.
   const midIn = CENTERS.Wo.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
   const midOut = CENTERS.Wo.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
   const finalEnd = endpoint(CENTERS.Output, pass.output);
-  const carryEnd = lerpVec(CENTERS.Wo, endpoint(CENTERS.Wo, pass.context), local);
+  const rows = matRows(pass.Wo);
+  const outputLen = Math.max(pass.output.length(), 1e-9);
+  const components = [pass.output.x, pass.output.y, pass.output.z];
 
-  dyn.woContextGhost.set(CENTERS.Wo, carryEnd, quant ? QUANT : VALUE, opacity * (0.18 + 0.44 * local));
-  setLine(dyn.transferLines[10], contextEnd, midIn, opacity * 0.34 * local, colorContext);
-  setLine(dyn.transferLines[11], midOut, finalEnd, opacity * 0.34 * local, quant ? QUANT_FINAL : colorOutput);
-  outputGlyph.set(CENTERS.Output, lerpVec(CENTERS.Output, finalEnd, local), colorOutput, opacity * (0.20 + 0.80 * local));
-
-  labelAt(dyn.labels[74], contextEnd.clone().add(new THREE.Vector3(0.18, -0.12, 0.12)), quant ? 'final ṽ/context' : 'final v/context', colorContext, opacity * local);
-  labelAt(dyn.labels[75], CENTERS.Wo.clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.40, 0)), quant ? 'W̃o · context' : 'Wo · context', quant ? QUANT : TENSOR, opacity * local);
-  labelAt(dyn.labels[76], finalEnd.clone().add(new THREE.Vector3(0.24, 0.10, 0.12)), quant ? 'quant output' : 'final output', colorOutput, opacity * local);
+  setLine(dyn.transferLines[10], contextEnd, midIn, opacity * 0.28 * t, colorContext);
+  setLine(dyn.transferLines[11], midOut, CENTERS.Output.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0)), opacity * 0.20 * t, quant ? QUANT_FINAL : colorOutput);
+  renderMatrixDotComposition({
+    inputTip: contextEnd,
+    matrixKey: quant ? 'õ' : 'o',
+    matrixCenter: CENTERS.Wo,
+    outputCenter: CENTERS.Output,
+    rows,
+    components,
+    outputGlyph,
+    outputColor: colorOutput,
+    lineColor: quant ? QUANT : TENSOR,
+    labelBase: 74,
+    lineBase: 12,
+    progress: t,
+    componentScale: SPHERE_RADIUS / outputLen,
+    finalEnd,
+    outputLabel: quant ? 'quant output' : 'final output',
+  });
+  labelAt(dyn.labels[78], CENTERS.Wo.clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.40, 0)), quant ? 'dot ṽ with W̃o rows' : 'dot v/context with Wo rows', quant ? QUANT : TENSOR, opacity * t);
 }
 function renderCompare() {
   const fade = 0.035;
@@ -1997,8 +2035,23 @@ function renderStage() {
     const end = rawProjEndpoint(CENTERS.q, derived.continuous.qRaw);
     setLine(dyn.transferLines[0], start, midIn, 0.38 * local, CURRENT);
     setLine(dyn.transferLines[1], midOut, end, 0.38 * local, QUERY);
-    dyn.qArrow.set(CENTERS.q, lerpVec(CENTERS.q, end, local), QUERY, local);
-    labelAt(dyn.labels[0], end.clone().add(new THREE.Vector3(0.16, 0.12, 0.10)), 'raw q = Wq x₀', QUERY, local);
+    renderMatrixDotComposition({
+      inputTip: start,
+      matrixKey: 'q',
+      matrixCenter: CENTERS.Wq,
+      outputCenter: CENTERS.q,
+      rows: derived.tensorContinuous.Wq,
+      components: [derived.continuous.qRaw.x, derived.continuous.qRaw.y, derived.continuous.qRaw.z],
+      outputGlyph: dyn.qArrow,
+      outputColor: QUERY,
+      lineColor: TENSOR,
+      labelBase: 90,
+      lineBase: 20,
+      progress: local,
+      componentScale: derived.projectionScale,
+      finalEnd: end,
+      outputLabel: 'raw q = Wq x₀',
+    });
   }
 
   if (s === 2) {
