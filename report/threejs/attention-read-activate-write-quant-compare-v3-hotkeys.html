@@ -1907,13 +1907,15 @@ function renderMatrixDotComposition({ inputTip, matrixKey, matrixCenter, outputC
   let cumulative = new THREE.Vector3();
   for (let i = 0; i < 3; i++) {
     const local = smoothstep01(t * 3 - i + 0.15);
+    const rowTip = endpoint(matrixCenter, rows[i]);
     const component = basisVector(i).multiplyScalar(components[i] * componentScale);
     const segStart = outputCenter.clone().add(cumulative);
     cumulative.add(component);
     const componentTip = outputCenter.clone().add(cumulative);
     const segEnd = lerpVec(segStart, componentTip, local);
-    setLine(dyn.transferLines[lineBase + i], inputTip, componentTip, 0.18 * local, lineColor);
-    setLine(dyn.transferLines[lineBase + 3 + i], segStart, segEnd, 0.62 * local, outputColor);
+    setLine(dyn.transferLines[lineBase + i], inputTip, rowTip, 0.20 * local, lineColor);
+    setLine(dyn.transferLines[lineBase + 3 + i], rowTip, componentTip, 0.20 * local, lineColor);
+    setLine(dyn.transferLines[lineBase + 6 + i], segStart, segEnd, 0.62 * local, outputColor);
 
     labelAt(dyn.labels[labelBase + i], componentTip.clone().add(new THREE.Vector3(0.14, 0.10 - 0.09 * i, 0.12)), `${matrixKey}${componentLabel(i)}=${components[i].toFixed(2)}`, lineColor, local);
   }
