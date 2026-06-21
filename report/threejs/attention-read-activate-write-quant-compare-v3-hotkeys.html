@@ -2124,13 +2124,26 @@ function renderStage() {
     renderRawProjections(derived.continuous, 0.08, 0.08, 0.08, false);
     const local = smoothstep01(t);
     const start = endpoint(CENTERS.Input, data.tokens[0]);
-    const midIn = CENTERS.Wq.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
     const midOut = CENTERS.Wq.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
     const end = rawProjEndpoint(CENTERS.q, derived.quantized.qRaw);
-    setLine(dyn.transferLines[0], start, midIn, 0.42 * local, CURRENT);
     setLine(dyn.transferLines[1], midOut, end, 0.42 * local, QUANT);
-    dyn.qArrowQ.set(CENTERS.q, lerpVec(CENTERS.q, end, local), QUANT, local);
-    labelAt(dyn.labels[0], end.clone().add(new THREE.Vector3(0.16, 0.10, 0.10)), state.quantWq ? 'raw q̃ = W̃q x₀' : 'raw q̃ = Wq x₀', QUANT, local);
+    renderMatrixDotComposition({
+      inputTip: start,
+      matrixKey: 'q̃',
+      matrixCenter: CENTERS.Wq,
+      outputCenter: CENTERS.q,
+      rows: derived.tensorQuantized.Wq,
+      components: [derived.quantized.qRaw.x, derived.quantized.qRaw.y, derived.quantized.qRaw.z],
+      outputGlyph: dyn.qArrowQ,
+      outputColor: QUANT,
+      lineColor: QUANT,
+      labelBase: 90,
+      lineBase: 20,
+      progress: local,
+      componentScale: derived.projectionScale,
+      finalEnd: end,
+      outputLabel: state.quantWq ? 'raw q̃ = W̃q x₀' : 'raw q̃ = Wq x₀',
+    });
   }
 
   if (s === 12) {
