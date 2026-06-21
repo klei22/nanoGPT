@@ -18,26 +18,31 @@ PY
 
 python3 train.py \
   --training_mode multicontext \
+  --dataset "data/simplified_hanzi_mc/char/char_simplified_hanzi_mc" \
   --multicontext \
   --multicontext_datasets "${DATASETS[@]}" \
   --out_dir "${OUT_DIR}" \
-  --eval_interval 5 \
-  --eval_iters 2 \
-  --log_interval 1 \
+  --eval_interval 250 \
+  --eval_iters 100 \
+  --log_interval 10 \
   --always_save_checkpoint \
-  --max_iters "${MAX_ITERS:-20}" \
-  --batch_size 4 \
-  --block_size 8 \
-  --n_layer 2 \
-  --n_head 2 \
-  --n_embd 64 \
+  --max_iters "${MAX_ITERS:-10000}" \
+  --use_rotary_embeddings \
+  --no-use_abs_pos_embeddings \
+  --use_qk_norm \
+  --use_qk_norm_scale \
+  --batch_size 32 \
+  --block_size 256 \
+  --n_layer 10 \
+  --n_head 3 \
+  --n_embd 384 \
   --dropout 0.0 \
-  --device "${DEVICE:-cpu}" \
+  --device "${DEVICE:-cuda:0}" \
   --no-compile
 
 python3 sample.py \
   --out_dir "${OUT_DIR}" \
-  --device "${DEVICE:-cpu}" \
+  --device "${DEVICE:-cuda:0}" \
   --no-compile \
   --multicontext \
   --multicontext_datasets "${DATASETS[@]}" \
