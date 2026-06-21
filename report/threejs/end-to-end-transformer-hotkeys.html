@@ -34,9 +34,9 @@
     <canvas id="scene"></canvas>
     <div class="title">
       <h1>End-to-End Transformer: x → Attention → MLP → y</h1>
-      <div class="subtitle">Pick a word to create an input vector. The vector shuttles down the residual stream, clones into norm spheres, projects onto each sphere surface, enters attention/MLP stations, and is added back at residual “+” stations.</div>
+      <div class="subtitle">Pick a word to create an input vector. The vector shuttles down the residual stream, clones into norm spheres, enters spinning 3D Attention/MLP blocks, produces an output sphere, and is added back at residual “+” stations.</div>
     </div>
-    <div class="hint">Drag to rotate • Scroll to zoom • <span class="kbd">j/→</span> next • <span class="kbd">k/←</span> previous • <span class="kbd">Space</span> play/pause • <span class="kbd">r</span> replay</div>
+    <div class="hint">Drag to rotate • Scroll to zoom • <span class="kbd">j/→</span> next • <span class="kbd">k/←</span> previous • <span class="kbd">Space</span> play/pause • <span class="kbd">r</span> replay • <span class="kbd">s</span> spin</div>
   </div>
   <aside>
     <div class="panel">
@@ -49,6 +49,7 @@
       <div class="stage" id="stageName"></div>
       <div class="grid"><button id="prevBtn">Previous</button><button id="nextBtn">Next</button><button id="playBtn">Play</button><button id="replayBtn">Replay</button></div>
       <div style="margin-top:12px;"><input id="progress" type="range" min="0" max="100" value="0" /></div>
+      <label class="row" style="margin-top:8px;"><span>Spin modules / camera</span><input id="spinToggle" type="checkbox" checked /></label>
     </div>
     <div class="panel">
       <h2>Path</h2>
@@ -58,8 +59,9 @@
       <h2>Legend</h2>
       <div class="row"><span>Residual stream</span><span style="color:var(--res)">x,r,+,h,y</span></div>
       <div class="row"><span>Norm clone</span><span style="color:var(--norm)">n1…n5</span></div>
-      <div class="row"><span>Attention</span><span style="color:var(--attn)">a1,a2</span></div>
-      <div class="row"><span>MLP</span><span style="color:var(--mlp)">m1,m2</span></div>
+      <div class="row"><span>Attention blocks</span><span style="color:var(--attn)">3D rectangles</span></div>
+      <div class="row"><span>MLP blocks</span><span style="color:var(--mlp)">3D rectangles</span></div>
+      <div class="row"><span>Module outputs</span><span style="color:var(--out)">output spheres</span></div>
     </div>
   </aside>
 </div>
@@ -72,27 +74,31 @@ const R = 0.58;
 const STAGE_SECONDS = 1.35;
 const words = ['transformer', 'attention', 'residual', 'sphere', 'token', 'gradient', 'matrix', 'context', 'logit'];
 const path = [
-  {key:'x', label:'x input', kind:'res', p:[-3.8,4.8,0]},
-  {key:'r0', label:'r0 residual', kind:'res', p:[-3.8,3.6,0]},
-  {key:'n1', label:'n1 norm clone', kind:'norm', p:[-1.55,3.6,0]},
-  {key:'a1', label:'a1 attention', kind:'attn', p:[0.65,3.6,0]},
-  {key:'plus1', label:'+ add attention', kind:'plus', p:[-3.8,2.4,0]},
-  {key:'r1', label:'r1 residual', kind:'res', p:[-3.8,1.2,0]},
-  {key:'n2', label:'n2 norm clone', kind:'norm', p:[-1.55,1.2,0]},
-  {key:'m1', label:'m1 MLP', kind:'mlp', p:[0.65,1.2,0]},
-  {key:'plus2', label:'+ add MLP', kind:'plus', p:[-3.8,0,0]},
-  {key:'r2', label:'r2 residual', kind:'res', p:[-3.8,-1.2,0]},
-  {key:'n3', label:'n3 norm clone', kind:'norm', p:[-1.55,-1.2,0]},
-  {key:'a2', label:'a2 attention', kind:'attn', p:[0.65,-1.2,0]},
-  {key:'plus3', label:'+ add attention', kind:'plus', p:[-3.8,-2.4,0]},
-  {key:'r3', label:'r3 residual', kind:'res', p:[-3.8,-3.6,0]},
-  {key:'n4', label:'n4 norm clone', kind:'norm', p:[-1.55,-3.6,0]},
-  {key:'m2', label:'m2 MLP', kind:'mlp', p:[0.65,-3.6,0]},
-  {key:'plus4', label:'+ add MLP', kind:'plus', p:[-3.8,-4.8,0]},
-  {key:'r4', label:'r4 residual', kind:'res', p:[-3.8,-6.0,0]},
-  {key:'n5', label:'n5 final norm', kind:'norm', p:[-3.8,-7.2,0]},
-  {key:'h', label:'h hidden state', kind:'out', p:[-3.8,-8.4,0]},
-  {key:'y', label:'y logits', kind:'out', p:[-3.8,-9.6,0]},
+  {key:'x', label:'x input', kind:'res', p:[-3.8,5.4,0]},
+  {key:'r0', label:'r0 residual', kind:'res', p:[-3.8,4.2,0]},
+  {key:'n1', label:'n1 norm clone', kind:'norm', p:[-1.75,4.2,0]},
+  {key:'a1', label:'a1 attention block', kind:'attn', p:[0.35,4.2,0]},
+  {key:'a1o', label:'a1 output sphere', kind:'modout', p:[2.2,4.2,0]},
+  {key:'plus1', label:'+ add attention', kind:'plus', p:[-3.8,3.0,0]},
+  {key:'r1', label:'r1 residual', kind:'res', p:[-3.8,1.8,0]},
+  {key:'n2', label:'n2 norm clone', kind:'norm', p:[-1.75,1.8,0]},
+  {key:'m1', label:'m1 MLP block', kind:'mlp', p:[0.35,1.8,0]},
+  {key:'m1o', label:'m1 output sphere', kind:'modout', p:[2.2,1.8,0]},
+  {key:'plus2', label:'+ add MLP', kind:'plus', p:[-3.8,0.6,0]},
+  {key:'r2', label:'r2 residual', kind:'res', p:[-3.8,-0.6,0]},
+  {key:'n3', label:'n3 norm clone', kind:'norm', p:[-1.75,-0.6,0]},
+  {key:'a2', label:'a2 attention block', kind:'attn', p:[0.35,-0.6,0]},
+  {key:'a2o', label:'a2 output sphere', kind:'modout', p:[2.2,-0.6,0]},
+  {key:'plus3', label:'+ add attention', kind:'plus', p:[-3.8,-1.8,0]},
+  {key:'r3', label:'r3 residual', kind:'res', p:[-3.8,-3.0,0]},
+  {key:'n4', label:'n4 norm clone', kind:'norm', p:[-1.75,-3.0,0]},
+  {key:'m2', label:'m2 MLP block', kind:'mlp', p:[0.35,-3.0,0]},
+  {key:'m2o', label:'m2 output sphere', kind:'modout', p:[2.2,-3.0,0]},
+  {key:'plus4', label:'+ add MLP', kind:'plus', p:[-3.8,-4.2,0]},
+  {key:'r4', label:'r4 residual', kind:'res', p:[-3.8,-5.4,0]},
+  {key:'n5', label:'n5 final norm', kind:'norm', p:[-3.8,-6.6,0]},
+  {key:'h', label:'h hidden state', kind:'out', p:[-3.8,-7.8,0]},
+  {key:'y', label:'y logits', kind:'out', p:[-3.8,-9.0,0]},
 ];
 const stages = path.map((p, i) => `${i + 1}. ${p.label}`);
 const canvas = document.getElementById('scene');
@@ -107,7 +113,7 @@ camera.position.set(3.7, -2.3, 13.5);
 const controls = new OrbitControls(camera, canvas); controls.target.set(-2.1, -2.2, 0); controls.update();
 scene.add(new THREE.HemisphereLight(0xffffff, 0x223355, 1.4));
 
-function colorFor(kind) { return COLORS[kind] || COLORS.white; }
+function colorFor(kind) { return kind === 'modout' ? COLORS.out : (COLORS[kind] || COLORS.white); }
 function v3(a) { return new THREE.Vector3(a[0], a[1], a[2]); }
 function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 function smoothstep01(x) { const t = clamp01(x); return t*t*(3-2*t); }
@@ -117,7 +123,7 @@ function hashWord(w) { let h=2166136261; for (const ch of w) { h^=ch.charCodeAt(
 function rand(seed) { let s=seed>>>0; return () => { s = Math.imul(1664525, s) + 1013904223 | 0; return ((s>>>0)/4294967296); }; }
 function wordVector(word) { const r=rand(hashWord(word)); return unit(new THREE.Vector3(r()*2-1, r()*2-1, r()*2-1)); }
 function transformVec(v, key) {
-  const angle = key.startsWith('a') ? 0.68 : key.startsWith('m') ? -0.52 : key === 'n5' ? 0.25 : 0.12;
+  const angle = key.startsWith('a') ? 0.68 : key.startsWith('m') ? -0.52 : key.endsWith('o') ? 0.34 : key === 'n5' ? 0.25 : 0.12;
   const axis = unit(new THREE.Vector3(key.length + 1, key.charCodeAt(0)%7 + 1, 3));
   return unit(v.clone().applyAxisAngle(axis, angle));
 }
@@ -152,30 +158,42 @@ class Arrow {
 
 const stationMeshes = new Map();
 const stationLabels = new Map();
+const moduleMeshes = [];
 for (const node of path) {
   const pos=v3(node.p);
-  const sphere=new THREE.Mesh(new THREE.SphereGeometry(R,24,14), new THREE.MeshBasicMaterial({color:COLORS.white, wireframe:true, transparent:true, opacity:.12, depthWrite:false}));
-  sphere.position.copy(pos); world.add(sphere); stationMeshes.set(node.key, sphere);
-  const label=makeText(node.key, colorFor(node.kind), 160, 58, node.key.startsWith('plus') ? 32 : 27); label.position.copy(pos.clone().add(new THREE.Vector3(0,R+.28,0))); world.add(label); stationLabels.set(node.key,label);
+  let mesh;
+  if (node.kind === 'attn' || node.kind === 'mlp') {
+    const geom = new THREE.BoxGeometry(1.05, 0.78, 0.52);
+    const mat = new THREE.MeshBasicMaterial({color:colorFor(node.kind), transparent:true, opacity:.34, wireframe:false, depthWrite:false});
+    mesh = new THREE.Mesh(geom, mat);
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom), new THREE.LineBasicMaterial({color:colorFor(node.kind), transparent:true, opacity:.9}));
+    mesh.add(edges);
+    moduleMeshes.push(mesh);
+  } else {
+    mesh=new THREE.Mesh(new THREE.SphereGeometry(R,24,14), new THREE.MeshBasicMaterial({color:COLORS.white, wireframe:true, transparent:true, opacity:.12, depthWrite:false}));
+  }
+  mesh.position.copy(pos); world.add(mesh); stationMeshes.set(node.key, mesh);
+  const label=makeText(node.key, colorFor(node.kind), 170, 58, node.key.startsWith('plus') ? 32 : 27); label.position.copy(pos.clone().add(new THREE.Vector3(0,R+.33,0))); world.add(label); stationLabels.set(node.key,label);
 }
 const pathLines=[]; for (let i=0;i<path.length-1;i++) pathLines.push(makeLine(COLORS.res,true));
-const branchPairs = [['r0','n1'],['n1','a1'],['a1','plus1'],['r1','n2'],['n2','m1'],['m1','plus2'],['r2','n3'],['n3','a2'],['a2','plus3'],['r3','n4'],['n4','m2'],['m2','plus4']];
+const branchPairs = [['r0','n1'],['n1','a1'],['a1','a1o'],['a1o','plus1'],['r1','n2'],['n2','m1'],['m1','m1o'],['m1o','plus2'],['r2','n3'],['n3','a2'],['a2','a2o'],['a2o','plus3'],['r3','n4'],['n4','m2'],['m2','m2o'],['m2o','plus4']];
 const branchLines = branchPairs.map(() => makeLine(COLORS.white,true));
 const arrows = path.map(() => new Arrow(COLORS.token));
 const shuttle = new THREE.Mesh(new THREE.SphereGeometry(.11,18,12), new THREE.MeshBasicMaterial({color:COLORS.token})); world.add(shuttle);
 
-const state = { stage:0, progress:0, playing:false, word:words[0], started:performance.now() };
-const stageNameEl=document.getElementById('stageName'); const progressEl=document.getElementById('progress'); const playBtn=document.getElementById('playBtn');
+const state = { stage:0, progress:0, playing:false, word:words[0], started:performance.now(), spin:true };
+const stageNameEl=document.getElementById('stageName'); const progressEl=document.getElementById('progress'); const playBtn=document.getElementById('playBtn'); const spinToggle=document.getElementById('spinToggle');
 const wordSelect=document.getElementById('wordSelect'); words.forEach(w=>{ const o=document.createElement('option'); o.value=w; o.textContent=w; wordSelect.appendChild(o); });
 const pathRows=document.getElementById('pathRows'); pathRows.innerHTML=path.map((p,i)=>`<div class="row"><span>${i+1}. ${p.key}</span><span style="color:${colorFor(p.kind)}">${p.label}</span></div>`).join('');
-function refreshUi(){ stageNameEl.textContent=stages[state.stage]; progressEl.value=Math.round(state.progress*100); playBtn.textContent=state.playing?'Pause':'Play'; wordSelect.value=state.word; }
+function refreshUi(){ stageNameEl.textContent=stages[state.stage]; progressEl.value=Math.round(state.progress*100); playBtn.textContent=state.playing?'Pause':'Play'; wordSelect.value=state.word; spinToggle.checked=state.spin; }
 function go(delta){ state.stage=Math.max(0,Math.min(path.length-1,state.stage+delta)); state.progress=0; state.playing=false; state.started=performance.now(); refreshUi(); }
 document.getElementById('prevBtn').onclick=()=>go(-1); document.getElementById('nextBtn').onclick=()=>go(1);
 playBtn.onclick=()=>{ state.playing=!state.playing; state.started=performance.now()-state.progress*STAGE_SECONDS*1000; refreshUi(); };
 document.getElementById('replayBtn').onclick=()=>{ state.progress=0; state.playing=true; state.started=performance.now(); refreshUi(); };
 progressEl.oninput=e=>{ state.progress=Number(e.target.value)/100; state.playing=false; refreshUi(); };
 wordSelect.onchange=e=>{ state.word=e.target.value; state.progress=0; state.stage=0; refreshUi(); };
-window.addEventListener('keydown', e=>{ if(['ArrowRight','j'].includes(e.key)){go(1);e.preventDefault();} else if(['ArrowLeft','k'].includes(e.key)){go(-1);e.preventDefault();} else if(e.key===' '){playBtn.onclick();e.preventDefault();} else if(e.key==='r'){document.getElementById('replayBtn').onclick();e.preventDefault();} });
+spinToggle.onchange=e=>{ state.spin=e.target.checked; refreshUi(); };
+window.addEventListener('keydown', e=>{ if(['ArrowRight','j'].includes(e.key)){go(1);e.preventDefault();} else if(['ArrowLeft','k'].includes(e.key)){go(-1);e.preventDefault();} else if(e.key===' '){playBtn.onclick();e.preventDefault();} else if(e.key==='r'){document.getElementById('replayBtn').onclick();e.preventDefault();} else if(e.key==='s'){state.spin=!state.spin; refreshUi(); e.preventDefault();} });
 
 function render() {
   const base=wordVector(state.word);
@@ -192,11 +210,12 @@ function render() {
   }
   const current=v3(path[state.stage].p); const prev=state.stage>0 ? v3(path[state.stage-1].p) : current;
   shuttle.position.copy(lerpVec(prev,current,state.progress));
-  stationMeshes.forEach((mesh,key)=>{ const i=path.findIndex(p=>p.key===key); mesh.material.opacity = i===state.stage ? .22 : .08; });
+  stationMeshes.forEach((mesh,key)=>{ const i=path.findIndex(p=>p.key===key); const node=path[i]; const active=i===state.stage; if (node.kind === 'attn' || node.kind === 'mlp') { mesh.material.opacity = active ? .48 : .28; mesh.scale.setScalar(active ? 1.12 : 1.0); } else { mesh.material.opacity = active ? .22 : .08; } });
+  if (state.spin) moduleMeshes.forEach((m,i)=>{ m.rotation.y += 0.012 + i * 0.001; m.rotation.x = Math.sin(performance.now()*0.001 + i) * 0.10; });
 }
 function resize(){ const w=canvas.clientWidth,h=canvas.clientHeight; renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); }
 window.addEventListener('resize', resize); resize(); refreshUi();
-let last=performance.now(); function animate(ts){ if(state.playing){ state.progress=clamp01((ts-state.started)/(STAGE_SECONDS*1000)); if(state.progress>=1){ state.playing=false; if(state.stage<path.length-1){ state.stage++; state.progress=0; state.playing=true; state.started=ts; } } refreshUi(); } render(); controls.update(); renderer.render(scene,camera); requestAnimationFrame(animate); last=ts; } requestAnimationFrame(animate);
+let last=performance.now(); function animate(ts){ if(state.playing){ state.progress=clamp01((ts-state.started)/(STAGE_SECONDS*1000)); if(state.progress>=1){ state.playing=false; if(state.stage<path.length-1){ state.stage++; state.progress=0; state.playing=true; state.started=ts; } } refreshUi(); } render(); if(state.spin){ const center=controls.target.clone(); camera.position.sub(center).applyAxisAngle(new THREE.Vector3(0,1,0),0.0018).add(center); } controls.update(); renderer.render(scene,camera); requestAnimationFrame(animate); last=ts; } requestAnimationFrame(animate);
 </script>
 </body>
 </html>
