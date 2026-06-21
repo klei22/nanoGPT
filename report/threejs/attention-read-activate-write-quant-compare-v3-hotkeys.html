@@ -1917,7 +1917,7 @@ function renderMatrixDotComposition({ inputTip, matrixKey, matrixCenter, outputC
     setLine(dyn.transferLines[lineBase + 3 + i], rowTip, componentTip, 0.20 * local, lineColor);
     setLine(dyn.transferLines[lineBase + 6 + i], segStart, segEnd, 0.62 * local, outputColor);
 
-    labelAt(dyn.labels[labelBase + i], componentTip.clone().add(new THREE.Vector3(0.14, 0.10 - 0.09 * i, 0.12)), `${matrixKey}${componentLabel(i)}=${components[i].toFixed(2)}`, lineColor, local);
+    labelAt(dyn.labels[labelBase + i], rowTip.clone().add(new THREE.Vector3(0.14, 0.10 - 0.09 * i, 0.12)), `${matrixKey}${componentLabel(i)}=${components[i].toFixed(2)}`, lineColor, local);
   }
   outputGlyph.set(outputCenter, lerpVec(outputCenter, finalEnd, t), outputColor, 0.22 + 0.78 * t);
   labelAt(dyn.labels[labelBase + 3], finalEnd.clone().add(new THREE.Vector3(0.22, 0.12, 0.12)), outputLabel, outputColor, t);
