@@ -54,12 +54,14 @@ def main() -> None:
     args = ap.parse_args()
     in_path = Path(args.input)
     out_root = Path(args.output_root)
-    chars = [line.rstrip("\n") for line in in_path.read_text(encoding="utf-8").splitlines() if line.rstrip("\n") != ""]
-    rows = []
-    for idx, text in enumerate(chars, 1):
-        if len(text) != 1:
-            raise ValueError(f"Line {idx} must contain exactly one character, got {text!r}")
-        rows.append(encode_char(text))
+    # Treat input.txt as an arbitrary UTF-8 text stream, not as one-character
+    # records. This lets regular corpora such as poem/title files flow through
+    # unchanged at the character timestep level: every code point gets one
+    # aligned multicontext vector; non-Hanzi code points become NON_HANZI.
+    chars = list(in_path.read_text(encoding="utf-8"))
+    if not chars:
+        raise ValueError(f"Input file is empty: {in_path}")
+    rows = [encode_char(ch) for ch in chars]
     datasets = []
     for lane in LANES:
         lane_dir = out_root / lane
