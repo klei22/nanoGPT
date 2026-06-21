@@ -357,7 +357,7 @@
         <div class="title-card">
           <h1>One-Head Attention: Read → Project Q/K/V → Norm → Activate → Write Values → Wo Output</h1>
           <div class="subtitle">
-            The tokens physically reside on the leftmost input (x) sphere. The current token (red) reads through the Wq matrix weights into q. All tokens (current + prior) read through the Wk and Wv matrix weights into k and v. After projection, q/k/v are normalized back to the hypersphere surface, q interacts with every k vector, activation produces coefficients, coefficients scale the value vectors, and Wo acts as a separate output-projection matrix: the final context/v vector dots with the Wo rows, those row outputs are scaled and added, and the output sphere displays the resulting final vector.
+            The tokens physically reside on the leftmost input (x) sphere. The current token (red) reads through the Wq matrix weights into q. All tokens (current + prior) read through the Wk and Wv matrix weights into k and v. After projection, q/k/v are normalized back to the hypersphere surface, q interacts with every k vector, activation produces coefficients, coefficients scale the value vectors, and Wo acts as a separate output-projection matrix: the final context/v vector passes through Wo just like x₀ passes through Wq, and the transformed final output is displayed on the separate output sphere.
           </div>
         </div>
       </div>
@@ -615,7 +615,7 @@ const stageLabels = {
   6: 'Activation produces attention coefficients aᵢ',
   7: 'Attention coefficients scale each value vector aᵢ vᵢ',
   8: 'Write and sum scaled values into one context vector',
-  9: 'Final v/context dots with Wo rows; scaled row outputs add on the output sphere',
+  9: 'Project final v/context through Wo into the separate output sphere',
   10: 'Quantize selected Wq / Wk / Wv / Wo tensors onto the blue grid',
   11: 'Q Wq → q: project with the selected quantized Wq path',
   12: 'Q Wk → k: project all tokens with the selected quantized Wk path',
@@ -1896,50 +1896,27 @@ function renderChain(pass, glyphs, color, opacity, progress) {
     glyphs[i].set(start, end, color, opacity * (localT > 0.01 ? 1 : 0), 0.75);
   }
 }
-function outputBasisVector(index) {
-  if (index === 0) return new THREE.Vector3(1, 0, 0);
-  if (index === 1) return new THREE.Vector3(0, 1, 0);
-  return new THREE.Vector3(0, 0, 1);
-}
 function renderContextAndOutput(pass, contextGlyph, outputGlyph, colorContext, colorOutput, opacity, progress, quant = false) {
   const t = smoothstep01(progress);
-  const carryT = smoothstep01(t / 0.34);
-  const dotT = smoothstep01((t - 0.18) / 0.42);
-  const sumT = smoothstep01((t - 0.48) / 0.52);
+  const local = smoothstep01(t);
   const contextEnd = rawEndpoint(CENTERS.v, pass.context, derived.chainScale);
   contextGlyph.set(CENTERS.v, contextEnd, colorContext, opacity);
 
-  // Wo is a matrix, not the output sphere. The final v/context vector is carried to Wo,
-  // dotted with each Wo row, and the resulting output-axis components are added on Output.
-  const contextAtWoEnd = endpoint(CENTERS.Wo, pass.context);
-  const outputLen = Math.max(pass.output.length(), 1e-9);
+  // Mirror the Wq stage: vector enters the Wo matrix, exits as Wo·context,
+  // and the transformed vector is then shown on the separate Output sphere.
+  const midIn = CENTERS.Wo.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0));
+  const midOut = CENTERS.Wo.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0));
   const finalEnd = endpoint(CENTERS.Output, pass.output);
-  const rowVectors = matRows(pass.Wo || (quant ? derived.quantized.Wo : derived.continuous.Wo));
-  const components = [pass.output.x, pass.output.y, pass.output.z];
-  const componentGlyphs = quant ? dyn.scaledVQ : dyn.scaledV;
+  const carryEnd = lerpVec(CENTERS.Wo, endpoint(CENTERS.Wo, pass.context), local);
 
-  dyn.woContextGhost.set(CENTERS.Wo, lerpVec(CENTERS.Wo, contextAtWoEnd, carryT), quant ? QUANT : VALUE, opacity * (0.20 + 0.42 * carryT));
-  setLine(dyn.transferLines[10], contextEnd, contextAtWoEnd, opacity * 0.26 * carryT, colorContext);
-  labelAt(dyn.labels[74], contextAtWoEnd.clone().add(new THREE.Vector3(0.20, -0.12, 0.10)), quant ? 'ṽ/context dots W̃o rows' : 'v/context dots Wo rows', quant ? QUANT : VALUE, opacity * dotT);
+  dyn.woContextGhost.set(CENTERS.Wo, carryEnd, quant ? QUANT : VALUE, opacity * (0.18 + 0.44 * local));
+  setLine(dyn.transferLines[10], contextEnd, midIn, opacity * 0.34 * local, colorContext);
+  setLine(dyn.transferLines[11], midOut, finalEnd, opacity * 0.34 * local, quant ? QUANT_FINAL : colorOutput);
+  outputGlyph.set(CENTERS.Output, lerpVec(CENTERS.Output, finalEnd, local), colorOutput, opacity * (0.20 + 0.80 * local));
 
-  let cumulative = new THREE.Vector3();
-  for (let i = 0; i < 3; i++) {
-    const rowTip = endpoint(CENTERS.Wo, rowVectors[i]);
-    const localDotT = smoothstep01(dotT * 3 - i + 0.15);
-    setLine(dyn.transferLines[11 + i], contextAtWoEnd, rowTip, opacity * 0.18 * localDotT, quant ? QUANT : TENSOR);
-
-    const component = outputBasisVector(i).multiplyScalar(components[i] / outputLen * SPHERE_RADIUS);
-    const segStart = CENTERS.Output.clone().add(cumulative);
-    cumulative.add(component);
-    const localSumT = smoothstep01(sumT * 3 - i);
-    const segEnd = lerpVec(segStart, CENTERS.Output.clone().add(cumulative), localSumT);
-    componentGlyphs[i].set(segStart, segEnd, quant ? QUANT_FINAL : colorOutput, opacity * localSumT, 0.72);
-    labelAt(dyn.labels[76 + i], rowTip.clone().add(new THREE.Vector3(0.16, 0.08 - 0.08 * i, 0.12)), `dot${i}=${components[i].toFixed(2)}`, quant ? QUANT : TENSOR, opacity * localDotT);
-  }
-
-  outputGlyph.set(CENTERS.Output, lerpVec(CENTERS.Output, finalEnd, sumT), colorOutput, opacity * (0.25 + 0.75 * sumT));
-  setLine(dyn.transferLines[14], CENTERS.Wo.clone().add(new THREE.Vector3(SPHERE_RADIUS, 0, 0)), CENTERS.Output.clone().add(new THREE.Vector3(-SPHERE_RADIUS, 0, 0)), opacity * 0.18 * sumT, quant ? QUANT_FINAL : FINAL);
-  labelAt(dyn.labels[75], finalEnd.clone().add(new THREE.Vector3(0.24, 0.10, 0.12)), quant ? 'Σ dotᵢ(W̃o, ṽ)' : 'Σ dotᵢ(Wo, v)', colorOutput, opacity * sumT);
+  labelAt(dyn.labels[74], contextEnd.clone().add(new THREE.Vector3(0.18, -0.12, 0.12)), quant ? 'final ṽ/context' : 'final v/context', colorContext, opacity * local);
+  labelAt(dyn.labels[75], CENTERS.Wo.clone().add(new THREE.Vector3(0, -SPHERE_RADIUS - 0.40, 0)), quant ? 'W̃o · context' : 'Wo · context', quant ? QUANT : TENSOR, opacity * local);
+  labelAt(dyn.labels[76], finalEnd.clone().add(new THREE.Vector3(0.24, 0.10, 0.12)), quant ? 'quant output' : 'final output', colorOutput, opacity * local);
 }
 function renderCompare() {
   const fade = 0.035;
