@@ -33,12 +33,12 @@ python3 train.py \
   --n_embd 64 \
   --dropout 0.0 \
   --device "${DEVICE:-cpu}" \
-  --compile false
+  --no-compile
 
 python3 sample.py \
   --out_dir "${OUT_DIR}" \
   --device "${DEVICE:-cpu}" \
-  --compile false \
+  --no-compile \
   --multicontext \
   --multicontext_datasets "${DATASETS[@]}" \
   --multicontext_start "明" "∅" "日" "月" "∅" "∅" "∅" "∅" "∅" "∅" "∅" \
