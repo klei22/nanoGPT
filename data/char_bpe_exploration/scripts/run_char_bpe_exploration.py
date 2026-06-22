@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build FLORES-200 language text files and run stepped char-BPE sweeps."""
+"""Build restructured FLORES-200 text files and run stepped char-BPE sweeps."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+SOURCE_URL = "https://huggingface.co/datasets/muhammadravi251001/restructured-flores200/tree/main/data"
 
 LANGUAGES = [
     ("kiswahili", "swh_Latn"),
@@ -47,32 +49,41 @@ def parse_vocab_sizes(value: str) -> list[int]:
     return sizes
 
 
-def load_flores_split(code: str, split: str) -> list[str]:
-    try:
-        from datasets import load_dataset
-    except ImportError as exc:
-        raise SystemExit(
-            "Missing dependency: install Hugging Face datasets with "
-            "`python3 -m pip install datasets` and rerun."
-        ) from exc
+def emit_restructured_flores_text(code: str, output_path: Path, source_url: str) -> None:
+    """Emit one text_<code> column from the restructured FLORES-200 parquet files.
 
-    dataset = load_dataset("facebook/flores", code, split=split)
-    if "sentence" not in dataset.column_names:
-        raise RuntimeError(f"Unexpected facebook/flores columns for {code}: {dataset.column_names}")
-    return [str(row["sentence"]) for row in dataset]
+    This mirrors data/flores200-res/get_dataset.sh, which uses the shared
+    data/template/utils/get_parquet_dataset.py helper against the
+    muhammadravi251001/restructured-flores200 Hugging Face parquet folder.
+    """
+    helper = repo_root() / "data" / "template" / "utils" / "get_parquet_dataset.py"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            sys.executable,
+            str(helper),
+            "--url",
+            source_url,
+            "--include_keys",
+            f"text_{code}",
+            "--value_prefix",
+            "\n",
+            "--output_text_file",
+            str(output_path),
+        ],
+        check=True,
+        cwd=output_path.parent,
+    )
 
 
-def write_language_texts(text_dir: Path, refresh: bool) -> dict[str, Path]:
+def write_language_texts(text_dir: Path, refresh: bool, source_url: str) -> dict[str, Path]:
     text_dir.mkdir(parents=True, exist_ok=True)
     outputs: dict[str, Path] = {}
 
     for label, code in LANGUAGES:
         out_path = text_dir / f"{label}.txt"
         if refresh or not out_path.exists():
-            sentences: list[str] = []
-            for split in ("dev", "devtest"):
-                sentences.extend(load_flores_split(code, split))
-            out_path.write_text("\n".join(sentences) + "\n", encoding="utf-8")
+            emit_restructured_flores_text(code, out_path, source_url)
         outputs[label] = out_path
 
     korean_nfd = text_dir / "korean_nfd.txt"
@@ -186,6 +197,11 @@ def main() -> int:
     parser.add_argument("--refresh-texts", action="store_true")
     parser.add_argument("--clean-runs", action="store_true")
     parser.add_argument(
+        "--source-url",
+        default=SOURCE_URL,
+        help="Hugging Face parquet folder URL for muhammadravi251001/restructured-flores200.",
+    )
+    parser.add_argument(
         "--percentage-train",
         type=float,
         default=0.9,
@@ -200,7 +216,7 @@ def main() -> int:
         shutil.rmtree(args.base_dir / "runs", ignore_errors=True)
         shutil.rmtree(args.base_dir / "results", ignore_errors=True)
 
-    texts = write_language_texts(args.base_dir / "texts", args.refresh_texts)
+    texts = write_language_texts(args.base_dir / "texts", args.refresh_texts, args.source_url)
     ordered_labels = [label for label, _ in LANGUAGES] + ["korean_nfd"]
 
     rows: list[dict[str, object]] = []

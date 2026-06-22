@@ -5,7 +5,7 @@ tokenizer across selected FLORES-200 languages and stepped vocabulary sizes.
 
 The pipeline does three things:
 
-1. Downloads/loads FLORES-200 via Hugging Face `datasets`.
+1. Downloads the `muhammadravi251001/restructured-flores200` parquet files from Hugging Face using the same helper pattern as `data/flores200-res/get_dataset.sh`.
 2. Writes one UTF-8 `.txt` file per requested language in `texts/`.
 3. Runs `data/template/prepare.py --method char_bpe` at each requested vocabulary
    size, then writes comparable metrics to `results/summary.csv` and
@@ -52,15 +52,19 @@ python3 data/char_bpe_exploration/scripts/run_char_bpe_exploration.py \
 python3 data/char_bpe_exploration/scripts/run_char_bpe_exploration.py \
   --refresh-texts
 
+# Override the restructured FLORES-200 parquet folder URL if needed.
+python3 data/char_bpe_exploration/scripts/run_char_bpe_exploration.py \
+  --source-url https://huggingface.co/datasets/muhammadravi251001/restructured-flores200/tree/main/data
+
 # Use the full text as train.bin when you only need tokenizer compression metrics.
 python3 data/char_bpe_exploration/scripts/run_char_bpe_exploration.py \
   --percentage-train 1.0
 ```
 
-If `datasets` is not installed, install it first:
+Install the parquet extraction dependencies first:
 
 ```bash
-python3 -m pip install datasets numpy tqdm sentencepiece tiktoken
+python3 -m pip install pandas pyarrow requests beautifulsoup4 tqdm numpy sentencepiece tiktoken
 ```
 
 ## Validation-loss and bits-per-byte demo
@@ -81,7 +85,7 @@ the script.
 
 Generated artifacts are intentionally ignored by Git:
 
-- `texts/*.txt`: per-language FLORES text files.
+- `texts/*.txt`: per-language FLORES text files emitted from `text_<FLORES_CODE>` parquet columns.
 - `runs/<language>/vocab_<size>/`: nanoGPT `char_bpe` outputs (`meta.pkl`,
   `train.bin`, `val.bin`, `char_bpe_vocab.json`, token counts, and metrics).
 - `results/summary.csv` and `results/summary.json`: comparison table.
