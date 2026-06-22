@@ -21,16 +21,16 @@ REPORT_HTML="${OUT_ROOT}/report.html"
 
 LANGUAGES=${LANGUAGES:-"kiswahili bahasa_indonesian korean korean_nfd english chinese japanese arabic spanish german russian thai filipino hindi finnish italian"}
 VOCAB_SIZES=${VOCAB_SIZES:-"320 384 512 640 768 1024 1280 1536 2048 3072 4096"}
-MAX_ITERS=${MAX_ITERS:-200}
+MAX_ITERS=${MAX_ITERS:-3000}
 EVAL_INTERVAL=${EVAL_INTERVAL:-50}
-EVAL_ITERS=${EVAL_ITERS:-20}
+EVAL_ITERS=${EVAL_ITERS:-50}
 BATCH_SIZE=${BATCH_SIZE:-8}
-BLOCK_SIZE=${BLOCK_SIZE:-64}
-N_LAYER=${N_LAYER:-2}
-N_HEAD=${N_HEAD:-2}
+BLOCK_SIZE=${BLOCK_SIZE:-256}
+N_LAYER=${N_LAYER:-6}
+N_HEAD=${N_HEAD:-3}
 N_EMBD=${N_EMBD:-128}
-DEVICE=${DEVICE:-"cpu"}
-DTYPE=${DTYPE:-"float32"}
+DEVICE=${DEVICE:-"cuda:0"}
+DTYPE=${DTYPE:-"bfloat16"}
 PERCENTAGE_TRAIN=${PERCENTAGE_TRAIN:-"0.9"}
 
 mkdir -p "${DATASET_ROOT}" "${OUT_ROOT}"
@@ -74,14 +74,25 @@ for language in ${LANGUAGES}; do
       --n_layer "${N_LAYER}" \
       --n_head "${N_HEAD}" \
       --n_embd "${N_EMBD}" \
+      --use_rotary_embeddings \
+      --no-use_abs_pos_embeddings \
+      --attention_variant infinite \
+      --use_concat_heads \
+      --n_qk_head_dim 120 \
+      --n_v_head_dim 120 \
+      --use_qk_norm \
+      --use_qk_norm_scale \
+      --activation_variant squared_relu \
+      --use_peri_ln \
       --max_iters "${MAX_ITERS}" \
       --eval_interval "${EVAL_INTERVAL}" \
       --eval_iters "${EVAL_ITERS}" \
-      --learning_rate 6e-4 \
-      --weight_decay 0.1 \
+      --learning_rate 0.001 \
+      --weight_decay 0.0 \
+      --optimizer muon \
       --device "${DEVICE}" \
       --dtype "${DTYPE}" \
-      --no-compile
+      --compile
 
     echo "=== Step 3: Compute BPB for ${language} vocab=${vocab_size} ==="
     python3 - <<'PY' "${language}" "${vocab_size}" "${dataset}" "${run_dir}/metrics.json" "${out_dir}" "${SUMMARY_CSV}"
