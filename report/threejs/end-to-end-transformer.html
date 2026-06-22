@@ -154,16 +154,75 @@
         position: absolute;
         left: 18px;
         bottom: 18px;
-        max-width: min(930px, calc(100% - 250px));
+        max-width: min(980px, calc(100% - 250px));
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 12px;
         border: 1px solid var(--border);
         border-radius: 16px;
-        padding: 10px 12px;
-        background: rgba(0, 0, 0, 0.36);
+        padding: 8px 10px;
+        background: rgba(0, 0, 0, 0.40);
         backdrop-filter: blur(9px);
         color: rgba(255, 255, 255, 0.86);
-        font-size: 13px;
-        line-height: 1.45;
+        font-size: 12.5px;
+        line-height: 1.35;
         pointer-events: none;
+      }
+
+      .token-status-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .token-status-group.accumulated {
+        padding: 5px 8px;
+        border: 1px solid color-mix(in srgb, var(--stage-accent), transparent 64%);
+        border-radius: 11px;
+        background: color-mix(in srgb, var(--stage-accent), transparent 90%);
+        box-shadow: 0 0 18px color-mix(in srgb, var(--stage-accent), transparent 86%);
+      }
+
+      .token-status-label {
+        flex: 0 0 auto;
+        color: rgba(255, 255, 255, 0.48);
+        font-size: 9.5px;
+        font-weight: 850;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .token-status-group.accumulated .token-status-label {
+        color: color-mix(in srgb, var(--stage-accent), white 18%);
+      }
+
+      .token-status-separator {
+        width: 1px;
+        height: 24px;
+        background: rgba(255, 255, 255, 0.14);
+      }
+
+      .overlay-bottom .boundary-sequence {
+        gap: 2px;
+        font-size: 12.5px;
+        line-height: 1.35;
+      }
+
+      .overlay-bottom .boundary-token {
+        font-weight: 720;
+      }
+
+      .overlay-bottom .boundary-token.latest {
+        color: color-mix(in srgb, var(--stage-accent), white 14%);
+        text-shadow: 0 0 15px color-mix(in srgb, var(--stage-accent), transparent 62%);
+      }
+
+      .sequence-ellipsis {
+        color: rgba(255, 255, 255, 0.46);
+        font-weight: 800;
       }
 
       .mono {
@@ -511,6 +570,17 @@
       .read-row:last-child {
         border-bottom: 0;
       }
+      .read-row.selected-token {
+        margin: 2px -7px;
+        padding: 6px 7px;
+        border: 1px solid color-mix(in srgb, var(--stage-accent), transparent 52%);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--stage-accent), transparent 90%);
+        box-shadow: 0 0 20px color-mix(in srgb, var(--stage-accent), transparent 84%);
+      }
+      .read-row.selected-token:last-child {
+        border-bottom: 1px solid color-mix(in srgb, var(--stage-accent), transparent 52%);
+      }
 
       .prob-bar {
         position: absolute;
@@ -590,6 +660,92 @@
         font-size: 13px;
         line-height: 1.48;
       }
+      .sequence-card {
+        width: min(980px, 100%);
+        margin-top: 10px;
+        padding: 10px 14px 9px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(0, 0, 0, 0.34);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 14px 38px rgba(0, 0, 0, 0.18);
+      }
+      .sequence-row {
+        display: grid;
+        grid-template-columns: 118px minmax(0, 1fr);
+        align-items: baseline;
+        gap: 10px;
+        min-height: 23px;
+      }
+      .sequence-label {
+        color: rgba(255, 255, 255, 0.5);
+        font-size: 10px;
+        font-weight: 850;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .boundary-sequence {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 3px;
+        min-width: 0;
+        color: rgba(255, 255, 255, 0.82);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .boundary-token {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 2px;
+        color: rgba(255, 255, 255, 0.82);
+        font-weight: 680;
+        white-space: nowrap;
+      }
+      .boundary-token::before,
+      .boundary-token::after {
+        color: rgba(255, 255, 255, 0.36);
+        font-weight: 500;
+      }
+      .boundary-token::before { content: "⟦"; }
+      .boundary-token::after { content: "⟧"; }
+      .boundary-token.input {
+        color: var(--current);
+        text-shadow: 0 0 16px rgba(255, 123, 114, 0.34);
+      }
+      .boundary-token.latest {
+        color: var(--current);
+      }
+      .boundary-token.selected {
+        color: var(--stage-accent);
+        font-weight: 850;
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+        text-underline-offset: 4px;
+        text-shadow: 0 0 18px color-mix(in srgb, var(--stage-accent), transparent 62%);
+      }
+      .boundary-mark {
+        color: rgba(255, 255, 255, 0.29);
+        font-size: 11px;
+        font-weight: 600;
+        user-select: none;
+      }
+      .sequence-empty {
+        color: rgba(255, 255, 255, 0.42);
+        font-style: italic;
+      }
+      .sequence-legend {
+        margin-top: 4px;
+        color: rgba(255, 255, 255, 0.42);
+        font-size: 10.5px;
+        line-height: 1.35;
+      }
+      .token-boundary-marker {
+        align-self: center;
+        color: rgba(255, 255, 255, 0.3);
+        font-size: 11px;
+      }
       .token-strip, .history-strip {
         display: flex;
         flex-wrap: wrap;
@@ -618,6 +774,14 @@
         outline: 1px dashed color-mix(in srgb, var(--token-color), transparent 28%);
         outline-offset: 2px;
       }
+      .token-chip.selected {
+        color: var(--token-color);
+        font-weight: 850;
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+        text-underline-offset: 4px;
+        box-shadow: 0 0 18px color-mix(in srgb, var(--token-color), transparent 76%);
+      }
       .history-chip.latest { color: var(--current); border-color: rgba(255,123,114,.5); }
       .layer-controls { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
       .inline-note { margin-top:7px; font-size:12px; line-height:1.45; color:var(--muted); }
@@ -629,6 +793,18 @@
       button:disabled { opacity:.35; cursor:default; transform:none !important; }
       @media (max-width: 1260px) {
         .math-display { font-size: 25px; }
+        .sequence-card { width: min(900px, 100%); }
+      }
+      @media (max-width: 760px) {
+        .sequence-row { grid-template-columns: 1fr; gap: 1px; margin-bottom: 4px; }
+        .sequence-label { font-size: 9px; }
+        .sequence-card { padding: 9px 11px; }
+        .overlay-bottom {
+          right: 18px;
+          bottom: 82px;
+          max-width: none;
+        }
+        .token-status-separator { display: none; }
       }
 </style>
   </head>
@@ -647,10 +823,16 @@
             </div>
           </div>
         </div>
-        <div class="overlay-bottom">
-          Drag to rotate • Scroll to zoom • Right-drag to pan • A camera cue ends as soon as you grab the scene.
-          <span class="mono">←/→</span> plays one micro-step, <span class="mono">R</span> replays from the current camera,
-          <span class="mono">−/=</span> removes/adds a layer, and <span class="mono">O</span> orbits the current scene center.
+        <div class="overlay-bottom" aria-live="polite" aria-label="Accumulated text tokens and current input token">
+          <div class="token-status-group accumulated">
+            <span class="token-status-label">Text so far</span>
+            <div id="overlayAccumulatedTokens" class="boundary-sequence"></div>
+          </div>
+          <span class="token-status-separator" aria-hidden="true"></span>
+          <div class="token-status-group">
+            <span class="token-status-label">Current input</span>
+            <div id="overlayInputToken" class="boundary-sequence"></div>
+          </div>
         </div>
         <div class="step-nav" aria-label="Step navigation">
           <button id="stepBackBtn" title="Previous step (Left Arrow)">‹</button>
@@ -823,7 +1005,8 @@ let WORDS = [...SENTENCES.english.tokens];
 const state = {
   sentenceKey: "english",
   word: WORDS[0],
-  history: [WORDS[0]],
+  initialWord: WORDS[0],
+  history: [],
   layerCount: 1,
   inputMagnitudeRatio: 0.33,
   stage: 0,
@@ -1056,59 +1239,322 @@ function buildStages() {
   push({
     type: "input",
     short: "Input embedding",
-    name: "Static sentence token and an empty residual carrier",
+    name: "Look up the embedding for the current input token",
     phase: "Token embedding",
     color: COLORS.current,
     duration: 2.0,
     station: "start",
     math: `${mathVector("x", "n")} = E[t<sub>n</sub>], &nbsp; ‖${mathVector("x", "n")}‖ = αR`,
-    mathNote: "Each space-delimited token owns one embedding direction. The α slider sets its initial magnitude as a fraction of the residual-sphere radius R.",
-    copy: "The selected token remains in the static input sphere. The first residual carrier starts empty.",
+    mathNote: "The whitespace tokenizer supplies one token tₙ. The embedding table E returns xₙ, and α sets the embedding norm used in this demonstration.",
+    copy: "The embedding xₙ has been computed. The residual state r⁽⁰⁾ is still empty until the next step.",
   });
   push({
     type: "copy-input",
     short: "Copy into residual",
-    name: "Copy the token embedding into the residual stream",
+    name: "Initialize the residual stream from the token embedding",
     phase: "Residual initialization",
     color: COLORS.current,
     duration: 2.8,
     station: "start",
     math: `${mathVector("r", "", "(0)")} ← ${mathVector("x", "n")}`,
-    mathNote: "The original token embedding remains visible while an exact copy initializes the residual stream.",
-    copy: "A same-sized copy travels from the static word sphere to the empty residual carrier.",
+    mathNote: "Set r⁽⁰⁾ equal to xₙ component by component, preserving the embedding direction and magnitude.",
+    copy: "The first Transformer layer now receives r⁽⁰⁾ as its input residual.",
   });
+
   for (let i = 0; i < state.layerCount; i++) {
     const ell = i + 1;
     const inSup = `(${i})`;
     const outSup = `(${ell})`;
     const prefix = `L${ell}`;
-    push({ type: "travel-attn", layer: i, short: `${prefix} → Attn`, name: `Layer ${ell}: residual travels to Attention pre-norm`, phase: `Layer ${ell} · residual stream`, color: COLORS.current, station: `l${i}-attn-norm`, math: `${mathVector("r", "", inSup)} → RMSNorm`, mathNote: "The residual itself bypasses the module; only a normalized copy enters Attention.", copy: "The current residual moves to this layer’s Attention pre-norm station." });
-    push({ type: "attn-norm-lift", layer: i, short: `${prefix} Attn copy`, name: `Layer ${ell}: lift an exact residual copy straight up`, phase: `Layer ${ell} · Attention norm`, color: COLORS.norm, station: `l${i}-attn-norm`, math: `${mathVector("r", "copy", inSup)} ← ${mathVector("r", "", inSup)}`, mathNote: "Before normalization, the lifted sphere and vector are a perfect copy of the current residual.", copy: "The copy moves only upward, preserving direction and magnitude." });
-    push({ type: "attn-norm-project", layer: i, short: `${prefix} Attn norm`, name: `Layer ${ell}: project the Attention copy to the sphere surface`, phase: `Layer ${ell} · Attention norm`, color: COLORS.norm, station: `l${i}-attn-norm`, math: `${mathVector("r̂", "", inSup)} = RMSNorm(${mathVector("r", "", inSup)})`, mathNote: "The visualization uses radial projection to the same-sized sphere surface as the geometric analogue of pre-normalization.", copy: "The lifted copy remains vertically aligned while its vector reaches radius R." });
-    push({ type: "attn-module", layer: i, short: `${prefix} Attention`, name: `Layer ${ell}: normalized residual passes through Attention`, phase: `Layer ${ell} · Attention`, color: COLORS.attention, station: `l${i}-attn-add`, duration: 3.8, math: `${mathVector("a", "", `(${ell})`)} = MHA<sup>(${ell})</sup>(${mathVector("r̂", "", inSup)})`, mathNote: "The opaque box summarizes multi-head read → activate → write while the residual branch moves underneath it.", copy: "The output sphere clears the module header and stops directly above the residual add station." });
-    push({ type: "attn-output-down", layer: i, short: `${prefix} Attn output ↓`, name: `Layer ${ell}: lower the Attention output above the residual`, phase: `Layer ${ell} · Attention output`, color: COLORS.output, station: `l${i}-attn-add`, duration: 3.1, math: `${mathVector("a", "", `(${ell})`)} ↓ ${mathVector("r", "", inSup)}`, mathNote: "The output first holds beyond the box, then descends vertically to a small gap above the residual carrier.", copy: "Both vectors remain visible before the addition close-up." });
-    push({ type: "attn-add-setup", layer: i, short: `${prefix} Attn add`, name: `Layer ${ell}: place the Attention update tip-to-tail`, phase: `Layer ${ell} · residual addition`, color: COLORS.plus, station: `l${i}-attn-add`, duration: 3.2, math: `${mathVector("u", "", `(${ell})`)} = ${mathVector("r", "", inSup)} + ${mathVector("a", "", `(${ell})`)}`, mathNote: "The camera moves tightly onto the residual sphere. The second arrow starts exactly at the residual tip; no + or = popup is drawn.", copy: "The concatenated arrows show vector addition geometrically." });
-    push({ type: "attn-add-collapse", layer: i, short: `${prefix} Attn sum`, name: `Layer ${ell}: replace both addends with their summed vector`, phase: `Layer ${ell} · residual addition`, color: COLORS.plus, station: `l${i}-attn-add`, duration: 3.2, math: `${mathVector("u", "", `(${ell})`)} ← ${mathVector("r", "", inSup)} + ${mathVector("a", "", `(${ell})`)}`, mathNote: "After a pause, the concatenated addends fade and one resultant vector remains.", copy: "The summed vector becomes the input to the MLP half of this layer." });
-    push({ type: "travel-mlp", layer: i, short: `${prefix} → MLP`, name: `Layer ${ell}: updated residual travels to MLP pre-norm`, phase: `Layer ${ell} · residual stream`, color: COLORS.current, station: `l${i}-mlp-norm`, math: `${mathVector("u", "", `(${ell})`)} → RMSNorm`, mathNote: "The camera widens to reveal the MLP region while preserving free orbit and pan controls.", copy: "The Attention-updated residual advances to the layer’s MLP pre-norm station." });
-    push({ type: "mlp-norm-lift", layer: i, short: `${prefix} MLP copy`, name: `Layer ${ell}: lift an exact MLP residual copy`, phase: `Layer ${ell} · MLP norm`, color: COLORS.norm, station: `l${i}-mlp-norm`, math: `${mathVector("u", "copy", `(${ell})`)} ← ${mathVector("u", "", `(${ell})`)}`, mathNote: "The copy begins coincident with the residual and moves straight upward without changing its vector.", copy: "Direction and magnitude remain identical during the lift." });
-    push({ type: "mlp-norm-project", layer: i, short: `${prefix} MLP norm`, name: `Layer ${ell}: project the MLP copy to the sphere surface`, phase: `Layer ${ell} · MLP norm`, color: COLORS.norm, station: `l${i}-mlp-norm`, math: `${mathVector("ū", "", `(${ell})`)} = RMSNorm(${mathVector("u", "", `(${ell})`)})`, mathNote: "This is the second pre-normalization in a standard pre-LN Transformer layer.", copy: "The copied vector expands radially to radius R." });
-    push({ type: "mlp-module", layer: i, short: `${prefix} MLP`, name: `Layer ${ell}: normalized residual passes through the MLP`, phase: `Layer ${ell} · MLP`, color: COLORS.mlp, station: `l${i}-mlp-add`, duration: 3.8, math: `${mathVector("m", "", `(${ell})`)} = W<sub>2</sub><sup>(${ell})</sup> φ(W<sub>1</sub><sup>(${ell})</sup>${mathVector("ū", "", `(${ell})`)})`, mathNote: i === state.layerCount - 1 ? `This final MLP is constructed so the resulting residual is nearest to the next sentence token “${nextWordFor(state.word)}”, with a small deterministic angular variation.` : "The opaque MLP summarizes read → nonlinear activation → write.", copy: i === state.layerCount - 1 ? "The final MLP steers the hidden direction toward the next token while retaining visible variation." : "The MLP output clears the header and stops directly above its residual add station." });
-    push({ type: "mlp-output-down", layer: i, short: `${prefix} MLP output ↓`, name: `Layer ${ell}: lower the MLP output above the residual`, phase: `Layer ${ell} · MLP output`, color: COLORS.output, station: `l${i}-mlp-add`, duration: 3.1, math: `${mathVector("m", "", `(${ell})`)} ↓ ${mathVector("u", "", `(${ell})`)}`, mathNote: "The output holds beyond the module, then moves straight down so its sphere and header remain visually separate.", copy: "Both vectors pause before the close-up addition." });
-    push({ type: "mlp-add-setup", layer: i, short: `${prefix} MLP add`, name: `Layer ${ell}: place the MLP update tip-to-tail`, phase: `Layer ${ell} · residual addition`, color: COLORS.plus, station: `l${i}-mlp-add`, duration: 3.2, math: `${mathVector("r", "", outSup)} = ${mathVector("u", "", `(${ell})`)} + ${mathVector("m", "", `(${ell})`)}`, mathNote: "The camera zooms directly onto the residual sphere and displays only the geometric concatenation and resultant vectors.", copy: "No symbolic + or = popups obscure the arrows." });
-    push({ type: "mlp-add-collapse", layer: i, short: `${prefix} MLP sum`, name: `Layer ${ell}: replace both MLP addends with the layer output`, phase: `Layer ${ell} · residual addition`, color: COLORS.plus, station: `l${i}-mlp-add`, duration: 3.2, math: `${mathVector("r", "", outSup)} ← ${mathVector("u", "", `(${ell})`)} + ${mathVector("m", "", `(${ell})`)}`, mathNote: i === state.layerCount - 1 ? `The final residual now points nearest to “${nextWordFor(state.word)}” before output normalization.` : `The resulting residual continues into layer ${ell + 1}.`, copy: "The source arrows fade, leaving one layer-output residual vector." });
+    const attnUpdate = mathVector("a", "", outSup);
+    const mlpUpdate = mathVector("m", "", outSup);
+    const residualIn = mathVector("r", "", inSup);
+    const residualOut = mathVector("r", "", outSup);
+    const postAttn = mathVector("u", "", outSup);
+
+    push({
+      type: "travel-attn",
+      layer: i,
+      short: `${prefix} Attn input`,
+      name: `Layer ${ell}: carry the residual unchanged to the Attention branch`,
+      phase: `Layer ${ell} · Attention input`,
+      color: COLORS.current,
+      station: `l${i}-attn-norm`,
+      math: `${mathVector("r", "A,in", outSup)} ← ${residualIn}`,
+      mathNote: "No normalization, activation, or learned transformation is applied in this step; the residual value is unchanged.",
+      copy: "Next, an exact branch copy will be created for Attention RMSNorm while the original residual remains the skip state.",
+    });
+    push({
+      type: "attn-norm-lift",
+      layer: i,
+      short: `${prefix} Attn copy`,
+      name: `Layer ${ell}: fork an exact copy for Attention normalization`,
+      phase: `Layer ${ell} · Attention branch copy`,
+      color: COLORS.norm,
+      station: `l${i}-attn-norm`,
+      math: `${mathVector("c", "A", outSup)} ← ${residualIn}, &nbsp; ${mathVector("r", "skip", outSup)} = ${residualIn}`,
+      mathNote: "This step performs only a copy. RMSNorm has not yet been applied, and both branches contain identical components.",
+      copy: "The original residual is preserved for the skip connection; c_A is the branch that will be normalized next.",
+    });
+    push({
+      type: "attn-norm-project",
+      layer: i,
+      short: `${prefix} Attn pre-norm`,
+      name: `Layer ${ell}: apply Attention pre-norm RMSNorm to the copied branch`,
+      phase: `Layer ${ell} · Attention pre-norm`,
+      color: COLORS.norm,
+      station: `l${i}-attn-norm`,
+      math: `${mathVector("r̂", "", inSup)} = RMSNorm<sub>A</sub><sup>(${ell})</sup>(${mathVector("c", "A", outSup)})`,
+      mathNote: "RMSNorm rescales the copied Attention branch to a controlled root-mean-square magnitude. The skip residual is not normalized or otherwise changed.",
+      copy: "The normalized branch r̂ is now ready for multi-head self-attention.",
+    });
+    push({
+      type: "attn-module",
+      layer: i,
+      short: `${prefix} Attention`,
+      name: `Layer ${ell}: evaluate multi-head Attention on the normalized branch`,
+      phase: `Layer ${ell} · Attention`,
+      color: COLORS.attention,
+      station: `l${i}-attn-add`,
+      duration: 3.8,
+      math: `${attnUpdate} = MHA<sup>(${ell})</sup>(${mathVector("r̂", "", inSup)})`,
+      mathNote: "MHA denotes the layer’s multi-head Attention transform. In this demonstrator it maps the normalized branch to a deterministic model-width update; the skip residual remains unchanged until the residual addition.",
+      copy: "The Attention update a⁽ˡ⁾ has been computed but has not yet been added to the residual.",
+    });
+    push({
+      type: "attn-output-down",
+      layer: i,
+      short: `${prefix} Attn update`,
+      name: `Layer ${ell}: retain both addends for the Attention skip connection`,
+      phase: `Layer ${ell} · Attention update`,
+      color: COLORS.output,
+      station: `l${i}-attn-add`,
+      duration: 3.1,
+      math: `${mathVector("r", "skip", outSup)} = ${residualIn}, &nbsp; ${attnUpdate} = MHA<sup>(${ell})</sup>(${mathVector("r̂", "", inSup)})`,
+      mathNote: "No residual addition occurs in this step. The skip state and Attention update are both retained without modification.",
+      copy: `The next operation is ${postAttn} = ${residualIn} + ${attnUpdate}.`,
+    });
+    push({
+      type: "attn-add-setup",
+      layer: i,
+      short: `${prefix} Attn add`,
+      name: `Layer ${ell}: form the componentwise Attention residual sum`,
+      phase: `Layer ${ell} · first residual addition`,
+      color: COLORS.plus,
+      station: `l${i}-attn-add`,
+      duration: 3.2,
+      math: `${postAttn} := ${residualIn} + ${attnUpdate}`,
+      mathNote: "The componentwise sum is being constructed from the two addends. The residual state is not replaced by u⁽ˡ⁾ until the sum is finalized.",
+      copy: "The next step commits u⁽ˡ⁾ as the single post-Attention residual state.",
+    });
+    push({
+      type: "attn-add-collapse",
+      layer: i,
+      short: `${prefix} Attn sum`,
+      name: `Layer ${ell}: replace the Attention addends with their sum`,
+      phase: `Layer ${ell} · first residual addition`,
+      color: COLORS.plus,
+      station: `l${i}-attn-add`,
+      duration: 3.2,
+      math: `${postAttn} ← ${residualIn} + ${attnUpdate}`,
+      mathNote: "After u⁽ˡ⁾ is formed, the two addends are no longer separate states. No activation or normalization is applied at this skip connection.",
+      copy: "The sole residual state entering the MLP branch is now u⁽ˡ⁾.",
+    });
+    push({
+      type: "travel-mlp",
+      layer: i,
+      short: `${prefix} MLP input`,
+      name: `Layer ${ell}: carry the post-Attention residual unchanged to the MLP branch`,
+      phase: `Layer ${ell} · MLP input`,
+      color: COLORS.current,
+      station: `l${i}-mlp-norm`,
+      math: `${mathVector("u", "M,in", outSup)} ← ${postAttn}`,
+      mathNote: "No normalization, activation, or learned transformation is applied in this step; u⁽ˡ⁾ is unchanged.",
+      copy: "Next, an exact branch copy will be created for MLP RMSNorm while u⁽ˡ⁾ remains the second skip state.",
+    });
+    push({
+      type: "mlp-norm-lift",
+      layer: i,
+      short: `${prefix} MLP copy`,
+      name: `Layer ${ell}: fork an exact copy for MLP normalization`,
+      phase: `Layer ${ell} · MLP branch copy`,
+      color: COLORS.norm,
+      station: `l${i}-mlp-norm`,
+      math: `${mathVector("c", "M", outSup)} ← ${postAttn}, &nbsp; ${mathVector("u", "skip", outSup)} = ${postAttn}`,
+      mathNote: "This step performs only a copy. RMSNorm has not yet been applied, and both branches contain identical components.",
+      copy: "The original u⁽ˡ⁾ is preserved for the skip connection; c_M is the branch that will be normalized next.",
+    });
+    push({
+      type: "mlp-norm-project",
+      layer: i,
+      short: `${prefix} MLP pre-norm`,
+      name: `Layer ${ell}: apply MLP pre-norm RMSNorm to the copied branch`,
+      phase: `Layer ${ell} · MLP pre-norm`,
+      color: COLORS.norm,
+      station: `l${i}-mlp-norm`,
+      math: `${mathVector("ū", "", outSup)} = RMSNorm<sub>M</sub><sup>(${ell})</sup>(${mathVector("c", "M", outSup)})`,
+      mathNote: "RMSNorm rescales the copied MLP branch to a controlled root-mean-square magnitude. The post-Attention skip state remains unnormalized and unchanged.",
+      copy: "The normalized branch ū⁽ˡ⁾ is now ready for the feed-forward transformation.",
+    });
+    push({
+      type: "mlp-module",
+      layer: i,
+      short: `${prefix} MLP`,
+      name: `Layer ${ell}: evaluate the feed-forward update on the normalized branch`,
+      phase: `Layer ${ell} · MLP`,
+      color: COLORS.mlp,
+      station: `l${i}-mlp-add`,
+      duration: 3.8,
+      math: `${mlpUpdate} = MLP<sup>(${ell})</sup>(${mathVector("ū", "", outSup)})`,
+      mathNote: i === state.layerCount - 1
+        ? `MLP is the token-wise nonlinear feed-forward function. In this demonstration, the final-layer update is biased so ${residualOut} is nearest in cosine direction to “${nextWordFor(state.word)}”, with a small deterministic variation.`
+        : "MLP is the token-wise nonlinear feed-forward function. It transforms the normalized state and returns a model-width update for the residual addition.",
+      copy: i === state.layerCount - 1
+        ? "The update m⁽ˡ⁾ is constructed to bias the eventual LM-head ranking toward the intended next sequence token; it has not yet been added."
+        : "The MLP update m⁽ˡ⁾ has been computed but has not yet been added to u⁽ˡ⁾.",
+    });
+    push({
+      type: "mlp-output-down",
+      layer: i,
+      short: `${prefix} MLP update`,
+      name: `Layer ${ell}: retain both addends for the MLP skip connection`,
+      phase: `Layer ${ell} · MLP update`,
+      color: COLORS.output,
+      station: `l${i}-mlp-add`,
+      duration: 3.1,
+      math: `${mathVector("u", "skip", outSup)} = ${postAttn}, &nbsp; ${mlpUpdate} = MLP<sup>(${ell})</sup>(${mathVector("ū", "", outSup)})`,
+      mathNote: "No residual addition occurs in this step. The skip state and MLP update are both retained without modification.",
+      copy: `The next operation is ${residualOut} = ${postAttn} + ${mlpUpdate}.`,
+    });
+    push({
+      type: "mlp-add-setup",
+      layer: i,
+      short: `${prefix} MLP add`,
+      name: `Layer ${ell}: form the componentwise MLP residual sum`,
+      phase: `Layer ${ell} · second residual addition`,
+      color: COLORS.plus,
+      station: `l${i}-mlp-add`,
+      duration: 3.2,
+      math: `${residualOut} := ${postAttn} + ${mlpUpdate}`,
+      mathNote: "The componentwise sum is being constructed from the two addends. The residual state is not replaced by r⁽ˡ⁾ until the sum is finalized.",
+      copy: "The next step commits r⁽ˡ⁾ as the single output state of the layer.",
+    });
+    push({
+      type: "mlp-add-collapse",
+      layer: i,
+      short: `${prefix} MLP sum`,
+      name: `Layer ${ell}: replace the MLP addends with their sum`,
+      phase: `Layer ${ell} · second residual addition`,
+      color: COLORS.plus,
+      station: `l${i}-mlp-add`,
+      duration: 3.2,
+      math: `${residualOut} ← ${postAttn} + ${mlpUpdate}`,
+      mathNote: i === state.layerCount - 1
+        ? `The completed final-layer residual is nearest in cosine direction to “${nextWordFor(state.word)}” before output normalization.`
+        : `The completed residual r⁽${ell}⁾ becomes the unchanged input residual for layer ${ell + 1}.`,
+      copy: `The sole layer-output state is now r⁽${ell}⁾.`,
+    });
   }
-  push({ type: "travel-output", short: "→ Output norm", name: "Final layer output travels to output normalization", phase: "Final residual stream", color: COLORS.current, station: "output-norm", duration: 3.1, math: `${mathVector("r", "", `(${state.layerCount})`)} → RMSNorm`, mathNote: `All ${state.layerCount} Attention–MLP layer${state.layerCount === 1 ? "" : "s"} are complete.`, copy: "The camera widens and follows the residual toward the static LM Head." });
-  push({ type: "output-project", short: "Output norm", name: "Project the final residual to the sphere surface", phase: "Output normalization", color: COLORS.norm, station: "output-norm", math: `${mathVector("h")} = RMSNorm(${mathVector("r", "", `(${state.layerCount})`)})`, mathNote: "The final hidden state h is the normalized residual consumed by the LM Head.", copy: "The current residual direction is preserved while its magnitude reaches radius R." });
-  push({ type: "lm-read", short: "LM Head read", name: "Read every sentence-token vector with a dot product", phase: "LM Head", color: COLORS.soft, station: "output-norm", duration: 3.4, math: `${mathVector("z", "i")} = ${mathVector("e", "i")}<sup>⊤</sup>${mathVector("h")}`, mathNote: "Each LM-head vector eᵢ corresponds to exactly one space-delimited token in the selected sentence.", copy: "Dashed lines connect h to all token vectors and reveal their dot products." });
-  push({ type: "lm-copy", short: "Copy LM Head", name: "Copy the LM Head and its dot-product values", phase: "Logit copy", color: COLORS.soft, station: "logits", duration: 2.9, math: `${mathVector("z")} ← E<sup>⊤</sup>${mathVector("h")}`, mathNote: "The static LM Head stays in place while a complete labeled copy moves down the track.", copy: "The copied vocabulary sphere carries the dot-product labels to the logits station." });
-  push({ type: "logits", short: "Scale logits", name: "Scale copied token vectors by their signed dot products", phase: "Logits", color: COLORS.soft, station: "logits", duration: 3.1, math: `${mathVector("v", "i", "logit")} = ${mathVector("z", "i")}${mathVector("e", "i")}`, mathNote: "Positive logits preserve direction; negative logits reverse it; magnitude encodes |zᵢ|.", copy: "The copied LM-head rays expand, contract, or reverse according to their signed values." });
-  push({ type: "softmax", short: "Softmax", name: "Convert logits into positive token probabilities", phase: "Softmax", color: COLORS.output, station: "softmax", duration: 3.3, math: `${mathVector("p", "i")} = exp(${mathVector("z", "i")}) / Σ<sub>j</sub> exp(${mathVector("z", "j")})`, mathNote: "All probability rays are positive and their scalar values sum to one.", copy: "Signed logit vectors morph into probability magnitudes and percentage labels." });
-  push({ type: "selection", short: "Top-k sample", name: "Highlight top-k candidates and choose the next token", phase: "Token selection", color: COLORS.output, station: "softmax", duration: 3.0, math: `t<sub>n+1</sub> ~ Categorical(TopK(${mathVector("p")}, k))`, mathNote: "k=1 is greedy. Larger k samples proportionally among the highlighted candidates.", copy: "The final MLP makes the sentence’s next token top-1, while top-k can deliberately introduce alternatives." });
-  push({ type: "return", short: "Return token", name: "Return the selected token to the residual start", phase: "Autoregressive loop", color: COLORS.current, station: "start", duration: 4.0, math: `${mathVector("x", "n+1")} = E[t<sub>n+1</sub>]`, mathNote: "The selected token becomes the next input embedding. Loop mode can continue around the sentence indefinitely.", copy: "A same-sized token sphere follows the elevated return path to the first residual station." });
+
+  push({
+    type: "travel-output",
+    short: "Output-norm input",
+    name: "Carry the final residual unchanged to the output-normalization input",
+    phase: "Final residual",
+    color: COLORS.current,
+    station: "output-norm",
+    duration: 3.1,
+    math: `${mathVector("r", "out,in")} ← ${mathVector("r", "", `(${state.layerCount})`)}`,
+    mathNote: `After ${state.layerCount} Attention–MLP layer${state.layerCount === 1 ? "" : "s"}, r⁽${state.layerCount}⁾ is transferred without changing its components or norm.`,
+    copy: "No output RMSNorm has occurred yet; the next step performs that normalization.",
+  });
+  push({
+    type: "output-project",
+    short: "Output RMSNorm",
+    name: "Apply the final output RMSNorm",
+    phase: "Output normalization",
+    color: COLORS.norm,
+    station: "output-norm",
+    math: `${mathVector("h")} = RMSNorm(${mathVector("r", "", `(${state.layerCount})`)})`,
+    mathNote: "RMSNorm rescales the final residual before the language-model head computes vocabulary logits. No further Transformer sublayer follows this normalization.",
+    copy: "The normalized hidden state h is now fixed, and the next operation computes one vocabulary logit per token.",
+  });
+  push({
+    type: "lm-read",
+    short: "LM Head dot products",
+    name: "Compute one LM-head logit for each vocabulary token",
+    phase: "LM Head",
+    color: COLORS.soft,
+    station: "output-norm",
+    duration: 3.4,
+    math: `${mathVector("z", "i")} = ${mathVector("e", "i")}<sup>⊤</sup>${mathVector("h")}`,
+    mathNote: "For every token i in the five-token vocabulary, zᵢ is the dot product between the normalized hidden state h and output embedding eᵢ.",
+    copy: "All five scalar logits are computed here; no probability normalization has occurred yet.",
+  });
+  push({
+    type: "lm-copy",
+    short: "Collect logits",
+    name: "Collect the token-wise dot products into the logit vector",
+    phase: "Logit vector",
+    color: COLORS.soft,
+    station: "logits",
+    duration: 2.9,
+    math: `${mathVector("z")} = E<sup>⊤</sup>${mathVector("h")} = [z<sub>1</sub>, …, z<sub>|V|</sub>]<sup>⊤</sup>`,
+    mathNote: "Stacking the token-wise dot products produces z with one real-valued score for each token in the selected sentence vocabulary.",
+    copy: "The scalar logit vector z is now available for signed scaling and softmax.",
+  });
+  push({
+    type: "logits",
+    short: "Encode signed logits",
+    name: "Associate each token direction with its signed logit",
+    phase: "Signed logits",
+    color: COLORS.soft,
+    station: "logits",
+    duration: 3.1,
+    math: `${mathVector("v", "i", "logit")} = ${mathVector("z", "i")}${mathVector("e", "i")}`,
+    mathNote: "The sign and magnitude of zᵢ are preserved in zᵢeᵢ. Token ranking and softmax still use the scalar logits zᵢ.",
+    copy: "Positive and negative logits remain distinct until exponentiation in the next step.",
+  });
+  push({
+    type: "softmax",
+    short: "Softmax",
+    name: "Normalize the logits into a probability distribution",
+    phase: "Softmax",
+    color: COLORS.output,
+    station: "softmax",
+    duration: 3.3,
+    math: `${mathVector("p", "i")} = exp(${mathVector("z", "i")} − z<sub>max</sub>) / Σ<sub>j</sub> exp(${mathVector("z", "j")} − z<sub>max</sub>)`,
+    mathNote: "Softmax maps the real-valued logits to nonnegative probabilities that sum to one. Subtracting z_max improves numerical stability without changing p.",
+    copy: "The probability vector p is complete; the next operation restricts it to the selected top-k set.",
+  });
+  push({
+    type: "selection",
+    short: "Top-k sample",
+    name: "Select the next token from the top-k distribution",
+    phase: "Token selection",
+    color: COLORS.output,
+    station: "softmax",
+    duration: 3.0,
+    math: `S = TopK(${mathVector("p")}, k), &nbsp; ${mathVector("p̃", "i")} = ${mathVector("p", "i")} / Σ<sub>j∈S</sub>${mathVector("p", "j")}, &nbsp; t<sub>n+1</sub> ~ Categorical(${mathVector("p̃")})`,
+    mathNote: "Only the k largest probabilities are retained and renormalized. With k = 1, the categorical draw reduces to greedy argmax.",
+    copy: "The categorical draw is performed once at stage entry and then held fixed for the return step; the probability values remain unchanged after selection.",
+  });
+  push({
+    type: "return",
+    short: "Embed next token",
+    name: "Embed the selected token for the next autoregressive position",
+    phase: "Autoregressive loop",
+    color: COLORS.current,
+    station: "start",
+    duration: 4.0,
+    math: `${mathVector("x", "n+1")} = E[t<sub>n+1</sub>], &nbsp; ${mathVector("r", "", "(0)")} ← ${mathVector("x", "n+1")}`,
+    mathNote: "Selection has already occurred. This step performs the embedding lookup for tₙ₊₁ and initializes the next autoregressive residual input.",
+    copy: "The same sequence of layer operations can now repeat for the next token position.",
+  });
+
   stages.forEach((stage, index) => { stage.index = index; });
   return stages;
 }
-
 let layout = computeLayout(state.layerCount);
 let STAGES = buildStages();
 let MAX_STAGE = STAGES.length - 1;
@@ -1474,23 +1920,30 @@ class VocabularySphere {
         continue;
       }
       const v = vectors[i];
+      const isSelected = selectedIndex === i;
       const op = (topSet.size ? (topSet.has(i) ? 1 : 0.2) : wordOpacity) * opacity;
       this.glyphs[i].set(new THREE.Vector3(), v, WORD_COLORS[i], op, 0.72);
+      this.glyphs[i].group.scale.setScalar(1);
       const tip = v.clone();
-      setLabel(this.wordLabels[i], tip.clone().add(new THREE.Vector3(0.11, 0.09 - 0.03 * i, 0.05)), WORDS[i], WORD_COLORS[i], op);
+      setLabel(
+        this.wordLabels[i],
+        tip.clone().add(new THREE.Vector3(0.11, 0.09 - 0.03 * i, 0.05)),
+        isSelected ? `✓ ${WORDS[i]}` : WORDS[i],
+        WORD_COLORS[i],
+        isSelected ? opacity : op,
+      );
       if (values && valueFormatter) {
-        setLabel(this.valueLabels[i], tip.clone().add(new THREE.Vector3(0.12, -0.15 - 0.026 * i, 0.06)), valueFormatter(values[i], i), WORD_COLORS[i], op);
+        setLabel(this.valueLabels[i], tip.clone().add(new THREE.Vector3(0.12, -0.15 - 0.026 * i, 0.06)), valueFormatter(values[i], i), WORD_COLORS[i], isSelected ? opacity : op);
       } else {
         this.valueLabels[i].visible = false;
       }
       const ring = this.rings[i];
-      const hi = topSet.has(i) || selectedIndex === i;
+      const hi = topSet.has(i) || isSelected;
       ring.visible = hi;
-      ring.material.opacity = hi ? (selectedIndex === i ? 0.95 : 0.52) : 0;
+      ring.material.opacity = hi ? (isSelected ? 0.98 : 0.42) : 0;
       ring.position.copy(tip);
       ring.quaternion.copy(camera.quaternion);
-      ring.scale.setScalar(selectedIndex === i ? pulse : 1);
-      this.glyphs[i].group.scale.setScalar(selectedIndex === i ? pulse : 1);
+      ring.scale.setScalar(isSelected ? 1.18 : 1);
     }
   }
   hide() { this.group.visible = false; }
@@ -1958,7 +2411,6 @@ function renderSoftmax(t) {
 }
 function renderSelection(t, ts) {
   ensureSelection(false);
-  const pulse = 1 + 0.11 * Math.sin(ts * 0.012);
   const count = clamp(Math.ceil(smoothstep01(t / 0.48) * state.topK), 0, state.topK);
   const set = new Set(pass.ranking.slice(0, count));
   const reveal = smoothstep01((t - 0.52) / 0.28);
@@ -1967,13 +2419,13 @@ function renderSelection(t, ts) {
     position: layout.softmax,
     vectors: probabilityVectors(),
     values: pass.probs,
-    valueFormatter: (x, i) => `${(x * 100).toFixed(1)}%${selected === i ? "  ✓" : ""}`,
+    valueFormatter: (x, i) => selected === i ? `SELECTED · ${(x * 100).toFixed(1)}%` : `${(x * 100).toFixed(1)}%`,
     opacity: 1,
     wordOpacity: 0.88,
     topSet: set,
     selectedIndex: selected,
-    pulse: 1 + (pulse - 1) * reveal,
-    title: `top-${state.topK} selection`,
+    pulse: 1,
+    title: selected === null ? `top-${state.topK} candidates` : `selected: ${WORDS[selected]}`,
   });
 }
 function returnPoint(t) {
@@ -2282,6 +2734,8 @@ const readoutEl = document.getElementById("readout");
 const nextTokenNoteEl = document.getElementById("nextTokenNote");
 const sentenceTokensEl = document.getElementById("sentenceTokens");
 const historyTokensEl = document.getElementById("historyTokens");
+const overlayAccumulatedTokensEl = document.getElementById("overlayAccumulatedTokens");
+const overlayInputTokenEl = document.getElementById("overlayInputToken");
 const hotkeyCardEl = document.getElementById("hotkeyCard");
 const toastContainer = document.getElementById("toast-container");
 const stepBackBtn = document.getElementById("stepBackBtn");
@@ -2362,25 +2816,87 @@ function recomputePass({ rebuildStages = false } = {}) {
   state.selectionKey = "";
   if (rebuildStages) rebuildStageMetadata();
 }
+function appendBoundarySequence(container, tokens, { inputWord = null, latestIndex = -1, selectedWord = null, emptyText = "none", leadingEllipsis = false } = {}) {
+  container.innerHTML = "";
+  if (!tokens.length) {
+    const empty = document.createElement("span");
+    empty.className = "sequence-empty";
+    empty.textContent = emptyText;
+    container.appendChild(empty);
+    return;
+  }
+  if (leadingEllipsis) {
+    const ellipsis = document.createElement("span");
+    ellipsis.className = "sequence-ellipsis";
+    ellipsis.textContent = "…";
+    container.appendChild(ellipsis);
+    const boundary = document.createElement("span");
+    boundary.className = "boundary-mark";
+    boundary.textContent = "│";
+    boundary.setAttribute("aria-hidden", "true");
+    container.appendChild(boundary);
+  }
+  tokens.forEach((word, index) => {
+    if (index > 0) {
+      const boundary = document.createElement("span");
+      boundary.className = "boundary-mark";
+      boundary.textContent = "│";
+      boundary.setAttribute("aria-hidden", "true");
+      container.appendChild(boundary);
+    }
+    const token = document.createElement("span");
+    token.className = "boundary-token";
+    token.textContent = word;
+    if (word === inputWord) token.classList.add("input");
+    if (index === latestIndex) token.classList.add("latest");
+    if (word === selectedWord) token.classList.add("selected");
+    container.appendChild(token);
+  });
+}
 function renderSentenceStrip() {
   sentenceTokensEl.innerHTML = "";
   WORDS.forEach((word, index) => {
+    if (index > 0) {
+      const marker = document.createElement("span");
+      marker.className = "token-boundary-marker";
+      marker.textContent = "│";
+      marker.setAttribute("aria-hidden", "true");
+      sentenceTokensEl.appendChild(marker);
+    }
     const chip = document.createElement("span");
     chip.className = "token-chip";
     chip.textContent = word;
     chip.style.setProperty("--token-color", WORD_COLORS[index]);
     if (word === state.word) chip.classList.add("current");
     if (word === pass.targetWord) chip.classList.add("target");
+    if (state.selectedIndex === index && state.stage >= SELECTION_STAGE) chip.classList.add("selected");
     sentenceTokensEl.appendChild(chip);
   });
   historyTokensEl.innerHTML = "";
   state.history.slice(-10).forEach((word, index, arr) => {
+    if (index > 0) {
+      const marker = document.createElement("span");
+      marker.className = "token-boundary-marker";
+      marker.textContent = "│";
+      marker.setAttribute("aria-hidden", "true");
+      historyTokensEl.appendChild(marker);
+    }
     const chip = document.createElement("span");
     chip.className = "history-chip";
     chip.textContent = word;
     if (index === arr.length - 1) chip.classList.add("latest");
     historyTokensEl.appendChild(chip);
   });
+
+  const accumulated = [state.initialWord, ...state.history];
+  const maxVisibleTokens = 14;
+  const visibleAccumulated = accumulated.slice(-maxVisibleTokens);
+  appendBoundarySequence(overlayAccumulatedTokensEl, visibleAccumulated, {
+    latestIndex: visibleAccumulated.length - 1,
+    leadingEllipsis: accumulated.length > maxVisibleTokens,
+    emptyText: "no tokens yet",
+  });
+  appendBoundarySequence(overlayInputTokenEl, [state.word], { inputWord: state.word });
 }
 function refreshReadout() {
   readoutEl.innerHTML = "";
@@ -2388,6 +2904,7 @@ function refreshReadout() {
   pass.probs.forEach((probability, index) => {
     const row = document.createElement("div");
     row.className = "read-row";
+    if (state.selectedIndex === index && state.stage >= SELECTION_STAGE) row.classList.add("selected-token");
     const bar = document.createElement("div");
     bar.className = "prob-bar";
     bar.style.width = `${Math.max(2, probability * 100)}%`;
@@ -2399,7 +2916,7 @@ function refreshReadout() {
     row.appendChild(left);
     const right = document.createElement("span");
     right.className = "mono";
-    right.textContent = `${probability.toFixed(3)}${index === pass.targetIndex ? "  next" : ""}${set.has(index) ? "  top-k" : ""}${state.selectedIndex === index ? "  ✓" : ""}`;
+    right.textContent = `${probability.toFixed(3)}${index === pass.targetIndex ? "  expected" : ""}${set.has(index) ? "  top-k" : ""}${state.selectedIndex === index && state.stage >= SELECTION_STAGE ? "  ✓ selected" : ""}`;
     row.appendChild(right);
     readoutEl.appendChild(row);
   });
@@ -2409,11 +2926,14 @@ function refreshReadout() {
 }
 function refreshUi() {
   const stage = STAGES[state.stage];
+  const selectedSuffix = stage.type === "selection" && state.selectedIndex !== null
+    ? ` Selected token: “${WORDS[state.selectedIndex]}”.`
+    : "";
   stageNameEl.textContent = stage.name;
-  stageCopyEl.textContent = stage.copy;
+  stageCopyEl.textContent = stage.copy + selectedSuffix;
   scenePhaseEl.textContent = stage.phase;
   sceneMathEl.innerHTML = stage.math;
-  sceneMathNoteEl.textContent = stage.mathNote;
+  sceneMathNoteEl.textContent = stage.mathNote + selectedSuffix;
   document.documentElement.style.setProperty("--stage-accent", stage.color);
   progressLabelEl.textContent = `${Math.round(state.progress * 100)}%`;
   progressSliderEl.value = String(Math.round(state.progress * 1000));
@@ -2456,7 +2976,7 @@ function commitSelectedWord() {
   ensureSelection(false);
   state.word = WORDS[state.selectedIndex];
   state.history.push(state.word);
-  if (state.history.length > 24) state.history.shift();
+  if (state.history.length > 256) state.history.shift();
   recomputePass({ rebuildStages: true });
   refreshReadout();
 }
@@ -2502,7 +3022,8 @@ function replayStage() {
 function cycleWord(delta = 1) {
   const index = Math.max(0, WORDS.indexOf(state.word));
   state.word = WORDS[(index + delta + WORDS.length) % WORDS.length];
-  state.history = [state.word];
+  state.initialWord = state.word;
+  state.history = [];
   state.stage = 0;
   state.progress = 0;
   state.playing = false;
@@ -2575,7 +3096,8 @@ function setSentence(key, notify = true) {
   state.sentenceKey = key;
   WORDS = [...SENTENCES[key].tokens];
   state.word = WORDS[0];
-  state.history = [state.word];
+  state.initialWord = state.word;
+  state.history = [];
   state.topK = clamp(state.topK, 1, WORDS.length);
   rebuildWordOptions();
   rebuildTopKOptions();
@@ -2630,7 +3152,8 @@ progressSliderEl.addEventListener("input", event => {
 sentenceSelectEl.addEventListener("change", event => setSentence(event.target.value));
 wordSelectEl.addEventListener("change", event => {
   state.word = event.target.value;
-  state.history = [state.word];
+  state.initialWord = state.word;
+  state.history = [];
   state.stage = 0;
   state.progress = 0;
   state.playing = false;
