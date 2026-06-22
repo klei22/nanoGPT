@@ -46,7 +46,7 @@ Optional examples:
 ```bash
 # Use a smaller sweep while testing the pipeline.
 python3 data/char_bpe_exploration/scripts/run_char_bpe_exploration.py \
-  --vocab-sizes 384,512
+  --vocab-sizes 320,384,512,768,1024
 
 # Refresh language text files from Hugging Face before tokenizing.
 python3 data/char_bpe_exploration/scripts/run_char_bpe_exploration.py \
@@ -79,7 +79,21 @@ bash demos/char_bpe_flores_validation_bpb_demo.sh
 The demo writes a comparison table to
 `out/char_bpe_flores_validation_bpb/summary.csv`. You can override `LANGUAGES`,
 `VOCAB_SIZES`, `MAX_ITERS`, `DEVICE`, and other shell variables before running
-the script.
+the script. The demo also renders a standalone Plotly report at
+`out/char_bpe_flores_validation_bpb/report.html`.
+
+## Plotly report
+
+If you already have `out/char_bpe_flores_validation_bpb/summary.csv`, regenerate
+the HTML report without retraining:
+
+```bash
+python3 data/char_bpe_exploration/scripts/render_bpb_report.py
+```
+
+The report includes line charts, heatmaps, best-observed BPB rankings, and
+scatter plots connecting validation loss, BPB, validation bytes/token, and
+byte-fallback counts.
 
 ## Outputs
 

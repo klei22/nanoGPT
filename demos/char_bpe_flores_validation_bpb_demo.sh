@@ -17,9 +17,10 @@ BASE_DIR="data/char_bpe_exploration"
 DATASET_ROOT="data/char_bpe_exploration_train"
 OUT_ROOT="out/char_bpe_flores_validation_bpb"
 SUMMARY_CSV="${OUT_ROOT}/summary.csv"
+REPORT_HTML="${OUT_ROOT}/report.html"
 
 LANGUAGES=${LANGUAGES:-"kiswahili bahasa_indonesian korean korean_nfd english chinese japanese arabic spanish german russian thai filipino hindi finnish italian"}
-VOCAB_SIZES=${VOCAB_SIZES:-"384 512"}
+VOCAB_SIZES=${VOCAB_SIZES:-"320 384 512 640 768 1024 1280 1536 2048 3072 4096"}
 MAX_ITERS=${MAX_ITERS:-200}
 EVAL_INTERVAL=${EVAL_INTERVAL:-50}
 EVAL_ITERS=${EVAL_ITERS:-20}
@@ -116,4 +117,11 @@ PY
   done
 done
 
+echo "=== Step 4: Render Plotly HTML report ==="
+python3 data/char_bpe_exploration/scripts/render_bpb_report.py \
+  --training-summary "${SUMMARY_CSV}" \
+  --tokenization-summary "${BASE_DIR}/results/summary.csv" \
+  --output "${REPORT_HTML}"
+
 echo "Comparison complete: ${SUMMARY_CSV}"
+echo "Plotly report: ${REPORT_HTML}"

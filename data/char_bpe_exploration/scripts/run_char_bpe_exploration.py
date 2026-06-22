@@ -32,7 +32,7 @@ LANGUAGES = [
     ("italian", "ita_Latn"),
 ]
 
-DEFAULT_VOCAB_SIZES = [384, 512, 768, 1024, 1536, 2048, 4096]
+DEFAULT_VOCAB_SIZES = [320, 384, 512, 640, 768, 1024, 1280, 1536, 2048, 3072, 4096, 6144, 8192]
 
 
 def repo_root() -> Path:
