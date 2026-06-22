@@ -47,6 +47,7 @@ from initializations.initialization_variations import init_dictionary
 
 from shared_param_utils import SharedParamGroupCreator
 from variations.block_variations import Block
+from writer_subspace import SubspaceLinear, SubspaceVocab
 
 class GPT(nn.Module):
 
@@ -138,6 +139,10 @@ class GPT(nn.Module):
                 else:
                     # no factorization
                     word_embd = nn.Embedding(config.vocab_size, config.n_embd)
+                    if config.writer_vocab_rank:
+                        word_embd = SubspaceVocab.from_embedding(
+                            word_embd, config.writer_vocab_rank, bits=config.writer_coeff_bits
+                        )
                     self.transformer['wte'] = word_embd
 
 
@@ -169,7 +174,10 @@ class GPT(nn.Module):
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
-                self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+                if config.writer_vocab_rank:
+                    self.lm_head = None
+                else:
+                    self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # Initialize and possibly import scale_up and scale_down matrices, if factorization is set
         if self.n_embd_wte:
@@ -197,7 +205,8 @@ class GPT(nn.Module):
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
                     self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
-                self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
+                if not config.writer_vocab_rank:
+                    self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
 
         # import wte
         if self.config.import_wte_npy:
@@ -212,6 +221,8 @@ class GPT(nn.Module):
             # apply special scaled init to the residual projections, per GPT-2 paper
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+
+        self.convert_writer_subspaces()
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
@@ -253,8 +264,32 @@ class GPT(nn.Module):
         return self.transformer.lm_head_norm(lm_head_weight)
 
     def compute_lm_head_logits(self, x, lm_head_module):
+        if lm_head_module is None and isinstance(self.transformer.wte, SubspaceVocab):
+            return self.transformer.wte.logits(x)
+        if hasattr(lm_head_module, "logits"):
+            return lm_head_module.logits(x)
         weight = self.apply_lm_head_norm(lm_head_module.weight)
         return F.linear(x, weight, lm_head_module.bias)
+
+    def convert_writer_subspaces(self):
+        """Replace attention/MLP residual writer projections with SubspaceLinear.
+
+        Only plain nn.Linear c_proj modules are converted; other linear variants are
+        left unchanged because they may have custom forward semantics.
+        """
+        bits = self.config.writer_coeff_bits
+        for block in self.transformer.h:
+            attn_rank = self.config.writer_attn_rank
+            if attn_rank and isinstance(getattr(block.attn, "c_proj", None), nn.Linear):
+                block.attn.c_proj = SubspaceLinear.from_linear(
+                    block.attn.c_proj, attn_rank, bits=bits
+                )
+
+            mlp_rank = self.config.writer_mlp_rank
+            if mlp_rank and isinstance(getattr(block.mlp, "c_proj", None), nn.Linear):
+                block.mlp.c_proj = SubspaceLinear.from_linear(
+                    block.mlp.c_proj, mlp_rank, bits=bits
+                )
 
     def _init_weights(self, module):
         """
