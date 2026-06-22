@@ -6,7 +6,7 @@ This is intentionally small and transparent: it demonstrates a reversible
 `char` lane and aligned radical-location lanes for model conditioning.
 """
 from __future__ import annotations
-import argparse, json, re
+import argparse, json
 from pathlib import Path
 
 PLACEHOLDER = "∅"
@@ -32,14 +32,38 @@ DECOMP = {
 }
 # Tiny demo-only exclusions so the non-simplified-Hanzi vector is testable.
 TRADITIONAL_ONLY = set("體龍門馬愛學國風書樂車東長萬與興貓鳥魚")
-CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+CJK_RANGES = (
+    (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
+    (0x20000, 0x2A6DF),  # Extension B
+    (0x2A700, 0x2B73F),  # Extension C
+    (0x2B740, 0x2B81F),  # Extension D
+    (0x2B820, 0x2CEAF),  # Extension E
+    (0x2CEB0, 0x2EBEF),  # Extensions F/I range in Unicode 15.x
+    (0x30000, 0x3134F),  # Extension G
+    (0x31350, 0x323AF),  # Extension H
+)
 
-def line_escape(value: str) -> str:
-    """Encode one lane value so each timestep stays on one physical line."""
-    return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+def encode_non_hanzi_value(value: str) -> str:
+    """Encode one non-Hanzi code point as a line-safe scalar value."""
+    if value == PLACEHOLDER:
+        return PLACEHOLDER
+    if len(value) != 1:
+        raise ValueError(f"non_hanzi lane values must be one code point, got {value!r}")
+    return f"U+{ord(value):04X}"
+
+def is_cjk_ideograph(ch: str) -> bool:
+    if len(ch) != 1:
+        return False
+    codepoint = ord(ch)
+    return any(start <= codepoint <= end for start, end in CJK_RANGES)
 
 def is_simplified_hanzi(ch: str) -> bool:
-    return len(ch) == 1 and bool(CJK_RE.fullmatch(ch)) and ch not in TRADITIONAL_ONLY
+    # There is no Unicode binary property for "simplified Chinese character".
+    # For the reversible demo contract, every CJK ideograph is preserved in the
+    # char lane unless it is in the small traditional-only exclusion fixture.
+    return is_cjk_ideograph(ch) and ch not in TRADITIONAL_ONLY
 
 def encode_char(ch: str) -> dict[str, str]:
     if not is_simplified_hanzi(ch):
@@ -73,7 +97,7 @@ def main() -> None:
     for lane in LANES:
         lane_dir = out_root / lane
         lane_dir.mkdir(parents=True, exist_ok=True)
-        lane_values = [line_escape(row[lane]) if lane == "non_hanzi" else row[lane] for row in rows]
+        lane_values = [encode_non_hanzi_value(row[lane]) if lane == "non_hanzi" else row[lane] for row in rows]
         (lane_dir / "input.txt").write_text("\n".join(lane_values) + "\n", encoding="utf-8")
         datasets.append(f"simplified_hanzi_mc/{lane}/char_{args.label}")
     manifest = {"tokenizer":"simplified_hanzi_radical_location_multicontext", "source":str(in_path), "lanes":LANES,

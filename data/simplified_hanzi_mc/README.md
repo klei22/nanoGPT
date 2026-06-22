@@ -8,7 +8,7 @@ This folder demonstrates a reversible multicontext split for simplified Hanzi.
 - `whole`, `left`, `right`, `top`, `bottom`, `enclosure`, `inside`, `corner`, `overlay`, `other`: radical/location signals.
 
 `∅` means “this simplified Hanzi has nothing in this category” (and is also the empty value in `non_hanzi` for simplified Hanzi). `⧆` means “this
-input code point is not treated as simplified Hanzi” in the `char`/radical lanes; the original code point is preserved in `non_hanzi` using line-safe escapes for control characters such as newlines.
+input code point is not treated as simplified Hanzi” in the `char`/radical lanes; the original code point is preserved in `non_hanzi` as a line-safe `U+XXXX` scalar value, so control characters, emoji, punctuation, and supplementary-plane code points reconstruct exactly.
 
 The decomposition table is intentionally small and transparent for tests. It can
 be replaced with a full Unihan/IDS-derived table without changing the lane
@@ -21,3 +21,9 @@ bash data/simplified_hanzi_mc/get_dataset.sh
 ```
 
 Each lane then contains `char_simplified_hanzi_mc/{train.bin,val.bin,meta.pkl}`.
+
+To verify the bijection contract over all configured CJK ideograph ranges plus non-Hanzi edge cases, run:
+
+```bash
+python3 data/simplified_hanzi_mc/self_test_bijection.py
+```
