@@ -1,0 +1,2829 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Transformer Sentence Layers — Residual, LM Head, Softmax</title>
+    <style>
+      :root {
+        --bg: #101426;
+        --bg-2: #151a31;
+        --panel: rgba(255, 255, 255, 0.06);
+        --panel-2: rgba(255, 255, 255, 0.095);
+        --border: rgba(255, 255, 255, 0.135);
+        --text: #ffffff;
+        --muted: rgba(255, 255, 255, 0.68);
+        --current: #ff7b72;
+        --prior: #94a3b8;
+        --norm: #7dd3fc;
+        --attention: #52b788;
+        --mlp: #ffd166;
+        --plus: #f4a261;
+        --output: #c77dff;
+        --soft: #58c4dd;
+        --sum: #4ea8de;
+        --stage-accent: #ff7b72;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background:
+          radial-gradient(
+            circle at 18% 14%,
+            rgba(82, 183, 136, 0.08),
+            transparent 30%
+          ),
+          radial-gradient(
+            circle at 82% 78%,
+            rgba(199, 125, 255, 0.08),
+            transparent 34%
+          ),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      #app {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 480px;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      #scene-wrap {
+        position: relative;
+        min-width: 0;
+        overflow: hidden;
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.012),
+          rgba(0, 0, 0, 0.05)
+        );
+      }
+
+      #scene {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      .overlay-top {
+        position: absolute;
+        left: 20px;
+        top: 18px;
+        right: 20px;
+        pointer-events: none;
+      }
+
+      .title-card {
+        max-width: 1130px;
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        padding: 16px 18px;
+        background: rgba(0, 0, 0, 0.28);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 18px 46px rgba(0, 0, 0, 0.2);
+      }
+
+      .title-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .phase-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 28px;
+        padding: 0 10px;
+        border-radius: 999px;
+        border: 1px solid
+          color-mix(in srgb, var(--stage-accent), transparent 52%);
+        background: color-mix(in srgb, var(--stage-accent), transparent 86%);
+        color: var(--stage-accent);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        transition:
+          color 0.18s ease,
+          border-color 0.18s ease,
+          background 0.18s ease;
+      }
+
+      .phase-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 16px currentColor;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 29px;
+        line-height: 1.08;
+        letter-spacing: -0.038em;
+      }
+
+      .subtitle {
+        margin-top: 8px;
+        max-width: 1080px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .overlay-bottom {
+        position: absolute;
+        left: 18px;
+        bottom: 18px;
+        max-width: min(930px, calc(100% - 250px));
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 10px 12px;
+        background: rgba(0, 0, 0, 0.36);
+        backdrop-filter: blur(9px);
+        color: rgba(255, 255, 255, 0.86);
+        font-size: 13px;
+        line-height: 1.45;
+        pointer-events: none;
+      }
+
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      #toast-container {
+        position: absolute;
+        left: 18px;
+        bottom: 78px;
+        z-index: 30;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        pointer-events: none;
+      }
+
+      .toast {
+        max-width: 660px;
+        padding: 10px 13px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 14px;
+        background: rgba(0, 0, 0, 0.68);
+        color: rgba(255, 255, 255, 0.96);
+        font-size: 13px;
+        line-height: 1.35;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.24);
+        animation: toast-in 0.18s cubic-bezier(0.2, 0.9, 0.2, 1.15) both;
+        transition:
+          opacity 0.24s ease,
+          transform 0.24s ease;
+      }
+
+      @keyframes toast-in {
+        from {
+          opacity: 0;
+          transform: translateY(8px) scale(0.97);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      .step-nav {
+        position: absolute;
+        right: 18px;
+        bottom: 18px;
+        z-index: 24;
+        display: grid;
+        grid-template-columns: 48px minmax(112px, auto) 48px;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(0, 0, 0, 0.48);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+      }
+
+      .step-nav button {
+        width: 48px;
+        height: 42px;
+        padding: 0;
+        border-radius: 13px;
+        font-size: 24px;
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .step-nav button:disabled {
+        cursor: default;
+        opacity: 0.32;
+        transform: none;
+      }
+
+      .step-counter {
+        min-width: 112px;
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 12px;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-align: center;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      #sidebar {
+        border-left: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.028);
+        overflow: auto;
+        padding: 18px;
+        scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+      }
+
+      .panel {
+        margin-bottom: 16px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        background: var(--panel);
+        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.12);
+      }
+
+      .panel h2 {
+        margin: 0 0 12px;
+        color: rgba(255, 255, 255, 0.56);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.19em;
+        text-transform: uppercase;
+      }
+
+      .stage-name {
+        margin-bottom: 7px;
+        font-size: 19px;
+        font-weight: 700;
+        line-height: 1.3;
+      }
+
+      .stage-copy {
+        min-height: 38px;
+        margin-bottom: 13px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .button-grid,
+      .controls-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 9px;
+      }
+
+      .controls-row {
+        margin-top: 9px;
+      }
+
+      button,
+      select {
+        width: 100%;
+        appearance: none;
+        border: 1px solid var(--border);
+        border-radius: 15px;
+        padding: 10px 11px;
+        background: var(--panel-2);
+        color: var(--text);
+        font-size: 13px;
+        cursor: pointer;
+        transition:
+          transform 0.12s ease,
+          background 0.12s ease,
+          border-color 0.12s ease,
+          box-shadow 0.12s ease;
+      }
+
+      button:hover,
+      select:hover {
+        transform: translateY(-1px);
+        background: rgba(255, 255, 255, 0.135);
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+
+      button.primary {
+        border-color: color-mix(in srgb, var(--stage-accent), transparent 52%);
+        background: color-mix(in srgb, var(--stage-accent), transparent 82%);
+        box-shadow: inset 0 0 0 1px
+          color-mix(in srgb, var(--stage-accent), transparent 86%);
+      }
+
+      .range-wrap {
+        margin-top: 13px;
+      }
+
+      .range-row,
+      .stack-row,
+      .toggle,
+      .read-row,
+      .legend-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .range-row {
+        margin-bottom: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      input[type="range"] {
+        width: 100%;
+        accent-color: var(--stage-accent);
+      }
+
+      .stage-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 7px;
+        margin-top: 13px;
+        max-height: 292px;
+        overflow: auto;
+        padding-right: 3px;
+      }
+
+      .stage-button {
+        min-height: 38px;
+        padding: 8px 9px;
+        text-align: left;
+        line-height: 1.23;
+        color: rgba(255, 255, 255, 0.8);
+        font-size: 11px;
+      }
+
+      .stage-button.active {
+        color: #fff;
+        border-color: color-mix(in srgb, var(--stage-accent), transparent 38%);
+        background: color-mix(in srgb, var(--stage-accent), transparent 76%);
+        box-shadow:
+          0 0 0 1px color-mix(in srgb, var(--stage-accent), transparent 88%),
+          0 8px 18px rgba(0, 0, 0, 0.14);
+      }
+
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+
+      .stack-row,
+      .toggle {
+        min-height: 34px;
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 13px;
+      }
+
+      .stack-row > span:first-child {
+        min-width: 138px;
+      }
+      .stack-row select {
+        width: 210px;
+      }
+      .toggle input {
+        transform: translateY(1px);
+      }
+
+      .small {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .hotkey-card {
+        background: linear-gradient(
+          180deg,
+          rgba(199, 125, 255, 0.095),
+          rgba(255, 255, 255, 0.045)
+        );
+        border-color: rgba(255, 255, 255, 0.17);
+      }
+
+      .hotkey-card.hidden {
+        display: none;
+      }
+
+      .hotkey-section {
+        margin-top: 11px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .hotkey-section:first-of-type {
+        margin-top: 0;
+        padding-top: 0;
+        border-top: 0;
+      }
+
+      .hotkey-section-title {
+        margin-bottom: 7px;
+        color: rgba(255, 255, 255, 0.52);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      .hotkey-row {
+        display: grid;
+        grid-template-columns: 126px 1fr;
+        align-items: center;
+        gap: 9px;
+        min-height: 28px;
+        color: rgba(255, 255, 255, 0.88);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .hotkey-chord {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        align-items: center;
+      }
+
+      .keycap {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 29px;
+        height: 22px;
+        padding: 0 7px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.095);
+        box-shadow:
+          inset 0 -1px 0 rgba(0, 0, 0, 0.22),
+          0 1px 4px rgba(0, 0, 0, 0.1);
+        color: #fff;
+        font:
+          700 11px/1 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        white-space: nowrap;
+      }
+
+      .keycap.wide {
+        min-width: 54px;
+      }
+
+      .read-row {
+        position: relative;
+        min-height: 31px;
+        padding: 5px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        font-size: 13px;
+        overflow: hidden;
+      }
+
+      .read-row:last-child {
+        border-bottom: 0;
+      }
+
+      .prob-bar {
+        position: absolute;
+        left: 0;
+        top: 4px;
+        bottom: 4px;
+        width: 0;
+        border-radius: 8px;
+        opacity: 0.14;
+        transition: width 0.2s ease;
+        pointer-events: none;
+      }
+
+      .read-row > span {
+        position: relative;
+        z-index: 1;
+      }
+
+      .legend-row {
+        padding: 4px 0;
+        color: rgba(255, 255, 255, 0.83);
+        font-size: 12px;
+      }
+      .legend-left {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        box-shadow: 0 0 11px currentColor;
+      }
+
+      @media (max-width: 1260px) {
+        #app {
+          grid-template-columns: 1fr;
+          grid-template-rows: minmax(0, 1fr) auto;
+        }
+        #sidebar {
+          border-left: 0;
+          border-top: 1px solid var(--border);
+          max-height: 52vh;
+        }
+        h1 {
+          font-size: 24px;
+        }
+        .title-card {
+          max-width: 900px;
+        }
+      }
+    
+
+      .math-card-body {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255,255,255,.09);
+      }
+      .math-display {
+        min-height: 42px;
+        font-family: "STIX Two Math", "Cambria Math", "Times New Roman", serif;
+        font-size: clamp(24px, 2.35vw, 36px);
+        font-weight: 600;
+        line-height: 1.22;
+        letter-spacing: .01em;
+        color: #fff;
+        text-shadow: 0 2px 20px color-mix(in srgb, var(--stage-accent), transparent 72%);
+      }
+      .math-display sub { font-size: .58em; vertical-align: -.28em; }
+      .math-display sup { font-size: .58em; vertical-align: .58em; }
+      .math-vector { font-style: italic; }
+      .math-note {
+        max-width: 1050px;
+        margin-top: 7px;
+        color: rgba(255,255,255,.67);
+        font-size: 13px;
+        line-height: 1.48;
+      }
+      .token-strip, .history-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 8px;
+      }
+      .token-chip, .history-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 0 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,.12);
+        background: rgba(255,255,255,.055);
+        color: rgba(255,255,255,.78);
+        font-size: 12px;
+        transition: .16s ease;
+      }
+      .token-chip.current {
+        color: var(--token-color);
+        border-color: color-mix(in srgb, var(--token-color), transparent 42%);
+        box-shadow: 0 0 16px color-mix(in srgb, var(--token-color), transparent 80%);
+      }
+      .token-chip.target {
+        background: color-mix(in srgb, var(--token-color), transparent 84%);
+        outline: 1px dashed color-mix(in srgb, var(--token-color), transparent 28%);
+        outline-offset: 2px;
+      }
+      .history-chip.latest { color: var(--current); border-color: rgba(255,123,114,.5); }
+      .layer-controls { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+      .inline-note { margin-top:7px; font-size:12px; line-height:1.45; color:var(--muted); }
+      .model-badge {
+        display:inline-flex; align-items:center; gap:7px; margin-top:9px;
+        padding:6px 9px; border-radius:10px; background:rgba(82,183,136,.08);
+        border:1px solid rgba(82,183,136,.2); color:#8ee2b2; font-size:12px;
+      }
+      button:disabled { opacity:.35; cursor:default; transform:none !important; }
+      @media (max-width: 1260px) {
+        .math-display { font-size: 25px; }
+      }
+</style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="scene-wrap">
+        <canvas id="scene"></canvas>
+        <div class="overlay-top">
+          <div class="title-card">
+            <div class="title-row">
+              <div class="phase-chip"><span class="phase-dot"></span><span id="scenePhase">Token embedding</span></div>
+            </div>
+            <div class="math-card-body">
+              <div class="math-display" id="sceneMath"></div>
+              <div class="math-note" id="sceneMathNote"></div>
+            </div>
+          </div>
+        </div>
+        <div class="overlay-bottom">
+          Drag to rotate • Scroll to zoom • Right-drag to pan • A camera cue ends as soon as you grab the scene.
+          <span class="mono">←/→</span> plays one micro-step, <span class="mono">R</span> replays from the current camera,
+          <span class="mono">−/=</span> removes/adds a layer, and <span class="mono">O</span> orbits the current scene center.
+        </div>
+        <div class="step-nav" aria-label="Step navigation">
+          <button id="stepBackBtn" title="Previous step (Left Arrow)">‹</button>
+          <div class="step-counter" id="stepCounter">Step 1</div>
+          <button id="stepForwardBtn" title="Next step (Right Arrow)">›</button>
+        </div>
+        <div id="toast-container" aria-live="polite"></div>
+      </div>
+
+      <aside id="sidebar">
+        <div class="panel">
+          <h2>Current stage</h2>
+          <div class="stage-name" id="stageName"></div>
+          <div class="stage-copy" id="stageCopy"></div>
+          <div class="button-grid">
+            <button id="prevBtn">← Previous step</button>
+            <button id="nextBtn">Next step →</button>
+            <button class="primary" id="playPause">Play sequence</button>
+            <button id="replayBtn">Replay step (R)</button>
+          </div>
+          <div class="range-wrap">
+            <div class="range-row"><span>Stage progress</span><span id="progressLabel">0%</span></div>
+            <input id="progressSlider" type="range" min="0" max="1000" value="0" />
+          </div>
+          <div class="stage-grid" id="stageGrid"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Sentence, layers, and input</h2>
+          <div class="stack">
+            <div class="stack-row"><span>Sentence vocabulary</span><select id="sentenceSelect"></select></div>
+            <div id="sentenceTokens" class="token-strip" aria-label="Sentence tokens"></div>
+            <div class="stack-row"><span>Current input token</span><select id="wordSelect"></select></div>
+            <div class="stack-row"><span>Transformer depth</span><select id="layerCountSelect"></select></div>
+            <div class="layer-controls"><button id="removeLayerBtn">− Layer</button><button id="addLayerBtn">+ Layer</button></div>
+            <div class="range-wrap" style="margin-top:0">
+              <div class="range-row"><span>Input vector magnitude α</span><span id="inputMagnitudeLabel">33% of R</span></div>
+              <input id="inputMagnitude" type="range" min="15" max="90" step="1" value="33" />
+            </div>
+            <div class="stack-row"><span>Top-k sampling</span><select id="topKSelect"></select></div>
+            <div class="stack-row"><span>Attention behavior</span><select id="attentionActivation">
+              <option value="softmax" selected>softmax-like</option>
+              <option value="sigmoid_norm">sigmoid-like</option>
+              <option value="relu2_norm">ReLU²-like</option>
+            </select></div>
+            <div class="stack-row"><span>MLP behavior</span><select id="mlpActivation">
+              <option value="gelu" selected>GELU-like</option>
+              <option value="relu">ReLU-like</option>
+              <option value="silu">SiLU-like</option>
+            </select></div>
+            <div class="range-wrap" style="margin-top:0">
+              <div class="range-row"><span>Attention transform strength</span><span id="scoreScaleLabel">8×</span></div>
+              <input id="scoreScale" type="range" min="2" max="18" step="1" value="8" />
+            </div>
+            <div class="controls-row"><button id="reinitializeBtn">Reinitialize transforms</button><button id="cycleWordBtn">Cycle token</button></div>
+            <button id="resampleBtn">Resample highlighted top-k</button>
+            <div class="model-badge">Final MLP → nearest next sentence token, with controlled variation</div>
+            <div class="inline-note">The vocabulary contains only the five space-delimited tokens in the chosen English or Hangul sentence. The sequence wraps cyclically for indefinite playback.</div>
+            <div class="small" style="margin-top:4px">Generated token history</div>
+            <div id="historyTokens" class="history-strip"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Camera and presentation</h2>
+          <div class="stack">
+            <label class="toggle"><span>Stage camera cues</span><input id="guidedCamera" type="checkbox" checked /></label>
+            <label class="toggle"><span>Auto-rotate camera</span><input id="autoRotate" type="checkbox" /></label>
+            <label class="toggle"><span>Show labels</span><input id="showLabels" type="checkbox" checked /></label>
+            <label class="toggle"><span>Track glow + travel trail</span><input id="showTrail" type="checkbox" checked /></label>
+            <label class="toggle"><span>Auto-advance during Play</span><input id="autoAdvance" type="checkbox" checked /></label>
+            <label class="toggle"><span>Loop indefinitely</span><input id="loopCycle" type="checkbox" checked /></label>
+            <div class="range-wrap" style="margin-top:0">
+              <div class="range-row"><span>Solid-angle aperture</span><span id="solidAngleLabel">14°</span></div>
+              <input id="solidAngle" type="range" min="4" max="32" value="14" />
+            </div>
+            <div class="controls-row"><button id="initialViewBtn">Initial view</button><button id="focusViewBtn">Focus current stage</button></div>
+          </div>
+        </div>
+
+        <div class="panel hotkey-card" id="hotkeyCard">
+          <h2>Presenter hotkeys</h2>
+          <div class="hotkey-section">
+            <div class="hotkey-section-title">Navigation</div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">j</span><span class="keycap">→</span><span class="keycap wide">PgDn</span></div><div>Play next micro-step once</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">k</span><span class="keycap">←</span><span class="keycap wide">PgUp</span></div><div>Play previous micro-step once</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap wide">1–9</span><span class="keycap wide">⇧1–⇧9</span></div><div>Jump to stages 1–18</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">a</span><span class="keycap">e</span><span class="keycap">l</span><span class="keycap">q</span></div><div>First Attention / final MLP / LM Head / selection</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">0</span></div><div>Jump to return loop</div></div>
+          </div>
+          <div class="hotkey-section">
+            <div class="hotkey-section-title">Depth, sentence, and input</div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">−</span><span class="keycap">=</span></div><div>Remove / add Attention–MLP layer</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">h</span></div><div>Toggle English / Hangul sentence</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">w</span><span class="keycap wide">⇧w</span></div><div>Cycle input token forward / backward</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">,</span><span class="keycap">.</span></div><div>Input magnitude − / + 5% of R</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">t</span><span class="keycap">u</span></div><div>Cycle top-k / resample</div></div>
+          </div>
+          <div class="hotkey-section">
+            <div class="hotkey-section-title">Playback and camera</div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">;</span><span class="keycap wide">Space</span></div><div>Play / pause sequence</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">r</span></div><div>Replay from the current camera view</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">i</span><span class="keycap">c</span></div><div>Initial camera / camera cues</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">o</span><span class="keycap">v</span></div><div>Scene-centered orbit / fullscreen</div></div>
+          </div>
+          <div class="hotkey-section">
+            <div class="hotkey-section-title">Presentation</div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">n</span></div><div>Reinitialize transforms</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">b</span><span class="keycap">g</span></div><div>Labels / track trail</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">s</span><span class="keycap">d</span><span class="keycap">f</span></div><div>Cone width 8° / 14° / 28°</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">[</span><span class="keycap">]</span></div><div>Nudge cone width</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">m</span></div><div>Show / hide this card</div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>LM-head readout</h2>
+          <div id="readout"></div>
+          <div class="small" id="nextTokenNote" style="margin-top:10px"></div>
+        </div>
+        <div class="panel">
+          <h2>Legend</h2>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--current);background:var(--current)"></span>Residual</span><span>moving carrier</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--norm);background:var(--norm)"></span>Norm copy</span><span>exact copy → surface</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--attention);background:var(--attention)"></span>Attention</span><span>opaque module per layer</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--mlp);background:var(--mlp)"></span>MLP</span><span>final one targets next token</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--soft);background:var(--soft)"></span>LM Head</span><span>five sentence tokens only</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--output);background:var(--output)"></span>Top-k</span><span>highlight, sample, return</span></div>
+        </div>
+      </aside>
+    </div>
+    <script type="module">import * as THREE from "https://esm.sh/three@0.160.0";
+import { OrbitControls } from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+
+const COLORS = {
+  bg: "#101426",
+  white: "#ffffff",
+  grid: "#8d99ae",
+  current: "#ff7b72",
+  prior: "#94a3b8",
+  norm: "#7dd3fc",
+  attention: "#52b788",
+  mlp: "#ffd166",
+  plus: "#f4a261",
+  output: "#c77dff",
+  soft: "#58c4dd",
+  sum: "#4ea8de",
+  dark: "#151a31",
+  dim: "#64748b",
+  danger: "#fb7185",
+};
+const SENTENCES = {
+  english: {
+    label: "English — Cat sits on the table",
+    text: "Cat sits on the table",
+    tokens: ["Cat", "sits", "on", "the", "table"],
+  },
+  hangul: {
+    label: "한국어 — 고양이는 탁자 위에 앉아 있다",
+    text: "고양이는 탁자 위에 앉아 있다",
+    tokens: ["고양이는", "탁자", "위에", "앉아", "있다"],
+  },
+};
+const WORD_COLORS = ["#ff7b72", "#f4a261", "#ffd166", "#52b788", "#7dd3fc"];
+const CARRIER_R = 0.8;
+const MAX_LAYERS = 4;
+const UP = new THREE.Vector3(0, 1, 0);
+let WORDS = [...SENTENCES.english.tokens];
+
+const state = {
+  sentenceKey: "english",
+  word: WORDS[0],
+  history: [WORDS[0]],
+  layerCount: 1,
+  inputMagnitudeRatio: 0.33,
+  stage: 0,
+  progress: 0,
+  playing: false,
+  stepOnce: false,
+  autoAdvance: true,
+  loopCycle: true,
+  topK: 1,
+  attentionActivation: "softmax",
+  mlpActivation: "gelu",
+  scoreScale: 8,
+  solidAngleDeg: 14,
+  guidedCamera: true,
+  autoRotate: false,
+  showLabels: true,
+  showTrail: true,
+  stageStartedAt: performance.now(),
+  cameraGuideStartedAt: performance.now(),
+  cameraGuideUntil: 0,
+  cameraGuideFromTarget: new THREE.Vector3(),
+  cameraGuideFromPosition: new THREE.Vector3(),
+  cameraGuideToTarget: new THREE.Vector3(),
+  cameraGuideToPosition: new THREE.Vector3(),
+  dataSeed: 41,
+  selectedIndex: null,
+  selectionNonce: 0,
+  selectionKey: "",
+};
+
+function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+function clamp01(x) { return clamp(x, 0, 1); }
+function smoothstep01(x) { const t = clamp01(x); return t * t * (3 - 2 * t); }
+function smootherstep01(x) { const t = clamp01(x); return t * t * t * (t * (t * 6 - 15) + 10); }
+function unit(v) { const n = v.length(); return n > 1e-9 ? v.clone().multiplyScalar(1 / n) : new THREE.Vector3(0, 1, 0); }
+function lerpVec(a, b, t) { return a.clone().lerp(b, clamp01(t)); }
+function colorLerp(a, b, t) { return new THREE.Color(a).lerp(new THREE.Color(b), clamp01(t)); }
+function cubicBezier(a, b, c, d, t) {
+  const u = 1 - t;
+  return a.clone().multiplyScalar(u * u * u)
+    .add(b.clone().multiplyScalar(3 * u * u * t))
+    .add(c.clone().multiplyScalar(3 * u * t * t))
+    .add(d.clone().multiplyScalar(t * t * t));
+}
+function travelPoint(a, b, t, arc = 0.3, zArc = 0.22) {
+  const e = smootherstep01(t), p = lerpVec(a, b, e);
+  p.y += Math.sin(Math.PI * e) * arc;
+  p.z += Math.sin(Math.PI * e) * zArc;
+  return p;
+}
+function hashString(text) {
+  let h = 2166136261;
+  for (const ch of text) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function seededRng(seed = 1) {
+  let s = seed >>> 0;
+  return () => { s = (Math.imul(1664525, s) + 1013904223) >>> 0; return s / 4294967296; };
+}
+function gaussian(rand) {
+  const u1 = Math.max(rand(), 1e-12), u2 = rand();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+function randomUnit(seed) {
+  const r = seededRng(seed);
+  return unit(new THREE.Vector3(gaussian(r), gaussian(r), gaussian(r)));
+}
+function rotateSeeded(v, seed, angle) { return unit(v.clone().applyAxisAngle(randomUnit(seed), angle)); }
+function wordDir(word) { return randomUnit(hashString(`sentence-token:${word}`)); }
+function softmax(values) {
+  const m = Math.max(...values);
+  const ex = values.map(v => Math.exp(clamp(v - m, -40, 40)));
+  const sum = ex.reduce((a, b) => a + b, 0) || 1;
+  return ex.map(v => v / sum);
+}
+function activationFactor(mode) {
+  return mode === "relu2_norm" ? 1.08 : mode === "sigmoid_norm" ? 0.9 : 1;
+}
+function mlpFactor(mode) { return mode === "relu" ? 0.92 : mode === "silu" ? 1.04 : 1; }
+function inputVectorLength() { return CARRIER_R * state.inputMagnitudeRatio; }
+function nextWordFor(word) {
+  const i = Math.max(0, WORDS.indexOf(word));
+  return WORDS[(i + 1) % WORDS.length];
+}
+function tokenColor(word) {
+  const i = Math.max(0, WORDS.indexOf(word));
+  return WORD_COLORS[i % WORD_COLORS.length];
+}
+function targetBiasedDirection(targetWord, seed) {
+  const target = wordDir(targetWord);
+  const r = seededRng(seed);
+  let axis = randomUnit(seed + 19);
+  axis.sub(target.clone().multiplyScalar(axis.dot(target)));
+  if (axis.lengthSq() < 1e-8) axis = new THREE.Vector3(0, 1, 0).cross(target);
+  axis.normalize();
+  let angle = 0.07 + r() * 0.12;
+  let candidate = unit(target.clone().applyAxisAngle(axis, angle));
+  const targetIndex = WORDS.indexOf(targetWord);
+  for (let guard = 0; guard < 8; guard++) {
+    const dots = WORDS.map(w => candidate.dot(wordDir(w)));
+    const rival = Math.max(...dots.filter((_, i) => i !== targetIndex));
+    if (dots[targetIndex] > rival + 0.025) break;
+    angle *= 0.55;
+    candidate = unit(target.clone().applyAxisAngle(axis, angle));
+  }
+  return candidate;
+}
+
+function computeLayout(layerCount) {
+  const inputWord = new THREE.Vector3(-3.25, 0, 0);
+  const residualStart = new THREE.Vector3(0, 0, 0);
+  const layers = [];
+  let streamStart = residualStart.clone();
+  for (let i = 0; i < layerCount; i++) {
+    const attnNorm = streamStart.clone().add(new THREE.Vector3(2.65, 0, 0));
+    const attnNormUp = attnNorm.clone().add(new THREE.Vector3(0, 3.05, 0));
+    const attnBox = attnNorm.clone().add(new THREE.Vector3(2.55, 3.05, 0));
+    const attnBoxIn = attnBox.clone().add(new THREE.Vector3(-1.15, 0, 0));
+    const attnBoxOut = attnBox.clone().add(new THREE.Vector3(1.15, 0, 0));
+    const attnAdd = attnBox.clone().add(new THREE.Vector3(3.45, -3.05, 0));
+    const attnOutputAbove = attnAdd.clone().add(new THREE.Vector3(0, 3.05, 0));
+    const attnOutputHold = attnAdd.clone().add(new THREE.Vector3(0, 1.92, 0));
+
+    const mlpNorm = attnAdd.clone().add(new THREE.Vector3(2.8, 0, 0));
+    const mlpNormUp = mlpNorm.clone().add(new THREE.Vector3(0, 3.05, 0));
+    const mlpBox = mlpNorm.clone().add(new THREE.Vector3(2.55, 3.05, 0));
+    const mlpBoxIn = mlpBox.clone().add(new THREE.Vector3(-1.15, 0, 0));
+    const mlpBoxOut = mlpBox.clone().add(new THREE.Vector3(1.15, 0, 0));
+    const mlpAdd = mlpBox.clone().add(new THREE.Vector3(3.45, -3.05, 0));
+    const mlpOutputAbove = mlpAdd.clone().add(new THREE.Vector3(0, 3.05, 0));
+    const mlpOutputHold = mlpAdd.clone().add(new THREE.Vector3(0, 1.92, 0));
+
+    layers.push({
+      index: i,
+      streamStart,
+      attnNorm,
+      attnNormUp,
+      attnBox,
+      attnBoxIn,
+      attnBoxOut,
+      attnAdd,
+      attnOutputAbove,
+      attnOutputHold,
+      mlpNorm,
+      mlpNormUp,
+      mlpBox,
+      mlpBoxIn,
+      mlpBoxOut,
+      mlpAdd,
+      mlpOutputAbove,
+      mlpOutputHold,
+    });
+    streamStart = mlpAdd.clone();
+  }
+  const outNorm = streamStart.clone().add(new THREE.Vector3(2.85, 0, 0));
+  const lmHead = outNorm.clone().add(new THREE.Vector3(3.25, 0, 0));
+  const logits = lmHead.clone().add(new THREE.Vector3(3.55, 0, 0));
+  const softmax = logits.clone().add(new THREE.Vector3(3.55, 0, 0));
+  const xMin = inputWord.x - 1.3;
+  const xMax = softmax.x + 1.3;
+  return {
+    inputWord,
+    residualStart,
+    layers,
+    outNorm,
+    lmHead,
+    logits,
+    softmax,
+    xMin,
+    xMax,
+    width: xMax - xMin,
+    centerX: (xMin + xMax) / 2,
+  };
+}
+
+function buildPass() {
+  const targetWord = nextWordFor(state.word);
+  let residual = wordDir(state.word).multiplyScalar(inputVectorLength());
+  const layerPasses = [];
+  for (let i = 0; i < state.layerCount; i++) {
+    const base = residual.clone();
+    const attnNorm = unit(base).multiplyScalar(CARRIER_R);
+    const attnAngle = 0.48 + (state.scoreScale - 8) * 0.01
+      + (state.attentionActivation === "relu2_norm" ? 0.08 : state.attentionActivation === "sigmoid_norm" ? -0.05 : 0);
+    const attnOut = rotateSeeded(attnNorm, state.dataSeed + i * 1031 + 101, attnAngle)
+      .multiplyScalar((0.22 + 0.025 * (i % 3)) * activationFactor(state.attentionActivation));
+    const afterAttn = base.clone().add(attnOut);
+    const mlpNorm = unit(afterAttn).multiplyScalar(CARRIER_R);
+    let mlpOut;
+    let afterMlp;
+    let targetDirection = null;
+    if (i === state.layerCount - 1) {
+      targetDirection = targetBiasedDirection(targetWord, state.dataSeed + hashString(state.word) + i * 701);
+      const desiredMagnitude = clamp(afterAttn.length() * 0.88 + 0.13, 0.44, 0.74);
+      afterMlp = targetDirection.clone().multiplyScalar(desiredMagnitude);
+      mlpOut = afterMlp.clone().sub(afterAttn);
+    } else {
+      const mlpAngle = -0.54 + (state.mlpActivation === "relu" ? 0.08 : state.mlpActivation === "silu" ? -0.06 : 0);
+      mlpOut = rotateSeeded(mlpNorm, state.dataSeed + i * 1031 + 809, mlpAngle)
+        .multiplyScalar((0.17 + 0.015 * (i % 2)) * mlpFactor(state.mlpActivation));
+      afterMlp = afterAttn.clone().add(mlpOut);
+    }
+    layerPasses.push({ base, attnNorm, attnOut, afterAttn, mlpNorm, mlpOut, afterMlp, targetDirection });
+    residual = afterMlp.clone();
+  }
+  const hidden = unit(residual).multiplyScalar(CARRIER_R);
+  const dots = WORDS.map(w => unit(hidden).dot(wordDir(w)));
+  const probs = softmax(dots);
+  const ranking = [...WORDS.keys()].sort((a, b) => probs[b] - probs[a]);
+  return {
+    base: layerPasses[0].base,
+    layers: layerPasses,
+    afterLayers: residual,
+    hidden,
+    dots,
+    probs,
+    ranking,
+    top: ranking[0],
+    targetWord,
+    targetIndex: WORDS.indexOf(targetWord),
+  };
+}
+
+function mathVector(name, sub = "", sup = "") {
+  return `<span class="math-vector">${name}</span>${sub ? `<sub>${sub}</sub>` : ""}${sup ? `<sup>${sup}</sup>` : ""}`;
+}
+function buildStages() {
+  const stages = [];
+  const push = (stage) => stages.push({ duration: 2.8, ...stage });
+  push({
+    type: "input",
+    short: "Input embedding",
+    name: "Static sentence token and an empty residual carrier",
+    phase: "Token embedding",
+    color: COLORS.current,
+    duration: 2.0,
+    station: "start",
+    math: `${mathVector("x", "n")} = E[t<sub>n</sub>], &nbsp; ‖${mathVector("x", "n")}‖ = αR`,
+    mathNote: "Each space-delimited token owns one embedding direction. The α slider sets its initial magnitude as a fraction of the residual-sphere radius R.",
+    copy: "The selected token remains in the static input sphere. The first residual carrier starts empty.",
+  });
+  push({
+    type: "copy-input",
+    short: "Copy into residual",
+    name: "Copy the token embedding into the residual stream",
+    phase: "Residual initialization",
+    color: COLORS.current,
+    duration: 2.8,
+    station: "start",
+    math: `${mathVector("r", "", "(0)")} ← ${mathVector("x", "n")}`,
+    mathNote: "The original token embedding remains visible while an exact copy initializes the residual stream.",
+    copy: "A same-sized copy travels from the static word sphere to the empty residual carrier.",
+  });
+  for (let i = 0; i < state.layerCount; i++) {
+    const ell = i + 1;
+    const inSup = `(${i})`;
+    const outSup = `(${ell})`;
+    const prefix = `L${ell}`;
+    push({ type: "travel-attn", layer: i, short: `${prefix} → Attn`, name: `Layer ${ell}: residual travels to Attention pre-norm`, phase: `Layer ${ell} · residual stream`, color: COLORS.current, station: `l${i}-attn-norm`, math: `${mathVector("r", "", inSup)} → RMSNorm`, mathNote: "The residual itself bypasses the module; only a normalized copy enters Attention.", copy: "The current residual moves to this layer’s Attention pre-norm station." });
+    push({ type: "attn-norm-lift", layer: i, short: `${prefix} Attn copy`, name: `Layer ${ell}: lift an exact residual copy straight up`, phase: `Layer ${ell} · Attention norm`, color: COLORS.norm, station: `l${i}-attn-norm`, math: `${mathVector("r", "copy", inSup)} ← ${mathVector("r", "", inSup)}`, mathNote: "Before normalization, the lifted sphere and vector are a perfect copy of the current residual.", copy: "The copy moves only upward, preserving direction and magnitude." });
+    push({ type: "attn-norm-project", layer: i, short: `${prefix} Attn norm`, name: `Layer ${ell}: project the Attention copy to the sphere surface`, phase: `Layer ${ell} · Attention norm`, color: COLORS.norm, station: `l${i}-attn-norm`, math: `${mathVector("r̂", "", inSup)} = RMSNorm(${mathVector("r", "", inSup)})`, mathNote: "The visualization uses radial projection to the same-sized sphere surface as the geometric analogue of pre-normalization.", copy: "The lifted copy remains vertically aligned while its vector reaches radius R." });
+    push({ type: "attn-module", layer: i, short: `${prefix} Attention`, name: `Layer ${ell}: normalized residual passes through Attention`, phase: `Layer ${ell} · Attention`, color: COLORS.attention, station: `l${i}-attn-add`, duration: 3.8, math: `${mathVector("a", "", `(${ell})`)} = MHA<sup>(${ell})</sup>(${mathVector("r̂", "", inSup)})`, mathNote: "The opaque box summarizes multi-head read → activate → write while the residual branch moves underneath it.", copy: "The output sphere clears the module header and stops directly above the residual add station." });
+    push({ type: "attn-output-down", layer: i, short: `${prefix} Attn output ↓`, name: `Layer ${ell}: lower the Attention output above the residual`, phase: `Layer ${ell} · Attention output`, color: COLORS.output, station: `l${i}-attn-add`, duration: 3.1, math: `${mathVector("a", "", `(${ell})`)} ↓ ${mathVector("r", "", inSup)}`, mathNote: "The output first holds beyond the box, then descends vertically to a small gap above the residual carrier.", copy: "Both vectors remain visible before the addition close-up." });
+    push({ type: "attn-add-setup", layer: i, short: `${prefix} Attn add`, name: `Layer ${ell}: place the Attention update tip-to-tail`, phase: `Layer ${ell} · residual addition`, color: COLORS.plus, station: `l${i}-attn-add`, duration: 3.2, math: `${mathVector("u", "", `(${ell})`)} = ${mathVector("r", "", inSup)} + ${mathVector("a", "", `(${ell})`)}`, mathNote: "The camera moves tightly onto the residual sphere. The second arrow starts exactly at the residual tip; no + or = popup is drawn.", copy: "The concatenated arrows show vector addition geometrically." });
+    push({ type: "attn-add-collapse", layer: i, short: `${prefix} Attn sum`, name: `Layer ${ell}: replace both addends with their summed vector`, phase: `Layer ${ell} · residual addition`, color: COLORS.plus, station: `l${i}-attn-add`, duration: 3.2, math: `${mathVector("u", "", `(${ell})`)} ← ${mathVector("r", "", inSup)} + ${mathVector("a", "", `(${ell})`)}`, mathNote: "After a pause, the concatenated addends fade and one resultant vector remains.", copy: "The summed vector becomes the input to the MLP half of this layer." });
+    push({ type: "travel-mlp", layer: i, short: `${prefix} → MLP`, name: `Layer ${ell}: updated residual travels to MLP pre-norm`, phase: `Layer ${ell} · residual stream`, color: COLORS.current, station: `l${i}-mlp-norm`, math: `${mathVector("u", "", `(${ell})`)} → RMSNorm`, mathNote: "The camera widens to reveal the MLP region while preserving free orbit and pan controls.", copy: "The Attention-updated residual advances to the layer’s MLP pre-norm station." });
+    push({ type: "mlp-norm-lift", layer: i, short: `${prefix} MLP copy`, name: `Layer ${ell}: lift an exact MLP residual copy`, phase: `Layer ${ell} · MLP norm`, color: COLORS.norm, station: `l${i}-mlp-norm`, math: `${mathVector("u", "copy", `(${ell})`)} ← ${mathVector("u", "", `(${ell})`)}`, mathNote: "The copy begins coincident with the residual and moves straight upward without changing its vector.", copy: "Direction and magnitude remain identical during the lift." });
+    push({ type: "mlp-norm-project", layer: i, short: `${prefix} MLP norm`, name: `Layer ${ell}: project the MLP copy to the sphere surface`, phase: `Layer ${ell} · MLP norm`, color: COLORS.norm, station: `l${i}-mlp-norm`, math: `${mathVector("ū", "", `(${ell})`)} = RMSNorm(${mathVector("u", "", `(${ell})`)})`, mathNote: "This is the second pre-normalization in a standard pre-LN Transformer layer.", copy: "The copied vector expands radially to radius R." });
+    push({ type: "mlp-module", layer: i, short: `${prefix} MLP`, name: `Layer ${ell}: normalized residual passes through the MLP`, phase: `Layer ${ell} · MLP`, color: COLORS.mlp, station: `l${i}-mlp-add`, duration: 3.8, math: `${mathVector("m", "", `(${ell})`)} = W<sub>2</sub><sup>(${ell})</sup> φ(W<sub>1</sub><sup>(${ell})</sup>${mathVector("ū", "", `(${ell})`)})`, mathNote: i === state.layerCount - 1 ? `This final MLP is constructed so the resulting residual is nearest to the next sentence token “${nextWordFor(state.word)}”, with a small deterministic angular variation.` : "The opaque MLP summarizes read → nonlinear activation → write.", copy: i === state.layerCount - 1 ? "The final MLP steers the hidden direction toward the next token while retaining visible variation." : "The MLP output clears the header and stops directly above its residual add station." });
+    push({ type: "mlp-output-down", layer: i, short: `${prefix} MLP output ↓`, name: `Layer ${ell}: lower the MLP output above the residual`, phase: `Layer ${ell} · MLP output`, color: COLORS.output, station: `l${i}-mlp-add`, duration: 3.1, math: `${mathVector("m", "", `(${ell})`)} ↓ ${mathVector("u", "", `(${ell})`)}`, mathNote: "The output holds beyond the module, then moves straight down so its sphere and header remain visually separate.", copy: "Both vectors pause before the close-up addition." });
+    push({ type: "mlp-add-setup", layer: i, short: `${prefix} MLP add`, name: `Layer ${ell}: place the MLP update tip-to-tail`, phase: `Layer ${ell} · residual addition`, color: COLORS.plus, station: `l${i}-mlp-add`, duration: 3.2, math: `${mathVector("r", "", outSup)} = ${mathVector("u", "", `(${ell})`)} + ${mathVector("m", "", `(${ell})`)}`, mathNote: "The camera zooms directly onto the residual sphere and displays only the geometric concatenation and resultant vectors.", copy: "No symbolic + or = popups obscure the arrows." });
+    push({ type: "mlp-add-collapse", layer: i, short: `${prefix} MLP sum`, name: `Layer ${ell}: replace both MLP addends with the layer output`, phase: `Layer ${ell} · residual addition`, color: COLORS.plus, station: `l${i}-mlp-add`, duration: 3.2, math: `${mathVector("r", "", outSup)} ← ${mathVector("u", "", `(${ell})`)} + ${mathVector("m", "", `(${ell})`)}`, mathNote: i === state.layerCount - 1 ? `The final residual now points nearest to “${nextWordFor(state.word)}” before output normalization.` : `The resulting residual continues into layer ${ell + 1}.`, copy: "The source arrows fade, leaving one layer-output residual vector." });
+  }
+  push({ type: "travel-output", short: "→ Output norm", name: "Final layer output travels to output normalization", phase: "Final residual stream", color: COLORS.current, station: "output-norm", duration: 3.1, math: `${mathVector("r", "", `(${state.layerCount})`)} → RMSNorm`, mathNote: `All ${state.layerCount} Attention–MLP layer${state.layerCount === 1 ? "" : "s"} are complete.`, copy: "The camera widens and follows the residual toward the static LM Head." });
+  push({ type: "output-project", short: "Output norm", name: "Project the final residual to the sphere surface", phase: "Output normalization", color: COLORS.norm, station: "output-norm", math: `${mathVector("h")} = RMSNorm(${mathVector("r", "", `(${state.layerCount})`)})`, mathNote: "The final hidden state h is the normalized residual consumed by the LM Head.", copy: "The current residual direction is preserved while its magnitude reaches radius R." });
+  push({ type: "lm-read", short: "LM Head read", name: "Read every sentence-token vector with a dot product", phase: "LM Head", color: COLORS.soft, station: "output-norm", duration: 3.4, math: `${mathVector("z", "i")} = ${mathVector("e", "i")}<sup>⊤</sup>${mathVector("h")}`, mathNote: "Each LM-head vector eᵢ corresponds to exactly one space-delimited token in the selected sentence.", copy: "Dashed lines connect h to all token vectors and reveal their dot products." });
+  push({ type: "lm-copy", short: "Copy LM Head", name: "Copy the LM Head and its dot-product values", phase: "Logit copy", color: COLORS.soft, station: "logits", duration: 2.9, math: `${mathVector("z")} ← E<sup>⊤</sup>${mathVector("h")}`, mathNote: "The static LM Head stays in place while a complete labeled copy moves down the track.", copy: "The copied vocabulary sphere carries the dot-product labels to the logits station." });
+  push({ type: "logits", short: "Scale logits", name: "Scale copied token vectors by their signed dot products", phase: "Logits", color: COLORS.soft, station: "logits", duration: 3.1, math: `${mathVector("v", "i", "logit")} = ${mathVector("z", "i")}${mathVector("e", "i")}`, mathNote: "Positive logits preserve direction; negative logits reverse it; magnitude encodes |zᵢ|.", copy: "The copied LM-head rays expand, contract, or reverse according to their signed values." });
+  push({ type: "softmax", short: "Softmax", name: "Convert logits into positive token probabilities", phase: "Softmax", color: COLORS.output, station: "softmax", duration: 3.3, math: `${mathVector("p", "i")} = exp(${mathVector("z", "i")}) / Σ<sub>j</sub> exp(${mathVector("z", "j")})`, mathNote: "All probability rays are positive and their scalar values sum to one.", copy: "Signed logit vectors morph into probability magnitudes and percentage labels." });
+  push({ type: "selection", short: "Top-k sample", name: "Highlight top-k candidates and choose the next token", phase: "Token selection", color: COLORS.output, station: "softmax", duration: 3.0, math: `t<sub>n+1</sub> ~ Categorical(TopK(${mathVector("p")}, k))`, mathNote: "k=1 is greedy. Larger k samples proportionally among the highlighted candidates.", copy: "The final MLP makes the sentence’s next token top-1, while top-k can deliberately introduce alternatives." });
+  push({ type: "return", short: "Return token", name: "Return the selected token to the residual start", phase: "Autoregressive loop", color: COLORS.current, station: "start", duration: 4.0, math: `${mathVector("x", "n+1")} = E[t<sub>n+1</sub>]`, mathNote: "The selected token becomes the next input embedding. Loop mode can continue around the sentence indefinitely.", copy: "A same-sized token sphere follows the elevated return path to the first residual station." });
+  stages.forEach((stage, index) => { stage.index = index; });
+  return stages;
+}
+
+let layout = computeLayout(state.layerCount);
+let STAGES = buildStages();
+let MAX_STAGE = STAGES.length - 1;
+let SELECTION_STAGE = STAGES.findIndex(s => s.type === "selection");
+let RETURN_STAGE = STAGES.findIndex(s => s.type === "return");
+let LOOP_RESTART_STAGE = STAGES.findIndex(s => s.type === "travel-attn" && s.layer === 0);
+let pass = buildPass();
+
+const canvas = document.getElementById("scene");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(COLORS.bg, 1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(COLORS.bg);
+scene.fog = new THREE.FogExp2(COLORS.bg, 0.0055);
+const world = new THREE.Group();
+scene.add(world);
+
+const camera = new THREE.PerspectiveCamera(47, 1, 0.1, 260);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.enablePan = true;
+controls.enableRotate = true;
+controls.enableZoom = true;
+controls.dampingFactor = 0.075;
+controls.minDistance = 2.0;
+controls.maxDistance = 170;
+scene.add(new THREE.AmbientLight(0xffffff, 0.92));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.15);
+keyLight.position.set(5, 10, 10);
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0x9fd9ff, 0.45);
+fillLight.position.set(-10, 4, -8);
+scene.add(fillLight);
+const rimLight = new THREE.DirectionalLight(0xd8b4fe, 0.34);
+rimLight.position.set(14, 8, -5);
+scene.add(rimLight);
+
+const UNIT_CONE_GEOMETRY = (() => {
+  const g = new THREE.ConeGeometry(1, 1, 30, 1, true);
+  g.rotateZ(Math.PI);
+  g.translate(0, 0.5, 0);
+  return g;
+})();
+let sharedCapGeometry = null;
+let sharedRimGeometry = null;
+function buildSectorGeometry(deg) {
+  const oldCap = sharedCapGeometry;
+  const oldRim = sharedRimGeometry;
+  const a = THREE.MathUtils.degToRad(Math.max(0.5, deg));
+  sharedCapGeometry = new THREE.SphereGeometry(1, 28, 12, 0, Math.PI * 2, 0, a);
+  const pts = [], r = Math.sin(a), y = Math.cos(a);
+  for (let i = 0; i <= 64; i++) {
+    const p = (i / 64) * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(p) * r, y, Math.sin(p) * r));
+  }
+  sharedRimGeometry = new THREE.BufferGeometry().setFromPoints(pts);
+  return { oldCap, oldRim };
+}
+buildSectorGeometry(state.solidAngleDeg);
+
+class DirectionGlyph {
+  constructor(color, dashed = false, parent = world) {
+    this.group = new THREE.Group();
+    parent.add(this.group);
+    this.dashed = dashed;
+    this.sideMat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.13, metalness: 0.03, roughness: 0.82, side: THREE.DoubleSide, depthWrite: false });
+    this.side = new THREE.Mesh(UNIT_CONE_GEOMETRY, this.sideMat);
+    this.group.add(this.side);
+    this.capMat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false });
+    this.cap = new THREE.Mesh(sharedCapGeometry, this.capMat);
+    this.group.add(this.cap);
+    this.rimMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.22, depthWrite: false });
+    this.rim = new THREE.Line(sharedRimGeometry, this.rimMat);
+    this.group.add(this.rim);
+    this.positions = new Float32Array([0, 0, 0, 0, 1, 0]);
+    this.lineGeom = new THREE.BufferGeometry();
+    this.lineGeom.setAttribute("position", new THREE.BufferAttribute(this.positions, 3));
+    this.lineMat = dashed
+      ? new THREE.LineDashedMaterial({ color, transparent: true, opacity: 1, dashSize: 0.09, gapSize: 0.065, depthWrite: false })
+      : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 1, depthWrite: false });
+    this.line = new THREE.Line(this.lineGeom, this.lineMat);
+    this.group.add(this.line);
+    this.headGeom = new THREE.ConeGeometry(0.05, 0.17, 18);
+    this.headMat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 1, depthWrite: false });
+    this.head = new THREE.Mesh(this.headGeom, this.headMat);
+    this.group.add(this.head);
+  }
+  set(start, end, color, opacity = 1, sectorScale = 1) {
+    const d = end.clone().sub(start), len = d.length();
+    this.group.visible = len > 1e-6 && opacity > 0.002;
+    if (!this.group.visible) return;
+    this.group.position.copy(start);
+    this.group.quaternion.setFromUnitVectors(UP, d.clone().normalize());
+    if (this.cap.geometry !== sharedCapGeometry) this.cap.geometry = sharedCapGeometry;
+    if (this.rim.geometry !== sharedRimGeometry) this.rim.geometry = sharedRimGeometry;
+    const a = THREE.MathUtils.degToRad(state.solidAngleDeg * sectorScale);
+    this.side.scale.set(Math.max(0.001, len * Math.sin(a)), Math.max(0.001, len * Math.cos(a)), Math.max(0.001, len * Math.sin(a)));
+    this.cap.scale.set(len, len, len);
+    this.rim.scale.set(len, len, len);
+    this.sideMat.color.set(color);
+    this.capMat.color.set(color);
+    this.rimMat.color.set(color);
+    this.sideMat.opacity = opacity * 0.13;
+    this.capMat.opacity = opacity * 0.07;
+    this.rimMat.opacity = opacity * 0.23;
+    const hl = Math.min(0.22, Math.max(0.1, len * 0.19));
+    const shaft = Math.max(0.001, len - hl);
+    const hr = Math.min(0.057, Math.max(0.032, len * 0.055));
+    this.positions[0] = 0; this.positions[1] = 0; this.positions[2] = 0;
+    this.positions[3] = 0; this.positions[4] = shaft; this.positions[5] = 0;
+    this.lineGeom.attributes.position.needsUpdate = true;
+    this.lineGeom.computeBoundingSphere();
+    if (this.dashed) this.line.computeLineDistances();
+    this.lineMat.color.set(color);
+    this.lineMat.opacity = opacity;
+    this.headMat.color.set(color);
+    this.headMat.opacity = opacity;
+    this.head.scale.set(hr / 0.05, hl / 0.17, hr / 0.05);
+    this.head.position.set(0, len - hl / 2, 0);
+    this.head.quaternion.identity();
+  }
+  hide() { this.group.visible = false; }
+}
+
+const allLabels = [];
+function roundRect(ctx, x, y, w, h, r) {
+  const q = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + q, y);
+  ctx.arcTo(x + w, y, x + w, y + h, q);
+  ctx.arcTo(x + w, y + h, x, y + h, q);
+  ctx.arcTo(x, y + h, x, y, q);
+  ctx.arcTo(x, y, x + w, y, q);
+  ctx.closePath();
+}
+function makeTextSprite(text, color = COLORS.white, width = 320, height = 88, fontSize = 30, pill = false, parent = world) {
+  const c = document.createElement("canvas");
+  c.width = width; c.height = height;
+  const ctx = c.getContext("2d");
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+  const s = new THREE.Sprite(mat);
+  s.scale.set(width / 320, height / 320, 1);
+  s.renderOrder = 30;
+  s.userData = { canvas: c, ctx, texture: tex, fontSize, pill, lastText: null, lastColor: null };
+  parent.add(s);
+  allLabels.push(s);
+  updateTextSprite(s, text, color);
+  return s;
+}
+function updateTextSprite(s, text, color = COLORS.white) {
+  const d = s.userData;
+  if (d.lastText === text && d.lastColor === color) return;
+  const { canvas: c, ctx, texture: tex, fontSize: f, pill } = d;
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (pill) {
+    roundRect(ctx, 5, 8, c.width - 10, c.height - 16, 20);
+    ctx.fillStyle = "rgba(0,0,0,.46)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.14)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.font = `700 ${f}px Inter, Arial, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  if (!pill) {
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(5,8,22,.92)";
+    ctx.lineWidth = Math.max(3, f * 0.18);
+    ctx.strokeText(text, c.width / 2, c.height / 2);
+  }
+  ctx.fillStyle = color;
+  ctx.fillText(text, c.width / 2, c.height / 2);
+  tex.needsUpdate = true;
+  d.lastText = text;
+  d.lastColor = color;
+}
+function setLabel(s, p, text, color, opacity = 1) {
+  if (!state.showLabels || opacity <= 0.002) { s.visible = false; return; }
+  updateTextSprite(s, text, color);
+  s.position.copy(p);
+  s.material.opacity = opacity;
+  s.visible = true;
+}
+function makeLine(dashed = true, color = COLORS.white, parent = world) {
+  const arr = new Float32Array([0, 0, 0, 0, 1, 0]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  const m = dashed
+    ? new THREE.LineDashedMaterial({ color, transparent: true, opacity: 0.4, dashSize: 0.085, gapSize: 0.06, depthWrite: false })
+    : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.4, depthWrite: false });
+  const l = new THREE.Line(g, m);
+  l.visible = false;
+  parent.add(l);
+  return l;
+}
+function setLine(l, a, b, opacity = 1, color = COLORS.white) {
+  l.visible = opacity > 0.002;
+  if (!l.visible) return;
+  const q = l.geometry.attributes.position.array;
+  q[0] = a.x; q[1] = a.y; q[2] = a.z;
+  q[3] = b.x; q[4] = b.y; q[5] = b.z;
+  l.geometry.attributes.position.needsUpdate = true;
+  l.geometry.computeBoundingSphere();
+  l.material.opacity = opacity;
+  l.material.color.set(color);
+  if (l.material.isLineDashedMaterial) l.computeLineDistances();
+}
+function makePolyline(n = 100, dashed = false, color = COLORS.white, parent = world) {
+  const arr = new Float32Array(n * 3);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+  g.setDrawRange(0, 0);
+  const m = dashed
+    ? new THREE.LineDashedMaterial({ color, transparent: true, opacity: 0.5, dashSize: 0.12, gapSize: 0.075, depthWrite: false })
+    : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5, depthWrite: false });
+  const l = new THREE.Line(g, m);
+  l.visible = false;
+  parent.add(l);
+  return l;
+}
+function setPolyline(l, pts, opacity = 1, color = COLORS.white) {
+  l.visible = pts.length > 1 && opacity > 0.002;
+  if (!l.visible) return;
+  const a = l.geometry.attributes.position.array;
+  const n = Math.min(pts.length, a.length / 3);
+  for (let i = 0; i < n; i++) {
+    a[i * 3] = pts[i].x; a[i * 3 + 1] = pts[i].y; a[i * 3 + 2] = pts[i].z;
+  }
+  l.geometry.setDrawRange(0, n);
+  l.geometry.attributes.position.needsUpdate = true;
+  l.geometry.computeBoundingSphere();
+  l.material.opacity = opacity;
+  l.material.color.set(color);
+  if (l.material.isLineDashedMaterial) l.computeLineDistances();
+}
+
+class VectorOrb {
+  constructor(r, color, label, parent = world) {
+    this.radius = r;
+    this.group = new THREE.Group();
+    parent.add(this.group);
+    this.shellMat = new THREE.MeshBasicMaterial({ color: COLORS.white, wireframe: true, transparent: true, opacity: 0.15, depthWrite: false });
+    this.shell = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 20), this.shellMat);
+    this.group.add(this.shell);
+    this.innerMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.035, depthWrite: false });
+    this.inner = new THREE.Mesh(new THREE.SphereGeometry(r * 0.97, 28, 18), this.innerMat);
+    this.group.add(this.inner);
+    this.axes = new THREE.Group();
+    const am = new THREE.LineBasicMaterial({ color: COLORS.grid, transparent: true, opacity: 0.22, depthWrite: false });
+    [
+      [-1, 0, 0, 1, 0, 0],
+      [0, -1, 0, 0, 1, 0],
+      [0, 0, -1, 0, 0, 1],
+    ].forEach(a => {
+      const g = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(a[0], a[1], a[2]).multiplyScalar(r * 1.05),
+        new THREE.Vector3(a[3], a[4], a[5]).multiplyScalar(r * 1.05),
+      ]);
+      this.axes.add(new THREE.Line(g, am.clone()));
+    });
+    this.group.add(this.axes);
+    this.haloMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, depthWrite: false });
+    this.halo = new THREE.Mesh(new THREE.TorusGeometry(r * 1.16, 0.023, 8, 64), this.haloMat);
+    this.halo.rotation.x = Math.PI / 2;
+    this.group.add(this.halo);
+    this.glyph = new DirectionGlyph(color, false, this.group);
+    this.tipMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1, depthWrite: false });
+    this.tip = new THREE.Mesh(new THREE.SphereGeometry(r * 0.075, 14, 10), this.tipMat);
+    this.group.add(this.tip);
+    this.label = makeTextSprite(label, color, 260, 62, 20, false, this.group);
+    this.label.position.set(0, r + 0.38, 0);
+    this.group.visible = false;
+  }
+  set(pos, dir, len, color, opacity = 1, label = null, scale = 1, vectorOpacity = opacity) {
+    this.group.visible = opacity > 0.002;
+    if (!this.group.visible) return;
+    this.group.position.copy(pos);
+    this.group.scale.setScalar(scale);
+    this.shellMat.opacity = 0.14 * opacity;
+    this.innerMat.opacity = 0.036 * opacity;
+    this.innerMat.color.set(color);
+    this.haloMat.opacity = 0.34 * opacity;
+    this.haloMat.color.set(color);
+    this.axes.children.forEach(x => { x.material.opacity = 0.2 * opacity; });
+    const end = len > 1e-6 ? unit(dir).multiplyScalar(len) : new THREE.Vector3();
+    if (len > 1e-6 && vectorOpacity > 0.002) {
+      this.glyph.set(new THREE.Vector3(), end, color, vectorOpacity, 0.92);
+      this.tip.position.copy(end);
+      this.tipMat.color.set(color);
+      this.tipMat.opacity = vectorOpacity;
+      this.tip.visible = true;
+    } else {
+      this.glyph.hide();
+      this.tip.visible = false;
+    }
+    if (label !== null) updateTextSprite(this.label, label, color);
+    this.label.visible = state.showLabels && opacity > 0.12;
+    this.label.material.opacity = opacity;
+  }
+  setEmpty(pos, color = COLORS.current, opacity = 1, label = "empty residual") {
+    this.set(pos, new THREE.Vector3(0, 1, 0), 0, color, opacity, label, 1, 0);
+  }
+  hide() { this.group.visible = false; }
+}
+
+class VocabularySphere {
+  constructor(title, color, pos, parent = world) {
+    this.group = new THREE.Group();
+    this.group.position.copy(pos);
+    parent.add(this.group);
+    this.shellMat = new THREE.MeshBasicMaterial({ color: COLORS.white, wireframe: true, transparent: true, opacity: 0.12, depthWrite: false });
+    this.shell = new THREE.Mesh(new THREE.SphereGeometry(CARRIER_R, 32, 20), this.shellMat);
+    this.group.add(this.shell);
+    this.innerMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.025, depthWrite: false });
+    this.inner = new THREE.Mesh(new THREE.SphereGeometry(CARRIER_R * 0.97, 28, 18), this.innerMat);
+    this.group.add(this.inner);
+    this.haloMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, depthWrite: false });
+    this.halo = new THREE.Mesh(new THREE.TorusGeometry(CARRIER_R * 1.16, 0.023, 8, 64), this.haloMat);
+    this.halo.rotation.x = Math.PI / 2;
+    this.group.add(this.halo);
+    this.label = makeTextSprite(title, color, 300, 68, 22, false, this.group);
+    this.label.position.set(0, CARRIER_R + 0.42, 0);
+    this.glyphs = Array.from({ length: 5 }, (_, i) => new DirectionGlyph(WORD_COLORS[i], false, this.group));
+    this.wordLabels = Array.from({ length: 5 }, (_, i) => {
+      const s = makeTextSprite("", WORD_COLORS[i], 190, 42, 15, false, this.group);
+      s.visible = false;
+      return s;
+    });
+    this.valueLabels = Array.from({ length: 5 }, (_, i) => {
+      const s = makeTextSprite("", WORD_COLORS[i], 190, 42, 15, false, this.group);
+      s.visible = false;
+      return s;
+    });
+    this.rings = Array.from({ length: 5 }, (_, i) => {
+      const m = new THREE.MeshBasicMaterial({ color: WORD_COLORS[i], transparent: true, opacity: 0, depthWrite: false });
+      const r = new THREE.Mesh(new THREE.TorusGeometry(0.105, 0.018, 8, 42), m);
+      r.visible = false;
+      this.group.add(r);
+      return r;
+    });
+  }
+  render({ position = this.group.position, vectors, values = null, valueFormatter = null, opacity = 1, wordOpacity = 1, topSet = new Set(), selectedIndex = null, pulse = 1, title = null }) {
+    this.group.visible = opacity > 0.002;
+    if (!this.group.visible) return;
+    this.group.position.copy(position);
+    this.shellMat.opacity = 0.12 * opacity;
+    this.innerMat.opacity = 0.025 * opacity;
+    this.haloMat.opacity = 0.25 * opacity;
+    if (title !== null) updateTextSprite(this.label, title, COLORS.soft);
+    this.label.visible = state.showLabels;
+    this.label.material.opacity = opacity;
+    for (let i = 0; i < this.glyphs.length; i++) {
+      if (i >= vectors.length || i >= WORDS.length) {
+        this.glyphs[i].hide();
+        this.wordLabels[i].visible = false;
+        this.valueLabels[i].visible = false;
+        this.rings[i].visible = false;
+        continue;
+      }
+      const v = vectors[i];
+      const op = (topSet.size ? (topSet.has(i) ? 1 : 0.2) : wordOpacity) * opacity;
+      this.glyphs[i].set(new THREE.Vector3(), v, WORD_COLORS[i], op, 0.72);
+      const tip = v.clone();
+      setLabel(this.wordLabels[i], tip.clone().add(new THREE.Vector3(0.11, 0.09 - 0.03 * i, 0.05)), WORDS[i], WORD_COLORS[i], op);
+      if (values && valueFormatter) {
+        setLabel(this.valueLabels[i], tip.clone().add(new THREE.Vector3(0.12, -0.15 - 0.026 * i, 0.06)), valueFormatter(values[i], i), WORD_COLORS[i], op);
+      } else {
+        this.valueLabels[i].visible = false;
+      }
+      const ring = this.rings[i];
+      const hi = topSet.has(i) || selectedIndex === i;
+      ring.visible = hi;
+      ring.material.opacity = hi ? (selectedIndex === i ? 0.95 : 0.52) : 0;
+      ring.position.copy(tip);
+      ring.quaternion.copy(camera.quaternion);
+      ring.scale.setScalar(selectedIndex === i ? pulse : 1);
+      this.glyphs[i].group.scale.setScalar(selectedIndex === i ? pulse : 1);
+    }
+  }
+  hide() { this.group.visible = false; }
+}
+
+class ModuleBox {
+  constructor(title, pos, color, parent = world) {
+    this.group = new THREE.Group();
+    this.group.position.copy(pos);
+    parent.add(this.group);
+    this.color = color;
+    const g = new THREE.BoxGeometry(2.15, 1.36, 1.04);
+    this.mat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.13, depthWrite: false });
+    this.mesh = new THREE.Mesh(g, this.mat);
+    this.group.add(this.mesh);
+    this.edgeMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.45, depthWrite: false });
+    this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(g), this.edgeMat);
+    this.group.add(this.edges);
+    this.scanMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });
+    this.scan = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 1.08), this.scanMat);
+    this.scan.rotation.y = Math.PI / 2;
+    this.group.add(this.scan);
+    this.inputRingMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, depthWrite: false });
+    this.inputRing = new THREE.Mesh(new THREE.TorusGeometry(0.28, 0.025, 8, 48), this.inputRingMat);
+    this.inputRing.rotation.y = Math.PI / 2;
+    this.inputRing.position.x = -1.09;
+    this.group.add(this.inputRing);
+    this.outputRingMat = this.inputRingMat.clone();
+    this.outputRing = new THREE.Mesh(new THREE.TorusGeometry(0.28, 0.025, 8, 48), this.outputRingMat);
+    this.outputRing.rotation.y = Math.PI / 2;
+    this.outputRing.position.x = 1.09;
+    this.group.add(this.outputRing);
+    this.label = makeTextSprite(title, color, 320, 72, 24, true, this.group);
+    this.label.position.set(0, 1.12, 0);
+    this.status = makeTextSprite("IDLE", color, 200, 56, 18, true, this.group);
+    this.status.position.set(0, -1.02, 0);
+  }
+  render(active, p, ts) {
+    const pulse = 0.5 + 0.5 * Math.sin(ts * 0.009);
+    this.mat.opacity = active ? 0.25 + 0.06 * pulse : 0.065;
+    this.edgeMat.opacity = active ? 0.82 : 0.2;
+    this.inputRingMat.opacity = active ? 0.55 : 0.13;
+    this.outputRingMat.opacity = active ? 0.55 : 0.13;
+    this.scan.visible = active;
+    this.scanMat.opacity = active ? 0.18 + 0.2 * Math.sin(Math.PI * clamp01(p)) : 0;
+    this.scan.position.x = -0.92 + 1.84 * smootherstep01(p);
+    const phase = p < 0.34 ? "READ" : p < 0.68 ? "ACTIVATE" : "WRITE";
+    updateTextSprite(this.status, active ? phase : "IDLE", this.color);
+    this.status.visible = state.showLabels;
+    this.status.material.opacity = state.showLabels ? (active ? 1 : 0.3) : 0;
+    this.label.visible = state.showLabels;
+    this.label.material.opacity = state.showLabels ? (active ? 1 : 0.58) : 0;
+  }
+}
+
+let layoutGroup = new THREE.Group();
+world.add(layoutGroup);
+let stations = [];
+let stationMap = new Map();
+let layerVisuals = [];
+let trackLights = [];
+
+function disposeObjectTree(root) {
+  root.traverse(obj => {
+    obj.geometry?.dispose?.();
+    if (Array.isArray(obj.material)) obj.material.forEach(m => { m.map?.dispose?.(); m.dispose?.(); });
+    else { obj.material?.map?.dispose?.(); obj.material?.dispose?.(); }
+  });
+}
+function makeStation(key, title, pos, color, parent) {
+  const g = new THREE.Group();
+  g.position.copy(pos);
+  parent.add(g);
+  const platformMat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.11, depthWrite: false });
+  const platform = new THREE.Mesh(new THREE.CylinderGeometry(1.02, 1.1, 0.1, 48), platformMat);
+  platform.position.y = -CARRIER_R - 0.09;
+  g.add(platform);
+  const ringMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.34, depthWrite: false });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1.08, 0.032, 10, 72), ringMat);
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = -CARRIER_R - 0.02;
+  g.add(ring);
+  const innerRingMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, depthWrite: false });
+  const inner = new THREE.Mesh(new THREE.TorusGeometry(0.76, 0.018, 8, 64), innerRingMat);
+  inner.rotation.x = Math.PI / 2;
+  inner.position.y = -CARRIER_R + 0.005;
+  g.add(inner);
+  const label = makeTextSprite(title, color, 300, 62, 18, false, g);
+  label.position.set(0, 1.28, 0);
+  const station = { key, group: g, platformMat, ringMat, innerRingMat, label, color, position: pos.clone() };
+  stations.push(station);
+  stationMap.set(key, station);
+  return station;
+}
+function createTrack(a, b, index, color, parent) {
+  const fa = a.clone().add(new THREE.Vector3(0, -CARRIER_R - 0.1, 0));
+  const fb = b.clone().add(new THREE.Vector3(0, -CARRIER_R - 0.1, 0));
+  const mid = lerpVec(fa, fb, 0.5).add(new THREE.Vector3(0, 0, index % 2 ? -0.13 : 0.13));
+  const curve = new THREE.CatmullRomCurve3([fa, mid, fb]);
+  [-0.2, 0.2].forEach(off => {
+    const rail = new THREE.CatmullRomCurve3([
+      fa.clone().add(new THREE.Vector3(0, 0, off)),
+      mid.clone().add(new THREE.Vector3(0, 0, off)),
+      fb.clone().add(new THREE.Vector3(0, 0, off)),
+    ]);
+    parent.add(new THREE.Mesh(
+      new THREE.TubeGeometry(rail, 36, 0.018, 6, false),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.25, depthWrite: false }),
+    ));
+  });
+  const centerGeom = new THREE.BufferGeometry().setFromPoints(curve.getPoints(48));
+  const centerMat = new THREE.LineDashedMaterial({ color, transparent: true, opacity: 0.15, dashSize: 0.16, gapSize: 0.12, depthWrite: false });
+  const center = new THREE.Line(centerGeom, centerMat);
+  center.computeLineDistances();
+  parent.add(center);
+  for (let i = 0; i < 6; i++) {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.035, 10, 8),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, depthWrite: false }),
+    );
+    m.position.copy(curve.getPoint((i + 0.5) / 6));
+    m.userData = { phase: i / 6 + index * 0.13 };
+    parent.add(m);
+    trackLights.push(m);
+  }
+}
+function rebuildLayoutVisuals() {
+  world.remove(layoutGroup);
+  disposeObjectTree(layoutGroup);
+  layoutGroup = new THREE.Group();
+  world.add(layoutGroup);
+  stations = [];
+  stationMap = new Map();
+  layerVisuals = [];
+  trackLights = [];
+
+  makeStation("start", "Residual start", layout.residualStart, COLORS.current, layoutGroup);
+  layout.layers.forEach((p, i) => {
+    makeStation(`l${i}-attn-norm`, `L${i + 1} Attn norm`, p.attnNorm, COLORS.norm, layoutGroup);
+    makeStation(`l${i}-attn-add`, `L${i + 1} Attn add`, p.attnAdd, COLORS.plus, layoutGroup);
+    makeStation(`l${i}-mlp-norm`, `L${i + 1} MLP norm`, p.mlpNorm, COLORS.norm, layoutGroup);
+    makeStation(`l${i}-mlp-add`, `L${i + 1} MLP add`, p.mlpAdd, COLORS.plus, layoutGroup);
+    const attentionBox = new ModuleBox(`L${i + 1} ATTENTION`, p.attnBox, COLORS.attention, layoutGroup);
+    const mlpBox = new ModuleBox(`L${i + 1} MLP`, p.mlpBox, COLORS.mlp, layoutGroup);
+    layerVisuals.push({ attentionBox, mlpBox });
+  });
+  makeStation("output-norm", "Output norm", layout.outNorm, COLORS.norm, layoutGroup);
+  makeStation("logits", "Logits copy", layout.logits, COLORS.soft, layoutGroup);
+  makeStation("softmax", "Softmax / select", layout.softmax, COLORS.output, layoutGroup);
+
+  const path = [layout.residualStart];
+  layout.layers.forEach(p => path.push(p.attnNorm, p.attnAdd, p.mlpNorm, p.mlpAdd));
+  path.push(layout.outNorm, layout.lmHead, layout.logits, layout.softmax);
+  for (let i = 0; i < path.length - 1; i++) {
+    const color = i < path.length - 4 ? (i % 4 === 0 || i % 4 === 2 ? COLORS.norm : COLORS.plus) : (i === path.length - 4 ? COLORS.soft : COLORS.output);
+    createTrack(path[i], path[i + 1], i, color, layoutGroup);
+  }
+
+  const gridSize = Math.max(64, Math.ceil(layout.width + 12));
+  const floorGrid = new THREE.GridHelper(gridSize, Math.max(48, Math.round(gridSize)), COLORS.grid, COLORS.grid);
+  floorGrid.position.set(layout.centerX, -CARRIER_R - 0.15, 0);
+  floorGrid.material.transparent = true;
+  floorGrid.material.opacity = 0.045;
+  floorGrid.material.depthWrite = false;
+  layoutGroup.add(floorGrid);
+}
+
+const starCount = 850;
+const starPositions = new Float32Array(starCount * 3);
+const starRng = seededRng(2026);
+for (let i = 0; i < starCount; i++) {
+  starPositions[i * 3] = -10 + starRng() * 105;
+  starPositions[i * 3 + 1] = -1 + starRng() * 16;
+  starPositions[i * 3 + 2] = -16 + starRng() * 32;
+}
+const starGeom = new THREE.BufferGeometry();
+starGeom.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
+const stars = new THREE.Points(starGeom, new THREE.PointsMaterial({ color: 0xb9c7e8, size: 0.045, transparent: true, opacity: 0.16, depthWrite: false, sizeAttenuation: true }));
+scene.add(stars);
+
+rebuildLayoutVisuals();
+
+const inputSphere = new VectorOrb(CARRIER_R, COLORS.current, "static input token");
+const carrier = new VectorOrb(CARRIER_R, COLORS.current, "residual stream");
+const wordCopyOrb = new VectorOrb(CARRIER_R, COLORS.current, "token copy");
+const normOrb = new VectorOrb(CARRIER_R, COLORS.norm, "norm copy");
+const moduleOutOrb = new VectorOrb(CARRIER_R, COLORS.output, "module output");
+const returnOrb = new VectorOrb(CARRIER_R, COLORS.current, "next token");
+const staticLmHead = new VocabularySphere("static LM Head", COLORS.soft, layout.lmHead);
+const movingLmHead = new VocabularySphere("LM-head copy", COLORS.soft, layout.lmHead);
+movingLmHead.hide();
+
+const copyLine = makeLine(true, COLORS.current);
+const normLine = makeLine(true, COLORS.norm);
+const moduleInputLine = makeLine(true, COLORS.norm);
+const moduleOutputLine = makeLine(true, COLORS.output);
+const addChain = new DirectionGlyph(COLORS.plus, false, world);
+const addResult = new DirectionGlyph(COLORS.plus, false, world);
+const addFlashMat = new THREE.MeshBasicMaterial({ color: COLORS.plus, transparent: true, opacity: 0, depthWrite: false });
+const addFlash = new THREE.Mesh(new THREE.TorusGeometry(1.04, 0.035, 8, 72), addFlashMat);
+addFlash.rotation.x = Math.PI / 2;
+addFlash.visible = false;
+world.add(addFlash);
+const lmReadLines = Array.from({ length: 5 }, (_, i) => makeLine(true, WORD_COLORS[i]));
+const lmReadLabels = Array.from({ length: 5 }, (_, i) => makeTextSprite("", WORD_COLORS[i], 210, 42, 15, false, world));
+const returnArc = makePolyline(120, false, COLORS.current);
+const returnDash = makePolyline(120, true, COLORS.current);
+const trailDots = [];
+for (let i = 0; i < 14; i++) {
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(0.055 * (1 - i / 22), 12, 8),
+    new THREE.MeshBasicMaterial({ color: COLORS.current, transparent: true, opacity: 0, depthWrite: false }),
+  );
+  m.visible = false;
+  world.add(m);
+  trailDots.push(m);
+}
+
+function weightedTopKSelection() {
+  const candidates = pass.ranking.slice(0, clamp(state.topK, 1, WORDS.length));
+  if (candidates.length === 1) return candidates[0];
+  const weights = candidates.map(i => pass.probs[i]);
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  let r = Math.random() * sum;
+  for (let j = 0; j < candidates.length; j++) {
+    r -= weights[j];
+    if (r <= 0) return candidates[j];
+  }
+  return candidates[candidates.length - 1];
+}
+function ensureSelection(force = false) {
+  const key = `${state.sentenceKey}|${state.word}|${state.dataSeed}|${state.layerCount}|${state.inputMagnitudeRatio.toFixed(3)}|${state.topK}|${pass.probs.map(p => p.toFixed(7)).join(",")}|${state.selectionNonce}`;
+  if (force || state.selectionKey !== key || state.selectedIndex === null) {
+    state.selectedIndex = weightedTopKSelection();
+    state.selectionKey = key;
+  }
+  return state.selectedIndex;
+}
+function selectedWord() { return WORDS[ensureSelection(false)]; }
+function topSet() { return new Set(pass.ranking.slice(0, clamp(state.topK, 1, WORDS.length))); }
+function probabilityVectors() {
+  const max = Math.max(...pass.probs, 1e-9);
+  return WORDS.map((w, i) => wordDir(w).multiplyScalar(CARRIER_R * (0.12 + 0.88 * pass.probs[i] / max)));
+}
+function fullWordVectors() { return WORDS.map(w => wordDir(w).multiplyScalar(CARRIER_R)); }
+function signedDotVectors() { return WORDS.map((w, i) => wordDir(w).multiplyScalar(CARRIER_R * pass.dots[i])); }
+
+function hideDynamic() {
+  carrier.hide();
+  wordCopyOrb.hide();
+  normOrb.hide();
+  moduleOutOrb.hide();
+  returnOrb.hide();
+  movingLmHead.hide();
+  copyLine.visible = false;
+  normLine.visible = false;
+  moduleInputLine.visible = false;
+  moduleOutputLine.visible = false;
+  addChain.hide();
+  addResult.hide();
+  addFlash.visible = false;
+  lmReadLines.forEach(l => { l.visible = false; });
+  lmReadLabels.forEach(l => { l.visible = false; });
+  returnArc.visible = false;
+  returnDash.visible = false;
+  trailDots.forEach(d => { d.visible = false; });
+}
+function staticInputRender() {
+  inputSphere.set(layout.inputWord, pass.base, pass.base.length(), tokenColor(state.word), 1, `input: ${state.word}`);
+}
+function staticLmRender(showDots = false, progress = 0) {
+  const vectors = fullWordVectors();
+  staticLmHead.render({ position: layout.lmHead, vectors, opacity: 1, wordOpacity: 0.78, title: "static LM Head" });
+  if (showDots) {
+    const hiddenTip = layout.outNorm.clone().add(pass.hidden);
+    vectors.forEach((v, i) => {
+      const local = smoothstep01(progress * WORDS.length - i + 0.12);
+      const tip = layout.lmHead.clone().add(v);
+      setLine(lmReadLines[i], hiddenTip, tip, 0.1 + 0.48 * local, WORD_COLORS[i]);
+      setLabel(
+        lmReadLabels[i],
+        tip.clone().add(new THREE.Vector3(0.12, -0.2 - 0.025 * i, 0.06)),
+        `${WORDS[i]} ${pass.dots[i] >= 0 ? "+" : ""}${pass.dots[i].toFixed(2)}`,
+        WORD_COLORS[i],
+        local,
+      );
+    });
+  }
+}
+function updateStatic(ts) {
+  const stage = STAGES[state.stage];
+  stations.forEach(station => {
+    const on = station.key === stage.station;
+    const pulse = 0.5 + 0.5 * Math.sin(ts * 0.005 + station.position.x * 0.13);
+    station.platformMat.opacity = on ? 0.23 : 0.065;
+    station.ringMat.opacity = on ? 0.6 + 0.15 * pulse : 0.16;
+    station.innerRingMat.opacity = on ? 0.29 + 0.09 * pulse : 0.075;
+    station.label.visible = state.showLabels;
+    station.label.material.opacity = state.showLabels ? (on ? 1 : 0.48) : 0;
+  });
+  trackLights.forEach(m => {
+    const w = 0.5 + 0.5 * Math.sin(ts * 0.006 - m.userData.phase * 12);
+    m.visible = state.showTrail;
+    m.material.opacity = state.showTrail ? 0.08 + 0.28 * w : 0;
+  });
+  layerVisuals.forEach((visual, i) => {
+    const attnActive = stage.layer === i && (stage.type === "attn-module" || stage.type === "attn-output-down");
+    const mlpActive = stage.layer === i && (stage.type === "mlp-module" || stage.type === "mlp-output-down");
+    visual.attentionBox.render(attnActive, stage.type === "attn-module" ? state.progress : 1, ts);
+    visual.mlpBox.render(mlpActive, stage.type === "mlp-module" ? state.progress : 1, ts);
+  });
+}
+function renderTrail(a, b, t, color) {
+  if (!state.showTrail) return;
+  for (let i = 0; i < trailDots.length; i++) {
+    const q = clamp01(t - i * 0.03);
+    if (q <= 0 && i > 0) { trailDots[i].visible = false; continue; }
+    trailDots[i].position.copy(travelPoint(a, b, q, 0.23, 0.16));
+    trailDots[i].material.color.set(color);
+    trailDots[i].material.opacity = (1 - i / trailDots.length) * 0.27;
+    trailDots[i].visible = true;
+  }
+}
+function moduleSpec(kind, layerIndex) {
+  const attention = kind === "attention";
+  const p = layout.layers[layerIndex];
+  const v = pass.layers[layerIndex];
+  return {
+    normBase: attention ? p.attnNorm : p.mlpNorm,
+    normTop: attention ? p.attnNormUp : p.mlpNormUp,
+    add: attention ? p.attnAdd : p.mlpAdd,
+    boxIn: attention ? p.attnBoxIn : p.mlpBoxIn,
+    box: attention ? p.attnBox : p.mlpBox,
+    boxOut: attention ? p.attnBoxOut : p.mlpBoxOut,
+    above: attention ? p.attnOutputAbove : p.mlpOutputAbove,
+    hold: attention ? p.attnOutputHold : p.mlpOutputHold,
+    input: attention ? v.attnNorm : v.mlpNorm,
+    base: attention ? v.base : v.afterAttn,
+    out: attention ? v.attnOut : v.mlpOut,
+    result: attention ? v.afterAttn : v.afterMlp,
+    boxObject: attention ? layerVisuals[layerIndex].attentionBox : layerVisuals[layerIndex].mlpBox,
+    outputLabel: attention ? `L${layerIndex + 1} attention out` : `L${layerIndex + 1} MLP out`,
+  };
+}
+function renderNormLift(kind, layerIndex, t) {
+  const m = moduleSpec(kind, layerIndex);
+  carrier.set(m.normBase, m.base, m.base.length(), COLORS.current, 1, "residual stream");
+  const lift = smootherstep01(t / 0.62);
+  const pos = lerpVec(m.normBase, m.normTop, lift);
+  normOrb.set(pos, m.base, m.base.length(), COLORS.current, 1, "exact residual copy");
+  setLine(normLine, m.normBase, pos, 0.1 + 0.38 * lift, COLORS.norm);
+}
+function renderNormProjection(kind, layerIndex, t) {
+  const m = moduleSpec(kind, layerIndex);
+  const project = smootherstep01((t - 0.12) / 0.62);
+  const len = THREE.MathUtils.lerp(m.base.length(), CARRIER_R, project);
+  carrier.set(m.normBase, m.base, m.base.length(), COLORS.current, 1, "residual stream");
+  normOrb.set(m.normTop, m.base, len, colorLerp(COLORS.current, COLORS.norm, project), 1, "surface-projected copy");
+  setLine(normLine, m.normBase, m.normTop, 0.42, COLORS.norm);
+}
+function renderModule(kind, layerIndex, t, ts) {
+  const m = moduleSpec(kind, layerIndex);
+  const bypass = smootherstep01(t / 0.82);
+  const residualPos = travelPoint(m.normBase, m.add, bypass, 0.16, 0.1);
+  carrier.set(residualPos, m.base, m.base.length(), COLORS.current, 1, "residual bypass");
+  renderTrail(m.normBase, m.add, bypass, COLORS.current);
+
+  const approach = smootherstep01(t / 0.24);
+  const enter = smootherstep01((t - 0.22) / 0.2);
+  const copyPos = t < 0.22 ? lerpVec(m.normTop, m.boxIn, approach) : lerpVec(m.boxIn, m.box, enter);
+  const copyOpacity = 1 - smoothstep01((t - 0.34) / 0.14);
+  normOrb.set(copyPos, m.input, CARRIER_R, COLORS.norm, copyOpacity, "norm copy", 1 - 0.48 * enter);
+  setLine(moduleInputLine, m.normTop, copyPos, 0.16 + 0.34 * (1 - enter), COLORS.norm);
+
+  const write = smootherstep01((t - 0.58) / 0.2);
+  const carry = smootherstep01((t - 0.75) / 0.25);
+  const outPos = t < 0.75 ? lerpVec(m.box, m.boxOut, write) : lerpVec(m.boxOut, m.above, carry);
+  const outOpacity = smootherstep01((t - 0.56) / 0.18);
+  moduleOutOrb.set(outPos, m.out, m.out.length(), COLORS.output, outOpacity, m.outputLabel, 0.34 + 0.66 * outOpacity);
+  setLine(moduleOutputLine, m.box, outPos, 0.14 + 0.38 * outOpacity, COLORS.output);
+  m.boxObject.render(true, smootherstep01((t - 0.24) / 0.5), ts);
+}
+function renderOutputDown(kind, layerIndex, t) {
+  const m = moduleSpec(kind, layerIndex);
+  const drop = smootherstep01((t - 0.16) / 0.56);
+  const pos = lerpVec(m.above, m.hold, drop);
+  carrier.set(m.add, m.base, m.base.length(), COLORS.current, 1, "residual stream");
+  moduleOutOrb.set(pos, m.out, m.out.length(), COLORS.output, 1, m.outputLabel);
+  setLine(moduleOutputLine, m.above, pos, 0.2 + 0.3 * drop, COLORS.output);
+}
+function renderAddSetup(kind, layerIndex, t) {
+  const m = moduleSpec(kind, layerIndex);
+  const grow = smootherstep01((t - 0.38) / 0.34);
+  const baseTip = m.add.clone().add(m.base);
+  const sumTip = baseTip.clone().add(m.out);
+  const sourceTip = m.hold.clone().add(m.out);
+  carrier.set(m.add, m.base, m.base.length(), COLORS.current, 1, "residual stream");
+  moduleOutOrb.set(m.hold, m.out, m.out.length(), COLORS.output, 1, m.outputLabel);
+  setLine(copyLine, sourceTip, baseTip, 0.24 * grow, COLORS.output);
+  addChain.set(baseTip, lerpVec(baseTip, sumTip, grow), COLORS.output, grow, 0.78);
+}
+function renderAddCollapse(kind, layerIndex, t) {
+  const m = moduleSpec(kind, layerIndex);
+  const sumGrow = smootherstep01((t - 0.08) / 0.36);
+  const fadeAddends = smootherstep01((t - 0.62) / 0.25);
+  const addendOpacity = 1 - fadeAddends;
+  const baseTip = m.add.clone().add(m.base);
+  const sumTip = baseTip.clone().add(m.out);
+  const resultTip = m.add.clone().add(m.result);
+  carrier.set(m.add, m.base, m.base.length(), COLORS.current, 1, "residual stream", 1, addendOpacity);
+  moduleOutOrb.set(m.hold, m.out, m.out.length(), COLORS.output, addendOpacity, m.outputLabel);
+  addChain.set(baseTip, sumTip, COLORS.output, addendOpacity, 0.78);
+  addResult.set(m.add, lerpVec(m.add, resultTip, sumGrow), COLORS.plus, sumGrow, 0.9);
+  const flash = smoothstep01((t - 0.78) / 0.2);
+  addFlash.position.copy(m.add);
+  addFlash.position.y = -CARRIER_R + 0.02;
+  addFlash.scale.setScalar(0.76 + 1.25 * flash);
+  addFlashMat.opacity = (1 - flash) * 0.62;
+  addFlash.visible = flash > 0 && flash < 1;
+}
+
+function renderMovingCopy(t) {
+  const pos = travelPoint(layout.lmHead, layout.logits, t, 0.42, 0.28);
+  movingLmHead.render({
+    position: pos,
+    vectors: fullWordVectors(),
+    values: pass.dots,
+    valueFormatter: v => `dot ${v >= 0 ? "+" : ""}${v.toFixed(2)}`,
+    opacity: 1,
+    wordOpacity: 0.84,
+    title: "LM-head copy",
+  });
+  setLine(copyLine, layout.lmHead, pos, 0.18 + 0.3 * smoothstep01(t), COLORS.soft);
+}
+function renderLogits(t) {
+  const full = fullWordVectors();
+  const signed = signedDotVectors();
+  const vectors = full.map((x, i) => x.clone().lerp(signed[i], smootherstep01(t)));
+  movingLmHead.render({
+    position: layout.logits,
+    vectors,
+    values: pass.dots,
+    valueFormatter: x => `dot ${x >= 0 ? "+" : ""}${x.toFixed(2)}`,
+    opacity: 1,
+    wordOpacity: 0.86,
+    title: "signed logits",
+  });
+}
+function renderSoftmax(t) {
+  const move = smootherstep01(t / 0.3);
+  const morph = smootherstep01((t - 0.2) / 0.8);
+  const pos = lerpVec(layout.logits, layout.softmax, move);
+  const signed = signedDotVectors();
+  const probs = probabilityVectors();
+  const vectors = signed.map((x, i) => x.clone().lerp(probs[i], morph));
+  movingLmHead.render({
+    position: pos,
+    vectors,
+    values: pass.probs,
+    valueFormatter: x => `${(x * 100).toFixed(1)}%`,
+    opacity: 1,
+    wordOpacity: 0.84,
+    title: "softmax probabilities",
+  });
+}
+function renderSelection(t, ts) {
+  ensureSelection(false);
+  const pulse = 1 + 0.11 * Math.sin(ts * 0.012);
+  const count = clamp(Math.ceil(smoothstep01(t / 0.48) * state.topK), 0, state.topK);
+  const set = new Set(pass.ranking.slice(0, count));
+  const reveal = smoothstep01((t - 0.52) / 0.28);
+  const selected = reveal > 0.02 ? state.selectedIndex : null;
+  movingLmHead.render({
+    position: layout.softmax,
+    vectors: probabilityVectors(),
+    values: pass.probs,
+    valueFormatter: (x, i) => `${(x * 100).toFixed(1)}%${selected === i ? "  ✓" : ""}`,
+    opacity: 1,
+    wordOpacity: 0.88,
+    topSet: set,
+    selectedIndex: selected,
+    pulse: 1 + (pulse - 1) * reveal,
+    title: `top-${state.topK} selection`,
+  });
+}
+function returnPoint(t) {
+  const highY = 6.9 + Math.min(2.2, state.layerCount * 0.35);
+  const control1 = layout.softmax.clone().add(new THREE.Vector3(-Math.min(5, layout.width * 0.08), highY, -2.4));
+  const control2 = layout.residualStart.clone().add(new THREE.Vector3(Math.min(8, layout.width * 0.14), highY, -2.4));
+  return cubicBezier(layout.softmax, control1, control2, layout.residualStart, smootherstep01(t));
+}
+function renderReturn(t) {
+  ensureSelection(false);
+  const i = state.selectedIndex;
+  const w = WORDS[i];
+  const dir = wordDir(w);
+  const fade = smoothstep01(t / 0.18);
+  movingLmHead.render({
+    position: layout.softmax,
+    vectors: probabilityVectors(),
+    values: pass.probs,
+    valueFormatter: x => `${(x * 100).toFixed(1)}%`,
+    opacity: 1 - fade,
+    wordOpacity: 0.8,
+    topSet: topSet(),
+    selectedIndex: i,
+    pulse: 1,
+    title: `selected: ${w}`,
+  });
+  returnOrb.set(returnPoint(t), dir, inputVectorLength(), WORD_COLORS[i], smoothstep01(t / 0.12), `next: ${w}`);
+  const full = [], part = [], n = 96, end = smootherstep01(t);
+  for (let j = 0; j <= n; j++) {
+    const u = j / n;
+    const highY = 6.9 + Math.min(2.2, state.layerCount * 0.35);
+    const control1 = layout.softmax.clone().add(new THREE.Vector3(-Math.min(5, layout.width * 0.08), highY, -2.4));
+    const control2 = layout.residualStart.clone().add(new THREE.Vector3(Math.min(8, layout.width * 0.14), highY, -2.4));
+    const p = cubicBezier(layout.softmax, control1, control2, layout.residualStart, u);
+    full.push(p);
+    if (u <= end) part.push(p);
+  }
+  setPolyline(returnDash, full, 0.16, WORD_COLORS[i]);
+  setPolyline(returnArc, part, 0.62, WORD_COLORS[i]);
+  if (t > 0.88) {
+    carrier.set(layout.residualStart, dir, inputVectorLength(), WORD_COLORS[i], smoothstep01((t - 0.88) / 0.12), "residual stream");
+  }
+}
+
+function renderStage(ts) {
+  hideDynamic();
+  staticInputRender();
+  updateStatic(ts);
+  const stage = STAGES[state.stage];
+  const t = state.progress;
+  staticLmRender(stage.type === "lm-read", t);
+
+  switch (stage.type) {
+    case "input":
+      carrier.setEmpty(layout.residualStart, COLORS.current, 1, "empty residual");
+      break;
+    case "copy-input": {
+      carrier.setEmpty(layout.residualStart, COLORS.current, 1, "empty residual");
+      const pos = travelPoint(layout.inputWord, layout.residualStart, t, 0.38, 0.26);
+      const fade = 1 - smoothstep01((t - 0.78) / 0.22);
+      wordCopyOrb.set(pos, pass.base, pass.base.length(), tokenColor(state.word), fade, "token copy");
+      setLine(copyLine, layout.inputWord, pos, 0.16 + 0.36 * smoothstep01(t), COLORS.current);
+      const arrive = smoothstep01((t - 0.72) / 0.28);
+      if (arrive > 0) carrier.set(layout.residualStart, pass.base, pass.base.length(), COLORS.current, 1, "residual stream", 1, arrive);
+      break;
+    }
+    case "travel-attn": {
+      const p = layout.layers[stage.layer];
+      const v = pass.layers[stage.layer].base;
+      const pos = travelPoint(p.streamStart, p.attnNorm, t, 0.23, 0.16);
+      carrier.set(pos, v, v.length(), COLORS.current, 1, "residual stream");
+      renderTrail(p.streamStart, p.attnNorm, t, COLORS.current);
+      break;
+    }
+    case "attn-norm-lift": renderNormLift("attention", stage.layer, t); break;
+    case "attn-norm-project": renderNormProjection("attention", stage.layer, t); break;
+    case "attn-module": renderModule("attention", stage.layer, t, ts); break;
+    case "attn-output-down": renderOutputDown("attention", stage.layer, t); break;
+    case "attn-add-setup": renderAddSetup("attention", stage.layer, t); break;
+    case "attn-add-collapse": renderAddCollapse("attention", stage.layer, t); break;
+    case "travel-mlp": {
+      const p = layout.layers[stage.layer];
+      const v = pass.layers[stage.layer].afterAttn;
+      const pos = travelPoint(p.attnAdd, p.mlpNorm, t, 0.23, 0.16);
+      carrier.set(pos, v, v.length(), COLORS.current, 1, "residual stream");
+      renderTrail(p.attnAdd, p.mlpNorm, t, COLORS.current);
+      break;
+    }
+    case "mlp-norm-lift": renderNormLift("mlp", stage.layer, t); break;
+    case "mlp-norm-project": renderNormProjection("mlp", stage.layer, t); break;
+    case "mlp-module": renderModule("mlp", stage.layer, t, ts); break;
+    case "mlp-output-down": renderOutputDown("mlp", stage.layer, t); break;
+    case "mlp-add-setup": renderAddSetup("mlp", stage.layer, t); break;
+    case "mlp-add-collapse": renderAddCollapse("mlp", stage.layer, t); break;
+    case "travel-output": {
+      const start = layout.layers[layout.layers.length - 1].mlpAdd;
+      const pos = travelPoint(start, layout.outNorm, t, 0.23, 0.16);
+      carrier.set(pos, pass.afterLayers, pass.afterLayers.length(), COLORS.current, 1, "residual stream");
+      renderTrail(start, layout.outNorm, t, COLORS.current);
+      break;
+    }
+    case "output-project": {
+      const q = smootherstep01(t);
+      const len = THREE.MathUtils.lerp(pass.afterLayers.length(), CARRIER_R, q);
+      carrier.set(layout.outNorm, pass.afterLayers, len, colorLerp(COLORS.current, COLORS.norm, q), 1, "normalized residual");
+      break;
+    }
+    case "lm-read":
+      carrier.set(layout.outNorm, pass.hidden, CARRIER_R, COLORS.norm, 1, "normalized residual");
+      break;
+    case "lm-copy":
+      carrier.set(layout.outNorm, pass.hidden, CARRIER_R, COLORS.norm, 0.72, "normalized residual");
+      staticLmRender(true, 1);
+      renderMovingCopy(t);
+      break;
+    case "logits":
+      carrier.set(layout.outNorm, pass.hidden, CARRIER_R, COLORS.norm, 0.48, "normalized residual");
+      staticLmRender(true, 1);
+      renderLogits(t);
+      break;
+    case "softmax":
+      carrier.set(layout.outNorm, pass.hidden, CARRIER_R, COLORS.norm, 0.32, "normalized residual");
+      renderSoftmax(t);
+      break;
+    case "selection":
+      carrier.set(layout.outNorm, pass.hidden, CARRIER_R, COLORS.norm, 0.22, "normalized residual");
+      renderSelection(t, ts);
+      break;
+    case "return":
+      carrier.setEmpty(layout.residualStart, COLORS.current, 0.7, "residual start");
+      renderReturn(t);
+      break;
+    default:
+      break;
+  }
+  stars.rotation.y += 0.000035;
+  if (!state.showLabels) allLabels.forEach(l => { l.visible = false; });
+}
+
+function makePose(target, zDistance, yOffset = 3.2, xOffset = 0) {
+  return { target: target.clone(), position: target.clone().add(new THREE.Vector3(xOffset, yOffset, zDistance)) };
+}
+function overviewPose() {
+  const target = new THREE.Vector3(layout.centerX, 1.45, 0);
+  const z = clamp(layout.width * 0.82, 25.5, 82);
+  return makePose(target, z, Math.min(12.5, 7.8 + state.layerCount * 0.9), 0);
+}
+function inputPose() {
+  return makePose(lerpVec(layout.inputWord, layout.residualStart, 0.52).add(new THREE.Vector3(0, 0.55, 0)), 9.5, 4.0);
+}
+function modulePose(layerIndex, kind, mode = "wide") {
+  const p = layout.layers[layerIndex];
+  const attention = kind === "attention";
+  const norm = attention ? p.attnNorm : p.mlpNorm;
+  const box = attention ? p.attnBox : p.mlpBox;
+  const add = attention ? p.attnAdd : p.mlpAdd;
+  const above = attention ? p.attnOutputAbove : p.mlpOutputAbove;
+  if (mode === "close") {
+    const target = add.clone().add(new THREE.Vector3(0, 0.48, 0));
+    return makePose(target, 4.15, 1.55, 0.18);
+  }
+  if (mode === "output") {
+    const target = lerpVec(box, above, 0.58).add(new THREE.Vector3(0, -0.12, 0));
+    return makePose(target, 8.65, 2.65);
+  }
+  const target = lerpVec(norm, add, 0.53).add(new THREE.Vector3(0, 1.42, 0));
+  return makePose(target, 10.2, 3.7);
+}
+function outputNormPose() {
+  const target = layout.outNorm.clone().add(new THREE.Vector3(0, 0.42, 0));
+  return makePose(target, 5.3, 2.35);
+}
+function lmReadPose() {
+  const target = lerpVec(layout.outNorm, layout.lmHead, 0.53).add(new THREE.Vector3(0, 0.38, 0));
+  return makePose(target, 5.75, 2.35);
+}
+function logitsPose() {
+  const target = lerpVec(layout.lmHead, layout.logits, 0.62).add(new THREE.Vector3(0, 0.38, 0));
+  return makePose(target, 6.35, 2.7);
+}
+function softmaxPose() {
+  const target = lerpVec(layout.logits, layout.softmax, 0.68).add(new THREE.Vector3(0, 0.34, 0));
+  return makePose(target, 5.8, 2.45);
+}
+function selectionPose() {
+  return makePose(layout.softmax.clone().add(new THREE.Vector3(0, 0.28, 0)), 4.8, 2.0);
+}
+function interpolatePose(a, b, t) {
+  const q = smootherstep01(t);
+  return { target: lerpVec(a.target, b.target, q), position: lerpVec(a.position, b.position, q) };
+}
+function cameraPose(stage = STAGES[state.stage], t = state.progress) {
+  if (!stage) return overviewPose();
+  switch (stage.type) {
+    case "input":
+    case "copy-input":
+      return inputPose();
+    case "travel-attn": {
+      const from = stage.layer === 0 ? inputPose() : modulePose(stage.layer - 1, "mlp", "close");
+      return interpolatePose(from, modulePose(stage.layer, "attention", "wide"), t);
+    }
+    case "attn-norm-lift":
+    case "attn-norm-project":
+    case "attn-module":
+      return modulePose(stage.layer, "attention", "wide");
+    case "attn-output-down":
+      return modulePose(stage.layer, "attention", "output");
+    case "attn-add-setup":
+      return interpolatePose(modulePose(stage.layer, "attention", "output"), modulePose(stage.layer, "attention", "close"), t / 0.42);
+    case "attn-add-collapse":
+      return modulePose(stage.layer, "attention", "close");
+    case "travel-mlp":
+      return interpolatePose(modulePose(stage.layer, "attention", "close"), modulePose(stage.layer, "mlp", "wide"), t);
+    case "mlp-norm-lift":
+    case "mlp-norm-project":
+    case "mlp-module":
+      return modulePose(stage.layer, "mlp", "wide");
+    case "mlp-output-down":
+      return modulePose(stage.layer, "mlp", "output");
+    case "mlp-add-setup":
+      return interpolatePose(modulePose(stage.layer, "mlp", "output"), modulePose(stage.layer, "mlp", "close"), t / 0.42);
+    case "mlp-add-collapse":
+      return modulePose(stage.layer, "mlp", "close");
+    case "travel-output":
+      return interpolatePose(modulePose(state.layerCount - 1, "mlp", "close"), outputNormPose(), t);
+    case "output-project":
+      return outputNormPose();
+    case "lm-read":
+      return lmReadPose();
+    case "lm-copy":
+      return interpolatePose(lmReadPose(), logitsPose(), t);
+    case "logits":
+      return logitsPose();
+    case "softmax":
+      return interpolatePose(logitsPose(), softmaxPose(), t);
+    case "selection":
+      return selectionPose();
+    case "return":
+      return overviewPose();
+    default:
+      return overviewPose();
+  }
+}
+function sceneOrbitCenter() { return cameraPose(STAGES[state.stage], state.progress).target.clone(); }
+function guideCamera(ts) {
+  if (!state.guidedCamera || ts >= state.cameraGuideUntil) return;
+  const span = Math.max(1, state.cameraGuideUntil - state.cameraGuideStartedAt);
+  const q = smootherstep01((ts - state.cameraGuideStartedAt) / span);
+  controls.target.copy(lerpVec(state.cameraGuideFromTarget, state.cameraGuideToTarget, q));
+  camera.position.copy(lerpVec(state.cameraGuideFromPosition, state.cameraGuideToPosition, q));
+}
+function armGuidedCamera(durationMs = 1500) {
+  if (!state.guidedCamera) return;
+  const now = performance.now();
+  const p = cameraPose(STAGES[state.stage], 1);
+  state.cameraGuideStartedAt = now;
+  state.cameraGuideUntil = now + durationMs;
+  state.cameraGuideFromTarget.copy(controls.target);
+  state.cameraGuideFromPosition.copy(camera.position);
+  state.cameraGuideToTarget.copy(p.target);
+  state.cameraGuideToPosition.copy(p.position);
+}
+function recenterOrbitTarget() {
+  const target = sceneOrbitCenter();
+  const delta = target.clone().sub(controls.target);
+  controls.target.copy(target);
+  camera.position.add(delta);
+  controls.update();
+}
+function setOverviewImmediate() {
+  const p = overviewPose();
+  controls.target.copy(p.target);
+  camera.position.copy(p.position);
+  controls.update();
+}
+setOverviewImmediate();
+
+const stageNameEl = document.getElementById("stageName");
+const stageCopyEl = document.getElementById("stageCopy");
+const scenePhaseEl = document.getElementById("scenePhase");
+const sceneMathEl = document.getElementById("sceneMath");
+const sceneMathNoteEl = document.getElementById("sceneMathNote");
+const progressLabelEl = document.getElementById("progressLabel");
+const progressSliderEl = document.getElementById("progressSlider");
+const playPauseBtn = document.getElementById("playPause");
+const stageGridEl = document.getElementById("stageGrid");
+const sentenceSelectEl = document.getElementById("sentenceSelect");
+const wordSelectEl = document.getElementById("wordSelect");
+const layerCountSelectEl = document.getElementById("layerCountSelect");
+const inputMagnitudeEl = document.getElementById("inputMagnitude");
+const inputMagnitudeLabelEl = document.getElementById("inputMagnitudeLabel");
+const topKSelectEl = document.getElementById("topKSelect");
+const attentionActivationEl = document.getElementById("attentionActivation");
+const mlpActivationEl = document.getElementById("mlpActivation");
+const scoreScaleEl = document.getElementById("scoreScale");
+const scoreScaleLabelEl = document.getElementById("scoreScaleLabel");
+const guidedCameraEl = document.getElementById("guidedCamera");
+const autoRotateEl = document.getElementById("autoRotate");
+const showLabelsEl = document.getElementById("showLabels");
+const showTrailEl = document.getElementById("showTrail");
+const autoAdvanceEl = document.getElementById("autoAdvance");
+const loopCycleEl = document.getElementById("loopCycle");
+const solidAngleEl = document.getElementById("solidAngle");
+const solidAngleLabelEl = document.getElementById("solidAngleLabel");
+const readoutEl = document.getElementById("readout");
+const nextTokenNoteEl = document.getElementById("nextTokenNote");
+const sentenceTokensEl = document.getElementById("sentenceTokens");
+const historyTokensEl = document.getElementById("historyTokens");
+const hotkeyCardEl = document.getElementById("hotkeyCard");
+const toastContainer = document.getElementById("toast-container");
+const stepBackBtn = document.getElementById("stepBackBtn");
+const stepForwardBtn = document.getElementById("stepForwardBtn");
+const stepCounterEl = document.getElementById("stepCounter");
+let stageButtons = [];
+
+Object.entries(SENTENCES).forEach(([key, data]) => {
+  const option = document.createElement("option");
+  option.value = key;
+  option.textContent = data.label;
+  sentenceSelectEl.appendChild(option);
+});
+for (let count = 1; count <= MAX_LAYERS; count++) {
+  const option = document.createElement("option");
+  option.value = String(count);
+  option.textContent = `${count} layer${count === 1 ? "" : "s"}`;
+  layerCountSelectEl.appendChild(option);
+}
+function rebuildWordOptions() {
+  wordSelectEl.innerHTML = "";
+  WORDS.forEach(w => {
+    const option = document.createElement("option");
+    option.value = w;
+    option.textContent = w;
+    wordSelectEl.appendChild(option);
+  });
+}
+function rebuildTopKOptions() {
+  topKSelectEl.innerHTML = "";
+  for (let k = 1; k <= WORDS.length; k++) {
+    const option = document.createElement("option");
+    option.value = String(k);
+    option.textContent = k === 1 ? "1 — greedy" : `${k} — weighted sample`;
+    topKSelectEl.appendChild(option);
+  }
+}
+function rebuildStageButtons() {
+  stageGridEl.innerHTML = "";
+  stageButtons = STAGES.map((stage, index) => {
+    const button = document.createElement("button");
+    button.className = "stage-button";
+    button.textContent = `${index + 1}. ${stage.short}`;
+    button.dataset.stage = String(index);
+    button.addEventListener("click", () => goToStage(index, true, true));
+    stageGridEl.appendChild(button);
+    return button;
+  });
+}
+rebuildWordOptions();
+rebuildTopKOptions();
+rebuildStageButtons();
+
+function showToast(message) {
+  const element = document.createElement("div");
+  element.className = "toast";
+  element.textContent = message;
+  toastContainer.appendChild(element);
+  while (toastContainer.children.length > 3) toastContainer.firstElementChild.remove();
+  setTimeout(() => {
+    element.style.opacity = "0";
+    element.style.transform = "translateY(6px) scale(.98)";
+    setTimeout(() => element.remove(), 260);
+  }, 1900);
+}
+function rebuildStageMetadata() {
+  STAGES = buildStages();
+  MAX_STAGE = STAGES.length - 1;
+  SELECTION_STAGE = STAGES.findIndex(s => s.type === "selection");
+  RETURN_STAGE = STAGES.findIndex(s => s.type === "return");
+  LOOP_RESTART_STAGE = STAGES.findIndex(s => s.type === "travel-attn" && s.layer === 0);
+  state.stage = clamp(state.stage, 0, MAX_STAGE);
+  rebuildStageButtons();
+}
+function recomputePass({ rebuildStages = false } = {}) {
+  pass = buildPass();
+  state.selectedIndex = null;
+  state.selectionKey = "";
+  if (rebuildStages) rebuildStageMetadata();
+}
+function renderSentenceStrip() {
+  sentenceTokensEl.innerHTML = "";
+  WORDS.forEach((word, index) => {
+    const chip = document.createElement("span");
+    chip.className = "token-chip";
+    chip.textContent = word;
+    chip.style.setProperty("--token-color", WORD_COLORS[index]);
+    if (word === state.word) chip.classList.add("current");
+    if (word === pass.targetWord) chip.classList.add("target");
+    sentenceTokensEl.appendChild(chip);
+  });
+  historyTokensEl.innerHTML = "";
+  state.history.slice(-10).forEach((word, index, arr) => {
+    const chip = document.createElement("span");
+    chip.className = "history-chip";
+    chip.textContent = word;
+    if (index === arr.length - 1) chip.classList.add("latest");
+    historyTokensEl.appendChild(chip);
+  });
+}
+function refreshReadout() {
+  readoutEl.innerHTML = "";
+  const set = topSet();
+  pass.probs.forEach((probability, index) => {
+    const row = document.createElement("div");
+    row.className = "read-row";
+    const bar = document.createElement("div");
+    bar.className = "prob-bar";
+    bar.style.width = `${Math.max(2, probability * 100)}%`;
+    bar.style.background = WORD_COLORS[index];
+    row.appendChild(bar);
+    const left = document.createElement("span");
+    left.textContent = `${WORDS[index]}  dot ${pass.dots[index] >= 0 ? "+" : ""}${pass.dots[index].toFixed(2)}`;
+    left.style.color = WORD_COLORS[index];
+    row.appendChild(left);
+    const right = document.createElement("span");
+    right.className = "mono";
+    right.textContent = `${probability.toFixed(3)}${index === pass.targetIndex ? "  next" : ""}${set.has(index) ? "  top-k" : ""}${state.selectedIndex === index ? "  ✓" : ""}`;
+    row.appendChild(right);
+    readoutEl.appendChild(row);
+  });
+  const selection = state.selectedIndex === null ? "not sampled yet" : selectedWord();
+  nextTokenNoteEl.textContent = `Expected sequence token: ${pass.targetWord}. Top-${state.topK}: ${pass.ranking.slice(0, state.topK).map(i => WORDS[i]).join(", ")}. Selected: ${selection}.`;
+  renderSentenceStrip();
+}
+function refreshUi() {
+  const stage = STAGES[state.stage];
+  stageNameEl.textContent = stage.name;
+  stageCopyEl.textContent = stage.copy;
+  scenePhaseEl.textContent = stage.phase;
+  sceneMathEl.innerHTML = stage.math;
+  sceneMathNoteEl.textContent = stage.mathNote;
+  document.documentElement.style.setProperty("--stage-accent", stage.color);
+  progressLabelEl.textContent = `${Math.round(state.progress * 100)}%`;
+  progressSliderEl.value = String(Math.round(state.progress * 1000));
+  playPauseBtn.textContent = state.playing ? "Pause" : "Play sequence";
+  sentenceSelectEl.value = state.sentenceKey;
+  wordSelectEl.value = state.word;
+  layerCountSelectEl.value = String(state.layerCount);
+  inputMagnitudeEl.value = String(Math.round(state.inputMagnitudeRatio * 100));
+  inputMagnitudeLabelEl.textContent = `${Math.round(state.inputMagnitudeRatio * 100)}% of R`;
+  topKSelectEl.value = String(state.topK);
+  attentionActivationEl.value = state.attentionActivation;
+  mlpActivationEl.value = state.mlpActivation;
+  scoreScaleEl.value = String(state.scoreScale);
+  scoreScaleLabelEl.textContent = `${state.scoreScale}×`;
+  guidedCameraEl.checked = state.guidedCamera;
+  autoRotateEl.checked = state.autoRotate;
+  showLabelsEl.checked = state.showLabels;
+  showTrailEl.checked = state.showTrail;
+  autoAdvanceEl.checked = state.autoAdvance;
+  loopCycleEl.checked = state.loopCycle;
+  solidAngleEl.value = String(state.solidAngleDeg);
+  solidAngleLabelEl.textContent = `${state.solidAngleDeg}°`;
+  stageButtons.forEach((button, index) => button.classList.toggle("active", index === state.stage));
+  stepCounterEl.textContent = `Step ${state.stage + 1} / ${STAGES.length}`;
+  stepBackBtn.disabled = state.stage === 0;
+  refreshReadout();
+}
+function updateProgressUi() {
+  progressLabelEl.textContent = `${Math.round(state.progress * 100)}%`;
+  progressSliderEl.value = String(Math.round(state.progress * 1000));
+}
+function stageDuration() { return STAGES[state.stage].duration; }
+function prepareSelection(force = false) {
+  if (force) state.selectionNonce += 1;
+  ensureSelection(force);
+  refreshUi();
+  return state.selectedIndex;
+}
+function commitSelectedWord() {
+  ensureSelection(false);
+  state.word = WORDS[state.selectedIndex];
+  state.history.push(state.word);
+  if (state.history.length > 24) state.history.shift();
+  recomputePass({ rebuildStages: true });
+  refreshReadout();
+}
+function goToStage(index, play = true, singleStep = true) {
+  state.stage = clamp(index, 0, MAX_STAGE);
+  state.progress = 0;
+  state.playing = play;
+  state.stepOnce = play && singleStep;
+  state.stageStartedAt = performance.now();
+  if (state.stage === SELECTION_STAGE) prepareSelection(true);
+  else if (state.stage === RETURN_STAGE) ensureSelection(false);
+  armGuidedCamera();
+  refreshUi();
+}
+function nextStage() {
+  if (state.stage < MAX_STAGE) goToStage(state.stage + 1, true, true);
+  else {
+    const next = selectedWord();
+    commitSelectedWord();
+    goToStage(LOOP_RESTART_STAGE, true, true);
+    showToast(`Next residual token: ${next}`);
+  }
+}
+function previousStage() { goToStage(Math.max(0, state.stage - 1), true, true); }
+function togglePlayback() {
+  state.playing = !state.playing;
+  state.stepOnce = false;
+  if (state.playing) state.stageStartedAt = performance.now() - state.progress * stageDuration() * 1000;
+  if (state.playing) armGuidedCamera();
+  refreshUi();
+  showToast(state.playing ? "Sequence playing" : "Playback paused");
+}
+function replayStage() {
+  state.progress = 0;
+  state.playing = true;
+  state.stepOnce = true;
+  state.stageStartedAt = performance.now();
+  if (state.stage === SELECTION_STAGE) prepareSelection(true);
+  state.cameraGuideUntil = 0;
+  refreshUi();
+  showToast(`Replay from current camera: ${STAGES[state.stage].name}`);
+}
+function cycleWord(delta = 1) {
+  const index = Math.max(0, WORDS.indexOf(state.word));
+  state.word = WORDS[(index + delta + WORDS.length) % WORDS.length];
+  state.history = [state.word];
+  state.stage = 0;
+  state.progress = 0;
+  state.playing = false;
+  state.stepOnce = false;
+  recomputePass({ rebuildStages: true });
+  refreshUi();
+  showToast(`Input token: ${state.word}`);
+}
+function reinitialize() {
+  state.dataSeed += 1;
+  state.stage = 0;
+  state.progress = 0;
+  state.playing = false;
+  state.stepOnce = false;
+  recomputePass({ rebuildStages: true });
+  refreshUi();
+  showToast("Reinitialized module transforms; sentence target remains top-1");
+}
+function setTopK(value, notify = true) {
+  state.topK = clamp(Math.round(value), 1, WORDS.length);
+  state.selectedIndex = null;
+  state.selectionKey = "";
+  if (state.stage >= SELECTION_STAGE) prepareSelection(true);
+  else refreshUi();
+  if (notify) showToast(`Top-k: ${state.topK}${state.topK === 1 ? " (greedy)" : ""}`);
+}
+function resampleSelection() {
+  state.selectionNonce += 1;
+  state.selectedIndex = null;
+  state.selectionKey = "";
+  ensureSelection(true);
+  refreshUi();
+  showToast(`Sampled next token: ${selectedWord()}`);
+}
+function setSolidAngle(value, notify = true) {
+  state.solidAngleDeg = clamp(Math.round(value), 4, 32);
+  const { oldCap, oldRim } = buildSectorGeometry(state.solidAngleDeg);
+  oldCap?.dispose();
+  oldRim?.dispose();
+  refreshUi();
+  if (notify) showToast(`Solid-angle half-width: ${state.solidAngleDeg}°`);
+}
+function setInputMagnitude(percent, notify = true) {
+  state.inputMagnitudeRatio = clamp(Number(percent) / 100, 0.15, 0.9);
+  recomputePass();
+  refreshUi();
+  if (notify) showToast(`Input magnitude: ${Math.round(state.inputMagnitudeRatio * 100)}% of R`);
+}
+function setLayerCount(count, notify = true) {
+  const next = clamp(Math.round(count), 1, MAX_LAYERS);
+  if (next === state.layerCount) return;
+  state.layerCount = next;
+  layout = computeLayout(state.layerCount);
+  pass = buildPass();
+  state.selectedIndex = null;
+  state.selectionKey = "";
+  rebuildStageMetadata();
+  rebuildLayoutVisuals();
+  state.stage = 0;
+  state.progress = 0;
+  state.playing = false;
+  state.stepOnce = false;
+  state.cameraGuideUntil = 0;
+  setOverviewImmediate();
+  refreshUi();
+  if (notify) showToast(`${state.layerCount} transformer layer${state.layerCount === 1 ? "" : "s"}`);
+}
+function setSentence(key, notify = true) {
+  if (!SENTENCES[key]) return;
+  state.sentenceKey = key;
+  WORDS = [...SENTENCES[key].tokens];
+  state.word = WORDS[0];
+  state.history = [state.word];
+  state.topK = clamp(state.topK, 1, WORDS.length);
+  rebuildWordOptions();
+  rebuildTopKOptions();
+  recomputePass({ rebuildStages: true });
+  state.stage = 0;
+  state.progress = 0;
+  state.playing = false;
+  state.stepOnce = false;
+  refreshUi();
+  if (notify) showToast(`Sentence: ${SENTENCES[key].text}`);
+}
+function focusCurrentStage() {
+  state.guidedCamera = true;
+  armGuidedCamera(1500);
+  refreshUi();
+  showToast("Framing the current scene — drag at any time to take control");
+}
+function initialView() {
+  state.cameraGuideUntil = 0;
+  setOverviewImmediate();
+  refreshUi();
+  showToast("Initial overview camera");
+}
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen?.().catch(() => {});
+    showToast("Fullscreen on");
+  } else {
+    document.exitFullscreen?.().catch(() => {});
+    showToast("Fullscreen off");
+  }
+}
+
+controls.addEventListener("start", () => {
+  const cueWasActive = performance.now() < state.cameraGuideUntil;
+  if (cueWasActive) recenterOrbitTarget();
+  state.cameraGuideUntil = 0;
+});
+
+document.getElementById("prevBtn").addEventListener("click", previousStage);
+document.getElementById("nextBtn").addEventListener("click", nextStage);
+stepBackBtn.addEventListener("click", previousStage);
+stepForwardBtn.addEventListener("click", nextStage);
+playPauseBtn.addEventListener("click", togglePlayback);
+document.getElementById("replayBtn").addEventListener("click", replayStage);
+progressSliderEl.addEventListener("input", event => {
+  state.progress = Number(event.target.value) / 1000;
+  state.playing = false;
+  state.stepOnce = false;
+  refreshUi();
+});
+sentenceSelectEl.addEventListener("change", event => setSentence(event.target.value));
+wordSelectEl.addEventListener("change", event => {
+  state.word = event.target.value;
+  state.history = [state.word];
+  state.stage = 0;
+  state.progress = 0;
+  state.playing = false;
+  state.stepOnce = false;
+  recomputePass({ rebuildStages: true });
+  refreshUi();
+});
+layerCountSelectEl.addEventListener("change", event => setLayerCount(Number(event.target.value)));
+document.getElementById("removeLayerBtn").addEventListener("click", () => setLayerCount(state.layerCount - 1));
+document.getElementById("addLayerBtn").addEventListener("click", () => setLayerCount(state.layerCount + 1));
+inputMagnitudeEl.addEventListener("input", event => setInputMagnitude(Number(event.target.value), false));
+inputMagnitudeEl.addEventListener("change", event => setInputMagnitude(Number(event.target.value), true));
+topKSelectEl.addEventListener("change", event => setTopK(Number(event.target.value)));
+attentionActivationEl.addEventListener("change", event => {
+  state.attentionActivation = event.target.value;
+  recomputePass();
+  refreshUi();
+  showToast("Attention transform updated");
+});
+mlpActivationEl.addEventListener("change", event => {
+  state.mlpActivation = event.target.value;
+  recomputePass({ rebuildStages: true });
+  refreshUi();
+  showToast("MLP transform updated; final target steering preserved");
+});
+scoreScaleEl.addEventListener("input", event => {
+  state.scoreScale = Number(event.target.value);
+  recomputePass();
+  refreshUi();
+});
+document.getElementById("reinitializeBtn").addEventListener("click", reinitialize);
+document.getElementById("cycleWordBtn").addEventListener("click", () => cycleWord(1));
+document.getElementById("resampleBtn").addEventListener("click", resampleSelection);
+guidedCameraEl.addEventListener("change", event => {
+  state.guidedCamera = event.target.checked;
+  if (state.guidedCamera) armGuidedCamera(1500);
+  else state.cameraGuideUntil = 0;
+  refreshUi();
+});
+autoRotateEl.addEventListener("change", event => {
+  state.autoRotate = event.target.checked;
+  if (state.autoRotate) recenterOrbitTarget();
+  refreshUi();
+});
+showLabelsEl.addEventListener("change", event => { state.showLabels = event.target.checked; refreshUi(); });
+showTrailEl.addEventListener("change", event => { state.showTrail = event.target.checked; refreshUi(); });
+autoAdvanceEl.addEventListener("change", event => { state.autoAdvance = event.target.checked; refreshUi(); });
+loopCycleEl.addEventListener("change", event => { state.loopCycle = event.target.checked; refreshUi(); });
+solidAngleEl.addEventListener("input", event => setSolidAngle(Number(event.target.value), false));
+document.getElementById("initialViewBtn").addEventListener("click", initialView);
+document.getElementById("focusViewBtn").addEventListener("click", focusCurrentStage);
+
+function isEditable(target) {
+  const tag = target?.tagName?.toLowerCase();
+  return tag === "input" || tag === "select" || tag === "textarea" || target?.isContentEditable;
+}
+function stageIndex(type, layer = null) {
+  return STAGES.findIndex(stage => stage.type === type && (layer === null || stage.layer === layer));
+}
+function handleHotkey(event) {
+  if (event.defaultPrevented || event.repeat || event.metaKey || event.ctrlKey || event.altKey || isEditable(event.target)) return;
+  const key = event.key.toLowerCase();
+  const code = event.code;
+  let handled = true;
+  if (code?.startsWith("Digit")) {
+    const number = Number(code.replace("Digit", ""));
+    if (number === 0) goToStage(RETURN_STAGE, true, true);
+    else if (number >= 1 && number <= 9) goToStage(event.shiftKey ? clamp(number + 8, 0, MAX_STAGE) : number - 1, true, true);
+    else handled = false;
+  } else if (key === "j" || key === "arrowright" || key === "pagedown") nextStage();
+  else if (key === "k" || key === "arrowleft" || key === "pageup") previousStage();
+  else if (key === ";" || code === "Space") togglePlayback();
+  else if (key === "r") replayStage();
+  else if (key === "i") initialView();
+  else if (key === "c") {
+    state.guidedCamera = !state.guidedCamera;
+    if (state.guidedCamera) armGuidedCamera(1500);
+    else state.cameraGuideUntil = 0;
+    refreshUi();
+    showToast(state.guidedCamera ? "Stage camera cues on — drag to interrupt any cue" : "Stage camera cues off");
+  } else if (key === "o") {
+    state.autoRotate = !state.autoRotate;
+    if (state.autoRotate) recenterOrbitTarget();
+    refreshUi();
+    showToast(`Auto-rotate ${state.autoRotate ? "on — centered on this scene" : "off"}`);
+  } else if (key === "v") toggleFullscreen();
+  else if (key === "m") {
+    hotkeyCardEl.classList.toggle("hidden");
+    showToast(hotkeyCardEl.classList.contains("hidden") ? "Hotkey card hidden — press M to show" : "Hotkey card shown");
+  } else if (key === "w") cycleWord(event.shiftKey ? -1 : 1);
+  else if (key === "h") setSentence(state.sentenceKey === "english" ? "hangul" : "english");
+  else if (key === "n") reinitialize();
+  else if (key === "b") {
+    state.showLabels = !state.showLabels;
+    refreshUi();
+    showToast(`Labels ${state.showLabels ? "on" : "off"}`);
+  } else if (key === "g") {
+    state.showTrail = !state.showTrail;
+    refreshUi();
+    showToast(`Track glow and trail ${state.showTrail ? "on" : "off"}`);
+  } else if (key === "s") setSolidAngle(8);
+  else if (key === "d") setSolidAngle(14);
+  else if (key === "f") setSolidAngle(28);
+  else if (key === "[") setSolidAngle(state.solidAngleDeg - (event.shiftKey ? 4 : 1));
+  else if (key === "]") setSolidAngle(state.solidAngleDeg + (event.shiftKey ? 4 : 1));
+  else if (key === "-" || key === "_") setLayerCount(state.layerCount - 1);
+  else if (key === "=" || key === "+") setLayerCount(state.layerCount + 1);
+  else if (key === ",") setInputMagnitude((state.inputMagnitudeRatio * 100) - 5);
+  else if (key === ".") setInputMagnitude((state.inputMagnitudeRatio * 100) + 5);
+  else if (key === "a") goToStage(stageIndex("attn-module", 0), true, true);
+  else if (key === "e") goToStage(stageIndex("mlp-module", state.layerCount - 1), true, true);
+  else if (key === "l") goToStage(stageIndex("lm-read"), true, true);
+  else if (key === "q") goToStage(SELECTION_STAGE, true, true);
+  else if (key === "t") setTopK((state.topK % WORDS.length) + 1);
+  else if (key === "u") resampleSelection();
+  else handled = false;
+  if (handled) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}
+window.addEventListener("keydown", handleHotkey);
+
+function resize() {
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  renderer.setSize(width, height, false);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+resize();
+refreshUi();
+
+let lastTs = performance.now();
+function animate(ts) {
+  const dt = Math.min(0.05, (ts - lastTs) / 1000);
+  lastTs = ts;
+  if (state.playing) {
+    state.progress = clamp01((ts - state.stageStartedAt) / (stageDuration() * 1000));
+    if (state.progress >= 1) {
+      state.progress = 1;
+      if (state.stepOnce) {
+        state.playing = false;
+        state.stepOnce = false;
+        refreshUi();
+      } else if (state.autoAdvance) {
+        if (state.stage < MAX_STAGE) {
+          state.stage += 1;
+          state.progress = 0;
+          state.stageStartedAt = ts;
+          if (state.stage === SELECTION_STAGE) prepareSelection(true);
+          else if (state.stage === RETURN_STAGE) ensureSelection(false);
+          if (state.guidedCamera) armGuidedCamera(1500);
+          refreshUi();
+        } else if (state.loopCycle) {
+          const next = selectedWord();
+          commitSelectedWord();
+          state.stage = LOOP_RESTART_STAGE;
+          state.progress = 0;
+          state.stageStartedAt = ts;
+          if (state.guidedCamera) armGuidedCamera(1500);
+          refreshUi();
+          showToast(`Looping with: ${next}`);
+        } else {
+          state.playing = false;
+          refreshUi();
+        }
+      } else {
+        state.playing = false;
+        refreshUi();
+      }
+    } else {
+      updateProgressUi();
+    }
+  }
+  if (state.guidedCamera && ts < state.cameraGuideUntil) guideCamera(ts);
+  if (state.autoRotate) {
+    const desiredCenter = sceneOrbitCenter();
+    const centerShift = desiredCenter.clone().sub(controls.target).multiplyScalar(0.085);
+    controls.target.add(centerShift);
+    camera.position.add(centerShift);
+    const orbit = controls.target.clone();
+    camera.position.sub(orbit);
+    camera.position.applyAxisAngle(UP, dt * 0.2);
+    camera.position.add(orbit);
+  }
+  controls.update();
+  renderStage(ts);
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+</script>
+  </body>
+</html>
