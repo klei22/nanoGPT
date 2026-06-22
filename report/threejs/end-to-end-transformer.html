@@ -887,8 +887,14 @@
               <div class="range-row"><span>Attention transform strength</span><span id="scoreScaleLabel">8×</span></div>
               <input id="scoreScale" type="range" min="2" max="18" step="1" value="8" />
             </div>
+            <div class="range-wrap" style="margin-top:0">
+              <div class="range-row"><span>Pre-softmax logit multiplier β</span><span id="preSoftmaxMultiplierLabel">30×</span></div>
+              <input id="preSoftmaxMultiplier" type="range" min="1" max="80" step="1" value="30" />
+              <div class="small" style="margin-top:6px">Probabilities are computed as p = softmax(βz).</div>
+            </div>
             <div class="controls-row"><button id="reinitializeBtn">Reinitialize transforms</button><button id="cycleWordBtn">Cycle token</button></div>
             <button id="resampleBtn">Resample highlighted top-k</button>
+            <div class="controls-row"><button id="skipTokenBtn">Skip to next token (X)</button><button id="resetSequenceBtn">Reset sequence (Z)</button></div>
             <div class="model-badge">Final MLP → nearest next sentence token, with controlled variation</div>
             <div class="inline-note">The vocabulary contains only the five space-delimited tokens in the chosen English or Hangul sentence. The sequence wraps cyclically for indefinite playback.</div>
             <div class="small" style="margin-top:4px">Generated token history</div>
@@ -921,6 +927,8 @@
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">k</span><span class="keycap">←</span><span class="keycap wide">PgUp</span></div><div>Play previous micro-step once</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap wide">1–9</span><span class="keycap wide">⇧1–⇧9</span></div><div>Jump to stages 1–18</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">a</span><span class="keycap">e</span><span class="keycap">l</span><span class="keycap">q</span></div><div>First Attention / final MLP / LM Head / selection</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">x</span></div><div>Skip directly to selection, then animate the token return</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">z</span></div><div>Reset generated text and return to the initial token</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">0</span></div><div>Jump to return loop</div></div>
           </div>
           <div class="hotkey-section">
@@ -1013,12 +1021,14 @@ const state = {
   progress: 0,
   playing: false,
   stepOnce: false,
+  quickTokenMode: false,
   autoAdvance: true,
   loopCycle: true,
   topK: 1,
   attentionActivation: "softmax",
   mlpActivation: "gelu",
   scoreScale: 8,
+  preSoftmaxMultiplier: 30,
   solidAngleDeg: 14,
   guidedCamera: true,
   autoRotate: false,
@@ -1214,7 +1224,8 @@ function buildPass() {
   }
   const hidden = unit(residual).multiplyScalar(CARRIER_R);
   const dots = WORDS.map(w => unit(hidden).dot(wordDir(w)));
-  const probs = softmax(dots);
+  const scaledLogits = dots.map(z => state.preSoftmaxMultiplier * z);
+  const probs = softmax(scaledLogits);
   const ranking = [...WORDS.keys()].sort((a, b) => probs[b] - probs[a]);
   return {
     base: layerPasses[0].base,
@@ -1222,6 +1233,7 @@ function buildPass() {
     afterLayers: residual,
     hidden,
     dots,
+    scaledLogits,
     probs,
     ranking,
     top: ranking[0],
@@ -1512,20 +1524,20 @@ function buildStages() {
     station: "logits",
     duration: 3.1,
     math: `${mathVector("v", "i", "logit")} = ${mathVector("z", "i")}${mathVector("e", "i")}`,
-    mathNote: "The sign and magnitude of zᵢ are preserved in zᵢeᵢ. Token ranking and softmax still use the scalar logits zᵢ.",
-    copy: "Positive and negative logits remain distinct until exponentiation in the next step.",
+    mathNote: "The sign and magnitude of zᵢ are preserved in zᵢeᵢ. A positive common multiplier β does not change the ranking, and the next step computes softmax(βz).",
+    copy: "Positive and negative logits remain distinct; β multiplies every scalar logit before exponentiation in the next step.",
   });
   push({
     type: "softmax",
-    short: "Softmax",
-    name: "Normalize the logits into a probability distribution",
-    phase: "Softmax",
+    short: "Scaled softmax",
+    name: "Apply the pre-softmax multiplier and normalize the logits",
+    phase: "Scaled softmax",
     color: COLORS.output,
     station: "softmax",
     duration: 3.3,
-    math: `${mathVector("p", "i")} = exp(${mathVector("z", "i")} − z<sub>max</sub>) / Σ<sub>j</sub> exp(${mathVector("z", "j")} − z<sub>max</sub>)`,
-    mathNote: "Softmax maps the real-valued logits to nonnegative probabilities that sum to one. Subtracting z_max improves numerical stability without changing p.",
-    copy: "The probability vector p is complete; the next operation restricts it to the selected top-k set.",
+    math: `${mathVector("p", "i")} = exp(β${mathVector("z", "i")} − m) / Σ<sub>j</sub> exp(β${mathVector("z", "j")} − m), &nbsp; m = max<sub>j</sub>(β${mathVector("z", "j")})`,
+    mathNote: "The slider-controlled multiplier β sharpens or flattens the distribution before softmax; its default value is 30. Subtracting m improves numerical stability without changing p.",
+    copy: "The probability vector p = softmax(βz) is complete; the next operation restricts it to the selected top-k set.",
   });
   push({
     type: "selection",
@@ -2175,7 +2187,7 @@ function weightedTopKSelection() {
   return candidates[candidates.length - 1];
 }
 function ensureSelection(force = false) {
-  const key = `${state.sentenceKey}|${state.word}|${state.dataSeed}|${state.layerCount}|${state.inputMagnitudeRatio.toFixed(3)}|${state.topK}|${pass.probs.map(p => p.toFixed(7)).join(",")}|${state.selectionNonce}`;
+  const key = `${state.sentenceKey}|${state.word}|${state.dataSeed}|${state.layerCount}|${state.inputMagnitudeRatio.toFixed(3)}|${state.topK}|${state.preSoftmaxMultiplier}|${pass.probs.map(p => p.toFixed(7)).join(",")}|${state.selectionNonce}`;
   if (force || state.selectionKey !== key || state.selectedIndex === null) {
     state.selectedIndex = weightedTopKSelection();
     state.selectionKey = key;
@@ -2406,7 +2418,7 @@ function renderSoftmax(t) {
     valueFormatter: x => `${(x * 100).toFixed(1)}%`,
     opacity: 1,
     wordOpacity: 0.84,
-    title: "softmax probabilities",
+    title: `softmax(βz), β=${state.preSoftmaxMultiplier}`,
   });
 }
 function renderSelection(t, ts) {
@@ -2722,6 +2734,8 @@ const attentionActivationEl = document.getElementById("attentionActivation");
 const mlpActivationEl = document.getElementById("mlpActivation");
 const scoreScaleEl = document.getElementById("scoreScale");
 const scoreScaleLabelEl = document.getElementById("scoreScaleLabel");
+const preSoftmaxMultiplierEl = document.getElementById("preSoftmaxMultiplier");
+const preSoftmaxMultiplierLabelEl = document.getElementById("preSoftmaxMultiplierLabel");
 const guidedCameraEl = document.getElementById("guidedCamera");
 const autoRotateEl = document.getElementById("autoRotate");
 const showLabelsEl = document.getElementById("showLabels");
@@ -2921,7 +2935,7 @@ function refreshReadout() {
     readoutEl.appendChild(row);
   });
   const selection = state.selectedIndex === null ? "not sampled yet" : selectedWord();
-  nextTokenNoteEl.textContent = `Expected sequence token: ${pass.targetWord}. Top-${state.topK}: ${pass.ranking.slice(0, state.topK).map(i => WORDS[i]).join(", ")}. Selected: ${selection}.`;
+  nextTokenNoteEl.textContent = `Expected sequence token: ${pass.targetWord}. β=${state.preSoftmaxMultiplier}×. Top-${state.topK}: ${pass.ranking.slice(0, state.topK).map(i => WORDS[i]).join(", ")}. Selected: ${selection}.`;
   renderSentenceStrip();
 }
 function refreshUi() {
@@ -2948,6 +2962,8 @@ function refreshUi() {
   mlpActivationEl.value = state.mlpActivation;
   scoreScaleEl.value = String(state.scoreScale);
   scoreScaleLabelEl.textContent = `${state.scoreScale}×`;
+  preSoftmaxMultiplierEl.value = String(state.preSoftmaxMultiplier);
+  preSoftmaxMultiplierLabelEl.textContent = `${state.preSoftmaxMultiplier}×`;
   guidedCameraEl.checked = state.guidedCamera;
   autoRotateEl.checked = state.autoRotate;
   showLabelsEl.checked = state.showLabels;
@@ -2981,6 +2997,7 @@ function commitSelectedWord() {
   refreshReadout();
 }
 function goToStage(index, play = true, singleStep = true) {
+  state.quickTokenMode = false;
   state.stage = clamp(index, 0, MAX_STAGE);
   state.progress = 0;
   state.playing = play;
@@ -3010,6 +3027,7 @@ function togglePlayback() {
   showToast(state.playing ? "Sequence playing" : "Playback paused");
 }
 function replayStage() {
+  state.quickTokenMode = false;
   state.progress = 0;
   state.playing = true;
   state.stepOnce = true;
@@ -3019,7 +3037,37 @@ function replayStage() {
   refreshUi();
   showToast(`Replay from current camera: ${STAGES[state.stage].name}`);
 }
+function skipToNextToken() {
+  state.quickTokenMode = true;
+  state.stage = SELECTION_STAGE;
+  state.progress = 0;
+  state.playing = true;
+  state.stepOnce = false;
+  state.stageStartedAt = performance.now();
+  prepareSelection(true);
+  if (state.guidedCamera) armGuidedCamera(1500);
+  refreshUi();
+  showToast(`Quick next-token path: selected ${selectedWord()}`);
+}
+function resetSequence() {
+  state.quickTokenMode = false;
+  state.word = WORDS.includes(state.initialWord) ? state.initialWord : WORDS[0];
+  state.history = [];
+  state.stage = 0;
+  state.progress = 0;
+  state.playing = false;
+  state.stepOnce = false;
+  state.selectedIndex = null;
+  state.selectionNonce = 0;
+  state.selectionKey = "";
+  recomputePass({ rebuildStages: true });
+  if (state.guidedCamera) armGuidedCamera(1500);
+  else state.cameraGuideUntil = 0;
+  refreshUi();
+  showToast(`Sequence reset to: ${state.word}`);
+}
 function cycleWord(delta = 1) {
+  state.quickTokenMode = false;
   const index = Math.max(0, WORDS.indexOf(state.word));
   state.word = WORDS[(index + delta + WORDS.length) % WORDS.length];
   state.initialWord = state.word;
@@ -3033,6 +3081,7 @@ function cycleWord(delta = 1) {
   showToast(`Input token: ${state.word}`);
 }
 function reinitialize() {
+  state.quickTokenMode = false;
   state.dataSeed += 1;
   state.stage = 0;
   state.progress = 0;
@@ -3073,6 +3122,7 @@ function setInputMagnitude(percent, notify = true) {
   if (notify) showToast(`Input magnitude: ${Math.round(state.inputMagnitudeRatio * 100)}% of R`);
 }
 function setLayerCount(count, notify = true) {
+  state.quickTokenMode = false;
   const next = clamp(Math.round(count), 1, MAX_LAYERS);
   if (next === state.layerCount) return;
   state.layerCount = next;
@@ -3092,6 +3142,7 @@ function setLayerCount(count, notify = true) {
   if (notify) showToast(`${state.layerCount} transformer layer${state.layerCount === 1 ? "" : "s"}`);
 }
 function setSentence(key, notify = true) {
+  state.quickTokenMode = false;
   if (!SENTENCES[key]) return;
   state.sentenceKey = key;
   WORDS = [...SENTENCES[key].tokens];
@@ -3151,6 +3202,7 @@ progressSliderEl.addEventListener("input", event => {
 });
 sentenceSelectEl.addEventListener("change", event => setSentence(event.target.value));
 wordSelectEl.addEventListener("change", event => {
+  state.quickTokenMode = false;
   state.word = event.target.value;
   state.initialWord = state.word;
   state.history = [];
@@ -3184,9 +3236,17 @@ scoreScaleEl.addEventListener("input", event => {
   recomputePass();
   refreshUi();
 });
+preSoftmaxMultiplierEl.addEventListener("input", event => {
+  state.preSoftmaxMultiplier = clamp(Math.round(Number(event.target.value)), 1, 80);
+  recomputePass();
+  if (state.stage >= SELECTION_STAGE) prepareSelection(true);
+  else refreshUi();
+});
 document.getElementById("reinitializeBtn").addEventListener("click", reinitialize);
 document.getElementById("cycleWordBtn").addEventListener("click", () => cycleWord(1));
 document.getElementById("resampleBtn").addEventListener("click", resampleSelection);
+document.getElementById("skipTokenBtn").addEventListener("click", skipToNextToken);
+document.getElementById("resetSequenceBtn").addEventListener("click", resetSequence);
 guidedCameraEl.addEventListener("change", event => {
   state.guidedCamera = event.target.checked;
   if (state.guidedCamera) armGuidedCamera(1500);
@@ -3267,6 +3327,8 @@ function handleHotkey(event) {
   else if (key === "e") goToStage(stageIndex("mlp-module", state.layerCount - 1), true, true);
   else if (key === "l") goToStage(stageIndex("lm-read"), true, true);
   else if (key === "q") goToStage(SELECTION_STAGE, true, true);
+  else if (key === "x") skipToNextToken();
+  else if (key === "z") resetSequence();
   else if (key === "t") setTopK((state.topK % WORDS.length) + 1);
   else if (key === "u") resampleSelection();
   else handled = false;
@@ -3296,7 +3358,31 @@ function animate(ts) {
     state.progress = clamp01((ts - state.stageStartedAt) / (stageDuration() * 1000));
     if (state.progress >= 1) {
       state.progress = 1;
-      if (state.stepOnce) {
+      if (state.quickTokenMode) {
+        if (state.stage === SELECTION_STAGE) {
+          state.stage = RETURN_STAGE;
+          state.progress = 0;
+          state.stageStartedAt = ts;
+          ensureSelection(false);
+          if (state.guidedCamera) armGuidedCamera(1500);
+          refreshUi();
+        } else if (state.stage === RETURN_STAGE) {
+          const next = selectedWord();
+          commitSelectedWord();
+          state.stage = LOOP_RESTART_STAGE;
+          state.progress = 0;
+          state.playing = false;
+          state.stepOnce = false;
+          state.quickTokenMode = false;
+          if (state.guidedCamera) armGuidedCamera(1500);
+          refreshUi();
+          showToast(`Next token returned: ${next}`);
+        } else {
+          state.quickTokenMode = false;
+          state.playing = false;
+          refreshUi();
+        }
+      } else if (state.stepOnce) {
         state.playing = false;
         state.stepOnce = false;
         refreshUi();
