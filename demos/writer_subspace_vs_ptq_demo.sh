@@ -247,6 +247,35 @@ PY
   run_eval "$writer_dir" "${EVAL_ROOT}/writer_subspace/${bit}bit"
 done
 
+echo "=== Step 6: Create/evaluate writer-subspace + fake PTQ checkpoints ==="
+for bit in "${BITS[@]}"; do
+  writer_dir="${SWEEP_ROOT}/writer_subspace/${bit}bit"
+  for scheme in "${PTQ_QUANTIZATION_ARRAY[@]}"; do
+    for group_count in "${PTQ_GROUP_COUNT_ARRAY[@]}"; do
+      if [[ "$group_count" == "0" ]]; then
+        group_tag="tensor"
+        extra_ptq_args=(--granularity tensor)
+      else
+        group_tag="vector_g${group_count}"
+        extra_ptq_args=(--granularity vector --vector-group-count "$group_count")
+      fi
+
+      combo_dir="${SWEEP_ROOT}/writer_subspace_ptq/${scheme}/${group_tag}/${bit}bit"
+      if [[ ! -f "${combo_dir}/ckpt.pt" ]]; then
+        mkdir -p "$combo_dir"
+        python3 quantizations/ptq/fake_quantize_ckpt.py "$writer_dir" \
+          --out_dir "$combo_dir" \
+          --num_bits "$bit" \
+          --quantization "$scheme" \
+          "${extra_ptq_args[@]}"
+      else
+        echo "Found ${combo_dir}/ckpt.pt; skipping writer-subspace + fake PTQ conversion."
+      fi
+      run_eval "$combo_dir" "${EVAL_ROOT}/writer_subspace_ptq/${scheme}/${group_tag}/${bit}bit"
+    done
+  done
+done
+
 python3 - "$BASE_OUT_DIR" "$SWEEP_ROOT" "$EVAL_ROOT" "$SUMMARY_ROOT" "$PTQ_QUANTIZATIONS" "$PTQ_VECTOR_GROUP_COUNTS" "${BITS[@]}" <<'PY'
 import csv
 import json
@@ -347,6 +376,30 @@ for bit in bits:
         "estimated_quantized_mb": estimated_quantized_mb(ckpt_path, bit, "writer_subspace"),
         "compression_ratio_vs_fp32": base_estimated_mb / estimated_quantized_mb(ckpt_path, bit, "writer_subspace"),
     })
+
+for scheme in ptq_quantizations:
+    for group_count in ptq_group_counts:
+        group_tag = "tensor" if group_count == 0 else f"vector_g{group_count}"
+        granularity = "tensor" if group_count == 0 else "vector"
+        label = f"Writer subspace + PTQ {scheme} {granularity}"
+        if group_count:
+            label += f" g={group_count}"
+        for bit in bits:
+            ckpt_path = os.path.join(sweep_root, "writer_subspace_ptq", scheme, group_tag, f"{bit}bit", "ckpt.pt")
+            eval_path = os.path.join(eval_root, "writer_subspace_ptq", scheme, group_tag, f"{bit}bit", "eval_loss.txt")
+            size = os.path.getsize(ckpt_path)
+            rows.append({
+                "bits": bit,
+                "method": "Writer subspace + fake PTQ",
+                "quantization": scheme,
+                "granularity": granularity,
+                "group_count": group_count,
+                "label": label,
+                "val_loss": read_loss(eval_path),
+                "ckpt_mb": size / (1024 * 1024),
+                "estimated_quantized_mb": estimated_quantized_mb(ckpt_path, bit, "fake_ptq"),
+                "compression_ratio_vs_fp32": base_estimated_mb / estimated_quantized_mb(ckpt_path, bit, "fake_ptq"),
+            })
 
 csv_path = os.path.join(summary_root, "writer_subspace_vs_ptq_eval.csv")
 with open(csv_path, "w", newline="", encoding="utf-8") as fh:

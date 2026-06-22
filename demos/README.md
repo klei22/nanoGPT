@@ -55,11 +55,12 @@ bash demos/fake_ptq_asymmetric_grouped_vector_eval_demo_shakespeare_char.sh \
 
 `writer_subspace_vs_ptq_demo.sh` trains or reuses a compact `shakespeare_char`
 full-precision checkpoint, evaluates it, creates fake PTQ checkpoints across
-symmetric/asymmetric schemes and several per-vector group-count settings, and
-creates writer-subspace checkpoints over the same bit-width sweep. It writes a
-CSV plus an HTML report with all stats, a validation-loss-vs-bits chart that
-uses a dotted horizontal full-precision reference line, and a validation-loss-vs-
-quantized-size chart.
+symmetric/asymmetric schemes and several per-vector group-count settings,
+creates writer-subspace checkpoints over the same bit-width sweep, and applies
+those fake PTQ settings on top of writer-subspace checkpoints to test the
+combined approach. It writes a CSV plus an HTML report with all stats, a
+validation-loss-vs-bits chart that uses a dotted horizontal full-precision
+reference line, and a validation-loss-vs-quantized-size chart.
 
 ```bash
 bash demos/writer_subspace_vs_ptq_demo.sh \
