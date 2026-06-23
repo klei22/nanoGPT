@@ -7,25 +7,20 @@ resembles identity, inverse/rotation-like, projection-like, etc. It also tests
 whether the equivalent head-space value/output map W_V^h W_O^h resembles
 specified block-diagonal 2D rotations.
 
+Additionally, we extract the product matrix W_Q^h (W_K^h)^T, partition it into
+its symmetric and skew-symmetric components to measure their L2 mass, and
+precisely tabulate the spectrum of the symmetric part (positive, negative, and
+zero eigenvalues). To bypass O(d_model^3) complexity, this utilizes an exact
+O(d_head^3) low-rank algebraic decomposition!
+
+Generates per-metric PNG heatmaps, interactive Plotly HTML pages, and an overall
+HTML dashboard report connecting everything.
+
 Examples:
 
   python head_special_matrix_probe.py --preset qwen-0.5b --device cuda
 
-  python head_special_matrix_probe.py --preset gemma-3-270m-it --device cuda --dtype bfloat16
-
   python head_special_matrix_probe.py --preset smollm2-135m-instruct --device cuda --dtype bfloat16
-
-  python head_special_matrix_probe.py \
-    --model google/gemma-3-270m \
-    --device cuda \
-    --dtype bfloat16 \
-    --trust-remote-code
-
-  python head_special_matrix_probe.py \
-    --preset qwen-0.5b \
-    --rotation-min-deg 5 \
-    --rotation-max-deg 45 \
-    --rotation-step-deg 5
 """
 
 import argparse
@@ -38,8 +33,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 from transformers import AutoModelForCausalLM
 
-from model import GPT
-from gpt_conf import GPTConfig
+try:
+    import plotly.express as px
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    print("Warning: plotly is not installed. Plotly interactive webpages will not be generated.")
+
+try:
+    from model import GPT
+    from gpt_conf import GPTConfig
+except ImportError:
+    pass
 
 
 def parse_args():
@@ -140,13 +145,7 @@ def get_rotation_degrees(args):
 
 
 def rotation_matrix_2d_blocks(dim, degrees, device):
-    """Return a block-diagonal 2D rotation target for head-space matrices.
-
-    Each adjacent coordinate pair gets the same 2D rotation. If dim is odd, the
-    final unpaired coordinate is left as identity. This gives a concrete
-    same-dimensional target for V_hO_h that can detect whether the equivalent
-    value/output map acts like a specified rotation inside the head subspace.
-    """
+    """Return a block-diagonal 2D rotation target for head-space matrices."""
     theta = torch.tensor(np.deg2rad(degrees), dtype=torch.float32, device=device)
     c = torch.cos(theta)
     s = torch.sin(theta)
@@ -177,6 +176,51 @@ def save_heatmap(arr, title, xlabel, ylabel, cbar, path, dpi=200, show=False):
     if show:
         plt.show()
     plt.close()
+
+
+def generate_html_report(args, metric_names, descriptions):
+    """Generates a cohesive HTML dashboard linking to Plotly and PNG heatmaps."""
+    report_path = os.path.join(args.outdir, "report.html")
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("<html>\n<head>\n<title>Probe Report</title>\n")
+        f.write("<style>\n")
+        f.write("body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 30px; background: #f8f9fa; color: #212529; }\n")
+        f.write("h1 { text-align: center; color: #343a40; margin-bottom: 5px; }\n")
+        f.write("h2 { border-bottom: 2px solid #dee2e6; padding-bottom: 5px; margin-top: 40px; color: #495057; }\n")
+        f.write(".grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 20px; }\n")
+        f.write(".card { border: 1px solid #e9ecef; padding: 20px; border-radius: 10px; background: #ffffff; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }\n")
+        f.write(".card h3 { margin-top: 0; font-size: 1.2em; color: #0056b3; word-wrap: break-word; }\n")
+        f.write("a { text-decoration: none; color: #007bff; font-weight: bold; }\n")
+        f.write("a:hover { text-decoration: underline; color: #0056b3; }\n")
+        f.write(".img-preview { max-width: 100%; height: auto; display: block; margin-top: 15px; border: 1px solid #dee2e6; border-radius: 6px; }\n")
+        f.write(".model-subtitle { text-align: center; color: #6c757d; font-size: 1.1em; margin-bottom: 40px; }\n")
+        f.write("</style>\n</head>\n<body>\n")
+        f.write(f"<h1>Attention Head Matrix Probe Report</h1>\n")
+        f.write(f"<p class='model-subtitle'><strong>Model:</strong> {args.model}</p>\n")
+
+        categories = {
+            "QK Matrix Inner Product Structure Metrics": [m for m in metric_names if m.startswith("QK_")],
+            "OV Identity & Standard Properties": [m for m in metric_names if "identity" in m or "orthogonal" in m or "involution" in m or "projection" in m or "symmetric" in m or "skew" in m],
+            "Head-space VO Metrics": [m for m in metric_names if "headspace" in m],
+        }
+
+        for cat, metrics in categories.items():
+            if not metrics:
+                continue
+            f.write(f"<h2>{cat}</h2>\n")
+            f.write("<div class='grid'>\n")
+            for m in metrics:
+                desc = descriptions.get(m, "")
+                f.write(f"<div class='card'>\n")
+                f.write(f"<h3>{m}</h3>\n")
+                f.write(f"<p>{desc}</p>\n")
+                if PLOTLY_AVAILABLE:
+                    f.write(f"<p><a href='plotly/{m}.html' target='_blank'>&#128200; View Interactive Plotly Heatmap</a></p>\n")
+                f.write(f"<a href='{m}_heatmap.png' target='_blank'><img class='img-preview' src='{m}_heatmap.png' alt='{m} heatmap'></a>\n")
+                f.write(f"</div>\n")
+            f.write("</div>\n")
+
+        f.write("</body>\n</html>\n")
 
 
 def cosine_to(A, B):
@@ -304,6 +348,10 @@ def main():
     args = apply_preset(parse_args())
     os.makedirs(args.outdir, exist_ok=True)
 
+    plotly_dir = os.path.join(args.outdir, "plotly")
+    if PLOTLY_AVAILABLE:
+        os.makedirs(plotly_dir, exist_ok=True)
+
     dtype = get_dtype(args.dtype)
 
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -350,6 +398,15 @@ def main():
 
         "rel_frob_headspace_VO_I",
         "cos_headspace_VO_I",
+
+        "QK_norm_frob",
+        "QK_norm_sym",
+        "QK_norm_skew",
+        "QK_mass_sym",
+        "QK_mass_skew",
+        "QK_pos_eigs",
+        "QK_neg_eigs",
+        "QK_zero_eigs",
     ]
 
     rotation_metric_names = []
@@ -375,11 +432,15 @@ def main():
                 Wq, Wk, Wv, Wo, hidden, config_heads
             )
 
+            # View weights to separate multiple heads
+            Wq_h = Wq.view(q_heads, head_dim, hidden)
+            Wk_h = Wk.view(k_heads, head_dim, hidden)
             Wv_h = Wv.view(v_heads, head_dim, hidden)
             Wo_h = Wo.view(hidden, o_heads, head_dim).permute(1, 0, 2)
 
             usable_heads = min(q_heads, o_heads)
             kv_group_size = max(1, q_heads // max(1, v_heads))
+            k_group_size = max(1, q_heads // max(1, k_heads))
 
             if layer_idx == 0:
                 print("inferred head_dim:", head_dim)
@@ -404,7 +465,65 @@ def main():
 
             for h in range(usable_heads):
                 kv_h = min(h // kv_group_size, v_heads - 1)
+                k_h = min(h // k_group_size, k_heads - 1)
 
+                values = {}
+
+                # =================================================================
+                # QK Bilinear Space (W_Q W_K^T) Extraction & Low-Rank Optimization
+                # =================================================================
+                # The full d_model x d_model attention matrix is extremely slow to
+                # eigendecompose. Using trace permutations, norms and eigenvalues
+                # are perfectly reconstructed in O(d_head^3) time instead of O(d_model^3).
+                wq_f = Wq_h[h].float()
+                wk_f = Wk_h[k_h].float()
+
+                Pq = wq_f @ wq_f.T # [head_dim, head_dim]
+                Pk = wk_f @ wk_f.T # [head_dim, head_dim]
+                C = wk_f @ wq_f.T  # [head_dim, head_dim]
+
+                # ||C||_F^2 = Tr(C^T C) = Tr(P_q P_k)
+                norm_QK_sq = torch.sum(Pq * Pk).item()
+                tr_C2 = torch.sum(C * C.T).item()
+
+                # S = 0.5 * (C + C.T), A = 0.5 * (C - C.T)
+                norm_S_sq = 0.5 * (norm_QK_sq + tr_C2)
+                norm_A_sq = 0.5 * (norm_QK_sq - tr_C2)
+
+                values["QK_norm_frob"] = max(norm_QK_sq, 0.0) ** 0.5
+                values["QK_norm_sym"] = max(norm_S_sq, 0.0) ** 0.5
+                values["QK_norm_skew"] = max(norm_A_sq, 0.0) ** 0.5
+
+                if norm_QK_sq > 0:
+                    values["QK_mass_sym"] = max(norm_S_sq, 0.0) / norm_QK_sq
+                    values["QK_mass_skew"] = max(norm_A_sq, 0.0) / norm_QK_sq
+                else:
+                    values["QK_mass_sym"] = 0.0
+                    values["QK_mass_skew"] = 0.0
+
+                # S = U V^T. The non-zero eigenvalues of S exactly match V^T U
+                # which collapses down to a tiny 2*head_dim x 2*head_dim matrix.
+                top_m = torch.cat([C, Pk], dim=1)
+                bot_m = torch.cat([Pq, C.T], dim=1)
+                M = 0.5 * torch.cat([top_m, bot_m], dim=0)
+
+                eigs = torch.linalg.eigvals(M).real
+                eigs_max = eigs.abs().max().item() if eigs.numel() > 0 else 0.0
+                tol = 1e-5 * max(eigs_max, 1e-7)
+
+                pos_eigs = (eigs > tol).sum().item()
+                neg_eigs = (eigs < -tol).sum().item()
+                # Missing eigenvalues (up to d_model) belong dynamically to the null space
+                zero_eigs = hidden - pos_eigs - neg_eigs
+
+                values["QK_pos_eigs"] = pos_eigs
+                values["QK_neg_eigs"] = neg_eigs
+                values["QK_zero_eigs"] = zero_eigs
+
+
+                # =================================================================
+                # OV Identity / Special Matrix Operators
+                # =================================================================
                 # Hidden-space operator:
                 # OV: [hidden, hidden]
                 OV = Wo_h[h] @ Wv_h[kv_h]
@@ -418,8 +537,6 @@ def main():
                 OVt = OV.T
                 OV2 = OV @ OV
                 OVtOV = OVt @ OV
-
-                values = {}
 
                 values["cos_identity_OV"] = cosine_to(OV, I_hidden)
                 values["rel_frob_identity_OV"] = rel_frob(OV, I_hidden)
@@ -517,6 +634,15 @@ def main():
 
         "rel_frob_headspace_VO_I": "V_hO_h relative distance to head identity, lower = more inverse-like in head space",
         "cos_headspace_VO_I": "V_hO_h cosine to head identity, higher = more inverse-like in head space",
+
+        "QK_norm_frob": "L2 (Frobenius) norm of the QK operator W_Q^h (W_K^h)^T",
+        "QK_norm_sym": "L2 norm of the purely symmetric part of the QK operator",
+        "QK_norm_skew": "L2 norm of the purely skew-symmetric part of the QK operator",
+        "QK_mass_sym": "Fraction of the QK matrix's mass strictly in the symmetric part (squared L2)",
+        "QK_mass_skew": "Fraction of the QK matrix's mass strictly in the skew-symmetric part (squared L2)",
+        "QK_pos_eigs": "Number of positive eigenvalues of the symmetric QK part",
+        "QK_neg_eigs": "Number of negative eigenvalues of the symmetric QK part",
+        "QK_zero_eigs": "Number of zero eigenvalues of the symmetric QK part",
     }
 
     for degree, label in rotation_metric_degrees:
@@ -544,11 +670,33 @@ def main():
             dpi=args.dpi,
             show=args.show,
         )
+        print("Saved static heatmap:", path)
 
-        print("Saved heatmap:", path)
+        if PLOTLY_AVAILABLE:
+            path_html = os.path.join(plotly_dir, f"{m}.html")
+            fig = px.imshow(
+                arr,
+                labels=dict(x="Head", y="Layer", color=m),
+                title=f"{m}<br><sup>{descriptions[m]}</sup>",
+                aspect="auto",
+                color_continuous_scale="Viridis"
+            )
+            fig.update_layout(title_x=0.5)
+            # Ensure correct and aesthetic integer tick orientations
+            fig.update_xaxes(side="bottom")
+            if arr.shape[1] <= 64:
+                fig.update_xaxes(tickmode='linear', tick0=0, dtick=1)
+            if arr.shape[0] <= 80:
+                fig.update_yaxes(tickmode='linear', tick0=0, dtick=1)
+
+            fig.write_html(path_html, include_plotlyjs="cdn")
+
+    generate_html_report(args, metric_names, descriptions)
+    print(f"Generated comprehensive HTML dashboard: {os.path.join(args.outdir, 'report.html')}")
 
     print("Done.")
 
 
 if __name__ == "__main__":
     main()
+
