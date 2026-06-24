@@ -1,0 +1,7 @@
+.gradle/
+build/
+app/build/
+app/src/main/assets/nanogpt.bin
+*.apk
+*.aab
+local.properties
