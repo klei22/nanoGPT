@@ -10,6 +10,7 @@ from variations.attention_variations import attention_dictionary
 from variations.mlp_variations import get_mlp_instance
 from variations.norm_variations import norm_dictionary
 from variations.learned_confidence_variations import learned_confidence_dictionary
+from variations.linear_variations import linear_dictionary
 from quantization.quantize import fake_quantize_act
 
 # type alias for the forward function
@@ -122,18 +123,19 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
     # Attn Operation
-    attn_out = block.attn(x_attn_in, iter_num)
+    attn_out = block.attn(x_attn_in, iter_num) if block.block_component_variant in ("attn_mlp", "attn_only") else None
 
     # Attn Peri-LN
-    if block.use_peri_ln_attn:
+    if block.use_peri_ln_attn and attn_out is not None:
         attn_out = block.peri_ln_attn(attn_out)
 
     # Attn Output Scaling
-    if block.attn_resid_scaler is not None:
+    if block.attn_resid_scaler is not None and attn_out is not None:
         attn_out = block.attn_resid_scaler(attn_out)
 
     # Attn Skip Connection
-    x = block._combine_resid("attn", x, attn_out)
+    if attn_out is not None:
+        x = block._combine_resid("attn", x, attn_out)
 
     # Attn Post-LN
     if block.use_post_ln_attn:
@@ -147,18 +149,26 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         x_mlp_in = block.pre_ln_mlp(x_mlp_in)
 
     # MLP Operation
-    mlp_out = block.mlp(x_mlp_in, iter_num)
+    mlp_out = block.mlp(x_mlp_in, iter_num) if block.block_component_variant in ("attn_mlp", "mlp_only") else None
+    if block.block_component_variant == "linear_only":
+        mlp_out = block.block_linear(x_mlp_in)
+    elif block.block_component_variant == "router_linear":
+        route_logits = block.block_router(x_mlp_in)
+        route_probs = torch.softmax(route_logits, dim=-1)
+        linear_out = block.block_linear(x_mlp_in)
+        mlp_out = route_probs[..., :1] * linear_out + route_probs[..., 1:2] * x_mlp_in
 
     # MLP Peri-LN
-    if block.use_peri_ln_mlp:
+    if block.use_peri_ln_mlp and mlp_out is not None:
         mlp_out = block.peri_ln_mlp(mlp_out)
 
     # MLP Output Scaling
-    if block.mlp_resid_scaler is not None:
+    if block.mlp_resid_scaler is not None and mlp_out is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
     # MLP Skip Connection
-    x = block._combine_resid("mlp", x, mlp_out)
+    if mlp_out is not None:
+        x = block._combine_resid("mlp", x, mlp_out)
 
     # MLP Post-LN
     if block.use_post_ln_mlp:
@@ -386,6 +396,7 @@ class Block(nn.Module):
         self.use_peri_ln = getattr(config, "use_peri_ln", False)
 
         # Forward variation choice
+        self.block_component_variant = getattr(config, "block_component_variant", "attn_mlp")
         self.use_parallel_mlp = getattr(config, "use_parallel_mlp", False)
         self.use_edgellm_asic = getattr(config, "use_edgellm_asic", False)
 
@@ -427,6 +438,20 @@ class Block(nn.Module):
             self.mlp = get_mlp_instance(config)
         else:
             self.mlp = mlp
+
+        if self.block_component_variant in ("linear_only", "router_linear"):
+            linear_cls = linear_dictionary[config.linear_variant_attn]
+            linear_cls = linear_cls if not getattr(config, "use_flash_norm", False) else linear_cls
+            self.block_linear = linear_cls(
+                config.n_embd,
+                config.n_embd,
+                config=config,
+                method=getattr(config, "activations_quant_method", None),
+                bits=getattr(config, "quantize_linear_bits", None),
+                bias=getattr(config, "bias", True),
+            )
+            if self.block_component_variant == "router_linear":
+                self.block_router = nn.Linear(config.n_embd, 2, bias=True)
 
         self.attn_resid_type = getattr(config, "attn_residual_combination", "add")
         self.mlp_resid_type = getattr(config, "mlp_residual_combination", "add")
