@@ -46,6 +46,12 @@ class GPTConfig:
     attention_variant_layerlist: List[str] = field(default_factory=list)
     use_rotary_embeddings_layerlist: List[bool] = field(default_factory=list)
     window_size_layerlist: List[int] = field(default_factory=list)
+    block_module_order_layerlist: List[str] = field(default_factory=list)
+    block_single_residual_layerlist: List[bool] = field(default_factory=list)
+
+    use_custom_module_block: bool = False
+    block_module_order: str = "attention,mlp"
+    block_single_residual: bool = False
 
     # For multicontext training
     multicontext: bool = False
