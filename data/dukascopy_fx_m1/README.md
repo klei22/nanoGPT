@@ -31,12 +31,25 @@ data/dukascopy_fx_m1/get_dataset.sh data/dukascopy_fx_m1/raw/eurusd
 ```
 
 `get_dataset.sh` first converts the raw floating-point candle CSV into
-`data/dukascopy_fx_m1/input.csv` with integer columns:
+`data/dukascopy_fx_m1/input.csv` with compact integer columns:
 
+- `minute_mod_10` in `[0, 9]`
+- `minute_of_hour` in `[0, 59]`
 - `minute_of_day` in `[0, 1439]`
-- `open_ticks`, `high_ticks`, `low_ticks`, `close_ticks` as rounded
-  `price * DUKASCOPY_PRICE_SCALE` (default `100000`)
-- `volume_ticks` as rounded `volume * DUKASCOPY_VOLUME_SCALE` (default `1000`)
+- `minute_of_week` in `[0, 10079]`
+- `minute_of_year` in `[0, 527039]` (leap-year-safe minute index)
+- `open_delta_state`, `high_delta_state`, `low_delta_state`,
+  `close_delta_state`, and `volume_delta_state` as compact derivative states
+
+For each OHLCV tick column, the converter computes the present tick value minus
+the previous tick value, derives default 5th/95th percentile saturation
+thresholds, clips outliers to those thresholds, and buckets the clipped
+derivative into `DUKASCOPY_DELTA_STATES` discrete states. The raw absolute tick
+values are not used as model tokens, which keeps vocabularies much smaller than
+full price/volume ranges.
+
+The converter also writes `stats.json` plus dependency-free PNG histograms for
+both the original tick values and derivative values under `data/dukascopy_fx_m1/stats/`.
 
 Then it calls `data/csv_mc_int/get_dataset.sh`, producing per-column datasets
 under `data/dukascopy_fx_m1/` and a `manifest.json` containing the ordered
@@ -45,11 +58,13 @@ under `data/dukascopy_fx_m1/` and a `manifest.json` containing the ordered
 Environment overrides:
 
 - `DUKASCOPY_MC_OUTPUT_ROOT` (default `dukascopy_fx_m1`)
-- `DUKASCOPY_PRICE_MIN` / `DUKASCOPY_PRICE_MAX` (default `0` / `300000`)
-- `DUKASCOPY_VOLUME_MAX` (default `100000000`)
 - `DUKASCOPY_PRICE_SCALE` (default `100000`)
 - `DUKASCOPY_VOLUME_SCALE` (default `1000`)
-- `DUKASCOPY_INCLUDE_WEEKDAY=1` to add a `weekday` context
+- `DUKASCOPY_DELTA_STATES` (default `257`)
+- `DUKASCOPY_DELTA_LOWER_PERCENTILE` / `DUKASCOPY_DELTA_UPPER_PERCENTILE` (default `5` / `95`)
+- `DUKASCOPY_DELTA_THRESHOLDS`, space-separated overrides like `open:-20:20 volume:-5000:5000`
+- `DUKASCOPY_LOG_DELTA=1` to apply signed `log1p` before derivative bucketing
+- `DUKASCOPY_STATS_DIR` (default `data/dukascopy_fx_m1/stats`)
 
 ## 3. Train/sample demo
 

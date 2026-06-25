@@ -9,31 +9,47 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 RAW_INPUT="${1:-${SCRIPT_DIR}/raw/eurusd}"
 INTEGER_CSV="${DUKASCOPY_MC_INPUT_CSV:-${SCRIPT_DIR}/input.csv}"
 OUTPUT_ROOT="${DUKASCOPY_MC_OUTPUT_ROOT:-dukascopy_fx_m1}"
-PRICE_MIN="${DUKASCOPY_PRICE_MIN:-0}"
-PRICE_MAX="${DUKASCOPY_PRICE_MAX:-300000}"
-VOLUME_MAX="${DUKASCOPY_VOLUME_MAX:-100000000}"
+STATS_DIR="${DUKASCOPY_STATS_DIR:-${SCRIPT_DIR}/stats}"
+DELTA_STATES="${DUKASCOPY_DELTA_STATES:-257}"
 
-python3 "${SCRIPT_DIR}/prepare_dukascopy_csv_for_mc_int.py" \
-  "$RAW_INPUT" \
-  --output_csv "$INTEGER_CSV" \
-  --price-scale "${DUKASCOPY_PRICE_SCALE:-100000}" \
-  --volume-scale "${DUKASCOPY_VOLUME_SCALE:-1000}" \
-  ${DUKASCOPY_INCLUDE_WEEKDAY:+--include-weekday}
+PREPARE_ARGS=(
+  "$RAW_INPUT"
+  --output_csv "$INTEGER_CSV"
+  --stats-dir "$STATS_DIR"
+  --price-scale "${DUKASCOPY_PRICE_SCALE:-100000}"
+  --volume-scale "${DUKASCOPY_VOLUME_SCALE:-1000}"
+  --delta-states "$DELTA_STATES"
+  --lower-percentile "${DUKASCOPY_DELTA_LOWER_PERCENTILE:-5}"
+  --upper-percentile "${DUKASCOPY_DELTA_UPPER_PERCENTILE:-95}"
+)
+
+if [[ -n "${DUKASCOPY_LOG_DELTA:-}" ]]; then
+  PREPARE_ARGS+=(--log-delta)
+fi
+
+if [[ -n "${DUKASCOPY_DELTA_THRESHOLDS:-}" ]]; then
+  read -r -a THRESHOLD_SPECS <<<"$DUKASCOPY_DELTA_THRESHOLDS"
+  for spec in "${THRESHOLD_SPECS[@]}"; do
+    PREPARE_ARGS+=(--delta-threshold "$spec")
+  done
+fi
+
+python3 "${SCRIPT_DIR}/prepare_dukascopy_csv_for_mc_int.py" "${PREPARE_ARGS[@]}"
 
 CSV_MC_ARGS=(
   "$INTEGER_CSV"
   --output_root "$OUTPUT_ROOT"
   --train_ratio "${DUKASCOPY_TRAIN_RATIO:-0.9}"
+  --range minute_mod_10:0:9
+  --range minute_of_hour:0:59
   --range minute_of_day:0:1439
-  --range open_ticks:"$PRICE_MIN":"$PRICE_MAX"
-  --range high_ticks:"$PRICE_MIN":"$PRICE_MAX"
-  --range low_ticks:"$PRICE_MIN":"$PRICE_MAX"
-  --range close_ticks:"$PRICE_MIN":"$PRICE_MAX"
-  --range volume_ticks:0:"$VOLUME_MAX"
+  --range minute_of_week:0:10079
+  --range minute_of_year:0:527039
+  --range open_delta_state:0:$((DELTA_STATES - 1))
+  --range high_delta_state:0:$((DELTA_STATES - 1))
+  --range low_delta_state:0:$((DELTA_STATES - 1))
+  --range close_delta_state:0:$((DELTA_STATES - 1))
+  --range volume_delta_state:0:$((DELTA_STATES - 1))
 )
-
-if [[ -n "${DUKASCOPY_INCLUDE_WEEKDAY:-}" ]]; then
-  CSV_MC_ARGS+=(--range weekday:0:6)
-fi
 
 "${REPO_ROOT}/data/csv_mc_int/get_dataset.sh" "${CSV_MC_ARGS[@]}"
