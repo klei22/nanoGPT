@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Transformer Sentence Layers — Residual, LM Head, Softmax</title>
+    <title>Transformer Inference — Prefill, Decode, K/V Cache</title>
     <style>
       :root {
-        --bg: #101426;
-        --bg-2: #151a31;
+        --bg: #151829;
+        --bg-2: #1b2138;
         --panel: rgba(255, 255, 255, 0.06);
         --panel-2: rgba(255, 255, 255, 0.095);
         --border: rgba(255, 255, 255, 0.135);
@@ -22,6 +22,10 @@
         --output: #c77dff;
         --soft: #58c4dd;
         --sum: #4ea8de;
+        --query: #c77dff;
+        --key: #60a5fa;
+        --value: #f4a261;
+        --cache: #7dd3fc;
         --stage-accent: #ff7b72;
       }
 
@@ -59,7 +63,7 @@
 
       #app {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 480px;
+        grid-template-columns: minmax(0, 1fr) 500px;
         width: 100vw;
         height: 100vh;
       }
@@ -90,7 +94,7 @@
       }
 
       .title-card {
-        max-width: 1130px;
+        max-width: 1220px;
         border: 1px solid var(--border);
         border-radius: 22px;
         padding: 16px 18px;
@@ -806,6 +810,164 @@
         }
         .token-status-separator { display: none; }
       }
+
+      .mode-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 0 11px;
+        border-radius: 999px;
+        border: 1px solid rgba(125,211,252,.34);
+        background: linear-gradient(180deg, rgba(125,211,252,.13), rgba(125,211,252,.055));
+        color: #b9ecff;
+        font-size: 11px;
+        font-weight: 850;
+        letter-spacing: .15em;
+        text-transform: uppercase;
+        box-shadow: 0 0 22px rgba(125,211,252,.08);
+      }
+      .mode-summary {
+        color: rgba(255,255,255,.58);
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: .01em;
+      }
+      .mode-switch {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 5px;
+        border: 1px solid rgba(255,255,255,.11);
+        border-radius: 16px;
+        background: rgba(0,0,0,.18);
+      }
+      .mode-switch button {
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-weight: 760;
+        letter-spacing: .02em;
+      }
+      .mode-switch button.active[data-mode="prefill"] {
+        color: #b9ecff;
+        border-color: rgba(125,211,252,.42);
+        background: rgba(125,211,252,.13);
+        box-shadow: inset 0 0 0 1px rgba(125,211,252,.08), 0 0 20px rgba(125,211,252,.07);
+      }
+      .mode-switch button.active[data-mode="decode"] {
+        color: #d9b8ff;
+        border-color: rgba(199,125,255,.42);
+        background: rgba(199,125,255,.13);
+        box-shadow: inset 0 0 0 1px rgba(199,125,255,.08), 0 0 20px rgba(199,125,255,.07);
+      }
+      .mode-description {
+        margin-top: 10px;
+        padding: 10px 11px;
+        border-radius: 13px;
+        border: 1px solid rgba(255,255,255,.09);
+        background: rgba(0,0,0,.16);
+        color: rgba(255,255,255,.72);
+        font-size: 12.5px;
+        line-height: 1.48;
+      }
+      .cache-stat-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-top: 11px;
+      }
+      .cache-stat {
+        min-width: 0;
+        padding: 9px 9px 8px;
+        border-radius: 13px;
+        border: 1px solid rgba(255,255,255,.09);
+        background: rgba(255,255,255,.045);
+      }
+      .cache-stat-label {
+        color: rgba(255,255,255,.45);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+      }
+      .cache-stat-value {
+        margin-top: 4px;
+        color: rgba(255,255,255,.94);
+        font: 750 13px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cache-strip-wrap { margin-top: 11px; }
+      .cache-strip-label {
+        margin-bottom: 6px;
+        color: rgba(255,255,255,.47);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: .13em;
+        text-transform: uppercase;
+      }
+      .cache-token-strip {
+        min-height: 38px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 5px;
+        padding: 7px;
+        border-radius: 13px;
+        border: 1px solid rgba(96,165,250,.16);
+        background: linear-gradient(180deg, rgba(96,165,250,.065), rgba(244,162,97,.035));
+      }
+      .cache-token {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 7px;
+        border-radius: 9px;
+        border: 1px solid rgba(255,255,255,.10);
+        background: rgba(0,0,0,.19);
+        color: rgba(255,255,255,.78);
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .cache-token.pending {
+        border-style: dashed;
+        color: #b9ecff;
+        border-color: rgba(125,211,252,.35);
+        background: rgba(125,211,252,.07);
+      }
+      .cache-token.current {
+        color: #d9b8ff;
+        border-color: rgba(199,125,255,.38);
+        background: rgba(199,125,255,.08);
+      }
+      .cache-token-index {
+        color: rgba(255,255,255,.34);
+        font: 700 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .stage-section {
+        grid-column: 1 / -1;
+        margin: 8px 0 1px;
+        padding: 7px 2px 3px;
+        border-top: 1px solid rgba(255,255,255,.075);
+        color: rgba(255,255,255,.46);
+        font-size: 9.5px;
+        font-weight: 850;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+      }
+      .stage-section:first-child { margin-top: 0; border-top: 0; }
+      .stage-button {
+        min-height: 40px;
+        text-align: left;
+        line-height: 1.25;
+      }
+      .panel.inference-panel {
+        background: linear-gradient(180deg, rgba(125,211,252,.065), rgba(199,125,255,.035));
+        border-color: rgba(125,211,252,.16);
+      }
+      .cache-key { color: var(--key); }
+      .cache-value { color: var(--value); }
+
 </style>
   </head>
   <body>
@@ -816,6 +978,8 @@
           <div class="title-card">
             <div class="title-row">
               <div class="phase-chip"><span class="phase-dot"></span><span id="scenePhase">Token embedding</span></div>
+              <div class="mode-chip" id="sceneModeChip">PREFILL</div>
+              <div class="mode-summary" id="sceneModeSummary">Parallel prompt pass · populate K/V cache</div>
             </div>
             <div class="math-card-body">
               <div class="math-display" id="sceneMath"></div>
@@ -860,8 +1024,30 @@
           <div class="stage-grid" id="stageGrid"></div>
         </div>
 
+        <div class="panel inference-panel">
+          <h2>Inference mode and K/V cache</h2>
+          <div class="mode-switch" role="group" aria-label="Inference mode">
+            <button id="prefillModeBtn" data-mode="prefill" class="active">Prefill</button>
+            <button id="decodeModeBtn" data-mode="decode">Decode</button>
+          </div>
+          <div class="mode-description" id="modeDescription"></div>
+          <div class="stack" style="margin-top:11px">
+            <div class="stack-row"><span>Prompt token count</span><select id="prefillLengthSelect"></select></div>
+          </div>
+          <div class="cache-stat-grid">
+            <div class="cache-stat"><div class="cache-stat-label">Stored slots</div><div class="cache-stat-value" id="cacheLengthValue">0</div></div>
+            <div class="cache-stat"><div class="cache-stat-label">Attention context</div><div class="cache-stat-value" id="contextLengthValue">4</div></div>
+            <div class="cache-stat"><div class="cache-stat-label">Active layer</div><div class="cache-stat-value" id="activeCacheLayer">—</div></div>
+          </div>
+          <div class="cache-strip-wrap">
+            <div class="cache-strip-label"><span class="cache-key">K</span> / <span class="cache-value">V</span> cache token slots</div>
+            <div class="cache-token-strip" id="cacheTokenStrip"></div>
+          </div>
+          <div class="inline-note">Prefill projects every prompt position and writes all cache slots. Decode projects one new position, appends one K/V slot per layer, and reads the retained cache.</div>
+        </div>
+
         <div class="panel">
-          <h2>Sentence, layers, and input</h2>
+          <h2>Model, sentence, and sampling</h2>
           <div class="stack">
             <div class="stack-row"><span>Sentence vocabulary</span><select id="sentenceSelect"></select></div>
             <div id="sentenceTokens" class="token-strip" aria-label="Sentence tokens"></div>
@@ -926,7 +1112,8 @@
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">j</span><span class="keycap">→</span><span class="keycap wide">PgDn</span></div><div>Play next micro-step once</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">k</span><span class="keycap">←</span><span class="keycap wide">PgUp</span></div><div>Play previous micro-step once</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap wide">1–9</span><span class="keycap wide">⇧1–⇧9</span></div><div>Jump to stages 1–18</div></div>
-            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">a</span><span class="keycap">e</span><span class="keycap">l</span><span class="keycap">q</span></div><div>First Attention / final MLP / LM Head / selection</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">a</span><span class="keycap">e</span><span class="keycap">l</span><span class="keycap">q</span></div><div>Attention detail / final MLP detail / LM Head / selection</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">p</span><span class="keycap">d</span></div><div>Reset into Prefill / Decode mode</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">x</span></div><div>Skip directly to selection, then animate the token return</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">z</span></div><div>Reset generated text and return to the initial token</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">0</span></div><div>Jump to return loop</div></div>
@@ -950,7 +1137,7 @@
             <div class="hotkey-section-title">Presentation</div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">n</span></div><div>Reinitialize transforms</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">b</span><span class="keycap">g</span></div><div>Labels / track trail</div></div>
-            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">s</span><span class="keycap">d</span><span class="keycap">f</span></div><div>Cone width 8° / 14° / 28°</div></div>
+            <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">s</span><span class="keycap">f</span></div><div>Cone width 8° / 28°</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">[</span><span class="keycap">]</span></div><div>Nudge cone width</div></div>
             <div class="hotkey-row"><div class="hotkey-chord"><span class="keycap">m</span></div><div>Show / hide this card</div></div>
           </div>
@@ -965,8 +1152,10 @@
           <h2>Legend</h2>
           <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--current);background:var(--current)"></span>Residual</span><span>moving carrier</span></div>
           <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--norm);background:var(--norm)"></span>Norm copy</span><span>exact copy → surface</span></div>
-          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--attention);background:var(--attention)"></span>Attention</span><span>opaque module per layer</span></div>
-          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--mlp);background:var(--mlp)"></span>MLP</span><span>final one targets next token</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--attention);background:var(--attention)"></span>Attention</span><span>Q/K/V → scores → softmax → values → Wₒ</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--key);background:var(--key)"></span>K cache</span><span>retained keys by token position</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--value);background:var(--value)"></span>V cache</span><span>retained values by token position</span></div>
+          <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--mlp);background:var(--mlp)"></span>MLP</span><span>read → activate → write → sum</span></div>
           <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--soft);background:var(--soft)"></span>LM Head</span><span>five sentence tokens only</span></div>
           <div class="legend-row"><span class="legend-left"><span class="swatch" style="color:var(--output);background:var(--output)"></span>Top-k</span><span>highlight, sample, return</span></div>
         </div>
@@ -976,7 +1165,7 @@
 import { OrbitControls } from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
 
 const COLORS = {
-  bg: "#101426",
+  bg: "#151829",
   white: "#ffffff",
   grid: "#8d99ae",
   current: "#ff7b72",
@@ -988,7 +1177,11 @@ const COLORS = {
   output: "#c77dff",
   soft: "#58c4dd",
   sum: "#4ea8de",
-  dark: "#151a31",
+  query: "#c77dff",
+  key: "#60a5fa",
+  value: "#f4a261",
+  cache: "#7dd3fc",
+  dark: "#1b2138",
   dim: "#64748b",
   danger: "#fb7185",
 };
@@ -1012,8 +1205,11 @@ let WORDS = [...SENTENCES.english.tokens];
 
 const state = {
   sentenceKey: "english",
-  word: WORDS[0],
-  initialWord: WORDS[0],
+  mode: "prefill",
+  prefillLength: 4,
+  cacheTokens: [],
+  word: WORDS[3],
+  initialWord: WORDS[3],
   history: [],
   layerCount: 1,
   inputMagnitudeRatio: 0.33,
@@ -1096,6 +1292,131 @@ function activationFactor(mode) {
   return mode === "relu2_norm" ? 1.08 : mode === "sigmoid_norm" ? 0.9 : 1;
 }
 function mlpFactor(mode) { return mode === "relu" ? 0.92 : mode === "silu" ? 1.04 : 1; }
+function gelu(x) { return 0.5 * x * (1 + Math.tanh(Math.sqrt(2 / Math.PI) * (x + 0.044715 * x * x * x))); }
+function silu(x) { return x / (1 + Math.exp(-x)); }
+function applyMlpActivation(mode, x) {
+  if (mode === "relu") return Math.max(0, x);
+  if (mode === "silu") return silu(x);
+  return gelu(x);
+}
+function attentionNormalize(scores, mode) {
+  if (!scores.length) return [];
+  if (mode === "sigmoid_norm") {
+    const raw = scores.map(x => 1 / (1 + Math.exp(-clamp(x, -24, 24))));
+    const total = raw.reduce((a, b) => a + b, 0) || 1;
+    return raw.map(x => x / total);
+  }
+  if (mode === "relu2_norm") {
+    const raw = scores.map(x => Math.max(0, x) ** 2);
+    const total = raw.reduce((a, b) => a + b, 0);
+    return total > 1e-9 ? raw.map(x => x / total) : raw.map(() => 1 / raw.length);
+  }
+  return softmax(scores);
+}
+function promptTokens() {
+  return WORDS.slice(0, clamp(state.prefillLength, 1, Math.max(1, WORDS.length)));
+}
+function promptLastToken() {
+  const tokens = promptTokens();
+  return tokens[tokens.length - 1] || WORDS[0];
+}
+function firstDecodeToken() {
+  return WORDS[clamp(state.prefillLength, 0, WORDS.length - 1)] || nextWordFor(promptLastToken());
+}
+function storedCacheTokens() {
+  return state.mode === "decode" ? (state.cacheTokens.length ? [...state.cacheTokens] : promptTokens()) : [];
+}
+function attentionContextTokens() {
+  if (state.mode === "prefill") return promptTokens();
+  return [...storedCacheTokens(), state.word];
+}
+function textSoFarTokens() {
+  return state.mode === "prefill" ? promptTokens().slice(0, -1) : storedCacheTokens();
+}
+function tokenLayerDirection(token, position, layerIndex) {
+  const seed = state.dataSeed + hashString(`${state.sentenceKey}|${token}|${position}|${layerIndex}`);
+  const angle = 0.10 + 0.025 * ((position + layerIndex) % 4);
+  return rotateSeeded(wordDir(token), seed, angle);
+}
+function computeAttentionDetail(tokens, layerIndex, activeNorm, desiredOutput) {
+  const n = Math.max(1, tokens.length);
+  const activeIndex = n - 1;
+  const inputs = tokens.map((token, index) => index === activeIndex
+    ? unit(activeNorm)
+    : tokenLayerDirection(token, index, layerIndex));
+  const q = inputs.map((x, index) => rotateSeeded(x, state.dataSeed + layerIndex * 1709 + index * 37 + 11, 0.31));
+  const k = inputs.map((x, index) => rotateSeeded(x, state.dataSeed + layerIndex * 1709 + index * 41 + 23, -0.27));
+  const v = inputs.map((x, index) => rotateSeeded(x, state.dataSeed + layerIndex * 1709 + index * 43 + 47, 0.39));
+  const rows = state.mode === "prefill" ? n : 1;
+  const scores = [];
+  const weights = [];
+  for (let row = 0; row < rows; row++) {
+    const queryIndex = state.mode === "prefill" ? row : activeIndex;
+    const valid = [];
+    const scoreRow = [];
+    for (let col = 0; col < n; col++) {
+      const masked = state.mode === "prefill" && col > queryIndex;
+      const value = masked ? -Infinity : state.scoreScale * q[queryIndex].dot(k[col]) / Math.sqrt(3);
+      scoreRow.push(value);
+      if (!masked) valid.push(value);
+    }
+    const validWeights = attentionNormalize(valid, state.attentionActivation);
+    let cursor = 0;
+    const weightRow = scoreRow.map(value => Number.isFinite(value) ? validWeights[cursor++] : 0);
+    scores.push(scoreRow);
+    weights.push(weightRow);
+  }
+  const activeRowIndex = rows - 1;
+  const activeWeights = weights[activeRowIndex];
+  const activeScores = scores[activeRowIndex];
+  const weightedValues = v.map((direction, index) => direction.clone().multiplyScalar(activeWeights[index] || 0));
+  const context = weightedValues.reduce((acc, item) => acc.add(item), new THREE.Vector3());
+  return {
+    mode: state.mode,
+    tokens,
+    activeIndex,
+    inputs,
+    q,
+    k,
+    v,
+    scores,
+    weights,
+    activeScores,
+    activeWeights,
+    weightedValues,
+    context,
+    output: desiredOutput.clone(),
+    existingCount: state.mode === "decode" ? Math.max(0, n - 1) : 0,
+    newIndices: state.mode === "prefill" ? tokens.map((_, index) => index) : [activeIndex],
+  };
+}
+function computeMlpDetail(input, desiredOutput, layerIndex) {
+  const count = 6;
+  const inputUnit = unit(input);
+  const readDirs = [
+    inputUnit.clone(),
+    ...Array.from({ length: count - 1 }, (_, index) => randomUnit(state.dataSeed + layerIndex * 2017 + index * 59 + 360)),
+  ];
+  const readCoeffs = readDirs.map(direction => inputUnit.dot(direction));
+  const activated = readCoeffs.map(value => applyMlpActivation(state.mlpActivation, value));
+  const pivot = activated.reduce((best, value, index) => Math.abs(value) > Math.abs(activated[best]) ? index : best, 0);
+  const writeDirs = Array.from({ length: count }, (_, index) =>
+    randomUnit(state.dataSeed + layerIndex * 2017 + index * 67 + 911).multiplyScalar(0.10 + 0.015 * (index % 3))
+  );
+  const contributions = writeDirs.map((write, index) => write.clone().multiplyScalar(activated[index]));
+  const partialWithoutPivot = contributions.reduce((acc, contribution, index) => index === pivot ? acc : acc.add(contribution), new THREE.Vector3());
+  const pivotCoeff = Math.abs(activated[pivot]) > 1e-5 ? activated[pivot] : 1;
+  writeDirs[pivot] = desiredOutput.clone().sub(partialWithoutPivot).multiplyScalar(1 / pivotCoeff);
+  contributions[pivot] = writeDirs[pivot].clone().multiplyScalar(activated[pivot]);
+  const chain = [];
+  let accumulator = new THREE.Vector3();
+  contributions.forEach((contribution, index) => {
+    const start = accumulator.clone();
+    accumulator.add(contribution);
+    chain.push({ start, end: accumulator.clone(), contribution: contribution.clone(), index });
+  });
+  return { input: input.clone(), readDirs, readCoeffs, activated, writeDirs, contributions, chain, output: desiredOutput.clone(), pivot };
+}
 function inputVectorLength() { return CARRIER_R * state.inputMagnitudeRatio; }
 function nextWordFor(word) {
   const i = Math.max(0, WORDS.indexOf(word));
@@ -1126,28 +1447,28 @@ function targetBiasedDirection(targetWord, seed) {
 }
 
 function computeLayout(layerCount) {
-  const inputWord = new THREE.Vector3(-3.25, 0, 0);
+  const inputWord = new THREE.Vector3(-3.4, 0, 0);
   const residualStart = new THREE.Vector3(0, 0, 0);
   const layers = [];
   let streamStart = residualStart.clone();
   for (let i = 0; i < layerCount; i++) {
-    const attnNorm = streamStart.clone().add(new THREE.Vector3(2.65, 0, 0));
-    const attnNormUp = attnNorm.clone().add(new THREE.Vector3(0, 3.05, 0));
-    const attnBox = attnNorm.clone().add(new THREE.Vector3(2.55, 3.05, 0));
-    const attnBoxIn = attnBox.clone().add(new THREE.Vector3(-1.15, 0, 0));
-    const attnBoxOut = attnBox.clone().add(new THREE.Vector3(1.15, 0, 0));
-    const attnAdd = attnBox.clone().add(new THREE.Vector3(3.45, -3.05, 0));
-    const attnOutputAbove = attnAdd.clone().add(new THREE.Vector3(0, 3.05, 0));
-    const attnOutputHold = attnAdd.clone().add(new THREE.Vector3(0, 1.92, 0));
+    const attnNorm = streamStart.clone().add(new THREE.Vector3(3.0, 0, 0));
+    const attnNormUp = attnNorm.clone().add(new THREE.Vector3(0, 3.55, 0));
+    const attnBox = attnNorm.clone().add(new THREE.Vector3(6.05, 3.75, 0));
+    const attnBoxIn = attnBox.clone().add(new THREE.Vector3(-5.05, 0, 0));
+    const attnBoxOut = attnBox.clone().add(new THREE.Vector3(5.15, -1.55, 0));
+    const attnAdd = attnNorm.clone().add(new THREE.Vector3(12.15, 0, 0));
+    const attnOutputAbove = attnAdd.clone().add(new THREE.Vector3(0, 3.65, 0));
+    const attnOutputHold = attnAdd.clone().add(new THREE.Vector3(0, 1.98, 0));
 
-    const mlpNorm = attnAdd.clone().add(new THREE.Vector3(2.8, 0, 0));
-    const mlpNormUp = mlpNorm.clone().add(new THREE.Vector3(0, 3.05, 0));
-    const mlpBox = mlpNorm.clone().add(new THREE.Vector3(2.55, 3.05, 0));
-    const mlpBoxIn = mlpBox.clone().add(new THREE.Vector3(-1.15, 0, 0));
-    const mlpBoxOut = mlpBox.clone().add(new THREE.Vector3(1.15, 0, 0));
-    const mlpAdd = mlpBox.clone().add(new THREE.Vector3(3.45, -3.05, 0));
-    const mlpOutputAbove = mlpAdd.clone().add(new THREE.Vector3(0, 3.05, 0));
-    const mlpOutputHold = mlpAdd.clone().add(new THREE.Vector3(0, 1.92, 0));
+    const mlpNorm = attnAdd.clone().add(new THREE.Vector3(3.2, 0, 0));
+    const mlpNormUp = mlpNorm.clone().add(new THREE.Vector3(0, 3.5, 0));
+    const mlpBox = mlpNorm.clone().add(new THREE.Vector3(4.95, 3.65, 0));
+    const mlpBoxIn = mlpBox.clone().add(new THREE.Vector3(-3.75, 0, 0));
+    const mlpBoxOut = mlpBox.clone().add(new THREE.Vector3(3.75, 0, 0));
+    const mlpAdd = mlpNorm.clone().add(new THREE.Vector3(10.05, 0, 0));
+    const mlpOutputAbove = mlpAdd.clone().add(new THREE.Vector3(0, 3.55, 0));
+    const mlpOutputHold = mlpAdd.clone().add(new THREE.Vector3(0, 1.98, 0));
 
     layers.push({
       index: i,
@@ -1171,10 +1492,10 @@ function computeLayout(layerCount) {
     });
     streamStart = mlpAdd.clone();
   }
-  const outNorm = streamStart.clone().add(new THREE.Vector3(2.85, 0, 0));
-  const lmHead = outNorm.clone().add(new THREE.Vector3(3.25, 0, 0));
-  const logits = lmHead.clone().add(new THREE.Vector3(3.55, 0, 0));
-  const softmax = logits.clone().add(new THREE.Vector3(3.55, 0, 0));
+  const outNorm = streamStart.clone().add(new THREE.Vector3(3.2, 0, 0));
+  const lmHead = outNorm.clone().add(new THREE.Vector3(3.5, 0, 0));
+  const logits = lmHead.clone().add(new THREE.Vector3(3.7, 0, 0));
+  const softmax = logits.clone().add(new THREE.Vector3(3.7, 0, 0));
   const xMin = inputWord.x - 1.3;
   const xMax = softmax.x + 1.3;
   return {
@@ -1194,6 +1515,7 @@ function computeLayout(layerCount) {
 
 function buildPass() {
   const targetWord = nextWordFor(state.word);
+  const contextTokens = attentionContextTokens();
   let residual = wordDir(state.word).multiplyScalar(inputVectorLength());
   const layerPasses = [];
   for (let i = 0; i < state.layerCount; i++) {
@@ -1219,7 +1541,9 @@ function buildPass() {
         .multiplyScalar((0.17 + 0.015 * (i % 2)) * mlpFactor(state.mlpActivation));
       afterMlp = afterAttn.clone().add(mlpOut);
     }
-    layerPasses.push({ base, attnNorm, attnOut, afterAttn, mlpNorm, mlpOut, afterMlp, targetDirection });
+    const attentionDetail = computeAttentionDetail(contextTokens, i, attnNorm, attnOut);
+    const mlpDetail = computeMlpDetail(mlpNorm, mlpOut, i);
+    layerPasses.push({ base, attnNorm, attnOut, afterAttn, mlpNorm, mlpOut, afterMlp, targetDirection, attentionDetail, mlpDetail });
     residual = afterMlp.clone();
   }
   const hidden = unit(residual).multiplyScalar(CARRIER_R);
@@ -1239,6 +1563,7 @@ function buildPass() {
     top: ranking[0],
     targetWord,
     targetIndex: WORDS.indexOf(targetWord),
+    contextTokens,
   };
 }
 
@@ -1247,30 +1572,35 @@ function mathVector(name, sub = "", sup = "") {
 }
 function buildStages() {
   const stages = [];
-  const push = (stage) => stages.push({ duration: 2.8, ...stage });
+  const push = (stage) => stages.push({ duration: 2.8, group: "Pipeline", ...stage });
+  const modePrefill = state.mode === "prefill";
   push({
     type: "input",
+    group: "Embedding",
     short: "Input embedding",
-    name: "Look up the embedding for the current input token",
-    phase: "Token embedding",
+    name: modePrefill ? "Look up the final prompt-position embedding" : "Look up the current decode-token embedding",
+    phase: modePrefill ? "Prefill · token embedding" : "Decode · token embedding",
     color: COLORS.current,
     duration: 2.0,
     station: "start",
-    math: `${mathVector("x", "n")} = E[t<sub>n</sub>], &nbsp; ‖${mathVector("x", "n")}‖ = αR`,
-    mathNote: "The whitespace tokenizer supplies one token tₙ. The embedding table E returns xₙ, and α sets the embedding norm used in this demonstration.",
-    copy: "The embedding xₙ has been computed. The residual state r⁽⁰⁾ is still empty until the next step.",
+    math: `${mathVector("x", "t")} = E[t], &nbsp; ‖${mathVector("x", "t")}‖ = αR`,
+    mathNote: modePrefill
+      ? "The prompt is tokenized on whitespace. The active residual corresponds to the final prompt position, whose hidden state predicts the next token."
+      : "Decode handles one new token position. Its embedding is the only new residual entering the stack; earlier positions are retained through the K/V cache.",
+    copy: "The token embedding is available, but the residual stream is still empty until the next step.",
   });
   push({
     type: "copy-input",
-    short: "Copy into residual",
-    name: "Initialize the residual stream from the token embedding",
-    phase: "Residual initialization",
+    group: "Embedding",
+    short: "Initialize residual",
+    name: "Initialize the residual stream from the active token embedding",
+    phase: modePrefill ? "Prefill · residual initialization" : "Decode · residual initialization",
     color: COLORS.current,
     duration: 2.8,
     station: "start",
-    math: `${mathVector("r", "", "(0)")} ← ${mathVector("x", "n")}`,
-    mathNote: "Set r⁽⁰⁾ equal to xₙ component by component, preserving the embedding direction and magnitude.",
-    copy: "The first Transformer layer now receives r⁽⁰⁾ as its input residual.",
+    math: `${mathVector("r", "t", "(0)")} ← ${mathVector("x", "t")}`,
+    mathNote: "The residual is copied component by component, preserving the selected embedding direction and magnitude.",
+    copy: "The first Transformer layer now receives the initialized residual.",
   });
 
   for (let i = 0; i < state.layerCount; i++) {
@@ -1278,290 +1608,299 @@ function buildStages() {
     const inSup = `(${i})`;
     const outSup = `(${ell})`;
     const prefix = `L${ell}`;
-    const attnUpdate = mathVector("a", "", outSup);
-    const mlpUpdate = mathVector("m", "", outSup);
-    const residualIn = mathVector("r", "", inSup);
-    const residualOut = mathVector("r", "", outSup);
-    const postAttn = mathVector("u", "", outSup);
+    const attnGroup = `Layer ${ell} · Attention`;
+    const mlpGroup = `Layer ${ell} · MLP`;
+    const attnUpdate = mathVector("a", "t", outSup);
+    const mlpUpdate = mathVector("m", "t", outSup);
+    const residualIn = mathVector("r", "t", inSup);
+    const residualOut = mathVector("r", "t", outSup);
+    const postAttn = mathVector("u", "t", outSup);
 
     push({
-      type: "travel-attn",
-      layer: i,
+      type: "travel-attn", layer: i, group: attnGroup,
       short: `${prefix} Attn input`,
       name: `Layer ${ell}: carry the residual unchanged to the Attention branch`,
-      phase: `Layer ${ell} · Attention input`,
-      color: COLORS.current,
-      station: `l${i}-attn-norm`,
+      phase: `${modePrefill ? "Prefill" : "Decode"} · Layer ${ell} Attention input`,
+      color: COLORS.current, station: `l${i}-attn-norm`,
       math: `${mathVector("r", "A,in", outSup)} ← ${residualIn}`,
-      mathNote: "No normalization, activation, or learned transformation is applied in this step; the residual value is unchanged.",
-      copy: "Next, an exact branch copy will be created for Attention RMSNorm while the original residual remains the skip state.",
+      mathNote: "No normalization or learned transformation is applied during this transfer.",
+      copy: "An exact branch copy will be created next while the original residual is retained for the skip connection.",
     });
     push({
-      type: "attn-norm-lift",
-      layer: i,
-      short: `${prefix} Attn copy`,
-      name: `Layer ${ell}: fork an exact copy for Attention normalization`,
-      phase: `Layer ${ell} · Attention branch copy`,
-      color: COLORS.norm,
-      station: `l${i}-attn-norm`,
+      type: "attn-norm-lift", layer: i, group: attnGroup,
+      short: `${prefix} Attn copy`, name: `Layer ${ell}: fork the Attention branch copy`,
+      phase: `Layer ${ell} · Attention branch copy`, color: COLORS.norm, station: `l${i}-attn-norm`,
       math: `${mathVector("c", "A", outSup)} ← ${residualIn}, &nbsp; ${mathVector("r", "skip", outSup)} = ${residualIn}`,
-      mathNote: "This step performs only a copy. RMSNorm has not yet been applied, and both branches contain identical components.",
-      copy: "The original residual is preserved for the skip connection; c_A is the branch that will be normalized next.",
+      mathNote: "This operation only copies the residual. RMSNorm has not yet been applied.",
+      copy: "The copied branch will be normalized; the original residual remains unchanged for the skip connection.",
     });
     push({
-      type: "attn-norm-project",
-      layer: i,
-      short: `${prefix} Attn pre-norm`,
-      name: `Layer ${ell}: apply Attention pre-norm RMSNorm to the copied branch`,
-      phase: `Layer ${ell} · Attention pre-norm`,
-      color: COLORS.norm,
-      station: `l${i}-attn-norm`,
-      math: `${mathVector("r̂", "", inSup)} = RMSNorm<sub>A</sub><sup>(${ell})</sup>(${mathVector("c", "A", outSup)})`,
-      mathNote: "RMSNorm rescales the copied Attention branch to a controlled root-mean-square magnitude. The skip residual is not normalized or otherwise changed.",
-      copy: "The normalized branch r̂ is now ready for multi-head self-attention.",
+      type: "attn-norm-project", layer: i, group: attnGroup,
+      short: `${prefix} Attn RMSNorm`, name: `Layer ${ell}: apply Attention pre-norm RMSNorm`,
+      phase: `Layer ${ell} · Attention pre-norm`, color: COLORS.norm, station: `l${i}-attn-norm`,
+      math: `${mathVector("x̂", "t", inSup)} = RMSNorm<sub>A</sub><sup>(${ell})</sup>(${mathVector("c", "A", outSup)})`,
+      mathNote: "RMSNorm rescales only the copied Attention branch. The skip residual is not normalized.",
+      copy: "The normalized branch is ready for Q/K/V projection.",
     });
     push({
-      type: "attn-module",
-      layer: i,
-      short: `${prefix} Attention`,
-      name: `Layer ${ell}: evaluate multi-head Attention on the normalized branch`,
-      phase: `Layer ${ell} · Attention`,
-      color: COLORS.attention,
-      station: `l${i}-attn-add`,
-      duration: 3.8,
-      math: `${attnUpdate} = MHA<sup>(${ell})</sup>(${mathVector("r̂", "", inSup)})`,
-      mathNote: "MHA denotes the layer’s multi-head Attention transform. In this demonstrator it maps the normalized branch to a deterministic model-width update; the skip residual remains unchanged until the residual addition.",
-      copy: "The Attention update a⁽ˡ⁾ has been computed but has not yet been added to the residual.",
+      type: "attn-project", layer: i, group: attnGroup,
+      short: `${prefix} Q / K / V`, name: modePrefill
+        ? `Layer ${ell}: project all prompt positions into Q, K, and V`
+        : `Layer ${ell}: project the current decode position into q, k, and v`,
+      phase: `${modePrefill ? "Prefill" : "Decode"} · Q/K/V projection`, color: COLORS.query, station: `l${i}-attn-add`, duration: 3.4,
+      math: modePrefill
+        ? `MHA<sup>(${ell})</sup>(${mathVector("X̂")}) &nbsp;·&nbsp; project Q / K / V for the prompt`
+        : `MHA<sup>(${ell})</sup>(${mathVector("x̂", "t")}; ${mathVector("K", "cache")}, ${mathVector("V", "cache")}) &nbsp;·&nbsp; project q<sub>t</sub> / k<sub>t</sub> / v<sub>t</sub>`,
+      mathNote: modePrefill
+        ? "Prefill performs the three projections for every prompt position in parallel. The final query row is emphasized because it produces the next-token hidden state."
+        : "Decode computes one new query, key, and value. Earlier keys and values are not recomputed.",
+      copy: "The projected keys and values are ready to be written to the layer cache.",
     });
     push({
-      type: "attn-output-down",
-      layer: i,
-      short: `${prefix} Attn update`,
-      name: `Layer ${ell}: retain both addends for the Attention skip connection`,
-      phase: `Layer ${ell} · Attention update`,
-      color: COLORS.output,
-      station: `l${i}-attn-add`,
-      duration: 3.1,
-      math: `${mathVector("r", "skip", outSup)} = ${residualIn}, &nbsp; ${attnUpdate} = MHA<sup>(${ell})</sup>(${mathVector("r̂", "", inSup)})`,
-      mathNote: "No residual addition occurs in this step. The skip state and Attention update are both retained without modification.",
-      copy: `The next operation is ${postAttn} = ${residualIn} + ${attnUpdate}.`,
+      type: "attn-cache", layer: i, group: attnGroup,
+      short: `${prefix} K/V cache`, name: modePrefill
+        ? `Layer ${ell}: populate the K and V caches for the prompt`
+        : `Layer ${ell}: append the current key and value to the caches`,
+      phase: `${modePrefill ? "Prefill" : "Decode"} · K/V cache write`, color: COLORS.cache, station: `l${i}-attn-add`, duration: 3.2,
+      math: modePrefill
+        ? `KVCache<sup>(${ell})</sup> ← CacheWrite(MHA<sup>(${ell})</sup> prompt projections)`
+        : `KVCache<sup>(${ell})</sup> ← CacheAppend(KVCache<sup>(${ell})</sup>, k<sub>t</sub>, v<sub>t</sub>)`,
+      mathNote: modePrefill
+        ? "Every prompt position receives one key slot and one value slot in each layer. These entries are retained for subsequent decode steps."
+        : "Exactly one new K/V slot is appended for this position; all earlier slots remain unchanged.",
+      copy: "The cache now supplies the keys and values used by the attention read.",
     });
     push({
-      type: "attn-add-setup",
-      layer: i,
-      short: `${prefix} Attn add`,
-      name: `Layer ${ell}: form the componentwise Attention residual sum`,
-      phase: `Layer ${ell} · first residual addition`,
-      color: COLORS.plus,
-      station: `l${i}-attn-add`,
-      duration: 3.2,
+      type: "attn-scores", layer: i, group: attnGroup,
+      short: `${prefix} Scores`, name: modePrefill
+        ? `Layer ${ell}: compute the causal attention score matrix`
+        : `Layer ${ell}: score the current query against the retained key cache`,
+      phase: `${modePrefill ? "Prefill" : "Decode"} · Attention scores`, color: COLORS.key, station: `l${i}-attn-add`, duration: 3.3,
+      math: modePrefill
+        ? `MHA<sup>(${ell})</sup>(${mathVector("X̂")}) &nbsp;·&nbsp; compare causal queries with cached keys`
+        : `MHA<sup>(${ell})</sup>(${mathVector("x̂", "t")}; ${mathVector("K", "cache")}, ${mathVector("V", "cache")}) &nbsp;·&nbsp; compare q<sub>t</sub> with cached keys`,
+      mathNote: modePrefill
+        ? "The causal mask removes future positions. The matrix graphic shows all valid rows and emphasizes the final query row."
+        : "The single decode query reads every retained key, including the newly appended key for the current position.",
+      copy: "The raw attention scores are complete; softmax is applied next.",
+    });
+    push({
+      type: "attn-activate", layer: i, group: attnGroup,
+      short: `${prefix} Softmax`, name: `Layer ${ell}: normalize attention scores into coefficients`,
+      phase: `Layer ${ell} · Attention activation`, color: COLORS.attention, station: `l${i}-attn-add`, duration: 3.2,
+      math: `MHA<sup>(${ell})</sup>(·) &nbsp;·&nbsp; normalize attention scores`,
+      mathNote: "Each valid score row is converted into nonnegative coefficients that sum to one.",
+      copy: "The active coefficient row now determines how strongly each cached value contributes.",
+    });
+    push({
+      type: "attn-scale", layer: i, group: attnGroup,
+      short: `${prefix} Scale V`, name: `Layer ${ell}: scale cached values by the active attention coefficients`,
+      phase: `Layer ${ell} · Value weighting`, color: COLORS.value, station: `l${i}-attn-add`, duration: 3.2,
+      math: `MHA<sup>(${ell})</sup>(·) &nbsp;·&nbsp; weight cached values`,
+      mathNote: "The coefficient for each token position multiplies that position’s cached value vector.",
+      copy: "The weighted value contributions are ready to be accumulated.",
+    });
+    push({
+      type: "attn-sum", layer: i, group: attnGroup,
+      short: `${prefix} Sum values`, name: `Layer ${ell}: sum the weighted value vectors`,
+      phase: `Layer ${ell} · Context accumulation`, color: COLORS.sum, station: `l${i}-attn-add`, duration: 3.4,
+      math: `MHA<sup>(${ell})</sup>(·) &nbsp;·&nbsp; accumulate value contributions`,
+      mathNote: "The weighted values are added componentwise to produce the attention context for the active position.",
+      copy: "The context vector is complete and will be projected through Wₒ.",
+    });
+    push({
+      type: "attn-output", layer: i, group: attnGroup,
+      short: `${prefix} Wₒ output`, name: `Layer ${ell}: apply the Attention output projection`,
+      phase: `Layer ${ell} · Attention write`, color: COLORS.output, station: `l${i}-attn-add`, duration: 3.4,
+      math: `${attnUpdate} = MHA<sup>(${ell})</sup>(${mathVector("x̂", "t", inSup)}; ${mathVector("K", "cache")}, ${mathVector("V", "cache")})`,
+      mathNote: "The output projection mixes the context back into model width and produces the update used by the residual connection.",
+      copy: "The Attention update has been computed but has not yet been added to the skip residual.",
+    });
+    push({
+      type: "attn-output-down", layer: i, group: attnGroup,
+      short: `${prefix} Attn update`, name: `Layer ${ell}: retain the Attention update beside the skip residual`,
+      phase: `Layer ${ell} · Attention update`, color: COLORS.output, station: `l${i}-attn-add`, duration: 3.4,
+      math: `${mathVector("r", "skip", outSup)} = ${residualIn}, &nbsp; ${attnUpdate} = MHA<sup>(${ell})</sup>(${mathVector("x̂", "t", inSup)})`,
+      mathNote: "The skip state and computed Attention update remain separate. No addition occurs in this step.",
+      copy: `The next operation forms ${postAttn} = ${residualIn} + ${attnUpdate}.`,
+    });
+    push({
+      type: "attn-add-setup", layer: i, group: attnGroup,
+      short: `${prefix} Attn add`, name: `Layer ${ell}: construct the Attention residual sum`,
+      phase: `Layer ${ell} · first residual addition`, color: COLORS.plus, station: `l${i}-attn-add`, duration: 3.2,
       math: `${postAttn} := ${residualIn} + ${attnUpdate}`,
-      mathNote: "The componentwise sum is being constructed from the two addends. The residual state is not replaced by u⁽ˡ⁾ until the sum is finalized.",
-      copy: "The next step commits u⁽ˡ⁾ as the single post-Attention residual state.",
+      mathNote: "The two addends are arranged tip-to-tail and summed componentwise.",
+      copy: "The next step replaces the addends with the single summed residual.",
     });
     push({
-      type: "attn-add-collapse",
-      layer: i,
-      short: `${prefix} Attn sum`,
-      name: `Layer ${ell}: replace the Attention addends with their sum`,
-      phase: `Layer ${ell} · first residual addition`,
-      color: COLORS.plus,
-      station: `l${i}-attn-add`,
-      duration: 3.2,
+      type: "attn-add-collapse", layer: i, group: attnGroup,
+      short: `${prefix} Attn sum`, name: `Layer ${ell}: commit the post-Attention residual`,
+      phase: `Layer ${ell} · first residual addition`, color: COLORS.plus, station: `l${i}-attn-add`, duration: 3.2,
       math: `${postAttn} ← ${residualIn} + ${attnUpdate}`,
-      mathNote: "After u⁽ˡ⁾ is formed, the two addends are no longer separate states. No activation or normalization is applied at this skip connection.",
-      copy: "The sole residual state entering the MLP branch is now u⁽ˡ⁾.",
+      mathNote: "The separate addends fade away after their componentwise sum becomes the sole residual state.",
+      copy: "The MLP branch receives the completed post-Attention residual.",
     });
+
     push({
-      type: "travel-mlp",
-      layer: i,
-      short: `${prefix} MLP input`,
-      name: `Layer ${ell}: carry the post-Attention residual unchanged to the MLP branch`,
-      phase: `Layer ${ell} · MLP input`,
-      color: COLORS.current,
-      station: `l${i}-mlp-norm`,
+      type: "travel-mlp", layer: i, group: mlpGroup,
+      short: `${prefix} MLP input`, name: `Layer ${ell}: carry the post-Attention residual to the MLP branch`,
+      phase: `Layer ${ell} · MLP input`, color: COLORS.current, station: `l${i}-mlp-norm`,
       math: `${mathVector("u", "M,in", outSup)} ← ${postAttn}`,
-      mathNote: "No normalization, activation, or learned transformation is applied in this step; u⁽ˡ⁾ is unchanged.",
-      copy: "Next, an exact branch copy will be created for MLP RMSNorm while u⁽ˡ⁾ remains the second skip state.",
+      mathNote: "The residual is transferred without normalization or learned transformation.",
+      copy: "An exact branch copy will be created next for MLP RMSNorm.",
     });
     push({
-      type: "mlp-norm-lift",
-      layer: i,
-      short: `${prefix} MLP copy`,
-      name: `Layer ${ell}: fork an exact copy for MLP normalization`,
-      phase: `Layer ${ell} · MLP branch copy`,
-      color: COLORS.norm,
-      station: `l${i}-mlp-norm`,
+      type: "mlp-norm-lift", layer: i, group: mlpGroup,
+      short: `${prefix} MLP copy`, name: `Layer ${ell}: fork the MLP branch copy`,
+      phase: `Layer ${ell} · MLP branch copy`, color: COLORS.norm, station: `l${i}-mlp-norm`,
       math: `${mathVector("c", "M", outSup)} ← ${postAttn}, &nbsp; ${mathVector("u", "skip", outSup)} = ${postAttn}`,
-      mathNote: "This step performs only a copy. RMSNorm has not yet been applied, and both branches contain identical components.",
-      copy: "The original u⁽ˡ⁾ is preserved for the skip connection; c_M is the branch that will be normalized next.",
+      mathNote: "This is an exact copy; MLP RMSNorm has not yet been applied.",
+      copy: "The copied branch will be normalized while the skip residual remains unchanged.",
     });
     push({
-      type: "mlp-norm-project",
-      layer: i,
-      short: `${prefix} MLP pre-norm`,
-      name: `Layer ${ell}: apply MLP pre-norm RMSNorm to the copied branch`,
-      phase: `Layer ${ell} · MLP pre-norm`,
-      color: COLORS.norm,
-      station: `l${i}-mlp-norm`,
-      math: `${mathVector("ū", "", outSup)} = RMSNorm<sub>M</sub><sup>(${ell})</sup>(${mathVector("c", "M", outSup)})`,
-      mathNote: "RMSNorm rescales the copied MLP branch to a controlled root-mean-square magnitude. The post-Attention skip state remains unnormalized and unchanged.",
-      copy: "The normalized branch ū⁽ˡ⁾ is now ready for the feed-forward transformation.",
+      type: "mlp-norm-project", layer: i, group: mlpGroup,
+      short: `${prefix} MLP RMSNorm`, name: `Layer ${ell}: apply MLP pre-norm RMSNorm`,
+      phase: `Layer ${ell} · MLP pre-norm`, color: COLORS.norm, station: `l${i}-mlp-norm`,
+      math: `${mathVector("ū", "t", outSup)} = RMSNorm<sub>M</sub><sup>(${ell})</sup>(${mathVector("c", "M", outSup)})`,
+      mathNote: "RMSNorm rescales only the copied MLP branch; the post-Attention skip state remains unchanged.",
+      copy: "The normalized state is ready for the feed-forward read.",
     });
     push({
-      type: "mlp-module",
-      layer: i,
-      short: `${prefix} MLP`,
-      name: `Layer ${ell}: evaluate the feed-forward update on the normalized branch`,
-      phase: `Layer ${ell} · MLP`,
-      color: COLORS.mlp,
-      station: `l${i}-mlp-add`,
-      duration: 3.8,
-      math: `${mlpUpdate} = MLP<sup>(${ell})</sup>(${mathVector("ū", "", outSup)})`,
+      type: "mlp-read", layer: i, group: mlpGroup,
+      short: `${prefix} MLP read`, name: `Layer ${ell}: read the normalized state through the expansion weights`,
+      phase: `Layer ${ell} · MLP read`, color: COLORS.query, station: `l${i}-mlp-add`, duration: 3.3,
+      math: `MLP<sup>(${ell})</sup>(${mathVector("ū", "t", outSup)}) &nbsp;·&nbsp; read expansion channels`,
+      mathNote: "Each expansion row reads the normalized state with a dot product, producing one pre-activation coefficient.",
+      copy: "The pre-activation coefficients are ready for the selected nonlinear function.",
+    });
+    push({
+      type: "mlp-activate", layer: i, group: mlpGroup,
+      short: `${prefix} MLP activate`, name: `Layer ${ell}: apply the feed-forward activation`,
+      phase: `Layer ${ell} · MLP activation`, color: COLORS.mlp, station: `l${i}-mlp-add`, duration: 3.3,
+      math: `MLP<sup>(${ell})</sup>(${mathVector("ū", "t", outSup)}) &nbsp;·&nbsp; apply ${state.mlpActivation === "relu" ? "ReLU" : state.mlpActivation === "silu" ? "SiLU" : "GELU"}`,
+      mathNote: "The nonlinearity is applied elementwise to the expansion coefficients.",
+      copy: "The activated coefficients will scale the down-projection write vectors.",
+    });
+    push({
+      type: "mlp-write", layer: i, group: mlpGroup,
+      short: `${prefix} MLP write`, name: `Layer ${ell}: expose the down-projection write directions`,
+      phase: `Layer ${ell} · MLP write bank`, color: COLORS.value, station: `l${i}-mlp-add`, duration: 3.0,
+      math: `MLP<sup>(${ell})</sup>(${mathVector("ū", "t", outSup)}) &nbsp;·&nbsp; expose write directions`,
+      mathNote: "Each activated channel has a corresponding model-width write direction in the down projection.",
+      copy: "The write directions are ready to be scaled by their activated coefficients.",
+    });
+    push({
+      type: "mlp-scale", layer: i, group: mlpGroup,
+      short: `${prefix} MLP scale`, name: `Layer ${ell}: scale every write direction by its activation`,
+      phase: `Layer ${ell} · MLP coefficient write`, color: COLORS.value, station: `l${i}-mlp-add`, duration: 3.2,
+      math: `MLP<sup>(${ell})</sup>(${mathVector("ū", "t", outSup)}) &nbsp;·&nbsp; scale channel writes`,
+      mathNote: "The activated channel coefficient controls the signed magnitude written along its down-projection direction.",
+      copy: "The scaled contributions are ready to be accumulated.",
+    });
+    push({
+      type: "mlp-sum", layer: i, group: mlpGroup,
+      short: `${prefix} MLP sum`, name: `Layer ${ell}: sum the feed-forward write contributions`,
+      phase: `Layer ${ell} · MLP output`, color: COLORS.sum, station: `l${i}-mlp-add`, duration: 3.5,
+      math: `${mlpUpdate} = MLP<sup>(${ell})</sup>(${mathVector("ū", "t", outSup)})`,
       mathNote: i === state.layerCount - 1
-        ? `MLP is the token-wise nonlinear feed-forward function. In this demonstration, the final-layer update is biased so ${residualOut} is nearest in cosine direction to “${nextWordFor(state.word)}”, with a small deterministic variation.`
-        : "MLP is the token-wise nonlinear feed-forward function. It transforms the normalized state and returns a model-width update for the residual addition.",
-      copy: i === state.layerCount - 1
-        ? "The update m⁽ˡ⁾ is constructed to bias the eventual LM-head ranking toward the intended next sequence token; it has not yet been added."
-        : "The MLP update m⁽ˡ⁾ has been computed but has not yet been added to u⁽ˡ⁾.",
+        ? `The synthetic final-layer MLP output is constrained so the completed residual remains nearest to “${nextWordFor(state.word)}”, with a small deterministic variation.`
+        : "The scaled writes sum componentwise into one model-width MLP update.",
+      copy: "The MLP update is complete but has not yet been added to the skip residual.",
     });
     push({
-      type: "mlp-output-down",
-      layer: i,
-      short: `${prefix} MLP update`,
-      name: `Layer ${ell}: retain both addends for the MLP skip connection`,
-      phase: `Layer ${ell} · MLP update`,
-      color: COLORS.output,
-      station: `l${i}-mlp-add`,
-      duration: 3.1,
-      math: `${mathVector("u", "skip", outSup)} = ${postAttn}, &nbsp; ${mlpUpdate} = MLP<sup>(${ell})</sup>(${mathVector("ū", "", outSup)})`,
-      mathNote: "No residual addition occurs in this step. The skip state and MLP update are both retained without modification.",
-      copy: `The next operation is ${residualOut} = ${postAttn} + ${mlpUpdate}.`,
+      type: "mlp-output-down", layer: i, group: mlpGroup,
+      short: `${prefix} MLP update`, name: `Layer ${ell}: retain the MLP update beside the skip residual`,
+      phase: `Layer ${ell} · MLP update`, color: COLORS.output, station: `l${i}-mlp-add`, duration: 3.4,
+      math: `${mathVector("u", "skip", outSup)} = ${postAttn}, &nbsp; ${mlpUpdate} = MLP<sup>(${ell})</sup>(${mathVector("ū", "t", outSup)})`,
+      mathNote: "The MLP update and skip residual remain separate; no residual addition occurs yet.",
+      copy: `The next operation forms ${residualOut} = ${postAttn} + ${mlpUpdate}.`,
     });
     push({
-      type: "mlp-add-setup",
-      layer: i,
-      short: `${prefix} MLP add`,
-      name: `Layer ${ell}: form the componentwise MLP residual sum`,
-      phase: `Layer ${ell} · second residual addition`,
-      color: COLORS.plus,
-      station: `l${i}-mlp-add`,
-      duration: 3.2,
+      type: "mlp-add-setup", layer: i, group: mlpGroup,
+      short: `${prefix} MLP add`, name: `Layer ${ell}: construct the MLP residual sum`,
+      phase: `Layer ${ell} · second residual addition`, color: COLORS.plus, station: `l${i}-mlp-add`, duration: 3.2,
       math: `${residualOut} := ${postAttn} + ${mlpUpdate}`,
-      mathNote: "The componentwise sum is being constructed from the two addends. The residual state is not replaced by r⁽ˡ⁾ until the sum is finalized.",
-      copy: "The next step commits r⁽ˡ⁾ as the single output state of the layer.",
+      mathNote: "The post-Attention residual and MLP update are arranged tip-to-tail and summed componentwise.",
+      copy: "The next step replaces the addends with the single layer-output residual.",
     });
     push({
-      type: "mlp-add-collapse",
-      layer: i,
-      short: `${prefix} MLP sum`,
-      name: `Layer ${ell}: replace the MLP addends with their sum`,
-      phase: `Layer ${ell} · second residual addition`,
-      color: COLORS.plus,
-      station: `l${i}-mlp-add`,
-      duration: 3.2,
+      type: "mlp-add-collapse", layer: i, group: mlpGroup,
+      short: `${prefix} MLP residual`, name: `Layer ${ell}: commit the layer-output residual`,
+      phase: `Layer ${ell} · second residual addition`, color: COLORS.plus, station: `l${i}-mlp-add`, duration: 3.2,
       math: `${residualOut} ← ${postAttn} + ${mlpUpdate}`,
       mathNote: i === state.layerCount - 1
         ? `The completed final-layer residual is nearest in cosine direction to “${nextWordFor(state.word)}” before output normalization.`
-        : `The completed residual r⁽${ell}⁾ becomes the unchanged input residual for layer ${ell + 1}.`,
+        : `The completed residual becomes the unchanged input to layer ${ell + 1}.`,
       copy: `The sole layer-output state is now r⁽${ell}⁾.`,
     });
   }
 
   push({
-    type: "travel-output",
-    short: "Output-norm input",
-    name: "Carry the final residual unchanged to the output-normalization input",
-    phase: "Final residual",
-    color: COLORS.current,
-    station: "output-norm",
-    duration: 3.1,
-    math: `${mathVector("r", "out,in")} ← ${mathVector("r", "", `(${state.layerCount})`)}`,
-    mathNote: `After ${state.layerCount} Attention–MLP layer${state.layerCount === 1 ? "" : "s"}, r⁽${state.layerCount}⁾ is transferred without changing its components or norm.`,
-    copy: "No output RMSNorm has occurred yet; the next step performs that normalization.",
+    type: "travel-output", group: "Output", short: "Output-norm input",
+    name: "Carry the final residual to the output-normalization input", phase: "Final residual",
+    color: COLORS.current, station: "output-norm", duration: 3.1,
+    math: `${mathVector("r", "out,in")} ← ${mathVector("r", "t", `(${state.layerCount})`)}`,
+    mathNote: `After ${state.layerCount} Transformer layer${state.layerCount === 1 ? "" : "s"}, the final residual is transferred without changing its components or norm.`,
+    copy: "The next step applies the final RMSNorm.",
   });
   push({
-    type: "output-project",
-    short: "Output RMSNorm",
-    name: "Apply the final output RMSNorm",
-    phase: "Output normalization",
-    color: COLORS.norm,
-    station: "output-norm",
-    math: `${mathVector("h")} = RMSNorm(${mathVector("r", "", `(${state.layerCount})`)})`,
-    mathNote: "RMSNorm rescales the final residual before the language-model head computes vocabulary logits. No further Transformer sublayer follows this normalization.",
-    copy: "The normalized hidden state h is now fixed, and the next operation computes one vocabulary logit per token.",
+    type: "output-project", group: "Output", short: "Output RMSNorm",
+    name: "Apply the final output RMSNorm", phase: "Output normalization",
+    color: COLORS.norm, station: "output-norm",
+    math: `${mathVector("h", "t")} = RMSNorm(${mathVector("r", "t", `(${state.layerCount})`)})`,
+    mathNote: "The final RMSNorm rescales the residual before vocabulary projection.",
+    copy: "The normalized hidden state is ready for the LM head.",
   });
   push({
-    type: "lm-read",
-    short: "LM Head dot products",
-    name: "Compute one LM-head logit for each vocabulary token",
-    phase: "LM Head",
-    color: COLORS.soft,
-    station: "output-norm",
-    duration: 3.4,
-    math: `${mathVector("z", "i")} = ${mathVector("e", "i")}<sup>⊤</sup>${mathVector("h")}`,
-    mathNote: "For every token i in the five-token vocabulary, zᵢ is the dot product between the normalized hidden state h and output embedding eᵢ.",
-    copy: "All five scalar logits are computed here; no probability normalization has occurred yet.",
+    type: "lm-read", group: "Output", short: "LM Head dot products",
+    name: "Compute one vocabulary logit for each sentence token", phase: "LM Head",
+    color: COLORS.soft, station: "output-norm", duration: 3.4,
+    math: `${mathVector("z", "i")} = ${mathVector("e", "i")}<sup>⊤</sup>${mathVector("h", "t")}`,
+    mathNote: "Each output embedding is dotted with the normalized hidden state to produce one scalar logit.",
+    copy: "All logits are available; probability normalization has not yet occurred.",
   });
   push({
-    type: "lm-copy",
-    short: "Collect logits",
-    name: "Collect the token-wise dot products into the logit vector",
-    phase: "Logit vector",
-    color: COLORS.soft,
-    station: "logits",
-    duration: 2.9,
-    math: `${mathVector("z")} = E<sup>⊤</sup>${mathVector("h")} = [z<sub>1</sub>, …, z<sub>|V|</sub>]<sup>⊤</sup>`,
-    mathNote: "Stacking the token-wise dot products produces z with one real-valued score for each token in the selected sentence vocabulary.",
-    copy: "The scalar logit vector z is now available for signed scaling and softmax.",
+    type: "lm-copy", group: "Output", short: "Collect logits",
+    name: "Collect the token-wise dot products into the logit vector", phase: "Logit vector",
+    color: COLORS.soft, station: "logits", duration: 2.9,
+    math: `${mathVector("z")} = E<sup>⊤</sup>${mathVector("h", "t")}`,
+    mathNote: "The scalar dot products are stacked into one vocabulary-length vector.",
+    copy: "The logit vector is ready for signed scaling and softmax.",
   });
   push({
-    type: "logits",
-    short: "Encode signed logits",
-    name: "Associate each token direction with its signed logit",
-    phase: "Signed logits",
-    color: COLORS.soft,
-    station: "logits",
-    duration: 3.1,
+    type: "logits", group: "Output", short: "Encode signed logits",
+    name: "Associate each token direction with its signed logit", phase: "Signed logits",
+    color: COLORS.soft, station: "logits", duration: 3.1,
     math: `${mathVector("v", "i", "logit")} = ${mathVector("z", "i")}${mathVector("e", "i")}`,
-    mathNote: "The sign and magnitude of zᵢ are preserved in zᵢeᵢ. A positive common multiplier β does not change the ranking, and the next step computes softmax(βz).",
-    copy: "Positive and negative logits remain distinct; β multiplies every scalar logit before exponentiation in the next step.",
+    mathNote: "The sign and magnitude of each logit are preserved before the common pre-softmax multiplier is applied.",
+    copy: "The next step computes softmax(βz).",
   });
   push({
-    type: "softmax",
-    short: "Scaled softmax",
-    name: "Apply the pre-softmax multiplier and normalize the logits",
-    phase: "Scaled softmax",
-    color: COLORS.output,
-    station: "softmax",
-    duration: 3.3,
-    math: `${mathVector("p", "i")} = exp(β${mathVector("z", "i")} − m) / Σ<sub>j</sub> exp(β${mathVector("z", "j")} − m), &nbsp; m = max<sub>j</sub>(β${mathVector("z", "j")})`,
-    mathNote: "The slider-controlled multiplier β sharpens or flattens the distribution before softmax; its default value is 30. Subtracting m improves numerical stability without changing p.",
-    copy: "The probability vector p = softmax(βz) is complete; the next operation restricts it to the selected top-k set.",
+    type: "softmax", group: "Output", short: "Scaled softmax",
+    name: "Apply the pre-softmax multiplier and normalize the logits", phase: "Scaled softmax",
+    color: COLORS.output, station: "softmax", duration: 3.3,
+    math: `${mathVector("p", "i")} = exp(β${mathVector("z", "i")} − m) / Σ<sub>j</sub> exp(β${mathVector("z", "j")} − m)`,
+    mathNote: "β sharpens or flattens the distribution. Subtracting the maximum improves numerical stability without changing the probabilities.",
+    copy: "The normalized probability vector is complete.",
   });
   push({
-    type: "selection",
-    short: "Top-k sample",
-    name: "Select the next token from the top-k distribution",
-    phase: "Token selection",
-    color: COLORS.output,
-    station: "softmax",
-    duration: 3.0,
-    math: `S = TopK(${mathVector("p")}, k), &nbsp; ${mathVector("p̃", "i")} = ${mathVector("p", "i")} / Σ<sub>j∈S</sub>${mathVector("p", "j")}, &nbsp; t<sub>n+1</sub> ~ Categorical(${mathVector("p̃")})`,
-    mathNote: "Only the k largest probabilities are retained and renormalized. With k = 1, the categorical draw reduces to greedy argmax.",
-    copy: "The categorical draw is performed once at stage entry and then held fixed for the return step; the probability values remain unchanged after selection.",
+    type: "selection", group: "Output", short: "Top-k sample",
+    name: "Select the next token from the top-k distribution", phase: "Token selection",
+    color: COLORS.output, station: "softmax", duration: 3.0,
+    math: `S = TopK(${mathVector("p")}, k), &nbsp; t<sub>next</sub> ~ Categorical(${mathVector("p", "S")})`,
+    mathNote: "Only the k highest probabilities are retained and renormalized. With k = 1, selection is greedy.",
+    copy: "The selected token is held fixed for the return step.",
   });
   push({
-    type: "return",
-    short: "Embed next token",
-    name: "Embed the selected token for the next autoregressive position",
-    phase: "Autoregressive loop",
-    color: COLORS.current,
-    station: "start",
-    duration: 4.0,
-    math: `${mathVector("x", "n+1")} = E[t<sub>n+1</sub>], &nbsp; ${mathVector("r", "", "(0)")} ← ${mathVector("x", "n+1")}`,
-    mathNote: "Selection has already occurred. This step performs the embedding lookup for tₙ₊₁ and initializes the next autoregressive residual input.",
-    copy: "The same sequence of layer operations can now repeat for the next token position.",
+    type: "return", group: "Output", short: "Embed next token",
+    name: modePrefill ? "Return the selected token and enter decode mode" : "Embed the selected token for the next decode position",
+    phase: modePrefill ? "Prefill → Decode" : "Autoregressive decode loop",
+    color: COLORS.current, station: "start", duration: 4.0,
+    math: `${mathVector("x", "next")} = E[t<sub>next</sub>], &nbsp; ${mathVector("r", "next", "(0)")} ← ${mathVector("x", "next")}`,
+    mathNote: modePrefill
+      ? "The prompt K/V cache is retained. The selected next token becomes the first decode input without recomputing the prompt."
+      : "The current token has been committed to the cache, and the selected token initializes the next decode position.",
+    copy: "The same layer sequence can now run for the next position.",
   });
 
   stages.forEach((stage, index) => { stage.index = index; });
@@ -1636,12 +1975,15 @@ class DirectionGlyph {
     this.dashed = dashed;
     this.sideMat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.13, metalness: 0.03, roughness: 0.82, side: THREE.DoubleSide, depthWrite: false });
     this.side = new THREE.Mesh(UNIT_CONE_GEOMETRY, this.sideMat);
+    this.side.userData.sharedGeometry = true;
     this.group.add(this.side);
     this.capMat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false });
     this.cap = new THREE.Mesh(sharedCapGeometry, this.capMat);
+    this.cap.userData.sharedGeometry = true;
     this.group.add(this.cap);
     this.rimMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.22, depthWrite: false });
     this.rim = new THREE.Line(sharedRimGeometry, this.rimMat);
+    this.rim.userData.sharedGeometry = true;
     this.group.add(this.rim);
     this.positions = new Float32Array([0, 0, 0, 0, 1, 0]);
     this.lineGeom = new THREE.BufferGeometry();
@@ -2011,6 +2353,690 @@ class ModuleBox {
   }
 }
 
+
+function makeWorkbenchPanel(pixelWidth, pixelHeight, worldWidth, worldHeight, parent) {
+  const canvas = document.createElement("canvas");
+  canvas.width = pixelWidth;
+  canvas.height = pixelHeight;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.98, side: THREE.DoubleSide, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(worldWidth, worldHeight), material);
+  mesh.renderOrder = 18;
+  mesh.userData = { canvas, ctx: canvas.getContext("2d"), texture, lastKey: "" };
+  parent.add(mesh);
+  return mesh;
+}
+function drawRoundedPanel(ctx, width, height, fill = "rgba(7,10,23,.88)", stroke = "rgba(255,255,255,.14)") {
+  ctx.clearRect(0, 0, width, height);
+  roundRect(ctx, 16, 16, width - 32, height - 32, 28);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+function shortToken(token, max = 8) {
+  return token.length > max ? `${token.slice(0, max - 1)}…` : token;
+}
+function drawAttentionWorkbenchPanel(mesh, detail, stageType, progress) {
+  const { canvas, ctx, texture } = mesh.userData;
+  const visibleStart = Math.max(0, detail.tokens.length - 8);
+  const tokens = detail.tokens.slice(visibleStart);
+  const mode = detail.mode;
+  const activation = stageType === "attn-activate" || ["attn-scale", "attn-sum", "attn-output"].includes(stageType);
+  const key = [mode, stageType, Math.round(progress * 80), tokens.join("|"), detail.activeScores.map(x => Number.isFinite(x) ? x.toFixed(3) : "M").join(",")].join("|");
+  if (mesh.userData.lastKey === key) return;
+  mesh.userData.lastKey = key;
+  drawRoundedPanel(ctx, canvas.width, canvas.height);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "800 30px Inter, Arial, sans-serif";
+  ctx.fillText(mode === "prefill" ? "Causal attention matrix" : "Decode cache attention", 38, 55);
+  ctx.font = "600 17px Inter, Arial, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,.62)";
+  ctx.fillText(activation ? "softmax coefficients" : "scaled q·k scores", 38, 84);
+
+  if (mode === "prefill") {
+    const rows = detail.weights.length;
+    const n = tokens.length;
+    const cell = Math.min(58, 360 / Math.max(1, n));
+    const x0 = 128;
+    const y0 = 124;
+    ctx.font = "700 15px ui-monospace, Menlo, monospace";
+    ctx.textAlign = "center";
+    for (let c = 0; c < n; c++) {
+      ctx.fillStyle = c === n - 1 ? "#ffb0aa" : "rgba(255,255,255,.68)";
+      ctx.fillText(shortToken(tokens[c], 7), x0 + c * cell + cell / 2, y0 - 18);
+    }
+    for (let r = Math.max(0, rows - n); r < rows; r++) {
+      const localR = r - Math.max(0, rows - n);
+      const tokenIndex = visibleStart + localR;
+      ctx.fillStyle = localR === n - 1 ? "#ffb0aa" : "rgba(255,255,255,.68)";
+      ctx.textAlign = "right";
+      ctx.fillText(shortToken(detail.tokens[tokenIndex] || "", 7), x0 - 12, y0 + localR * cell + cell * 0.64);
+      ctx.textAlign = "center";
+      for (let localC = 0; localC < n; localC++) {
+        const c = visibleStart + localC;
+        const masked = c > r;
+        const rawScore = detail.scores[r]?.[c];
+        const weight = detail.weights[r]?.[c] || 0;
+        const reveal = smoothstep01(progress * n - localC + 0.3);
+        const x = x0 + localC * cell;
+        const y = y0 + localR * cell;
+        ctx.fillStyle = masked
+          ? "rgba(255,255,255,.025)"
+          : activation
+            ? `rgba(82,183,136,${0.08 + 0.72 * weight * reveal})`
+            : `rgba(96,165,250,${0.08 + 0.22 * Math.min(1, Math.abs(rawScore || 0) / 5) * reveal})`;
+        ctx.fillRect(x + 2, y + 2, cell - 4, cell - 4);
+        ctx.strokeStyle = localR === n - 1 ? "rgba(255,123,114,.42)" : "rgba(255,255,255,.08)";
+        ctx.strokeRect(x + 2, y + 2, cell - 4, cell - 4);
+        ctx.fillStyle = masked ? "rgba(255,255,255,.2)" : "rgba(255,255,255,.85)";
+        ctx.font = "700 13px ui-monospace, Menlo, monospace";
+        ctx.fillText(masked ? "—" : (activation ? weight.toFixed(2) : (rawScore || 0).toFixed(2)), x + cell / 2, y + cell * 0.62);
+      }
+    }
+    ctx.textAlign = "left";
+    if (visibleStart > 0) {
+      ctx.fillStyle = "rgba(255,255,255,.42)";
+      ctx.font = "600 14px Inter, Arial";
+      ctx.fillText(`showing final ${n} of ${detail.tokens.length} positions`, 38, canvas.height - 34);
+    }
+  } else {
+    const n = tokens.length;
+    const x0 = 48;
+    const y0 = 122;
+    const rowH = Math.min(48, 350 / Math.max(1, n));
+    const visibleScores = detail.activeScores.slice(visibleStart);
+    const visibleWeights = detail.activeWeights.slice(visibleStart);
+    const maxScore = Math.max(1, ...visibleScores.filter(Number.isFinite).map(x => Math.abs(x)));
+    const maxWeight = Math.max(1e-6, ...visibleWeights);
+    ctx.font = "700 15px ui-monospace, Menlo, monospace";
+    for (let i = 0; i < n; i++) {
+      const y = y0 + i * rowH;
+      const reveal = smoothstep01(progress * n - i + 0.25);
+      const globalIndex = visibleStart + i;
+      const current = globalIndex === detail.activeIndex;
+      ctx.fillStyle = current ? "rgba(255,123,114,.08)" : "rgba(255,255,255,.025)";
+      ctx.fillRect(x0 - 10, y - 20, canvas.width - 78, rowH - 4);
+      ctx.fillStyle = current ? "#ff9a92" : "rgba(255,255,255,.76)";
+      ctx.fillText(`${globalIndex.toString().padStart(2, "0")}  ${shortToken(tokens[i], 10)}`, x0, y);
+      const value = activation ? visibleWeights[i] : visibleScores[i];
+      const denom = activation ? maxWeight : maxScore;
+      const bar = Math.abs(value || 0) / denom;
+      ctx.fillStyle = activation ? `rgba(82,183,136,${0.18 + 0.72 * reveal})` : `rgba(96,165,250,${0.18 + 0.72 * reveal})`;
+      ctx.fillRect(260, y - 13, 330 * bar, 14);
+      ctx.fillStyle = "rgba(255,255,255,.88)";
+      ctx.fillText(Number.isFinite(value) ? value.toFixed(3) : "mask", 620, y);
+    }
+    ctx.fillStyle = "rgba(255,255,255,.46)";
+    ctx.font = "600 14px Inter, Arial";
+    ctx.fillText(`query position ${detail.activeIndex} reads ${detail.tokens.length} cached positions`, 48, canvas.height - 34);
+  }
+  texture.needsUpdate = true;
+}
+function drawMlpWorkbenchPanel(mesh, detail, progress) {
+  const { canvas, ctx, texture } = mesh.userData;
+  const key = [state.mlpActivation, Math.round(progress * 80), detail.readCoeffs.map(x => x.toFixed(3)).join(",")].join("|");
+  if (mesh.userData.lastKey === key) return;
+  mesh.userData.lastKey = key;
+  drawRoundedPanel(ctx, canvas.width, canvas.height);
+  const label = state.mlpActivation === "relu" ? "ReLU" : state.mlpActivation === "silu" ? "SiLU" : "GELU";
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "800 30px Inter, Arial, sans-serif";
+  ctx.fillText(`${label} activation`, 36, 54);
+  ctx.font = "600 16px Inter, Arial";
+  ctx.fillStyle = "rgba(255,255,255,.58)";
+  ctx.fillText("expansion coefficients → activated coefficients", 36, 82);
+
+  const gx = 52, gy = 115, gw = 290, gh = 250;
+  const xMin = -1.25, xMax = 1.25, yMin = -0.4, yMax = 1.45;
+  const px = x => gx + (x - xMin) / (xMax - xMin) * gw;
+  const py = y => gy + gh - (y - yMin) / (yMax - yMin) * gh;
+  ctx.strokeStyle = "rgba(255,255,255,.16)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(gx, py(0)); ctx.lineTo(gx + gw, py(0));
+  ctx.moveTo(px(0), gy); ctx.lineTo(px(0), gy + gh);
+  ctx.stroke();
+  ctx.strokeStyle = state.mlpActivation === "relu" ? "#ffd166" : state.mlpActivation === "silu" ? "#c77dff" : "#7dd3fc";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  for (let i = 0; i <= 220; i++) {
+    const x = xMin + (xMax - xMin) * i / 220;
+    const y = applyMlpActivation(state.mlpActivation, x);
+    const X = px(x), Y = py(clamp(y, yMin, yMax));
+    if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+  }
+  ctx.stroke();
+
+  const x0 = 390;
+  const y0 = 122;
+  const rowH = 50;
+  ctx.font = "700 16px ui-monospace, Menlo, monospace";
+  for (let i = 0; i < detail.readCoeffs.length; i++) {
+    const y = y0 + i * rowH;
+    const reveal = smoothstep01(progress * detail.readCoeffs.length - i + 0.2);
+    ctx.fillStyle = "rgba(199,125,255,.86)";
+    ctx.fillText(`g${i}  ${detail.readCoeffs[i].toFixed(3)}`, x0, y);
+    ctx.fillStyle = `rgba(82,183,136,${0.22 + 0.72 * reveal})`;
+    ctx.fillText(`h${i}  ${detail.activated[i].toFixed(3)}`, x0 + 190, y);
+  }
+  texture.needsUpdate = true;
+}
+
+class VectorBank {
+  constructor(title, position, radius, color, maxVectors, parent) {
+    this.group = new THREE.Group();
+    this.group.position.copy(position);
+    parent.add(this.group);
+    this.radius = radius;
+    this.maxVectors = maxVectors;
+    this.shellMat = new THREE.MeshBasicMaterial({ color: COLORS.white, wireframe: true, transparent: true, opacity: 0.09, depthWrite: false });
+    this.shell = new THREE.Mesh(new THREE.SphereGeometry(radius, 24, 16), this.shellMat);
+    this.group.add(this.shell);
+    this.innerMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.025, depthWrite: false });
+    this.inner = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.96, 22, 14), this.innerMat);
+    this.group.add(this.inner);
+    this.haloMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, depthWrite: false });
+    this.halo = new THREE.Mesh(new THREE.TorusGeometry(radius * 1.14, 0.016, 7, 48), this.haloMat);
+    this.halo.rotation.x = Math.PI / 2;
+    this.group.add(this.halo);
+    this.label = makeTextSprite(title, color, 240, 54, 18, false, this.group);
+    this.label.position.set(0, radius + 0.3, 0);
+    this.glyphs = Array.from({ length: maxVectors }, () => new DirectionGlyph(color, false, this.group));
+    this.tipLabels = Array.from({ length: maxVectors }, () => {
+      const sprite = makeTextSprite("", color, 150, 36, 13, false, this.group);
+      sprite.visible = false;
+      return sprite;
+    });
+  }
+  render(vectors, options = {}) {
+    const {
+      colors = [], opacities = [], labels = [], opacity = 1,
+      normalize = false, length = this.radius * 0.9, activeIndex = -1,
+    } = options;
+    this.group.visible = opacity > 0.002;
+    if (!this.group.visible) return;
+    this.shellMat.opacity = 0.085 * opacity;
+    this.innerMat.opacity = 0.024 * opacity;
+    this.haloMat.opacity = 0.20 * opacity;
+    this.label.visible = state.showLabels;
+    this.label.material.opacity = state.showLabels ? opacity : 0;
+    for (let i = 0; i < this.maxVectors; i++) {
+      if (i >= vectors.length) {
+        this.glyphs[i].hide();
+        this.tipLabels[i].visible = false;
+        continue;
+      }
+      const raw = vectors[i];
+      const end = normalize ? unit(raw).multiplyScalar(length) : raw.clone();
+      const color = colors[i] || this.innerMat.color;
+      const localOpacity = (opacities[i] ?? 1) * opacity * (i === activeIndex ? 1 : 0.82);
+      this.glyphs[i].set(new THREE.Vector3(), end, color, localOpacity, 0.68);
+      if (labels[i] && state.showLabels) {
+        setLabel(this.tipLabels[i], end.clone().add(new THREE.Vector3(0.07, 0.06, 0.04)), labels[i], color, localOpacity);
+      } else {
+        this.tipLabels[i].visible = false;
+      }
+    }
+  }
+  hide() { this.group.visible = false; }
+  localTip(vector, normalize = true, length = this.radius * 0.9) {
+    const end = normalize ? unit(vector).multiplyScalar(length) : vector.clone();
+    return this.group.position.clone().add(end);
+  }
+}
+
+class MatrixPlate {
+  constructor(title, position, color, parent) {
+    this.group = new THREE.Group();
+    this.group.position.copy(position);
+    parent.add(this.group);
+    const geom = new THREE.BoxGeometry(0.24, 0.92, 0.92);
+    this.mat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.10, depthWrite: false, metalness: 0.05, roughness: 0.78 });
+    this.mesh = new THREE.Mesh(geom, this.mat);
+    this.group.add(this.mesh);
+    this.edgeMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.35, depthWrite: false });
+    this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom), this.edgeMat);
+    this.group.add(this.edges);
+    this.scanMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });
+    this.scan = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.7), this.scanMat);
+    this.scan.rotation.y = Math.PI / 2;
+    this.group.add(this.scan);
+    this.label = makeTextSprite(title, color, 150, 42, 15, false, this.group);
+    this.label.position.set(0, 0.72, 0);
+  }
+  render(active, progress = 1, opacity = 1) {
+    this.group.visible = opacity > 0.002;
+    this.mat.opacity = (active ? 0.24 : 0.07) * opacity;
+    this.edgeMat.opacity = (active ? 0.82 : 0.22) * opacity;
+    this.scanMat.opacity = active ? 0.22 * Math.sin(Math.PI * clamp01(progress)) * opacity : 0;
+    this.scan.position.y = -0.28 + 0.56 * smootherstep01(progress);
+    this.label.visible = state.showLabels;
+    this.label.material.opacity = state.showLabels ? opacity : 0;
+  }
+}
+
+class CacheRack {
+  constructor(title, position, color, parent, maxVisible = 8) {
+    this.group = new THREE.Group();
+    this.group.position.copy(position);
+    parent.add(this.group);
+    this.color = color;
+    this.maxVisible = maxVisible;
+    const frameGeom = new THREE.BoxGeometry(3.55, 0.94, 0.22);
+    this.frameMat = new THREE.MeshStandardMaterial({ color: COLORS.dark, transparent: true, opacity: 0.80, depthWrite: false, roughness: 0.9 });
+    this.frame = new THREE.Mesh(frameGeom, this.frameMat);
+    this.group.add(this.frame);
+    this.edgeMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.42, depthWrite: false });
+    this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(frameGeom), this.edgeMat);
+    this.group.add(this.edges);
+    this.title = makeTextSprite(title, color, 240, 46, 16, false, this.group);
+    this.title.position.set(-1.05, 0.68, 0);
+    this.countLabel = makeTextSprite("0 slots", color, 170, 40, 13, false, this.group);
+    this.countLabel.position.set(1.12, 0.68, 0);
+    this.slots = [];
+    const slotWidth = 0.38;
+    const gap = 0.045;
+    const total = maxVisible * slotWidth + (maxVisible - 1) * gap;
+    const left = -total / 2 + slotWidth / 2;
+    for (let i = 0; i < maxVisible; i++) {
+      const slot = new THREE.Group();
+      slot.position.set(left + i * (slotWidth + gap), 0, 0.15);
+      this.group.add(slot);
+      const boxGeom = new THREE.BoxGeometry(slotWidth * 0.92, 0.56, 0.12);
+      const boxMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.08, depthWrite: false });
+      const box = new THREE.Mesh(boxGeom, boxMat);
+      slot.add(box);
+      const edgeMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.18, depthWrite: false });
+      const edge = new THREE.LineSegments(new THREE.EdgesGeometry(boxGeom), edgeMat);
+      slot.add(edge);
+      const glyph = new DirectionGlyph(color, false, slot);
+      const label = makeTextSprite("", color, 94, 30, 10, false, slot);
+      label.position.set(0, -0.41, 0);
+      label.visible = false;
+      this.slots.push({ slot, boxMat, edgeMat, glyph, label, globalIndex: -1, vector: new THREE.Vector3() });
+    }
+    this.visibleMap = new Map();
+  }
+  render(tokens, vectors, options = {}) {
+    const {
+      existingCount = 0, newIndices = [], progress = 1, weights = null,
+      weighted = false, activeIndex = -1, opacity = 1,
+    } = options;
+    this.group.visible = opacity > 0.002;
+    if (!this.group.visible) return;
+    this.frameMat.opacity = 0.78 * opacity;
+    this.edgeMat.opacity = 0.42 * opacity;
+    this.title.visible = state.showLabels;
+    this.countLabel.visible = state.showLabels;
+    updateTextSprite(this.countLabel, `${tokens.length} slot${tokens.length === 1 ? "" : "s"}`, this.color);
+    this.title.material.opacity = this.countLabel.material.opacity = opacity;
+    const start = Math.max(0, tokens.length - this.maxVisible);
+    const visibleTokens = tokens.slice(start);
+    const maxWeight = weights ? Math.max(1e-6, ...weights) : 1;
+    this.visibleMap.clear();
+    this.slots.forEach((slotInfo, localIndex) => {
+      if (localIndex >= visibleTokens.length) {
+        slotInfo.slot.visible = false;
+        slotInfo.globalIndex = -1;
+        return;
+      }
+      const globalIndex = start + localIndex;
+      const newOrder = newIndices.indexOf(globalIndex);
+      const isNew = newOrder >= 0;
+      const appear = isNew ? smoothstep01(progress * Math.max(1, newIndices.length) - newOrder + 0.15) : 1;
+      const stored = globalIndex < existingCount;
+      const current = globalIndex === activeIndex;
+      const slotOpacity = opacity * (stored ? 0.74 : isNew ? appear : 0.62);
+      slotInfo.slot.visible = slotOpacity > 0.002;
+      slotInfo.boxMat.opacity = (current ? 0.19 : 0.075) * slotOpacity;
+      slotInfo.edgeMat.opacity = (current ? 0.62 : isNew ? 0.44 : 0.19) * slotOpacity;
+      const weight = weights?.[globalIndex] || 0;
+      const vectorLength = weighted ? (0.055 + 0.27 * weight / maxWeight) : 0.24;
+      const vectorColor = weighted ? COLORS.attention : this.color;
+      const vector = vectors[globalIndex] || new THREE.Vector3(0, 1, 0);
+      slotInfo.glyph.set(new THREE.Vector3(), unit(vector).multiplyScalar(vectorLength), vectorColor, slotOpacity, 0.54);
+      const labelText = shortToken(tokens[globalIndex], 7);
+      setLabel(slotInfo.label, new THREE.Vector3(0, -0.41, 0), labelText, current ? COLORS.current : this.color, slotOpacity);
+      slotInfo.globalIndex = globalIndex;
+      slotInfo.vector.copy(vector);
+      this.visibleMap.set(globalIndex, slotInfo);
+    });
+  }
+  localTip(globalIndex, vector = null, length = 0.24) {
+    const info = this.visibleMap.get(globalIndex);
+    if (!info) return null;
+    const v = vector || info.vector;
+    return this.group.position.clone().add(info.slot.position).add(unit(v).multiplyScalar(length));
+  }
+  hide() { this.group.visible = false; }
+}
+
+class AttentionWorkbench {
+  constructor(layerIndex, position, parent) {
+    this.layerIndex = layerIndex;
+    this.group = new THREE.Group();
+    this.group.position.copy(position);
+    parent.add(this.group);
+    const frameGeom = new THREE.BoxGeometry(11.1, 5.55, 0.28);
+    this.frameMat = new THREE.MeshStandardMaterial({ color: COLORS.dark, transparent: true, opacity: 0.86, depthWrite: false, roughness: 0.96 });
+    this.frame = new THREE.Mesh(frameGeom, this.frameMat);
+    this.frame.position.z = -0.62;
+    this.group.add(this.frame);
+    this.edgeMat = new THREE.LineBasicMaterial({ color: COLORS.attention, transparent: true, opacity: 0.46, depthWrite: false });
+    this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(frameGeom), this.edgeMat);
+    this.edges.position.z = -0.61;
+    this.group.add(this.edges);
+    this.header = makeTextSprite(`L${layerIndex + 1} ATTENTION`, COLORS.attention, 450, 66, 23, false, this.group);
+    this.header.position.set(-3.55, 3.0, 0);
+    this.status = makeTextSprite("Q / K / V", COLORS.cache, 290, 52, 16, true, this.group);
+    this.status.position.set(3.8, 3.0, 0);
+
+    this.inputBank = new VectorBank("normalized token states", new THREE.Vector3(-4.55, 0, 0), 0.58, COLORS.norm, 8, this.group);
+    this.wq = new MatrixPlate("Wq", new THREE.Vector3(-3.2, 1.55, 0), COLORS.query, this.group);
+    this.wk = new MatrixPlate("Wk", new THREE.Vector3(-3.2, 0, 0), COLORS.key, this.group);
+    this.wv = new MatrixPlate("Wv", new THREE.Vector3(-3.2, -1.55, 0), COLORS.value, this.group);
+    this.qBank = new VectorBank("Q", new THREE.Vector3(-1.95, 1.55, 0), 0.52, COLORS.query, 8, this.group);
+    this.kBank = new VectorBank("K", new THREE.Vector3(-1.95, 0, 0), 0.52, COLORS.key, 8, this.group);
+    this.vBank = new VectorBank("V", new THREE.Vector3(-1.95, -1.55, 0), 0.52, COLORS.value, 8, this.group);
+    this.kCache = new CacheRack("K CACHE", new THREE.Vector3(0.35, 0.88, 0), COLORS.key, this.group, 8);
+    this.vCache = new CacheRack("V CACHE", new THREE.Vector3(0.35, -0.92, 0), COLORS.value, this.group, 8);
+    this.panel = makeWorkbenchPanel(840, 520, 3.25, 2.0, this.group);
+    this.panel.position.set(3.05, 0.72, 0.18);
+    this.contextBank = new VectorBank("Σ αᵢvᵢ", new THREE.Vector3(3.08, -1.58, 0), 0.50, COLORS.sum, 1, this.group);
+    this.wo = new MatrixPlate("Wo", new THREE.Vector3(4.35, -1.58, 0), COLORS.mlp, this.group);
+    this.outputBank = new VectorBank("attention update", new THREE.Vector3(5.15, -1.58, 0), 0.52, COLORS.output, 1, this.group);
+    this.projectionLines = Array.from({ length: 10 }, () => makeLine(true, COLORS.norm, this.group));
+    this.scoreLines = Array.from({ length: 8 }, () => makeLine(true, COLORS.key, this.group));
+    this.scoreLabels = Array.from({ length: 8 }, () => {
+      const sprite = makeTextSprite("", COLORS.key, 150, 34, 11, false, this.group);
+      sprite.visible = false;
+      return sprite;
+    });
+    this.sumGlyphs = Array.from({ length: 12 }, () => new DirectionGlyph(COLORS.sum, false, this.group));
+    this.contextGlyph = new DirectionGlyph(COLORS.sum, false, this.group);
+    this.outputGlyph = new DirectionGlyph(COLORS.output, false, this.group);
+    this.woInLine = makeLine(true, COLORS.sum, this.group);
+    this.woOutLine = makeLine(true, COLORS.output, this.group);
+    this.group.visible = false;
+  }
+  hideDynamic() {
+    this.projectionLines.forEach(line => { line.visible = false; });
+    this.scoreLines.forEach(line => { line.visible = false; });
+    this.scoreLabels.forEach(label => { label.visible = false; });
+    this.sumGlyphs.forEach(glyph => glyph.hide());
+    this.contextGlyph.hide();
+    this.outputGlyph.hide();
+    this.woInLine.visible = false;
+    this.woOutLine.visible = false;
+    this.panel.visible = false;
+  }
+  render(stageType, detail, progress, ts, opacity = 1) {
+    this.group.visible = opacity > 0.002;
+    if (!this.group.visible) return;
+    this.hideDynamic();
+    const stageLabels = {
+      "attn-project": "PROJECT Q / K / V",
+      "attn-cache": detail.mode === "prefill" ? "POPULATE K/V CACHE" : "APPEND K/V SLOT",
+      "attn-scores": "QUERY × KEY SCORES",
+      "attn-activate": "SOFTMAX",
+      "attn-scale": "SCALE CACHED VALUES",
+      "attn-sum": "SUM VALUE WRITES",
+      "attn-output": "Wₒ OUTPUT",
+    };
+    updateTextSprite(this.header, `L${this.layerIndex + 1} ATTENTION · ${detail.mode.toUpperCase()}`, COLORS.attention);
+    updateTextSprite(this.status, stageLabels[stageType] || "ATTENTION", stageType === "attn-cache" ? COLORS.cache : COLORS.attention);
+    this.frameMat.opacity = 0.84 * opacity;
+    this.edgeMat.opacity = (0.42 + 0.12 * Math.sin(ts * 0.005)) * opacity;
+    this.header.visible = this.status.visible = state.showLabels;
+    this.header.material.opacity = this.status.material.opacity = opacity;
+
+    const start = Math.max(0, detail.tokens.length - 8);
+    const tokens = detail.tokens.slice(start);
+    const inputVectors = detail.inputs.slice(start).map(v => unit(v).multiplyScalar(0.50));
+    const inputColors = tokens.map((_, i) => start + i === detail.activeIndex ? COLORS.current : COLORS.prior);
+    this.inputBank.render(inputVectors, { colors: inputColors, labels: tokens.map(t => shortToken(t, 7)), opacity, activeIndex: detail.activeIndex - start });
+
+    const order = { "attn-project": 0, "attn-cache": 1, "attn-scores": 2, "attn-activate": 3, "attn-scale": 4, "attn-sum": 5, "attn-output": 6 };
+    const currentOrder = order[stageType] ?? 0;
+    const qkvProgress = currentOrder > 0 ? 1 : smootherstep01(progress);
+    this.wq.render(stageType === "attn-project", qkvProgress, opacity);
+    this.wk.render(stageType === "attn-project", qkvProgress, opacity);
+    this.wv.render(stageType === "attn-project", qkvProgress, opacity);
+
+    let qVectors;
+    let qColors;
+    let qLabels;
+    if (detail.mode === "prefill") {
+      qVectors = detail.q.slice(start).map(v => unit(v).multiplyScalar(0.46 * qkvProgress));
+      qColors = tokens.map((_, i) => start + i === detail.activeIndex ? COLORS.query : COLORS.prior);
+      qLabels = tokens.map((_, i) => start + i === detail.activeIndex ? "qₜ" : "");
+    } else {
+      qVectors = [unit(detail.q[detail.activeIndex]).multiplyScalar(0.46 * qkvProgress)];
+      qColors = [COLORS.query];
+      qLabels = ["qₜ"];
+    }
+    const kVectors = detail.k.slice(start).map(v => unit(v).multiplyScalar(0.46 * qkvProgress));
+    const vVectors = detail.v.slice(start).map(v => unit(v).multiplyScalar(0.46 * qkvProgress));
+    this.qBank.render(qVectors, { colors: qColors, labels: qLabels, opacity });
+    this.kBank.render(kVectors, { colors: kVectors.map(() => COLORS.key), opacity });
+    this.vBank.render(vVectors, { colors: vVectors.map(() => COLORS.value), opacity });
+
+    if (stageType === "attn-project") {
+      const q = qkvProgress;
+      const input = this.inputBank.group.position;
+      [[this.wq, this.qBank, COLORS.query], [this.wk, this.kBank, COLORS.key], [this.wv, this.vBank, COLORS.value]].forEach((entry, index) => {
+        setLine(this.projectionLines[index * 2], input, entry[0].group.position, 0.24 * q * opacity, entry[2]);
+        setLine(this.projectionLines[index * 2 + 1], entry[0].group.position, entry[1].group.position, 0.40 * q * opacity, entry[2]);
+      });
+    }
+
+    if (currentOrder >= 1) {
+      const cacheProgress = stageType === "attn-cache" ? progress : 1;
+      this.kCache.render(detail.tokens, detail.k, {
+        existingCount: detail.existingCount, newIndices: detail.newIndices, progress: cacheProgress,
+        activeIndex: detail.activeIndex, opacity,
+      });
+      this.vCache.render(detail.tokens, detail.v, {
+        existingCount: detail.existingCount, newIndices: detail.newIndices, progress: cacheProgress,
+        activeIndex: detail.activeIndex, opacity,
+        weights: currentOrder >= 4 ? detail.activeWeights : null,
+        weighted: currentOrder >= 4,
+      });
+    } else {
+      this.kCache.hide();
+      this.vCache.hide();
+    }
+
+    if (currentOrder >= 2) {
+      this.panel.visible = true;
+      drawAttentionWorkbenchPanel(this.panel, detail, stageType, progress);
+      const qVector = detail.q[detail.activeIndex];
+      const qTip = this.qBank.group.position.clone().add(unit(qVector).multiplyScalar(0.46));
+      const visibleIndices = [...this.kCache.visibleMap.keys()];
+      visibleIndices.forEach((globalIndex, localIndex) => {
+        if (localIndex >= this.scoreLines.length) return;
+        const keyTip = this.kCache.localTip(globalIndex, detail.k[globalIndex], 0.24);
+        if (!keyTip) return;
+        const reveal = smoothstep01(progress * visibleIndices.length - localIndex + 0.2);
+        const weight = detail.activeWeights[globalIndex] || 0;
+        const score = detail.activeScores[globalIndex] || 0;
+        const lineOpacity = (0.12 + 0.45 * reveal) * (0.45 + 0.55 * weight / Math.max(...detail.activeWeights, 1e-6)) * opacity;
+        setLine(this.scoreLines[localIndex], qTip, keyTip, lineOpacity, currentOrder >= 3 ? COLORS.attention : COLORS.key);
+        const mid = lerpVec(qTip, keyTip, 0.55).add(new THREE.Vector3(0, 0.05 * (localIndex % 2 ? -1 : 1), 0.06));
+        setLabel(this.scoreLabels[localIndex], mid, currentOrder >= 3 ? weight.toFixed(2) : score.toFixed(2), currentOrder >= 3 ? COLORS.attention : COLORS.key, reveal * opacity);
+      });
+    }
+
+    if (currentOrder >= 5) {
+      const contributions = detail.weightedValues;
+      const chain = [];
+      let acc = new THREE.Vector3();
+      contributions.forEach((contribution, index) => {
+        const startVec = acc.clone();
+        acc.add(contribution);
+        chain.push({ start: startVec, end: acc.clone(), index });
+      });
+      const maxPartial = Math.max(0.1, ...chain.map(segment => segment.end.length()));
+      const scale = 0.47 / maxPartial;
+      const visibleStart = Math.max(0, chain.length - this.sumGlyphs.length);
+      chain.slice(visibleStart).forEach((segment, localIndex) => {
+        const reveal = stageType === "attn-sum" ? smoothstep01(progress * Math.min(chain.length, this.sumGlyphs.length) - localIndex + 0.1) : 1;
+        const startPoint = this.contextBank.group.position.clone().add(segment.start.clone().multiplyScalar(scale));
+        const endPoint = this.contextBank.group.position.clone().add(segment.end.clone().multiplyScalar(scale));
+        this.sumGlyphs[localIndex].set(startPoint, lerpVec(startPoint, endPoint, reveal), COLORS.sum, reveal * opacity, 0.58);
+      });
+      const contextEnd = this.contextBank.group.position.clone().add(unit(detail.context).multiplyScalar(0.46));
+      this.contextGlyph.set(this.contextBank.group.position, contextEnd, COLORS.sum, opacity, 0.62);
+      this.contextBank.render([unit(detail.context).multiplyScalar(0.46)], { colors: [COLORS.sum], opacity });
+    } else {
+      this.contextBank.hide();
+    }
+
+    if (currentOrder >= 6) {
+      this.wo.render(true, progress, opacity);
+      const contextTip = this.contextBank.group.position.clone().add(unit(detail.context).multiplyScalar(0.46));
+      const outputEnd = this.outputBank.group.position.clone().add(unit(detail.output).multiplyScalar(0.47 * smootherstep01(progress)));
+      setLine(this.woInLine, contextTip, this.wo.group.position, 0.38 * opacity, COLORS.sum);
+      setLine(this.woOutLine, this.wo.group.position, outputEnd, 0.46 * smootherstep01(progress) * opacity, COLORS.output);
+      this.outputGlyph.set(this.outputBank.group.position, outputEnd, COLORS.output, smootherstep01(progress) * opacity, 0.66);
+      this.outputBank.render([unit(detail.output).multiplyScalar(0.47 * smootherstep01(progress))], { colors: [COLORS.output], opacity });
+    } else {
+      this.wo.render(false, 0, 0.28 * opacity);
+      this.outputBank.hide();
+    }
+  }
+  outputWorldPosition() { return this.group.position.clone().add(this.outputBank.group.position); }
+}
+
+class MlpWorkbench {
+  constructor(layerIndex, position, parent) {
+    this.layerIndex = layerIndex;
+    this.group = new THREE.Group();
+    this.group.position.copy(position);
+    parent.add(this.group);
+    const frameGeom = new THREE.BoxGeometry(8.4, 5.05, 0.28);
+    this.frameMat = new THREE.MeshStandardMaterial({ color: COLORS.dark, transparent: true, opacity: 0.86, depthWrite: false, roughness: 0.96 });
+    this.frame = new THREE.Mesh(frameGeom, this.frameMat);
+    this.frame.position.z = -0.62;
+    this.group.add(this.frame);
+    this.edgeMat = new THREE.LineBasicMaterial({ color: COLORS.mlp, transparent: true, opacity: 0.46, depthWrite: false });
+    this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(frameGeom), this.edgeMat);
+    this.edges.position.z = -0.61;
+    this.group.add(this.edges);
+    this.header = makeTextSprite(`L${layerIndex + 1} MLP`, COLORS.mlp, 360, 64, 23, false, this.group);
+    this.header.position.set(-2.45, 2.75, 0);
+    this.status = makeTextSprite("READ", COLORS.mlp, 240, 50, 16, true, this.group);
+    this.status.position.set(2.75, 2.75, 0);
+    this.inputBank = new VectorBank("normalized state", new THREE.Vector3(-3.45, 0, 0), 0.58, COLORS.norm, 1, this.group);
+    this.readBank = new VectorBank("Wup rows", new THREE.Vector3(-1.75, 0, 0), 0.72, COLORS.query, 6, this.group);
+    this.panel = makeWorkbenchPanel(760, 500, 2.7, 2.08, this.group);
+    this.panel.position.set(0.15, 0.65, 0.18);
+    this.writeBank = new VectorBank("Wdown writes", new THREE.Vector3(2.0, 0, 0), 0.72, COLORS.value, 6, this.group);
+    this.outputBank = new VectorBank("MLP update", new THREE.Vector3(3.72, 0, 0), 0.58, COLORS.output, 1, this.group);
+    this.readLines = Array.from({ length: 6 }, () => makeLine(true, COLORS.query, this.group));
+    this.readLabels = Array.from({ length: 6 }, () => {
+      const sprite = makeTextSprite("", COLORS.query, 150, 34, 11, false, this.group);
+      sprite.visible = false;
+      return sprite;
+    });
+    this.transferLines = Array.from({ length: 6 }, () => makeLine(true, COLORS.value, this.group));
+    this.scaledGlyphs = Array.from({ length: 6 }, () => new DirectionGlyph(COLORS.value, false, this.group));
+    this.chainGlyphs = Array.from({ length: 6 }, () => new DirectionGlyph(COLORS.sum, false, this.group));
+    this.outputGlyph = new DirectionGlyph(COLORS.output, false, this.group);
+    this.group.visible = false;
+  }
+  hideDynamic() {
+    this.readLines.forEach(line => { line.visible = false; });
+    this.readLabels.forEach(label => { label.visible = false; });
+    this.transferLines.forEach(line => { line.visible = false; });
+    this.scaledGlyphs.forEach(g => g.hide());
+    this.chainGlyphs.forEach(g => g.hide());
+    this.outputGlyph.hide();
+    this.panel.visible = false;
+  }
+  render(stageType, detail, progress, ts, opacity = 1) {
+    this.group.visible = opacity > 0.002;
+    if (!this.group.visible) return;
+    this.hideDynamic();
+    const labels = {
+      "mlp-read": "READ Wup",
+      "mlp-activate": "ACTIVATE",
+      "mlp-write": "WRITE BANK",
+      "mlp-scale": "SCALE WRITES",
+      "mlp-sum": "SUM OUTPUT",
+    };
+    updateTextSprite(this.header, `L${this.layerIndex + 1} MLP · READ / ACTIVATE / WRITE`, COLORS.mlp);
+    updateTextSprite(this.status, labels[stageType] || "MLP", COLORS.mlp);
+    this.frameMat.opacity = 0.84 * opacity;
+    this.edgeMat.opacity = (0.42 + 0.12 * Math.sin(ts * 0.005 + 1.4)) * opacity;
+    this.header.visible = this.status.visible = state.showLabels;
+    this.header.material.opacity = this.status.material.opacity = opacity;
+    this.inputBank.render([unit(detail.input).multiplyScalar(0.52)], { colors: [COLORS.norm], opacity });
+    const order = { "mlp-read": 0, "mlp-activate": 1, "mlp-write": 2, "mlp-scale": 3, "mlp-sum": 4 };
+    const currentOrder = order[stageType] ?? 0;
+    const readProgress = currentOrder > 0 ? 1 : smootherstep01(progress);
+    this.readBank.render(detail.readDirs.map(v => unit(v).multiplyScalar(0.66 * readProgress)), {
+      colors: detail.readDirs.map(() => COLORS.query), opacity,
+    });
+    if (currentOrder >= 0) {
+      const inputTip = this.inputBank.group.position.clone().add(unit(detail.input).multiplyScalar(0.52));
+      detail.readDirs.forEach((direction, index) => {
+        const tip = this.readBank.group.position.clone().add(unit(direction).multiplyScalar(0.66));
+        const reveal = stageType === "mlp-read" ? smoothstep01(progress * detail.readDirs.length - index + 0.2) : 1;
+        setLine(this.readLines[index], inputTip, tip, 0.14 + 0.42 * reveal * opacity, COLORS.query);
+        setLabel(this.readLabels[index], lerpVec(inputTip, tip, 0.62).add(new THREE.Vector3(0, 0.04 * (index % 2 ? -1 : 1), 0.05)), `g${index}=${detail.readCoeffs[index].toFixed(2)}`, COLORS.query, reveal * opacity);
+      });
+    }
+    if (currentOrder >= 1) {
+      this.panel.visible = true;
+      drawMlpWorkbenchPanel(this.panel, detail, stageType === "mlp-activate" ? progress : 1);
+    }
+    if (currentOrder >= 2) {
+      const writeProgress = stageType === "mlp-write" ? smootherstep01(progress) : 1;
+      this.writeBank.render(detail.writeDirs.map(v => unit(v).multiplyScalar(0.66 * writeProgress)), {
+        colors: detail.writeDirs.map(() => COLORS.value), opacity,
+      });
+      detail.writeDirs.forEach((direction, index) => {
+        const readTip = this.readBank.group.position.clone().add(unit(detail.readDirs[index]).multiplyScalar(0.66));
+        const writeTip = this.writeBank.group.position.clone().add(unit(direction).multiplyScalar(0.66));
+        const reveal = stageType === "mlp-write" ? smoothstep01(progress * detail.writeDirs.length - index + 0.2) : 1;
+        setLine(this.transferLines[index], readTip, writeTip, 0.22 * reveal * opacity, COLORS.value);
+      });
+    } else {
+      this.writeBank.hide();
+    }
+    if (currentOrder >= 3) {
+      const maxContribution = Math.max(0.02, ...detail.contributions.map(v => v.length()));
+      detail.contributions.forEach((contribution, index) => {
+        const reveal = stageType === "mlp-scale" ? smoothstep01(progress * detail.contributions.length - index + 0.15) : 1;
+        const start = this.writeBank.group.position.clone();
+        const end = start.clone().add(contribution.clone().multiplyScalar(0.62 / maxContribution));
+        this.scaledGlyphs[index].set(start, lerpVec(start, end, reveal), COLORS.value, reveal * opacity, 0.60);
+      });
+    }
+    if (currentOrder >= 4) {
+      const maxPartial = Math.max(0.05, ...detail.chain.map(segment => segment.end.length()));
+      const scale = 0.50 / maxPartial;
+      detail.chain.forEach((segment, index) => {
+        const reveal = smoothstep01(progress * detail.chain.length - index + 0.15);
+        const start = this.outputBank.group.position.clone().add(segment.start.clone().multiplyScalar(scale));
+        const end = this.outputBank.group.position.clone().add(segment.end.clone().multiplyScalar(scale));
+        this.chainGlyphs[index].set(start, lerpVec(start, end, reveal), COLORS.sum, reveal * opacity, 0.58);
+      });
+      const outputEnd = this.outputBank.group.position.clone().add(unit(detail.output).multiplyScalar(0.52 * smootherstep01(progress)));
+      this.outputGlyph.set(this.outputBank.group.position, outputEnd, COLORS.output, smootherstep01(progress) * opacity, 0.66);
+      this.outputBank.render([unit(detail.output).multiplyScalar(0.52 * smootherstep01(progress))], { colors: [COLORS.output], opacity });
+    } else {
+      this.outputBank.hide();
+    }
+  }
+  outputWorldPosition() { return this.group.position.clone().add(this.outputBank.group.position); }
+}
+
+
 let layoutGroup = new THREE.Group();
 world.add(layoutGroup);
 let stations = [];
@@ -2020,7 +3046,7 @@ let trackLights = [];
 
 function disposeObjectTree(root) {
   root.traverse(obj => {
-    obj.geometry?.dispose?.();
+    if (!obj.userData?.sharedGeometry) obj.geometry?.dispose?.();
     if (Array.isArray(obj.material)) obj.material.forEach(m => { m.map?.dispose?.(); m.dispose?.(); });
     else { obj.material?.map?.dispose?.(); obj.material?.dispose?.(); }
   });
@@ -2100,7 +3126,9 @@ function rebuildLayoutVisuals() {
     makeStation(`l${i}-mlp-add`, `L${i + 1} MLP add`, p.mlpAdd, COLORS.plus, layoutGroup);
     const attentionBox = new ModuleBox(`L${i + 1} ATTENTION`, p.attnBox, COLORS.attention, layoutGroup);
     const mlpBox = new ModuleBox(`L${i + 1} MLP`, p.mlpBox, COLORS.mlp, layoutGroup);
-    layerVisuals.push({ attentionBox, mlpBox });
+    const attentionWorkbench = new AttentionWorkbench(i, p.attnBox, layoutGroup);
+    const mlpWorkbench = new MlpWorkbench(i, p.mlpBox, layoutGroup);
+    layerVisuals.push({ attentionBox, mlpBox, attentionWorkbench, mlpWorkbench });
   });
   makeStation("output-norm", "Output norm", layout.outNorm, COLORS.norm, layoutGroup);
   makeStation("logits", "Logits copy", layout.logits, COLORS.soft, layoutGroup);
@@ -2187,7 +3215,7 @@ function weightedTopKSelection() {
   return candidates[candidates.length - 1];
 }
 function ensureSelection(force = false) {
-  const key = `${state.sentenceKey}|${state.word}|${state.dataSeed}|${state.layerCount}|${state.inputMagnitudeRatio.toFixed(3)}|${state.topK}|${state.preSoftmaxMultiplier}|${pass.probs.map(p => p.toFixed(7)).join(",")}|${state.selectionNonce}`;
+  const key = `${state.sentenceKey}|${state.mode}|${state.prefillLength}|${state.cacheTokens.join("¦")}|${state.word}|${state.dataSeed}|${state.layerCount}|${state.inputMagnitudeRatio.toFixed(3)}|${state.topK}|${state.preSoftmaxMultiplier}|${pass.probs.map(p => p.toFixed(7)).join(",")}|${state.selectionNonce}`;
   if (force || state.selectionKey !== key || state.selectedIndex === null) {
     state.selectedIndex = weightedTopKSelection();
     state.selectionKey = key;
@@ -2222,6 +3250,10 @@ function hideDynamic() {
   returnArc.visible = false;
   returnDash.visible = false;
   trailDots.forEach(d => { d.visible = false; });
+  layerVisuals.forEach(visual => {
+    visual.attentionWorkbench.group.visible = false;
+    visual.mlpWorkbench.group.visible = false;
+  });
 }
 function staticInputRender() {
   inputSphere.set(layout.inputWord, pass.base, pass.base.length(), tokenColor(state.word), 1, `input: ${state.word}`);
@@ -2262,10 +3294,16 @@ function updateStatic(ts) {
     m.material.opacity = state.showTrail ? 0.08 + 0.28 * w : 0;
   });
   layerVisuals.forEach((visual, i) => {
-    const attnActive = stage.layer === i && (stage.type === "attn-module" || stage.type === "attn-output-down");
-    const mlpActive = stage.layer === i && (stage.type === "mlp-module" || stage.type === "mlp-output-down");
-    visual.attentionBox.render(attnActive, stage.type === "attn-module" ? state.progress : 1, ts);
-    visual.mlpBox.render(mlpActive, stage.type === "mlp-module" ? state.progress : 1, ts);
+    const attentionDetailTypes = new Set(["attn-project", "attn-cache", "attn-scores", "attn-activate", "attn-scale", "attn-sum", "attn-output"]);
+    const mlpDetailTypes = new Set(["mlp-read", "mlp-activate", "mlp-write", "mlp-scale", "mlp-sum"]);
+    const attnDetailActive = stage.layer === i && attentionDetailTypes.has(stage.type);
+    const mlpDetailActive = stage.layer === i && mlpDetailTypes.has(stage.type);
+    const attnTransferActive = stage.layer === i && stage.type === "attn-output-down";
+    const mlpTransferActive = stage.layer === i && stage.type === "mlp-output-down";
+    visual.attentionBox.group.visible = !attnDetailActive && !attnTransferActive;
+    visual.mlpBox.group.visible = !mlpDetailActive && !mlpTransferActive;
+    visual.attentionBox.render(false, 0, ts);
+    visual.mlpBox.render(false, 0, ts);
   });
 }
 function renderTrail(a, b, t, color) {
@@ -2297,6 +3335,8 @@ function moduleSpec(kind, layerIndex) {
     out: attention ? v.attnOut : v.mlpOut,
     result: attention ? v.afterAttn : v.afterMlp,
     boxObject: attention ? layerVisuals[layerIndex].attentionBox : layerVisuals[layerIndex].mlpBox,
+    workbench: attention ? layerVisuals[layerIndex].attentionWorkbench : layerVisuals[layerIndex].mlpWorkbench,
+    detail: attention ? v.attentionDetail : v.mlpDetail,
     outputLabel: attention ? `L${layerIndex + 1} attention out` : `L${layerIndex + 1} MLP out`,
   };
 }
@@ -2316,6 +3356,37 @@ function renderNormProjection(kind, layerIndex, t) {
   normOrb.set(m.normTop, m.base, len, colorLerp(COLORS.current, COLORS.norm, project), 1, "surface-projected copy");
   setLine(normLine, m.normBase, m.normTop, 0.42, COLORS.norm);
 }
+function renderAttentionDetail(layerIndex, stageType, t, ts) {
+  const m = moduleSpec("attention", layerIndex);
+  const bypass = stageType === "attn-project" ? smootherstep01(t / 0.58) : 1;
+  const residualPos = travelPoint(m.normBase, m.add, bypass, 0.18, 0.11);
+  carrier.set(residualPos, m.base, m.base.length(), COLORS.current, 1, "residual bypass");
+  renderTrail(m.normBase, m.add, bypass, COLORS.current);
+  if (stageType === "attn-project") {
+    const workbenchInput = m.workbench.group.position.clone().add(m.workbench.inputBank.group.position);
+    const enter = smootherstep01(t / 0.42);
+    const fade = 1 - smoothstep01((t - 0.34) / 0.18);
+    normOrb.set(lerpVec(m.normTop, workbenchInput, enter), m.input, CARRIER_R, COLORS.norm, fade, "normalized branch", 1 - 0.3 * enter);
+    setLine(moduleInputLine, m.normTop, lerpVec(m.normTop, workbenchInput, enter), 0.18 + 0.30 * fade, COLORS.norm);
+  }
+  m.workbench.render(stageType, m.detail, t, ts, 1);
+}
+function renderMlpDetail(layerIndex, stageType, t, ts) {
+  const m = moduleSpec("mlp", layerIndex);
+  const bypass = stageType === "mlp-read" ? smootherstep01(t / 0.58) : 1;
+  const residualPos = travelPoint(m.normBase, m.add, bypass, 0.18, 0.11);
+  carrier.set(residualPos, m.base, m.base.length(), COLORS.current, 1, "residual bypass");
+  renderTrail(m.normBase, m.add, bypass, COLORS.current);
+  if (stageType === "mlp-read") {
+    const workbenchInput = m.workbench.group.position.clone().add(m.workbench.inputBank.group.position);
+    const enter = smootherstep01(t / 0.42);
+    const fade = 1 - smoothstep01((t - 0.34) / 0.18);
+    normOrb.set(lerpVec(m.normTop, workbenchInput, enter), m.input, CARRIER_R, COLORS.norm, fade, "normalized branch", 1 - 0.3 * enter);
+    setLine(moduleInputLine, m.normTop, lerpVec(m.normTop, workbenchInput, enter), 0.18 + 0.30 * fade, COLORS.norm);
+  }
+  m.workbench.render(stageType, m.detail, t, ts, 1);
+}
+
 function renderModule(kind, layerIndex, t, ts) {
   const m = moduleSpec(kind, layerIndex);
   const bypass = smootherstep01(t / 0.82);
@@ -2338,13 +3409,19 @@ function renderModule(kind, layerIndex, t, ts) {
   setLine(moduleOutputLine, m.box, outPos, 0.14 + 0.38 * outOpacity, COLORS.output);
   m.boxObject.render(true, smootherstep01((t - 0.24) / 0.5), ts);
 }
-function renderOutputDown(kind, layerIndex, t) {
+function renderOutputDown(kind, layerIndex, t, ts) {
   const m = moduleSpec(kind, layerIndex);
-  const drop = smootherstep01((t - 0.16) / 0.56);
-  const pos = lerpVec(m.above, m.hold, drop);
+  const finalStage = kind === "attention" ? "attn-output" : "mlp-sum";
+  m.workbench.render(finalStage, m.detail, 1, ts, 0.34);
+  const outward = smootherstep01(t / 0.38);
+  const downward = smootherstep01((t - 0.56) / 0.44);
+  let pos;
+  if (t < 0.42) pos = lerpVec(m.boxOut, m.above, outward);
+  else if (t < 0.56) pos = m.above.clone();
+  else pos = lerpVec(m.above, m.hold, downward);
   carrier.set(m.add, m.base, m.base.length(), COLORS.current, 1, "residual stream");
   moduleOutOrb.set(pos, m.out, m.out.length(), COLORS.output, 1, m.outputLabel);
-  setLine(moduleOutputLine, m.above, pos, 0.2 + 0.3 * drop, COLORS.output);
+  setLine(moduleOutputLine, m.boxOut, pos, 0.18 + 0.34 * Math.max(outward, downward), COLORS.output);
 }
 function renderAddSetup(kind, layerIndex, t) {
   const m = moduleSpec(kind, layerIndex);
@@ -2514,8 +3591,15 @@ function renderStage(ts) {
     }
     case "attn-norm-lift": renderNormLift("attention", stage.layer, t); break;
     case "attn-norm-project": renderNormProjection("attention", stage.layer, t); break;
-    case "attn-module": renderModule("attention", stage.layer, t, ts); break;
-    case "attn-output-down": renderOutputDown("attention", stage.layer, t); break;
+    case "attn-project":
+    case "attn-cache":
+    case "attn-scores":
+    case "attn-activate":
+    case "attn-scale":
+    case "attn-sum":
+    case "attn-output":
+      renderAttentionDetail(stage.layer, stage.type, t, ts); break;
+    case "attn-output-down": renderOutputDown("attention", stage.layer, t, ts); break;
     case "attn-add-setup": renderAddSetup("attention", stage.layer, t); break;
     case "attn-add-collapse": renderAddCollapse("attention", stage.layer, t); break;
     case "travel-mlp": {
@@ -2528,8 +3612,13 @@ function renderStage(ts) {
     }
     case "mlp-norm-lift": renderNormLift("mlp", stage.layer, t); break;
     case "mlp-norm-project": renderNormProjection("mlp", stage.layer, t); break;
-    case "mlp-module": renderModule("mlp", stage.layer, t, ts); break;
-    case "mlp-output-down": renderOutputDown("mlp", stage.layer, t); break;
+    case "mlp-read":
+    case "mlp-activate":
+    case "mlp-write":
+    case "mlp-scale":
+    case "mlp-sum":
+      renderMlpDetail(stage.layer, stage.type, t, ts); break;
+    case "mlp-output-down": renderOutputDown("mlp", stage.layer, t, ts); break;
     case "mlp-add-setup": renderAddSetup("mlp", stage.layer, t); break;
     case "mlp-add-collapse": renderAddCollapse("mlp", stage.layer, t); break;
     case "travel-output": {
@@ -2595,16 +3684,21 @@ function modulePose(layerIndex, kind, mode = "wide") {
   const box = attention ? p.attnBox : p.mlpBox;
   const add = attention ? p.attnAdd : p.mlpAdd;
   const above = attention ? p.attnOutputAbove : p.mlpOutputAbove;
+  const boxOut = attention ? p.attnBoxOut : p.mlpBoxOut;
   if (mode === "close") {
     const target = add.clone().add(new THREE.Vector3(0, 0.48, 0));
-    return makePose(target, 4.15, 1.55, 0.18);
+    return makePose(target, 4.25, 1.6, 0.18);
   }
   if (mode === "output") {
-    const target = lerpVec(box, above, 0.58).add(new THREE.Vector3(0, -0.12, 0));
-    return makePose(target, 8.65, 2.65);
+    const target = lerpVec(boxOut, above, 0.62).add(new THREE.Vector3(0, -0.08, 0));
+    return makePose(target, attention ? 9.3 : 8.4, 2.75);
   }
-  const target = lerpVec(norm, add, 0.53).add(new THREE.Vector3(0, 1.42, 0));
-  return makePose(target, 10.2, 3.7);
+  if (mode === "detail") {
+    const target = box.clone().add(new THREE.Vector3(0, -0.15, 0));
+    return makePose(target, attention ? 14.5 : 11.7, attention ? 2.7 : 2.45);
+  }
+  const target = lerpVec(norm, add, 0.52).add(new THREE.Vector3(0, 1.9, 0));
+  return makePose(target, attention ? 15.2 : 12.6, 4.0);
 }
 function outputNormPose() {
   const target = layout.outNorm.clone().add(new THREE.Vector3(0, 0.42, 0));
@@ -2641,8 +3735,15 @@ function cameraPose(stage = STAGES[state.stage], t = state.progress) {
     }
     case "attn-norm-lift":
     case "attn-norm-project":
-    case "attn-module":
       return modulePose(stage.layer, "attention", "wide");
+    case "attn-project":
+    case "attn-cache":
+    case "attn-scores":
+    case "attn-activate":
+    case "attn-scale":
+    case "attn-sum":
+    case "attn-output":
+      return modulePose(stage.layer, "attention", "detail");
     case "attn-output-down":
       return modulePose(stage.layer, "attention", "output");
     case "attn-add-setup":
@@ -2653,8 +3754,13 @@ function cameraPose(stage = STAGES[state.stage], t = state.progress) {
       return interpolatePose(modulePose(stage.layer, "attention", "close"), modulePose(stage.layer, "mlp", "wide"), t);
     case "mlp-norm-lift":
     case "mlp-norm-project":
-    case "mlp-module":
       return modulePose(stage.layer, "mlp", "wide");
+    case "mlp-read":
+    case "mlp-activate":
+    case "mlp-write":
+    case "mlp-scale":
+    case "mlp-sum":
+      return modulePose(stage.layer, "mlp", "detail");
     case "mlp-output-down":
       return modulePose(stage.layer, "mlp", "output");
     case "mlp-add-setup":
@@ -2720,6 +3826,16 @@ const stageCopyEl = document.getElementById("stageCopy");
 const scenePhaseEl = document.getElementById("scenePhase");
 const sceneMathEl = document.getElementById("sceneMath");
 const sceneMathNoteEl = document.getElementById("sceneMathNote");
+const sceneModeChipEl = document.getElementById("sceneModeChip");
+const sceneModeSummaryEl = document.getElementById("sceneModeSummary");
+const prefillModeBtn = document.getElementById("prefillModeBtn");
+const decodeModeBtn = document.getElementById("decodeModeBtn");
+const modeDescriptionEl = document.getElementById("modeDescription");
+const prefillLengthSelectEl = document.getElementById("prefillLengthSelect");
+const cacheLengthValueEl = document.getElementById("cacheLengthValue");
+const contextLengthValueEl = document.getElementById("contextLengthValue");
+const activeCacheLayerEl = document.getElementById("activeCacheLayer");
+const cacheTokenStripEl = document.getElementById("cacheTokenStrip");
 const progressLabelEl = document.getElementById("progressLabel");
 const progressSliderEl = document.getElementById("progressSlider");
 const playPauseBtn = document.getElementById("playPause");
@@ -2787,20 +3903,41 @@ function rebuildTopKOptions() {
     topKSelectEl.appendChild(option);
   }
 }
+function rebuildPrefillLengthOptions() {
+  prefillLengthSelectEl.innerHTML = "";
+  for (let count = 1; count <= WORDS.length; count++) {
+    const option = document.createElement("option");
+    option.value = String(count);
+    option.textContent = `${count} · ${WORDS.slice(0, count).join(" │ ")}`;
+    prefillLengthSelectEl.appendChild(option);
+  }
+  state.prefillLength = clamp(state.prefillLength, 1, WORDS.length);
+}
 function rebuildStageButtons() {
   stageGridEl.innerHTML = "";
-  stageButtons = STAGES.map((stage, index) => {
+  stageButtons = [];
+  let previousGroup = null;
+  STAGES.forEach((stage, index) => {
+    if (stage.group !== previousGroup) {
+      const heading = document.createElement("div");
+      heading.className = "stage-section";
+      heading.textContent = stage.group;
+      stageGridEl.appendChild(heading);
+      previousGroup = stage.group;
+    }
     const button = document.createElement("button");
     button.className = "stage-button";
     button.textContent = `${index + 1}. ${stage.short}`;
     button.dataset.stage = String(index);
+    button.title = stage.name;
     button.addEventListener("click", () => goToStage(index, true, true));
     stageGridEl.appendChild(button);
-    return button;
+    stageButtons.push(button);
   });
 }
 rebuildWordOptions();
 rebuildTopKOptions();
+rebuildPrefillLengthOptions();
 rebuildStageButtons();
 
 function showToast(message) {
@@ -2867,6 +4004,63 @@ function appendBoundarySequence(container, tokens, { inputWord = null, latestInd
     container.appendChild(token);
   });
 }
+function renderCacheStrip() {
+  cacheTokenStripEl.innerHTML = "";
+  const cached = storedCacheTokens();
+  const entries = state.mode === "prefill"
+    ? promptTokens().map((word, index) => ({ word, index, pending: true, current: index === promptTokens().length - 1 }))
+    : [
+        ...cached.map((word, index) => ({ word, index, pending: false, current: false })),
+        { word: state.word, index: cached.length, pending: true, current: true },
+      ];
+  const maxVisible = 12;
+  const visible = entries.slice(-maxVisible);
+  if (entries.length > maxVisible) {
+    const ellipsis = document.createElement("span");
+    ellipsis.className = "cache-token";
+    ellipsis.textContent = "…";
+    cacheTokenStripEl.appendChild(ellipsis);
+  }
+  visible.forEach(entry => {
+    const chip = document.createElement("span");
+    chip.className = "cache-token";
+    if (entry.pending) chip.classList.add("pending");
+    if (entry.current) chip.classList.add("current");
+    const idx = document.createElement("span");
+    idx.className = "cache-token-index";
+    idx.textContent = String(entry.index);
+    const token = document.createElement("span");
+    token.textContent = entry.word;
+    const kv = document.createElement("span");
+    kv.innerHTML = `<span class="cache-key">K</span><span style="color:rgba(255,255,255,.28)">/</span><span class="cache-value">V</span>`;
+    chip.append(idx, token, kv);
+    cacheTokenStripEl.appendChild(chip);
+  });
+}
+function refreshInferenceUi() {
+  const isPrefill = state.mode === "prefill";
+  const context = attentionContextTokens();
+  const cached = storedCacheTokens();
+  const activeStage = STAGES[state.stage];
+  const activeLayer = Number.isInteger(activeStage?.layer) ? `L${activeStage.layer + 1}` : "—";
+  sceneModeChipEl.textContent = isPrefill ? "PREFILL" : "DECODE";
+  sceneModeChipEl.style.borderColor = isPrefill ? "rgba(125,211,252,.34)" : "rgba(199,125,255,.36)";
+  sceneModeChipEl.style.background = isPrefill ? "rgba(125,211,252,.09)" : "rgba(199,125,255,.10)";
+  sceneModeChipEl.style.color = isPrefill ? "#b9ecff" : "#e3c8ff";
+  sceneModeSummaryEl.textContent = isPrefill
+    ? `${context.length} prompt positions in parallel · populate every K/V slot`
+    : `1 new position · reuse ${cached.length} retained K/V slot${cached.length === 1 ? "" : "s"}`;
+  prefillModeBtn.classList.toggle("active", isPrefill);
+  decodeModeBtn.classList.toggle("active", !isPrefill);
+  prefillLengthSelectEl.value = String(state.prefillLength);
+  modeDescriptionEl.innerHTML = isPrefill
+    ? `Process <strong>${context.length}</strong> prompt token${context.length === 1 ? "" : "s"} in parallel. Each layer forms a causal attention matrix and writes <strong>${context.length} K/V slots</strong>.`
+    : `Reuse <strong>${cached.length}</strong> retained slot${cached.length === 1 ? "" : "s"}, compute Q/K/V only for <strong>“${state.word}”</strong>, and append one new K/V slot in each layer.`;
+  cacheLengthValueEl.textContent = isPrefill ? `0 → ${context.length}` : `${cached.length} → ${cached.length + 1}`;
+  contextLengthValueEl.textContent = String(context.length);
+  activeCacheLayerEl.textContent = activeLayer;
+  renderCacheStrip();
+}
 function renderSentenceStrip() {
   sentenceTokensEl.innerHTML = "";
   WORDS.forEach((word, index) => {
@@ -2902,7 +4096,7 @@ function renderSentenceStrip() {
     historyTokensEl.appendChild(chip);
   });
 
-  const accumulated = [state.initialWord, ...state.history];
+  const accumulated = textSoFarTokens();
   const maxVisibleTokens = 14;
   const visibleAccumulated = accumulated.slice(-maxVisibleTokens);
   appendBoundarySequence(overlayAccumulatedTokensEl, visibleAccumulated, {
@@ -2935,7 +4129,10 @@ function refreshReadout() {
     readoutEl.appendChild(row);
   });
   const selection = state.selectedIndex === null ? "not sampled yet" : selectedWord();
-  nextTokenNoteEl.textContent = `Expected sequence token: ${pass.targetWord}. β=${state.preSoftmaxMultiplier}×. Top-${state.topK}: ${pass.ranking.slice(0, state.topK).map(i => WORDS[i]).join(", ")}. Selected: ${selection}.`;
+  const modePrefix = state.mode === "prefill"
+    ? `Prefill predicts from ${promptTokens().length} prompt positions.`
+    : `Decode reuses ${storedCacheTokens().length} cached positions.`;
+  nextTokenNoteEl.textContent = `${modePrefix} Expected sequence token: ${pass.targetWord}. β=${state.preSoftmaxMultiplier}×. Top-${state.topK}: ${pass.ranking.slice(0, state.topK).map(i => WORDS[i]).join(", ")}. Selected: ${selection}.`;
   renderSentenceStrip();
 }
 function refreshUi() {
@@ -2948,6 +4145,7 @@ function refreshUi() {
   scenePhaseEl.textContent = stage.phase;
   sceneMathEl.innerHTML = stage.math;
   sceneMathNoteEl.textContent = stage.mathNote + selectedSuffix;
+  refreshInferenceUi();
   document.documentElement.style.setProperty("--stage-accent", stage.color);
   progressLabelEl.textContent = `${Math.round(state.progress * 100)}%`;
   progressSliderEl.value = String(Math.round(state.progress * 1000));
@@ -2990,11 +4188,23 @@ function prepareSelection(force = false) {
 }
 function commitSelectedWord() {
   ensureSelection(false);
-  state.word = WORDS[state.selectedIndex];
-  state.history.push(state.word);
-  if (state.history.length > 256) state.history.shift();
+  const previousInput = state.word;
+  const nextToken = WORDS[state.selectedIndex];
+  if (state.mode === "prefill") {
+    state.cacheTokens = promptTokens();
+    state.mode = "decode";
+    state.word = nextToken;
+    state.history = [nextToken];
+  } else {
+    state.cacheTokens = [...storedCacheTokens(), previousInput];
+    if (state.cacheTokens.length > 256) state.cacheTokens.shift();
+    state.word = nextToken;
+    state.history.push(nextToken);
+    if (state.history.length > 256) state.history.shift();
+  }
+  state.initialWord = promptLastToken();
   recomputePass({ rebuildStages: true });
-  refreshReadout();
+  refreshUi();
 }
 function goToStage(index, play = true, singleStep = true) {
   state.quickTokenMode = false;
@@ -3051,7 +4261,10 @@ function skipToNextToken() {
 }
 function resetSequence() {
   state.quickTokenMode = false;
-  state.word = WORDS.includes(state.initialWord) ? state.initialWord : WORDS[0];
+  state.mode = "prefill";
+  state.cacheTokens = [];
+  state.word = promptLastToken();
+  state.initialWord = state.word;
   state.history = [];
   state.stage = 0;
   state.progress = 0;
@@ -3064,14 +4277,22 @@ function resetSequence() {
   if (state.guidedCamera) armGuidedCamera(1500);
   else state.cameraGuideUntil = 0;
   refreshUi();
-  showToast(`Sequence reset to: ${state.word}`);
+  showToast(`Reset to Prefill: ${promptTokens().join(" │ ")}`);
 }
 function cycleWord(delta = 1) {
   state.quickTokenMode = false;
   const index = Math.max(0, WORDS.indexOf(state.word));
-  state.word = WORDS[(index + delta + WORDS.length) % WORDS.length];
+  const nextIndex = (index + delta + WORDS.length) % WORDS.length;
+  if (state.mode === "prefill") {
+    state.prefillLength = clamp(nextIndex + 1, 1, WORDS.length);
+    state.word = promptLastToken();
+    state.cacheTokens = [];
+  } else {
+    state.word = WORDS[nextIndex];
+    state.cacheTokens = promptTokens();
+  }
   state.initialWord = state.word;
-  state.history = [];
+  state.history = state.mode === "decode" ? [state.word] : [];
   state.stage = 0;
   state.progress = 0;
   state.playing = false;
@@ -3121,6 +4342,54 @@ function setInputMagnitude(percent, notify = true) {
   refreshUi();
   if (notify) showToast(`Input magnitude: ${Math.round(state.inputMagnitudeRatio * 100)}% of R`);
 }
+function setInferenceMode(mode, notify = true) {
+  if (mode !== "prefill" && mode !== "decode") return;
+  state.quickTokenMode = false;
+  state.mode = mode;
+  state.stage = 0;
+  state.progress = 0;
+  state.playing = false;
+  state.stepOnce = false;
+  state.selectedIndex = null;
+  state.selectionKey = "";
+  if (mode === "prefill") {
+    state.cacheTokens = [];
+    state.word = promptLastToken();
+    state.history = [];
+  } else {
+    state.cacheTokens = promptTokens();
+    state.word = firstDecodeToken();
+    state.history = [state.word];
+  }
+  state.initialWord = promptLastToken();
+  recomputePass({ rebuildStages: true });
+  if (state.guidedCamera) armGuidedCamera(1500);
+  else state.cameraGuideUntil = 0;
+  refreshUi();
+  if (notify) showToast(mode === "prefill"
+    ? `Prefill: ${promptTokens().length} prompt token${promptTokens().length === 1 ? "" : "s"}`
+    : `Decode: ${state.cacheTokens.length} retained K/V slot${state.cacheTokens.length === 1 ? "" : "s"}`);
+}
+function setPrefillLength(count, notify = true) {
+  state.prefillLength = clamp(Math.round(count), 1, WORDS.length);
+  if (state.mode === "prefill") {
+    state.cacheTokens = [];
+    state.word = promptLastToken();
+    state.history = [];
+  } else {
+    state.cacheTokens = promptTokens();
+    state.word = firstDecodeToken();
+    state.history = [state.word];
+  }
+  state.initialWord = promptLastToken();
+  state.stage = 0;
+  state.progress = 0;
+  state.playing = false;
+  state.stepOnce = false;
+  recomputePass({ rebuildStages: true });
+  refreshUi();
+  if (notify) showToast(`Prompt: ${promptTokens().join(" │ ")}`);
+}
 function setLayerCount(count, notify = true) {
   state.quickTokenMode = false;
   const next = clamp(Math.round(count), 1, MAX_LAYERS);
@@ -3146,12 +4415,16 @@ function setSentence(key, notify = true) {
   if (!SENTENCES[key]) return;
   state.sentenceKey = key;
   WORDS = [...SENTENCES[key].tokens];
-  state.word = WORDS[0];
+  state.prefillLength = clamp(state.prefillLength, 1, WORDS.length);
+  state.mode = "prefill";
+  state.cacheTokens = [];
+  state.word = promptLastToken();
   state.initialWord = state.word;
   state.history = [];
   state.topK = clamp(state.topK, 1, WORDS.length);
   rebuildWordOptions();
   rebuildTopKOptions();
+  rebuildPrefillLengthOptions();
   recomputePass({ rebuildStages: true });
   state.stage = 0;
   state.progress = 0;
@@ -3201,11 +4474,23 @@ progressSliderEl.addEventListener("input", event => {
   refreshUi();
 });
 sentenceSelectEl.addEventListener("change", event => setSentence(event.target.value));
+prefillModeBtn.addEventListener("click", () => setInferenceMode("prefill"));
+decodeModeBtn.addEventListener("click", () => setInferenceMode("decode"));
+prefillLengthSelectEl.addEventListener("change", event => setPrefillLength(Number(event.target.value)));
 wordSelectEl.addEventListener("change", event => {
   state.quickTokenMode = false;
-  state.word = event.target.value;
-  state.initialWord = state.word;
-  state.history = [];
+  const selected = event.target.value;
+  if (state.mode === "prefill") {
+    state.prefillLength = clamp(WORDS.indexOf(selected) + 1, 1, WORDS.length);
+    state.word = promptLastToken();
+    state.cacheTokens = [];
+    state.history = [];
+  } else {
+    state.word = selected;
+    state.cacheTokens = promptTokens();
+    state.history = [selected];
+  }
+  state.initialWord = promptLastToken();
   state.stage = 0;
   state.progress = 0;
   state.playing = false;
@@ -3303,7 +4588,9 @@ function handleHotkey(event) {
   else if (key === "m") {
     hotkeyCardEl.classList.toggle("hidden");
     showToast(hotkeyCardEl.classList.contains("hidden") ? "Hotkey card hidden — press M to show" : "Hotkey card shown");
-  } else if (key === "w") cycleWord(event.shiftKey ? -1 : 1);
+  } else if (key === "p") setInferenceMode("prefill");
+  else if (key === "d") setInferenceMode("decode");
+  else if (key === "w") cycleWord(event.shiftKey ? -1 : 1);
   else if (key === "h") setSentence(state.sentenceKey === "english" ? "hangul" : "english");
   else if (key === "n") reinitialize();
   else if (key === "b") {
@@ -3315,7 +4602,6 @@ function handleHotkey(event) {
     refreshUi();
     showToast(`Track glow and trail ${state.showTrail ? "on" : "off"}`);
   } else if (key === "s") setSolidAngle(8);
-  else if (key === "d") setSolidAngle(14);
   else if (key === "f") setSolidAngle(28);
   else if (key === "[") setSolidAngle(state.solidAngleDeg - (event.shiftKey ? 4 : 1));
   else if (key === "]") setSolidAngle(state.solidAngleDeg + (event.shiftKey ? 4 : 1));
@@ -3323,8 +4609,8 @@ function handleHotkey(event) {
   else if (key === "=" || key === "+") setLayerCount(state.layerCount + 1);
   else if (key === ",") setInputMagnitude((state.inputMagnitudeRatio * 100) - 5);
   else if (key === ".") setInputMagnitude((state.inputMagnitudeRatio * 100) + 5);
-  else if (key === "a") goToStage(stageIndex("attn-module", 0), true, true);
-  else if (key === "e") goToStage(stageIndex("mlp-module", state.layerCount - 1), true, true);
+  else if (key === "a") goToStage(stageIndex("attn-project", 0), true, true);
+  else if (key === "e") goToStage(stageIndex("mlp-read", state.layerCount - 1), true, true);
   else if (key === "l") goToStage(stageIndex("lm-read"), true, true);
   else if (key === "q") goToStage(SELECTION_STAGE, true, true);
   else if (key === "x") skipToNextToken();
