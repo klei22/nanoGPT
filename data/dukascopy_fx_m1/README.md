@@ -36,8 +36,8 @@ data/dukascopy_fx_m1/get_dataset.sh data/dukascopy_fx_m1/raw/eurusd
 - `minute_mod_10` in `[0, 9]`
 - `minute_of_hour` in `[0, 59]`
 - `minute_of_day` in `[0, 1439]`
-- `minute_of_week` in `[0, 10079]`
-- `minute_of_year` in `[0, 527039]` (leap-year-safe minute index)
+- `day_of_week` in `[0, 6]` (Monday=0)
+- `week_of_year` in `[1, 53]` (ISO week number)
 - `open_delta_state`, `high_delta_state`, `low_delta_state`,
   `close_delta_state`, and `volume_delta_state` as compact derivative states
 
@@ -65,6 +65,10 @@ Environment overrides:
 - `DUKASCOPY_DELTA_THRESHOLDS`, space-separated overrides like `open:-20:20 volume:-5000:5000`
 - `DUKASCOPY_LOG_DELTA=1` to apply signed `log1p` before derivative bucketing
 - `DUKASCOPY_STATS_DIR` (default `data/dukascopy_fx_m1/stats`)
+
+The time features therefore represent modulo position within 10 minutes, 1 hour,
+24 hours, 1 week, and 1 year without expanding the weekly/yearly features to
+minute-level vocabularies.
 
 ## 3. Train/sample demo
 

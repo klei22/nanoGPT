@@ -43,8 +43,8 @@ CSV_MC_ARGS=(
   --range minute_mod_10:0:9
   --range minute_of_hour:0:59
   --range minute_of_day:0:1439
-  --range minute_of_week:0:10079
-  --range minute_of_year:0:527039
+  --range day_of_week:0:6
+  --range week_of_year:1:53
   --range open_delta_state:0:$((DELTA_STATES - 1))
   --range high_delta_state:0:$((DELTA_STATES - 1))
   --range low_delta_state:0:$((DELTA_STATES - 1))

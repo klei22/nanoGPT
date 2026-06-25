@@ -16,7 +16,7 @@ from typing import Iterable, Sequence
 
 TICK_COLUMNS = ("open", "high", "low", "close", "volume")
 DELTA_STATE_COLUMNS = tuple(f"{column}_delta_state" for column in TICK_COLUMNS)
-TIME_COLUMNS = ("minute_mod_10", "minute_of_hour", "minute_of_day", "minute_of_week", "minute_of_year")
+TIME_COLUMNS = ("minute_mod_10", "minute_of_hour", "minute_of_day", "day_of_week", "week_of_year")
 
 
 def open_text(path: Path):
@@ -154,9 +154,9 @@ def write_histogram_png(path: Path, values: Sequence[int], bins: int = 80, width
 
 def time_features(ts: datetime) -> list[int]:
     minute_of_day = ts.hour * 60 + ts.minute
-    minute_of_week = ts.weekday() * 24 * 60 + minute_of_day
-    minute_of_year = (ts.timetuple().tm_yday - 1) * 24 * 60 + minute_of_day
-    return [minute_of_day % 10, ts.minute, minute_of_day, minute_of_week, minute_of_year]
+    day_of_week = ts.weekday()
+    week_of_year = ts.isocalendar().week
+    return [minute_of_day % 10, ts.minute, minute_of_day, day_of_week, week_of_year]
 
 
 def main() -> None:
