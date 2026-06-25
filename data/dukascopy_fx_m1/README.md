@@ -54,12 +54,24 @@ Environment overrides:
 ## 3. Train/sample demo
 
 ```bash
-demos/dukascopy_fx_m1_csv_mc_int_demo.sh data/dukascopy_fx_m1/raw/eurusd
+demos/dukascopy_fx_m1_csv_mc_int_demo.sh
 ```
 
 The demo mirrors `demos/csv_mc_int_demo.sh`: it reads the generated manifest,
 trains regular `--training_mode multicontext`, and samples CSV continuations
-using `sample.py --multicontext_csv_input`.
+using `sample.py --multicontext_csv_input`. If the default raw input
+`data/dukascopy_fx_m1/raw/eurusd` does not exist yet, the demo first downloads
+one day of BID data for the built-in majors universe, then builds the EUR/USD
+dataset from the downloaded CSVs.
+
+Demo download overrides:
+
+- `DUKASCOPY_DEMO_START` / `DUKASCOPY_DEMO_END` (default `2025-01-02` / `2025-01-03`)
+- `DUKASCOPY_DEMO_SIDE` (default `BID`)
+- `DUKASCOPY_DEMO_UNIVERSE` (default `majors`)
+- `DUKASCOPY_DEMO_RAW_OUT` (default `data/dukascopy_fx_m1/raw`)
+- `DUKASCOPY_DEMO_MAX_WORKERS` (default `4`)
+- `DUKASCOPY_DEMO_RPS` (default `2`)
 
 ## Source and license
 

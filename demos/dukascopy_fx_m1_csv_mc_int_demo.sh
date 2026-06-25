@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Dukascopy FX M1 regular integer CSV multicontext demo:
-# 1) convert downloaded Dukascopy candle CSV(.gz) files into integer columns
-# 2) split those columns into per-column integer datasets via data/csv_mc_int
-# 3) train regular multicontext and sample timestamped CSV continuations
+# 1) download a tiny default Dukascopy candle slice when raw CSVs are missing
+# 2) convert downloaded Dukascopy candle CSV(.gz) files into integer columns
+# 3) split those columns into per-column integer datasets via data/csv_mc_int
+# 4) train regular multicontext and sample timestamped CSV continuations
 
 set -euo pipefail
 
@@ -16,6 +17,34 @@ OUT_DIR="${DUKASCOPY_MC_OUT_DIR:-out/dukascopy_fx_m1}"
 MAX_ITERS="${DUKASCOPY_MC_MAX_ITERS:-1000}"
 DEVICE="${DUKASCOPY_MC_DEVICE:-cuda:0}"
 DTYPE="${DUKASCOPY_MC_DTYPE:-bfloat16}"
+DOWNLOAD_START="${DUKASCOPY_DEMO_START:-2025-01-02}"
+DOWNLOAD_END="${DUKASCOPY_DEMO_END:-2025-01-03}"
+DOWNLOAD_SIDE="${DUKASCOPY_DEMO_SIDE:-BID}"
+DOWNLOAD_UNIVERSE="${DUKASCOPY_DEMO_UNIVERSE:-majors}"
+DOWNLOAD_OUT="${DUKASCOPY_DEMO_RAW_OUT:-data/dukascopy_fx_m1/raw}"
+
+has_candle_csvs() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    return 0
+  fi
+  if [[ -d "$path" ]] && find "$path" -type f \( -name "*.csv" -o -name "*.csv.gz" \) -print -quit | grep -q .; then
+    return 0
+  fi
+  return 1
+}
+
+if ! has_candle_csvs "$RAW_INPUT"; then
+  echo "No Dukascopy candle CSVs found at $RAW_INPUT; downloading $DOWNLOAD_UNIVERSE $DOWNLOAD_SIDE data for [$DOWNLOAD_START, $DOWNLOAD_END)."
+  python3 data/dukascopy_fx_m1/download_dukascopy_fx_m1.py \
+    --start "$DOWNLOAD_START" \
+    --end "$DOWNLOAD_END" \
+    --universe "$DOWNLOAD_UNIVERSE" \
+    --out "$DOWNLOAD_OUT" \
+    --side "$DOWNLOAD_SIDE" \
+    --max-workers "${DUKASCOPY_DEMO_MAX_WORKERS:-4}" \
+    --rps "${DUKASCOPY_DEMO_RPS:-2}"
+fi
 
 # Reuse the same dataset preparation path as csv_mc_int_demo.sh, with a
 # Dukascopy-specific float-to-integer conditioning step in front.
