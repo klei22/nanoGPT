@@ -367,7 +367,20 @@ class Trainer:
                 self.model_args[k] = altered_model_args[k]
 
             self.load_data()
-            gptconf = GPTConfig(**self.model_args)
+            writer_keys = ("writer_attn_rank", "writer_mlp_rank", "writer_vocab_rank")
+            converting_dense_writer_subspaces = any(
+                int(self.model_args.get(k, 0) or 0) > 0
+                and int(checkpoint_model_args.get(k, 0) or 0) == 0
+                for k in writer_keys
+            )
+            build_model_args = dict(self.model_args)
+            if converting_dense_writer_subspaces:
+                # Load the dense checkpoint first, then factor writer modules before
+                # optimizer creation. Parameter names/shapes change, so optimizer
+                # state from the dense checkpoint must not be reused.
+                for k in writer_keys:
+                    build_model_args[k] = 0
+            gptconf = GPTConfig(**build_model_args)
             self.model = GPT(gptconf)
 
             ## TODO: Add ability here to swap WTE factors.
@@ -376,6 +389,18 @@ class Trainer:
                 if k.startswith('_orig_mod.'):
                     state_dict[k[len('_orig_mod.'):]] = state_dict.pop(k)
             self.model.load_state_dict(state_dict)
+            if converting_dense_writer_subspaces:
+                for k in writer_keys:
+                    setattr(self.model.config, k, self.model_args[k])
+                self.model.convert_writer_subspaces()
+                if self.model_args.get("writer_vocab_rank", 0):
+                    from writer_subspace import SubspaceVocab
+                    self.model.transformer.wte = SubspaceVocab.from_embedding(
+                        self.model.transformer.wte,
+                        self.model_args["writer_vocab_rank"],
+                        bits=self.model_args.get("writer_coeff_bits", 16),
+                    )
+                    self.model.lm_head = None
             self.best_val_loss = checkpoint['best_val_loss']
             self.best_iter = checkpoint['best_iter']
             self.best_tokens = checkpoint.get('best_tokens', 0)
@@ -395,12 +420,16 @@ class Trainer:
 
             self.scheduler = self.create_scheduler()
 
-            if "optimizer" in checkpoint and checkpoint["optimizer"] is not None:
+            if converting_dense_writer_subspaces:
+                print("Writer-subspace conversion changed parameter names/shapes; not reusing dense optimizer or scheduler state.")
+            elif "optimizer" in checkpoint and checkpoint["optimizer"] is not None:
                 self.optimizer.load_state_dict(checkpoint["optimizer"])
             else:
                 print("Warning: No optimizer state found in checkpoint. Using newly initialized optimizer.")
 
-            if "scheduler" in checkpoint and checkpoint["scheduler"] is not None and self.scheduler is not None:
+            if converting_dense_writer_subspaces:
+                pass
+            elif "scheduler" in checkpoint and checkpoint["scheduler"] is not None and self.scheduler is not None:
                 self.scheduler.load_state_dict(checkpoint["scheduler"])
             else:
                 print("Warning: No scheduler state found in checkpoint or scheduler is None. Using newly initialized scheduler.")

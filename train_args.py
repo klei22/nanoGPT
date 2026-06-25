@@ -1417,6 +1417,12 @@ def parse_args():
     # ───────────────────────────────────────────────────────────────────────
 
 
+    # Writer-subspace factorization
+    model_group.add_argument("--writer_attn_rank", type=int, default=0, help="Low-rank writer-subspace rank for block.attn.c_proj (0 disables).")
+    model_group.add_argument("--writer_mlp_rank", type=int, default=0, help="Low-rank writer-subspace rank for block.mlp.c_proj (0 disables).")
+    model_group.add_argument("--writer_vocab_rank", type=int, default=0, help="Low-rank tied vocabulary writer rank (0 disables).")
+    model_group.add_argument("--writer_coeff_bits", type=int, default=16, help="Fake-quantization bits for writer-subspace coefficients; 16 disables quantization.")
+
     # Gradient Checkpointing
     model_group.add_argument('--use_gradient_checkpointing', default=False, action=argparse.BooleanOptionalAction, help="Memory efficient training, but takes longer time to train due to trading compute time for memory efficiency. For best memory tradeoff omit the --compile flag. For medium memory tradeoff add --compile.")
     model_group.add_argument('--recompute_backward_pass', default=False, action=argparse.BooleanOptionalAction, help="Recomputes for the backward pass, must use with --use_gradient_checkpointing")
