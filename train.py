@@ -1112,6 +1112,20 @@ class Trainer:
         elif self.args.training_mode == "multicontext":
             for i, dataset in enumerate(self.args.multicontext_datasets):
                 out['datasets'][dataset] = {}
+            target_metric_dataset = (
+                self.args.dataset
+                if self.args.dataset in self.args.multicontext_datasets
+                else None
+            )
+            target_metric_idx = (
+                self.args.multicontext_datasets.index(target_metric_dataset)
+                if target_metric_dataset is not None
+                else None
+            )
+            top1_probs, top1_corrects, target_ranks = [], [], []
+            target_probs, target_left_probs, left_inclusive_probs = [], [], []
+            ln_f_cosines = []
+            rankme_vectors = [] if compute_rankme else None
             # multicontext training
             for split in ['train', 'val']:
                 losses = {}
@@ -1127,6 +1141,12 @@ class Trainer:
                 for k in range(self.args.eval_iters):
                     x_dict, y_dict, dataset_list = self.get_batch(split)
 
+                    ln_f_out: list[torch.Tensor] = []
+                    handle = None
+                    if split == 'val' and target_metric_idx is not None:
+                        handle = self.model.transformer.ln_f.register_forward_hook(
+                            lambda _m, _i, o: ln_f_out.append(o.detach())
+                        )
                     with self.ctx:
                         logits, loss_list = self.model(
                             None,
@@ -1135,8 +1155,38 @@ class Trainer:
                             iter_num=self.iter_num,
                             loss_fn=self.loss_fn,
                         )
+                    if handle is not None:
+                        handle.remove()
                     for i in range(len(self.args.multicontext_datasets)):
                         losses[f"{i}"][k] = loss_list[i]
+
+                    if split == 'val' and target_metric_idx is not None:
+                        target_dataset_name = dataset_list[target_metric_idx]
+                        target_logits = logits[target_metric_idx]
+                        Y = y_dict[target_dataset_name]
+                        probs = F.softmax(target_logits, dim=-1)
+                        top1_prob, top1_idx = probs.max(dim=-1)
+                        top1_probs.append(top1_prob)
+                        top1_corrects.append((top1_idx == Y).float())
+                        gold_logits = target_logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                        ranks = (target_logits > gold_logits.unsqueeze(-1)).sum(dim=-1) + 1
+                        target_ranks.append(ranks.float())
+                        target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
+                        target_probs.append(target_prob)
+                        left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
+                        target_left_probs.append(left_prob)
+                        left_inclusive_probs.append(left_prob + target_prob)
+                        if ln_f_out:
+                            lm_head = self.model.transformer[f'lm_head_{target_metric_idx}']
+                            target_vecs = lm_head.weight[Y]
+                            cos = F.cosine_similarity(
+                                ln_f_out[0].float(), target_vecs.float(), dim=-1
+                            )
+                            ln_f_cosines.append(cos)
+                            if compute_rankme:
+                                rankme_vectors.append(
+                                    ln_f_out[0][:, -1, :].float().detach().cpu()
+                                )
 
                 for i, dataset in enumerate(self.args.multicontext_datasets):
                     means[f"{i}"] = losses[f"{i}"].mean()
@@ -1152,7 +1202,31 @@ class Trainer:
                 # general train and val losses, as well as std dev
                 out[split] = mean_avg / len(self.args.multicontext_datasets)
                 out[split + "_std"] = loss_std / len(self.args.multicontext_datasets)
-            if compute_rankme:
+            if target_metric_dataset is not None:
+                metric_values = {
+                    'top1_prob': torch.cat(top1_probs).mean() if top1_probs else torch.tensor(float('nan')),
+                    'top1_correct': torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan')),
+                    'target_rank': torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan')),
+                    'target_left_prob': torch.cat(target_left_probs).mean() if target_left_probs else torch.tensor(float('nan')),
+                    'target_prob': torch.cat(target_probs).mean() if target_probs else torch.tensor(float('nan')),
+                    'target_rank_95': torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan')),
+                    'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
+                    'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
+                    'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
+                }
+                out.update(metric_values)
+                out['datasets'][target_metric_dataset].update(metric_values)
+                if compute_rankme:
+                    rankme = torch.tensor(float('nan'))
+                    areq = torch.tensor(float('nan'))
+                    if rankme_vectors:
+                        features = torch.cat(rankme_vectors, dim=0)
+                        rankme, areq = self._compute_rankme_areq(features)
+                    out['rankme'] = rankme
+                    out['areq'] = areq
+                    out['datasets'][target_metric_dataset]['rankme'] = rankme
+                    out['datasets'][target_metric_dataset]['areq'] = areq
+            elif compute_rankme:
                 out['rankme'] = torch.tensor(float('nan'))
                 out['areq'] = torch.tensor(float('nan'))
         else:
