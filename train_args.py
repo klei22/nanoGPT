@@ -201,6 +201,22 @@ def parse_args():
         help='Path to a teacher checkpoint (ckpt.pt) for knowledge distillation.',
     )
     training_group.add_argument(
+        '--distillation_teacher_logits',
+        type=str,
+        default=None,
+        help=(
+            'Path to an offline teacher logits memmap (.bin) aligned with the training tokens. '
+            'When provided, the teacher checkpoint is not required.'
+        ),
+    )
+    training_group.add_argument(
+        '--distillation_teacher_logits_dtype',
+        type=str,
+        default='float16',
+        choices=['float16', 'float32'],
+        help='Data type used to store offline teacher logits.',
+    )
+    training_group.add_argument(
         '--distillation_loss',
         type=str,
         default=None,
