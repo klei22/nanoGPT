@@ -140,6 +140,7 @@ def test_export_buttons_exist_for_tables_and_graphs() -> None:
         "exportPairwiseBinTokensCsv",
         "exportMinDistancePlotPng",
         "exportMinDistancesCsv",
+        "exportMinDistanceHighlightCsv",
     ]:
         assert f'id="{export_id}"' in html
         assert export_id in js
@@ -158,12 +159,19 @@ def test_minimum_angular_distance_ui_exists() -> None:
     assert 'id="minDistanceBlockSize"' in html
     assert 'id="minDistanceComputeDevice"' in html
     assert 'id="minDistanceSort"' in html
+    assert 'id="minDistanceHighlightStart"' in html
+    assert 'id="minDistanceHighlightEnd"' in html
+    assert 'id="minDistanceHighlightIds"' in html
+    assert 'id="clearMinDistanceHighlight"' in html
+    assert 'id="exportMinDistanceHighlightCsv"' in html
     assert 'id="minDistancePlot"' in html
     assert 'id="minDistancesTable"' in html
     assert "Closest non-self token for every token" in html
     assert "fetchJson(`/api/min-angular-distances?" in js
     assert "computeMinAngularDistances" in js
     assert "drawMinDistancePlot" in js
+    assert "getMinDistanceHighlightSpec" in js
+    assert "exportHighlightedMinDistanceRowsCsv" in js
     assert "renderMinDistanceTable" in js
     assert "resetMinDistancesOutput" in js
     assert "min-distance-scroll" in css

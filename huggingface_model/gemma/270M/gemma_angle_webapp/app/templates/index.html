@@ -319,11 +319,29 @@
       <div id="minDistancesOutput" class="output muted">Load a model, then compute each token’s closest non-self angular neighbor. CUDA is used automatically when available.</div>
 
       <div id="minDistancePlotCard" class="plot-card hidden">
+        <div class="analysis-controls min-distance-highlight-controls">
+          <div>
+            <label for="minDistanceHighlightStart">Highlight token ID start</label>
+            <input id="minDistanceHighlightStart" type="number" min="0" step="1" placeholder="e.g. 100" />
+          </div>
+          <div>
+            <label for="minDistanceHighlightEnd">Highlight token ID end</label>
+            <input id="minDistanceHighlightEnd" type="number" min="0" step="1" placeholder="e.g. 199" />
+          </div>
+          <div>
+            <label for="minDistanceHighlightIds">Highlight exact token IDs</label>
+            <input id="minDistanceHighlightIds" type="text" placeholder="e.g. 42, 1001, 50256" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="analysis-checkbox">
+            <button id="clearMinDistanceHighlight" type="button" class="secondary">Clear highlight</button>
+          </div>
+        </div>
         <canvas id="minDistancePlot" width="1100" height="460" aria-label="Minimum angular distance sorted scatter plot"></canvas>
         <div class="export-actions">
           <button id="exportMinDistancePlotPng" type="button" class="export-button">Export graph PNG</button>
+          <button id="exportMinDistanceHighlightCsv" type="button" class="export-button hidden">Export highlighted rows CSV</button>
         </div>
-        <p id="minDistancePlotCaption" class="selection">Y axis is the minimum non-self angle. X axis is rank after sorting tokens from lowest to highest minimum angle.</p>
+        <p id="minDistancePlotCaption" class="selection">Y axis is the minimum non-self angle. X axis is rank after sorting tokens from lowest to highest minimum angle. Enter a token ID range or comma-separated token IDs above to overlay matching tokens as orange dots.</p>
       </div>
 
       <div class="export-actions">
