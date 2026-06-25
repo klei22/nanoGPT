@@ -684,6 +684,7 @@ def parse_args():
             "swiglu",
             "dual_path",
             "dual_path_swiglu",
+            "quad_path_magnitude_swiglu",
             "identity",
             ]
 
