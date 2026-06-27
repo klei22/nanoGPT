@@ -92,8 +92,25 @@ Demo download overrides:
 - `DUKASCOPY_DEMO_MAX_WORKERS` (default `4`)
 - `DUKASCOPY_DEMO_RPS` (default `2`)
 
+## 4. Prediction-vs-reality viewer
+
+The demo now finishes by calling `data/timeseries_viewer/generate_timeseries_comparison.py`.
+That viewer withholds a tail slice from `data/dukascopy_fx_m1/input.csv`, uses the
+preceding rows as the inference prompt, samples every requested random seed at
+`top_k=1` and `top_k=5`, and writes a self-contained HTML graph comparing those
+forecasts against the held-out ground truth.
+
+Viewer overrides:
+
+- `DUKASCOPY_VIEWER_SEEDS` (default `1337 1338 1339`)
+- `DUKASCOPY_VIEWER_TOP_K` (default `1 5`)
+- `DUKASCOPY_VIEWER_HOLDOUT_ROWS` (default `128`)
+- `DUKASCOPY_VIEWER_PROMPT_ROWS` (default `512`)
+- `DUKASCOPY_VIEWER_WORK_DIR` (default `$DUKASCOPY_MC_OUT_DIR/timeseries_viewer`)
+
 ## Source and license
 
 Raw candle data is downloaded from Dukascopy's public historical data feed:
 <https://datafeed.dukascopy.com/datafeed>. Review Dukascopy's terms before
 redistributing downloaded data.
+

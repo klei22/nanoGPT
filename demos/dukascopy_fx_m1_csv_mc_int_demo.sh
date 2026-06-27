@@ -102,3 +102,19 @@ python3 sample.py \
   --top_k 5 \
   --compile \
   --num_samples 1
+
+read -r -a VIEWER_SEEDS <<<"${DUKASCOPY_VIEWER_SEEDS:-1337 1338 1339}"
+read -r -a VIEWER_TOP_K <<<"${DUKASCOPY_VIEWER_TOP_K:-1 5}"
+
+python3 data/timeseries_viewer/generate_timeseries_comparison.py \
+  --input_csv "$CSV_INPUT" \
+  --manifest "data/$OUTPUT_ROOT/manifest.json" \
+  --checkpoint_dir "$OUT_DIR" \
+  --work_dir "${DUKASCOPY_VIEWER_WORK_DIR:-$OUT_DIR/timeseries_viewer}" \
+  --holdout_rows "${DUKASCOPY_VIEWER_HOLDOUT_ROWS:-128}" \
+  --prompt_rows "${DUKASCOPY_VIEWER_PROMPT_ROWS:-512}" \
+  --seeds "${VIEWER_SEEDS[@]}" \
+  --top_k "${VIEWER_TOP_K[@]}" \
+  --device "$DEVICE" \
+  --dtype "$DTYPE" \
+  --compile
