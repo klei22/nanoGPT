@@ -225,6 +225,36 @@ def parse_args():
         default=1e-8,
         help='Numerical stability epsilon for distillation losses.',
     )
+    training_group.add_argument(
+        '--distillation_direction_weight',
+        type=float,
+        default=0.0,
+        help='Weight for matching the teacher final post-RMSNorm hidden direction.',
+    )
+    training_group.add_argument(
+        '--distillation_centered_logit_weight',
+        type=float,
+        default=0.0,
+        help='Weight for centered teacher/student logit MSE.',
+    )
+    training_group.add_argument(
+        '--distillation_ce_weight_final',
+        type=float,
+        default=None,
+        help='If set, linearly anneal the hard-label CE loss multiplier from 1.0 to this value.',
+    )
+    training_group.add_argument(
+        '--distillation_ce_anneal_iters',
+        type=int,
+        default=None,
+        help='Number of iterations for --distillation_ce_weight_final annealing; defaults to max_iters.',
+    )
+    training_group.add_argument(
+        '--distillation_entropy_aware_ce',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Scale hard-label CE by normalized teacher confidence, reducing sampled-token noise on high-entropy contexts.',
+    )
 
     # Sample args
     training_group.add_argument('--max_sample_tokens', default=None, type=int, help="If set, maximum number of tokens to sample and print after each validation loss")
