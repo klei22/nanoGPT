@@ -684,6 +684,8 @@ def parse_args():
             "swiglu",
             "dual_path",
             "dual_path_swiglu",
+            "cayley",
+            "cayley_mixture",
             "identity",
             ]
 
@@ -693,6 +695,11 @@ def parse_args():
     model_group.add_argument("--mlp_size", type=int, default=None, help="If not None, is used instead of mlp_expansion_factor")
     model_group.add_argument('--mlp_cproj_scale', default=1.0, type=float, help="Divide MLP down projection outputs by this value")
     model_group.add_argument('--mlp_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction, help="L2 normalize MLP activation vectors before down projection")
+    model_group.add_argument('--cayley_mode', type=str, default="exact", choices=["exact", "ns"], help="Cayley map backend for Cayley attention/MLP variants")
+    model_group.add_argument('--cayley_ns_steps', type=int, default=8, help="Newton-Schulz steps for cayley_mode=ns")
+    model_group.add_argument('--cayley_init_scale', type=float, default=1e-3, help="Initialization scale for Cayley skew parameters")
+    model_group.add_argument('--cayley_max_skew_norm', type=float, default=None, help="Optional smooth norm cap for Cayley skew parameters")
+    model_group.add_argument('--cayley_mixture_size', type=int, default=4, help="Number of learned rotations in cayley_mixture MLP")
 
     ## KAN Options
     model_group.add_argument("--kan_poly_order", type=int, default=3, help="Order of KAN non-linearity")
@@ -978,6 +985,7 @@ def parse_args():
     model_group.add_argument('--attn_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction,
                              help="L2 normalize attention outputs before c_proj (Infinite Attention)")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
+    model_group.add_argument('--infinite_cayley_value', default=False, action=argparse.BooleanOptionalAction, help='Use CayleyLinear for Infinite Attention Wv and make Wo/c_proj an identity; requires n_v_head_dim == n_embd and no head concatenation.')
 
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")

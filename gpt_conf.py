@@ -203,6 +203,12 @@ class GPTConfig:
 
     # MLP Options
     use_parallel_mlp: bool = False
+    cayley_mode: str = "exact"
+    cayley_ns_steps: int = 8
+    cayley_init_scale: float = 1e-3
+    cayley_max_skew_norm: float | None = None
+    cayley_mixture_size: int = 4
+    infinite_cayley_value: bool = False
     mlp_variant: str = "mlp"
     mlp_expansion_factor: int = 4
     mlp_size: int = None
