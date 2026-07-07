@@ -2228,9 +2228,9 @@ class Trainer:
 
                         if getattr(self.args, "distillation_ce_weight_final", None) is not None:
                             anneal_iters = self.args.distillation_ce_anneal_iters or self.args.max_iters
-                            progress = min(max(self.iter_num / max(1, anneal_iters), 0.0), 1.0)
+                            ce_progress = min(max(self.iter_num / max(1, anneal_iters), 0.0), 1.0)
                             final_weight = float(self.args.distillation_ce_weight_final)
-                            ce_weight = 1.0 + progress * (final_weight - 1.0)
+                            ce_weight = 1.0 + ce_progress * (final_weight - 1.0)
                             if getattr(self.args, "distillation_entropy_aware_ce", False):
                                 with torch.no_grad():
                                     teacher_probs = torch.softmax(teacher_logits.float(), dim=-1)
