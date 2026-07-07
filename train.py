@@ -25,7 +25,11 @@ from train_variations.optimizer_variants import (
 )
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 from train_variations.loss_variants import build_loss_function
-from train_variations.distillation_loss_variants import build_distillation_loss
+from train_variations.distillation_loss_variants import (
+    build_distillation_loss,
+    centered_logit_mse_loss,
+    direction_cosine_loss,
+)
 
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
 from utils.progress_bar import format_progress_metrics
@@ -78,6 +82,7 @@ import numpy as np
 # Torch
 import torch
 import torch.onnx
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -209,6 +214,7 @@ class Trainer:
         self.distillation_weight = getattr(self.args, "distillation_weight", 1.0)
         self.teacher_model = None
         self.latest_distillation_loss = float('nan')
+        self.distillation_hidden_adapter = None
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
 
@@ -541,6 +547,16 @@ class Trainer:
             param.requires_grad_(False)
 
         self.teacher_model = teacher_model
+
+        student_dim = int(self.model.config.n_embd_wte or self.model.config.n_embd)
+        teacher_dim = int(teacher_model.config.n_embd_wte or teacher_model.config.n_embd)
+        if float(getattr(self.args, "distillation_direction_weight", 0.0)) > 0.0 and student_dim != teacher_dim:
+            self.distillation_hidden_adapter = nn.Linear(student_dim, teacher_dim, bias=False).to(self.device)
+            if self.optimizer is not None:
+                self.optimizer.add_param_group({"params": self.distillation_hidden_adapter.parameters()})
+        else:
+            self.distillation_hidden_adapter = nn.Identity()
+
         if self.master_process:
             print(f"Loaded teacher checkpoint from {expanded}")
 
@@ -2154,13 +2170,28 @@ class Trainer:
                             loss = sum(training_losses) / len(training_losses)
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(
-                                self.X,
-                                targets=self.Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
+                            need_distill_hidden = (
+                                self.teacher_model is not None
+                                and float(getattr(self.args, "distillation_direction_weight", 0.0)) > 0.0
                             )
+                            if need_distill_hidden:
+                                logits, loss, student_hidden = self.model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                    return_hidden=True,
+                                )
+                            else:
+                                student_hidden = None
+                                logits, loss = self.model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                         with torch.no_grad():
@@ -2176,19 +2207,56 @@ class Trainer:
                         and self.args.training_mode != 'multicontext'
                     ):
                         with torch.no_grad():
-                            teacher_logits, _ = self.teacher_model(
-                                self.X,
-                                targets=self.Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=None,
-                            )
+                            if student_hidden is not None:
+                                teacher_logits, _, teacher_hidden = self.teacher_model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=None,
+                                    return_hidden=True,
+                                )
+                            else:
+                                teacher_hidden = None
+                                teacher_logits, _ = self.teacher_model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=None,
+                                )
+
+                        if getattr(self.args, "distillation_ce_weight_final", None) is not None:
+                            anneal_iters = self.args.distillation_ce_anneal_iters or self.args.max_iters
+                            ce_progress = min(max(self.iter_num / max(1, anneal_iters), 0.0), 1.0)
+                            final_weight = float(self.args.distillation_ce_weight_final)
+                            ce_weight = 1.0 + ce_progress * (final_weight - 1.0)
+                            if getattr(self.args, "distillation_entropy_aware_ce", False):
+                                with torch.no_grad():
+                                    teacher_probs = torch.softmax(teacher_logits.float(), dim=-1)
+                                    entropy = -(teacher_probs * torch.log(teacher_probs + 1e-9)).sum(dim=-1)
+                                    confidence = 1.0 - entropy / math.log(teacher_logits.size(-1))
+                                    valid = self.Y != -1
+                                    ce_weight = ce_weight * float(confidence[valid].mean().item() if valid.any() else 0.0)
+                            loss = loss * ce_weight
+
                         distill_component = self.distillation_loss_fn(
                             logits,
                             teacher_logits,
                             self.Y,
                             iter_num=self.iter_num,
                         )
+                        direction_weight = float(getattr(self.args, "distillation_direction_weight", 0.0))
+                        if direction_weight > 0.0 and student_hidden is not None and teacher_hidden is not None:
+                            projected_hidden = self.distillation_hidden_adapter(student_hidden)
+                            distill_component = distill_component + direction_weight * direction_cosine_loss(
+                                projected_hidden, teacher_hidden, self.Y, eps=self.args.distillation_eps
+                            )
+                        centered_weight = float(getattr(self.args, "distillation_centered_logit_weight", 0.0))
+                        if centered_weight > 0.0:
+                            distill_component = distill_component + centered_weight * centered_logit_mse_loss(
+                                logits, teacher_logits, self.Y, temperature=self.args.distillation_temperature, eps=self.args.distillation_eps
+                            )
                         distill_component = distill_component.to(loss.dtype)
                         loss = loss + self.distillation_weight * distill_component
 

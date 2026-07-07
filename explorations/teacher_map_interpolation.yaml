@@ -1,0 +1,86 @@
+# explorations/teacher_map_interpolation.yaml
+# Compare next-token prediction, conventional KL distillation, and deterministic
+# teacher-map interpolation objectives. Run without --use_timestamp so the
+# student jobs can find the parent checkpoint at the deterministic path below:
+#   python3 optimization_and_search/run_experiments.py -c explorations/teacher_map_interpolation.yaml -o out
+---
+named_static_groups:
+  - named_group: teacher
+    named_group_settings:
+      n_layer: [8]
+      n_head: [8]
+      n_embd: [512]
+      max_iters: [20000]
+      always_save_checkpoint: [true]
+      only_save_checkpoint_at_end: [true]
+      never_save_checkpoint: [false]
+
+  - named_group: student
+    named_group_settings:
+      n_layer: [4]
+      n_head: [4]
+      n_embd: [256]
+      max_iters: [5000]
+      always_save_checkpoint: [false]
+      only_save_checkpoint_at_end: [true]
+      never_save_checkpoint: [false]
+
+  - named_group: parent_ckpt
+    named_group_settings:
+      distillation_teacher_ckpt: ["out/teacher_map_interpolation-teacher/ckpt.pt"]
+      distillation_temperature: [2.0]
+
+common_group:
+  dataset: ["minipile"]
+  batch_size: [16]
+  block_size: [256]
+  eval_interval: [500]
+  eval_iters: [100]
+  learning_rate: [0.0006]
+  lr_decay_iters: [5000]
+  warmup_iters: [100]
+  compile: [false]
+  tensorboard_log: [true]
+  csv_log: [true]
+
+parameter_groups:
+  # Long trained larger parent to distill from.
+  - named_group_static: ["teacher"]
+
+  # Baseline: conventional next-token prediction.
+  - named_group_static: ["student"]
+
+  # Existing supported conventional distillation baseline.
+  - named_group_static: ["student", "parent_ckpt"]
+    distillation_loss: ["kl_divergence"]
+    distillation_weight: [1.0]
+
+  # Deterministic teacher-map interpolation variants.
+  - named_group_static: ["student", "parent_ckpt"]
+    distillation_loss: ["kl_divergence"]
+    distillation_weight: [1.0]
+    distillation_ce_weight_final: [0.0]
+    distillation_ce_anneal_iters: [4000]
+    distillation_direction_weight: [0.0, 1.0]
+    distillation_centered_logit_weight: [0.0, 0.1]
+
+  # Hidden-direction-only ablation. Keeps a zero-weight KL selector only to load
+  # the teacher and activate the distillation path.
+  - named_group_static: ["student", "parent_ckpt"]
+    distillation_loss: ["none"]
+    distillation_weight: [1.0]
+    distillation_ce_weight_final: [0.0]
+    distillation_ce_anneal_iters: [4000]
+    distillation_direction_weight: [1.0]
+    distillation_centered_logit_weight: [0.0]
+
+  # Entropy-aware CE anchor: sampled-token CE is strongest where the teacher is
+  # confident and fades on high-entropy contexts.
+  - named_group_static: ["student", "parent_ckpt"]
+    distillation_loss: ["kl_divergence"]
+    distillation_weight: [1.0]
+    distillation_ce_weight_final: [0.05]
+    distillation_ce_anneal_iters: [4000]
+    distillation_entropy_aware_ce: [true]
+    distillation_direction_weight: [1.0]
+    distillation_centered_logit_weight: [0.1]

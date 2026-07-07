@@ -176,12 +176,71 @@ def logit_mse_loss(
     return mean.to(student_logits.dtype)
 
 
+def zero_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    targets: Optional[torch.Tensor],
+    *,
+    iter_num: int | None = None,
+    temperature: float = 1.0,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Zero-valued placeholder for hidden/vector-only teacher-map ablations."""
+
+    return student_logits.new_zeros(())
+
+
+def centered_logit_mse_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    targets: Optional[torch.Tensor],
+    *,
+    iter_num: int | None = None,
+    temperature: float = 1.0,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Mean-squared-error between centered temperature-scaled logits."""
+
+    student_scaled = student_logits.float() / temperature
+    teacher_scaled = teacher_logits.float() / temperature
+    student_centered = student_scaled - student_scaled.mean(dim=-1, keepdim=True)
+    teacher_centered = teacher_scaled - teacher_scaled.mean(dim=-1, keepdim=True)
+    token_mse = F.mse_loss(student_centered, teacher_centered, reduction="none").mean(dim=-1)
+    mean = _masked_mean(token_mse, targets)
+    if mean is None:
+        return student_logits.new_zeros(())
+    return mean.to(student_logits.dtype)
+
+
+def direction_cosine_loss(
+    student_hidden: torch.Tensor,
+    teacher_hidden: torch.Tensor,
+    targets: Optional[torch.Tensor],
+    *,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Final-hidden-direction loss: 1 - cosine(student, teacher)."""
+
+    token_loss = 1.0 - F.cosine_similarity(
+        student_hidden.float(),
+        teacher_hidden.float(),
+        dim=-1,
+        eps=eps,
+    )
+    mean = _masked_mean(token_loss, targets)
+    if mean is None:
+        return student_hidden.new_zeros(())
+    return mean.to(student_hidden.dtype)
+
+
 DISTILLATION_LOSS_VARIANTS: Dict[str, Callable[..., torch.Tensor]] = {
+    "none": zero_loss,
     "kl_divergence": kl_divergence_loss,
     "reverse_kl": reverse_kl_loss,
     "symmetric_kl": symmetric_kl_loss,
     "jensen_shannon": jensen_shannon_loss,
     "logit_mse": logit_mse_loss,
+    "centered_logit_mse": centered_logit_mse_loss,
 }
 
 
@@ -222,6 +281,9 @@ def build_distillation_loss(args) -> Optional[Callable[[torch.Tensor, torch.Tens
 
 __all__ = [
     "DISTILLATION_LOSS_VARIANTS",
+    "zero_loss",
+    "centered_logit_mse_loss",
+    "direction_cosine_loss",
     "build_distillation_loss",
 ]
 
