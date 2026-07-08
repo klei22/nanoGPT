@@ -253,8 +253,22 @@ def parse_args():
     training_group.add_argument(
         '--training_mode',
         default='single',
-        choices=['single', 'multidataset', 'multicontext'],
-        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously."
+        choices=['single', 'multidataset', 'multicontext', 'multi_token'],
+        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously. 'multi_token' predicts multiple future tokens per step."
+    )
+
+    training_group.add_argument(
+        '--multi_token_prediction_steps',
+        type=int,
+        default=1,
+        help='Number of sequential prediction rounds to run in multi_token mode.',
+    )
+    training_group.add_argument(
+        '--multi_token_loss_reduction',
+        type=str,
+        default='average',
+        choices=['average', 'linear'],
+        help="How to combine per-step losses in multi_token mode. 'average' uses a mean; 'linear' applies 0..N-1 weights.",
     )
 
     # Data args
