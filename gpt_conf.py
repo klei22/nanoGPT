@@ -84,6 +84,10 @@ class GPTConfig:
     mla_latent_dim: int | None = None   # d_c  (proj dimension of the shared latent)
     mla_rotary_dim: int       = 32      # d_r  (# rotary channels per head)
 
+    orbital_theta_max_deg: float = 45.0
+    orbital_displacement_only: bool = False
+    orbital_signed_gate: bool = False
+
     use_mla_lobo: bool = False          # turns the feature on/off
     mla_lobo_init: float = 0.0          # log-space initial value (like flash_lobo_log_const)
 
