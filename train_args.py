@@ -849,6 +849,7 @@ def parse_args():
             "prelu",
             "relu",
             "relu_power",
+            "relu2line",
             "relu6",
             "rrelu",
             "disco",
@@ -880,6 +881,9 @@ def parse_args():
 
     ## ReLUPower
     model_group.add_argument("--relu_power", type=float, default=2.0)
+
+    ## ReLU2Line
+    model_group.add_argument("--relu2line_transition_point", type=float, default=None)
 
     ## Shifted Gelu
     model_group.add_argument("--shifted_gelu_learnable_shift",  type=bool, default=True, action=argparse.BooleanOptionalAction)
@@ -1272,6 +1276,7 @@ def parse_args():
         "polymax",
         "relumax",
         "relu2max",
+        "relu2linemax",
         "sigmoidmax",
         "vpolymax",
         "exppolymax",
@@ -1321,6 +1326,9 @@ def parse_args():
 
     ### ReLU2Max Options
     model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
+
+    ### ReLU2LineMax Options
+    model_group.add_argument("--relu2line_divisor", type=float, default=256.0)
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
