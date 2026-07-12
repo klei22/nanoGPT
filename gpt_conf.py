@@ -179,6 +179,15 @@ class GPTConfig:
     attn_cproj_scale: float = 1.0
     attn_post_act_l2_norm: bool = False
 
+    # Triadic head hypersphere rotation attention
+    trirot_n_triplets: int | None = None
+    trirot_output_mode: str = "replace_a"
+    trirot_theta_max_deg: float = 30.0
+    trirot_angle_gain_init: float = 0.0
+    trirot_controller_rmsnorm: bool = True
+    trirot_eps: float = 1e-6
+    trirot_require_distinct_values: bool = False
+
     # QK Norm Options
     use_qk_norm: bool = False
     use_qk_norm_scale: bool = False

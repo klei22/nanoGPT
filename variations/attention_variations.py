@@ -278,7 +278,7 @@ class CausalSelfAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, return_head_outputs: bool = False):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
@@ -447,6 +447,10 @@ class CausalSelfAttention(nn.Module):
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_pv_mult_output", y, num_bits, quant_method, iter_num)
+
+        # Geometry-aware wrappers can request independently attended heads before W_O.
+        if return_head_outputs:
+            return y
 
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
@@ -1534,6 +1538,148 @@ class Co4Attention(nn.Module):
         y = self.resid_dropout(self.out_proj(y))
         return y
 
+
+###############################################################################
+# Triadic head hypersphere rotation
+###############################################################################
+
+
+def skew_axis_rotate(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    C: torch.Tensor,
+    theta: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Rotate A around axis B in the C-selected plane without forming matrices.
+
+    The rank-two skew generator's Cayley transform preserves ||A|| and A.B.
+    Degenerate geometries smoothly collapse to the identity.
+    """
+    if A.shape != B.shape or A.shape != C.shape:
+        raise ValueError("A, B, and C must have identical shapes")
+    if A.size(-1) < 3:
+        raise ValueError("triadic_hyperrot requires head_dim >= 3")
+
+    out_dtype = A.dtype
+    work_dtype = torch.float32 if A.dtype in (torch.float16, torch.bfloat16) else A.dtype
+    a = A.to(work_dtype)
+    b = B.to(work_dtype)
+    c = C.to(work_dtype)
+    angle = theta.to(work_dtype)
+
+    bb = (b * b).sum(dim=-1, keepdim=True)
+    u = bb * a - (a * b).sum(dim=-1, keepdim=True) * b
+    v = bb * c - (c * b).sum(dim=-1, keepdim=True) * b
+
+    eps_sq = eps * eps
+    u_bar = u * torch.rsqrt((u * u).sum(dim=-1, keepdim=True) + eps_sq)
+    v_bar = v * torch.rsqrt((v * v).sum(dim=-1, keepdim=True) + eps_sq)
+
+    uu = (u_bar * u_bar).sum(dim=-1, keepdim=True)
+    vv = (v_bar * v_bar).sum(dim=-1, keepdim=True)
+    uv = (u_bar * v_bar).sum(dim=-1, keepdim=True)
+    omega_sq = (uu * vv - uv * uv).clamp_min(0.0)
+    generator_denom = torch.sqrt(omega_sq + eps_sq)
+
+    def apply_generator(x: torch.Tensor) -> torch.Tensor:
+        sx = v_bar * (u_bar * x).sum(dim=-1, keepdim=True) - u_bar * (v_bar * x).sum(dim=-1, keepdim=True)
+        return sx / generator_denom
+
+    ka = apply_generator(a)
+    k2a = apply_generator(ka)
+
+    kappa_sq = omega_sq / (omega_sq + eps_sq)
+    half_tan = torch.tan(0.5 * angle)
+    cayley_denom = 1.0 + half_tan.square() * kappa_sq
+    rotated = a + (2.0 * half_tan / cayley_denom) * ka + (2.0 * half_tan.square() / cayley_denom) * k2a
+    return rotated.to(out_dtype)
+
+
+class TriadicHeadHypersphereAttention(nn.Module):
+    """Rotate A-head outputs around B-head outputs in triples, controlled by C."""
+
+    def __init__(self, config, fire_pos_enc=None):
+        super().__init__()
+        self.inner = CausalSelfAttention(config, fire_pos_enc=fire_pos_enc)
+        self.n_head = self.inner.n_head
+        self.head_dim = self.inner.head_dim
+        self.n_embd = self.inner.n_embd
+
+        max_triplets = self.n_head // 3
+        requested_triplets = getattr(config, "trirot_n_triplets", None)
+        self.n_triplets = max_triplets if requested_triplets is None else int(requested_triplets)
+        if not 1 <= self.n_triplets <= max_triplets:
+            raise ValueError(f"trirot_n_triplets must be in [1, {max_triplets}] for n_head={self.n_head}")
+        if self.head_dim < 3:
+            raise ValueError("triadic_hyperrot requires head_dim >= 3")
+
+        self.n_grouped_heads = 3 * self.n_triplets
+        self.n_passthrough_heads = self.n_head - self.n_grouped_heads
+        self.output_mode = str(getattr(config, "trirot_output_mode", "replace_a"))
+        if self.output_mode not in {"replace_a", "triad_only"}:
+            raise ValueError("trirot_output_mode must be 'replace_a' or 'triad_only'")
+        if bool(getattr(config, "trirot_require_distinct_values", False)) and self.inner.n_kv_group != self.n_head:
+            raise ValueError("distinct A/B/C value heads require n_kv_group == n_head")
+
+        self.theta_max = math.radians(float(getattr(config, "trirot_theta_max_deg", 30.0)))
+        if not 0.0 <= self.theta_max < math.pi:
+            raise ValueError("trirot_theta_max_deg must be in [0, 180)")
+        self.eps = float(getattr(config, "trirot_eps", 1e-6))
+        self.controller_rmsnorm = bool(getattr(config, "trirot_controller_rmsnorm", True))
+
+        self.angle_direction = nn.Parameter(torch.empty(self.n_triplets, self.head_dim))
+        nn.init.normal_(self.angle_direction, mean=0.0, std=1.0 / math.sqrt(self.head_dim))
+        self.angle_gain = nn.Parameter(torch.full((self.n_triplets,), float(getattr(config, "trirot_angle_gain_init", 0.0))))
+
+        if self.output_mode == "triad_only":
+            output_width = (self.n_triplets + self.n_passthrough_heads) * self.head_dim
+            qdict = self.inner.quantization_attn_dict
+            self.inner.c_proj = self.inner.linear_variant_attn_proj(
+                output_width, self.n_embd, config,
+                qdict["quantize_linear_attn_proj_method"], qdict["quantize_linear_attn_proj_bits"],
+                bias=config.bias,
+            )
+
+    def _controller_parts(self, C: torch.Tensor):
+        direction = F.normalize(self.angle_direction.float(), dim=-1, eps=self.eps).to(dtype=C.dtype, device=C.device)
+        direction = direction.view(1, self.n_triplets, 1, self.head_dim)
+        plane_component = C - (C * direction).sum(dim=-1, keepdim=True) * direction
+        controller = C
+        if self.controller_rmsnorm:
+            inv_rms = torch.rsqrt(controller.float().square().mean(dim=-1, keepdim=True) + self.eps).to(dtype=controller.dtype)
+            controller = controller * inv_rms
+        signal = (controller * direction).sum(dim=-1, keepdim=True)
+        gain = self.angle_gain.to(dtype=controller.dtype, device=controller.device).view(1, self.n_triplets, 1, 1)
+        return plane_component, self.theta_max * torch.tanh(gain * signal)
+
+    def rotate_head_outputs(self, heads: torch.Tensor):
+        batch, n_head, time, head_dim = heads.shape
+        if n_head != self.n_head or head_dim != self.head_dim:
+            raise ValueError("unexpected head output shape")
+        grouped = heads[:, :self.n_grouped_heads].reshape(batch, self.n_triplets, 3, time, head_dim)
+        A, B_axis, C_control = grouped[:, :, 0], grouped[:, :, 1], grouped[:, :, 2]
+        C_plane, theta = self._controller_parts(C_control)
+        A_rot = skew_axis_rotate(A, B_axis, C_plane, theta, eps=self.eps)
+        passthrough = heads[:, self.n_grouped_heads:]
+        if self.output_mode == "replace_a":
+            transformed_grouped = torch.stack((A_rot, B_axis, C_control), dim=2).reshape(batch, self.n_grouped_heads, time, head_dim)
+            transformed = torch.cat((transformed_grouped, passthrough), dim=1)
+        else:
+            transformed = torch.cat((A_rot, passthrough), dim=1)
+        return transformed, theta
+
+    def forward(self, x, iter_num=None):
+        B, T, _ = x.shape
+        heads = self.inner(x, iter_num, return_head_outputs=True)
+        heads, _ = self.rotate_head_outputs(heads)
+        y = heads.transpose(1, 2).contiguous().view(B, T, -1)
+        y = self.inner.resid_dropout(self.inner.c_proj(y))
+        qdict = self.inner.quantization_attn_dict
+        if qdict["quantize_attn_act_output"]:
+            y = fake_quantize_act(self.inner, "attn_act_output", y, qdict["quantize_attn_act_output_bits"], qdict["activations_quant_method"], iter_num)
+        return y
+
 attention_dictionary = {
     "causal": CausalSelfAttention,
     "edgellm_asic_attn": EdgeLLMASICAttention,
@@ -1543,4 +1689,5 @@ attention_dictionary = {
     "infinite": InfiniteHeadAttention,
     "mla": MultiHeadLatentAttention,
     "co4": Co4Attention,
+    "triadic_hyperrot": TriadicHeadHypersphereAttention,
 }
