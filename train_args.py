@@ -913,6 +913,7 @@ def parse_args():
                           "infinite",
                           "mla",
                           "co4",
+                          "triadic_hyperrot",
                           ]
 
     model_group.add_argument(
@@ -957,6 +958,25 @@ def parse_args():
     model_group.add_argument("--mod_fn",       type=str, default="cooperation",
                         choices=["cooperation","tm1","tm2","tm3","tm4"],
                         help="which MOD transfer-function to use")
+
+    ## Triadic Hyperrotation Attention Variations
+    model_group.add_argument("--trirot_n_triplets", type=int, default=None,
+                             help="number of leading A/B/C head triples to rotate")
+    model_group.add_argument("--trirot_output_mode", type=str, default="replace_a",
+                             choices=["replace_a", "triad_only"],
+                             help="replace A in each triple or emit one rotated head per triple")
+    model_group.add_argument("--trirot_theta_max_deg", type=float, default=30.0,
+                             help="maximum absolute triadic hyperrotation angle in degrees")
+    model_group.add_argument("--trirot_angle_gain_init", type=float, default=0.0,
+                             help="initial scalar gain for C-derived angle controller")
+    model_group.add_argument("--trirot_controller_rmsnorm", default=True,
+                             action=argparse.BooleanOptionalAction,
+                             help="RMS-normalize C before reading the angle signal")
+    model_group.add_argument("--trirot_eps", type=float, default=1e-6,
+                             help="epsilon used by triadic hyperrotation geometry")
+    model_group.add_argument("--trirot_require_distinct_values", default=False,
+                             action=argparse.BooleanOptionalAction,
+                             help="require n_kv_group == n_head so A/B/C use distinct W_V projections")
 
     # LayerLists
     model_group.add_argument("--n_qk_head_dim_layerlist", nargs='+', action=LayerListAction, default=None)
