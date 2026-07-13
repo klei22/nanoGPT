@@ -1,4 +1,4 @@
-# Compare ReLU2Max against positive polynomial softmax variants under pre-norm.
+# Compare ReLU2Max against raw polynomial softmax variants under pre-norm.
 ---
 
 named_static_groups:
@@ -33,20 +33,20 @@ named_static_groups:
     use_concat_heads: [true]
 
 common_group:
-  dataset: ["minipile"]
-  eval_interval: [1000]
+  dataset: ["shakespeare_char"]
+  eval_interval: [500]
   eval_iters: [200]
-  max_iters: [10000]
+  max_iters: [3000]
   never_save_checkpoint: [true]
   compile: [true]
   use_gradient_checkpointing: [true]
   log_rankme: [true]
   log_areq: [true]
-  n_layer: [18]
-  n_embd: [768]
-  n_qk_head_dim: [200]
-  n_v_head_dim: [200]
-  n_head: [3]
+  n_layer: [5]
+  n_embd: [128]
+  n_qk_head_dim: [64]
+  n_v_head_dim: [64]
+  n_head: [2]
   n_kv_group: [1]
 
 parameter_groups:

@@ -578,11 +578,10 @@ class ReLU2Max(nn.Module):
 
 
 class PolynomialMax(nn.Module):
-    """Positive polynomial attention weighting, e.g. x^2 or x^3.
+    """Polynomial attention weighting, e.g. x^2 or x^3.
 
-    This is a generalized polynomial sibling of ReLU2Max. Inputs are first
-    passed through ReLU so attention weights stay non-negative, then raised to
-    ``polynomialmax_power`` and divided by ``polynomialmax_divisor``.
+    Applies the raw polynomial ``x ** polynomialmax_power`` and divides by
+    ``polynomialmax_divisor`` without clipping negative inputs first.
     """
     def __init__(self, config, dim=-1):
         super().__init__()
@@ -593,7 +592,7 @@ class PolynomialMax(nn.Module):
 
     def forward(self, x):
 
-        result = torch.relu(x) ** self.power / self.divisor
+        result = x ** self.power / self.divisor
 
         # divide by sequence length
         if self.div_by_seq_len:
