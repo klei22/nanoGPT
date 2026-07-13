@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import html
 import json
 import math
 from collections import defaultdict
@@ -147,7 +146,7 @@ def enrich_training_rows(
     for row in training_rows:
         merged = dict(row)
         token_row = lookup.get((row.get("language", ""), as_int(row, "vocab_size")), {})
-        for key in ("val_bytes_per_token", "val_chars_per_token", "val_tokens", "unk_byte_fallback_tokens", "actual_vocab_size"):
+        for key in ("val_bytes_per_token", "val_chars_per_token", "val_tokens", "val_utf8_bytes", "unk_byte_fallback_tokens", "actual_vocab_size"):
             if key in token_row:
                 merged[key] = token_row[key]
         enriched.append(merged)
@@ -168,6 +167,32 @@ def metric_scatter(rows: list[dict[str, str]], x_metric: str, y_metric: str) -> 
             "hovertemplate": "language=%{text}<br>vocab=%{customdata}<br>" + x_metric + "=%{x:.5f}<br>" + y_metric + "=%{y:.5f}<extra></extra>",
         }
     ]
+
+
+def add_probability_metrics(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Add derived log-probability/codelength metrics without exponentiating the joint probability."""
+    enriched = []
+    for row in rows:
+        merged = dict(row)
+        validation_loss = as_float(merged, "validation_loss")
+        val_tokens = as_float(merged, "val_tokens")
+        val_bytes = as_float(merged, "val_utf8_bytes")
+        if math.isfinite(validation_loss):
+            merged.setdefault("geometric_mean_correct_prob", f"{math.exp(-validation_loss):.10f}")
+        if math.isfinite(validation_loss) and math.isfinite(val_tokens) and val_tokens > 0:
+            total_nll = validation_loss * val_tokens
+            total_bits = total_nll / math.log(2)
+            merged.setdefault("estimated_total_nll_nats", f"{total_nll:.6f}")
+            merged.setdefault("estimated_total_bits", f"{total_bits:.6f}")
+            merged.setdefault("estimated_log10_sequence_probability", f"{-total_nll / math.log(10):.6f}")
+        if math.isfinite(val_bytes) and val_bytes > 0 and merged.get("estimated_total_bits"):
+            merged.setdefault("estimated_bits_per_val_byte_from_total", f"{float(merged['estimated_total_bits']) / val_bytes:.6f}")
+        enriched.append(merged)
+    return enriched
+
+
+def filtered_line_traces(rows: list[dict[str, str]], metric: str, languages: set[str]) -> list[dict[str, Any]]:
+    return line_traces([row for row in rows if row.get("language") in languages], metric)
 
 
 def make_plots(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
@@ -201,6 +226,27 @@ def make_plots(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
             "layout": {"xaxis": {"title": "Requested vocabulary size"}, "yaxis": {"title": "Language"}},
         },
         {
+            "id": "estimated-total-bits-lines",
+            "title": "Estimated total validation bits by char-BPE vocabulary size",
+            "description": "Estimated total bits = validation_loss * scored_validation_tokens / ln(2). For fixed validation text, minimizing this is equivalent to minimizing BPB.",
+            "data": line_traces(rows, "estimated_total_bits"),
+            "layout": {"xaxis": {"title": "Requested vocabulary size"}, "yaxis": {"title": "Estimated total validation bits"}},
+        },
+        {
+            "id": "estimated-total-bits-heatmap",
+            "title": "Estimated total validation bits heatmap",
+            "description": "Cross-language total bits include each language's validation byte length, so use this with BPB when comparing languages.",
+            "data": heatmap_trace(rows, "estimated_total_bits"),
+            "layout": {"xaxis": {"title": "Requested vocabulary size"}, "yaxis": {"title": "Language"}},
+        },
+        {
+            "id": "geomean-prob-lines",
+            "title": "Geometric-mean correct-token probability",
+            "description": "exp(-validation_loss): the typical probability assigned to the observed next token. This is not sequence probability or top-1 accuracy.",
+            "data": line_traces(rows, "geometric_mean_correct_prob"),
+            "layout": {"xaxis": {"title": "Requested vocabulary size"}, "yaxis": {"title": "Geometric mean correct-token probability"}},
+        },
+        {
             "id": "best-bpb-bar",
             "title": "Best observed BPB per language",
             "description": "Ranks languages by their best observed BPB and shows which vocab size produced it.",
@@ -228,6 +274,20 @@ def make_plots(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
             "data": metric_scatter(rows, "unk_byte_fallback_tokens", "bits_per_byte"),
             "layout": {"xaxis": {"title": "Byte-fallback tokens"}, "yaxis": {"title": "Bits per byte"}},
         },
+        {
+            "id": "korean-nfc-nfd-bpb",
+            "title": "Korean NFC vs Korean NFD: BPB",
+            "description": "Directly compares default Korean NFC (`korean`) with Hangul-decomposed Korean NFD (`korean_nfd`).",
+            "data": filtered_line_traces(rows, "bits_per_byte", {"korean", "korean_nfd"}),
+            "layout": {"xaxis": {"title": "Requested vocabulary size"}, "yaxis": {"title": "Bits per byte"}},
+        },
+        {
+            "id": "korean-nfc-nfd-total-bits",
+            "title": "Korean NFC vs Korean NFD: estimated total bits",
+            "description": "Compares the estimated complete validation codelength for Korean NFC and NFD tokenizations.",
+            "data": filtered_line_traces(rows, "estimated_total_bits", {"korean", "korean_nfd"}),
+            "layout": {"xaxis": {"title": "Requested vocabulary size"}, "yaxis": {"title": "Estimated total validation bits"}},
+        },
     ]
 
 
@@ -254,7 +314,8 @@ def render_html(rows: list[dict[str, str]], plots: list[dict[str, Any]]) -> str:
 </head>
 <body>
   <h1>FLORES char-BPE validation and bits-per-byte report</h1>
-  <p>This report compares validation loss and BPB for char-BPE vocab sweeps. BPB is computed as <code>validation_loss_nats / (ln(2) * val_bytes_per_token)</code>.</p>
+  <p>This report compares validation loss, BPB, and estimated sequence-level codelength metrics for char-BPE vocab sweeps. BPB is computed as <code>validation_loss_nats / (ln(2) * val_bytes_per_token)</code>.</p>
+  <p><strong>Interpretation note:</strong> <code>validation_loss * val_tokens</code> is estimated total negative log-probability (NLL), not probability. The exact sequence probability is <code>exp(-total_nll)</code>, which usually underflows, so the report stores total NLL, total bits, and log10 probability instead. These totals are exact only when validation loss is a token-weighted complete-pass mean over every target exactly once; with random/overlapping eval batches they are estimates.</p>
   <p>Total completed runs: <strong>{len(rows)}</strong></p>
   <div id=\"plots\"></div>
   <h2>Raw completed-run table</h2>
@@ -279,7 +340,7 @@ def render_html(rows: list[dict[str, str]], plots: list[dict[str, Any]]) -> str:
       container.appendChild(card);
       Plotly.newPlot(div.id, plot.data, {{...plot.layout, margin: {{l: 90, r: 30, t: 30, b: 70}}, hovermode: 'closest'}}, {{responsive: true}});
     }}
-    const tableColumns = ['language', 'vocab_size', 'validation_loss', 'bits_per_byte', 'val_bytes_per_token', 'unk_byte_fallback_tokens', 'out_dir'];
+    const tableColumns = ['language', 'vocab_size', 'validation_loss', 'val_tokens', 'val_utf8_bytes', 'bits_per_byte', 'estimated_total_nll_nats', 'estimated_total_bits', 'estimated_log10_sequence_probability', 'geometric_mean_correct_prob', 'val_bytes_per_token', 'unk_byte_fallback_tokens', 'out_dir'];
     const tableHtml = '<table><thead><tr>' + tableColumns.map(c => `<th>${{c}}</th>`).join('') + '</tr></thead><tbody>' +
       rows.map(row => '<tr>' + tableColumns.map(c => `<td>${{row[c] ?? ''}}</td>`).join('') + '</tr>').join('') +
       '</tbody></table>';
@@ -299,7 +360,7 @@ def main() -> int:
 
     training_rows = read_csv_rows(args.training_summary)
     tokenization_rows = read_csv_rows(args.tokenization_summary) if args.tokenization_summary.exists() else []
-    rows = enrich_training_rows(training_rows, tokenization_rows)
+    rows = add_probability_metrics(enrich_training_rows(training_rows, tokenization_rows))
     plots = make_plots(rows)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(render_html(rows, plots), encoding="utf-8")

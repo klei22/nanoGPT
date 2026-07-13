@@ -46,7 +46,7 @@ python3 "${BASE_DIR}/scripts/run_char_bpe_exploration.py" \
   --vocab-sizes "${VOCAB_CSV}" \
   --percentage-train "${PERCENTAGE_TRAIN}"
 
-echo "language,vocab_size,dataset,validation_loss,bits_per_byte,out_dir" > "${SUMMARY_CSV}"
+echo "language,vocab_size,dataset,validation_loss,val_tokens,val_utf8_bytes,bits_per_byte,estimated_total_nll_nats,estimated_total_bits,estimated_log10_sequence_probability,geometric_mean_correct_prob,out_dir" > "${SUMMARY_CSV}"
 
 for language in ${LANGUAGES}; do
   for vocab_size in ${VOCAB_SIZES}; do
@@ -101,12 +101,22 @@ val_bytes_per_token = float(metrics["val_bytes_per_token"])
 if val_bytes_per_token <= 0:
     raise SystemExit(f"val_bytes_per_token must be > 0 in {metrics_path}")
 bits_per_byte = validation_loss / (math.log(2) * val_bytes_per_token)
+val_tokens = float(metrics.get("val_tokens", 0))
+val_utf8_bytes = float(metrics.get("val_utf8_bytes", 0))
+total_nll = validation_loss * val_tokens
+total_bits = total_nll / math.log(2) if val_tokens > 0 else float("nan")
 row = {
     "language": language,
     "vocab_size": vocab_size,
     "dataset": dataset,
     "validation_loss": f"{validation_loss:.6f}",
+    "val_tokens": f"{val_tokens:.0f}",
+    "val_utf8_bytes": f"{val_utf8_bytes:.0f}",
     "bits_per_byte": f"{bits_per_byte:.6f}",
+    "estimated_total_nll_nats": f"{total_nll:.6f}",
+    "estimated_total_bits": f"{total_bits:.6f}",
+    "estimated_log10_sequence_probability": f"{-total_nll / math.log(10):.6f}" if val_tokens > 0 else "nan",
+    "geometric_mean_correct_prob": f"{math.exp(-validation_loss):.10f}",
     "out_dir": out_dir,
 }
 with Path(summary_csv).open("a", newline="", encoding="utf-8") as f:

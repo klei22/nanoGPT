@@ -91,9 +91,7 @@ the HTML report without retraining:
 python3 data/char_bpe_exploration/scripts/render_bpb_report.py
 ```
 
-The report includes line charts, heatmaps, best-observed BPB rankings, and
-scatter plots connecting validation loss, BPB, validation bytes/token, and
-byte-fallback counts.
+The report includes line charts, heatmaps, best-observed BPB rankings, Korean NFC vs NFD comparisons, and scatter plots connecting validation loss, BPB, validation bytes/token, and byte-fallback counts. It also reports estimated total NLL, total bits, log10 sequence probability, and geometric-mean correct-token probability. Sequence-level totals are exact only for complete-pass token-weighted validation; with sampled or overlapping validation batches they should be interpreted as estimates.
 
 ## Outputs
 
