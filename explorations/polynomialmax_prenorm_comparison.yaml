@@ -1,0 +1,72 @@
+# Compare ReLU2Max against positive polynomial softmax variants under pre-norm.
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Pre-norm only: normalize before attention/MLP blocks, with no peri/post LN.
+  - named_group: "pre_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [false]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Embedding Norm
+  - named_group: "rmsnorm_wte"
+    norm_variant_wte: ["rmsnorm"]
+
+  # MLP Activation
+  - named_group: "swiglu"
+    activation_variant: ["silu"]
+    mlp_variant: ["swiglu"]
+
+  # Infinite Attention
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [1000]
+  eval_iters: [200]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  use_gradient_checkpointing: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  n_layer: [18]
+  n_embd: [768]
+  n_qk_head_dim: [200]
+  n_v_head_dim: [200]
+  n_head: [3]
+  n_kv_group: [1]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "pre_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "swiglu"
+      - "infinite"
+    softmax_variant_attn: ["relu2max"]
+    relu2max_divisor: [256.0]
+
+  - named_group_static:
+      - "qk_norm"
+      - "pre_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "swiglu"
+      - "infinite"
+    softmax_variant_attn: ["polynomialmax"]
+    polynomialmax_power: [2.0, 3.0]
+    polynomialmax_divisor: [256.0]

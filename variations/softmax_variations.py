@@ -577,6 +577,32 @@ class ReLU2Max(nn.Module):
         return result
 
 
+class PolynomialMax(nn.Module):
+    """Positive polynomial attention weighting, e.g. x^2 or x^3.
+
+    This is a generalized polynomial sibling of ReLU2Max. Inputs are first
+    passed through ReLU so attention weights stay non-negative, then raised to
+    ``polynomialmax_power`` and divided by ``polynomialmax_divisor``.
+    """
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.power = config.polynomialmax_power
+        self.divisor = config.polynomialmax_divisor
+        self.div_by_seq_len = config.div_by_seq_len
+
+    def forward(self, x):
+
+        result = torch.relu(x) ** self.power / self.divisor
+
+        # divide by sequence length
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
+
 class Softplus2Max(nn.Module):
     """ Softmax variant based on arxiv 1805.10829 with added handles for base """
     def __init__(self, config, dim=-1):
@@ -870,6 +896,7 @@ softmax_dictionary = {
     "sigsoftmax": SigSoftmax,
     "relumax": ReLUMax,
     "relu2max": ReLU2Max,
+    "polynomialmax": PolynomialMax,
     "sigmoidmax": SigmoidMax,
     "softshrink": Softshrink,
     "gelumax": Gelumax,
