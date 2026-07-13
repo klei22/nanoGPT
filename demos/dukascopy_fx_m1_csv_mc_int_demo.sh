@@ -103,8 +103,8 @@ python3 sample.py \
   --compile \
   --num_samples 1
 
-read -r -a VIEWER_SEEDS <<<"${DUKASCOPY_VIEWER_SEEDS:-1337 1338 1339}"
-read -r -a VIEWER_TOP_K <<<"${DUKASCOPY_VIEWER_TOP_K:-1 5}"
+read -r -a VIEWER_SEEDS <<<"${DUKASCOPY_VIEWER_SEEDS:-1337 1338 1339 1340 1341}"
+read -r -a VIEWER_TOP_K <<<"${DUKASCOPY_VIEWER_TOP_K:-1 5 10}"
 
 python3 data/timeseries_viewer/generate_timeseries_comparison.py \
   --input_csv "$CSV_INPUT" \

@@ -4,10 +4,10 @@
 integer multicontext CSV time series:
 
 1. Split a prepared full CSV into an inference prompt and a tail holdout set.
-2. Run `sample.py` for every requested random seed at both `top_k=1` and
-   `top_k=5` (configurable).
+2. Run `sample.py` for every requested random seed at `top_k=1`, `top_k=5`, and
+   `top_k=10` (configurable).
 3. Write an HTML page that overlays the prompt tail, ground-truth holdout, and
-   every sampled forecast for each column.
+   every sampled forecast for every column at the same time.
 
 The generated HTML is self-contained and uses browser canvas rendering, so it
 has no Plotly or JavaScript package dependency.
@@ -24,8 +24,8 @@ python3 data/timeseries_viewer/generate_timeseries_comparison.py \
   --work_dir out/dukascopy_fx_m1/timeseries_viewer \
   --holdout_rows 128 \
   --prompt_rows 512 \
-  --seeds 1337 1338 1339 \
-  --top_k 1 5
+  --seeds 1337 1338 1339 1340 1341 \
+  --top_k 1 5 10
 ```
 
 Open:

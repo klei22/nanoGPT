@@ -96,14 +96,14 @@ Demo download overrides:
 
 The demo now finishes by calling `data/timeseries_viewer/generate_timeseries_comparison.py`.
 That viewer withholds a tail slice from `data/dukascopy_fx_m1/input.csv`, uses the
-preceding rows as the inference prompt, samples every requested random seed at
-`top_k=1` and `top_k=5`, and writes a self-contained HTML graph comparing those
+preceding rows as the inference prompt, samples five random seeds each at
+`top_k=1`, `top_k=5`, and `top_k=10`, and writes a self-contained HTML graph comparing those
 forecasts against the held-out ground truth.
 
 Viewer overrides:
 
-- `DUKASCOPY_VIEWER_SEEDS` (default `1337 1338 1339`)
-- `DUKASCOPY_VIEWER_TOP_K` (default `1 5`)
+- `DUKASCOPY_VIEWER_SEEDS` (default `1337 1338 1339 1340 1341`)
+- `DUKASCOPY_VIEWER_TOP_K` (default `1 5 10`)
 - `DUKASCOPY_VIEWER_HOLDOUT_ROWS` (default `128`)
 - `DUKASCOPY_VIEWER_PROMPT_ROWS` (default `512`)
 - `DUKASCOPY_VIEWER_WORK_DIR` (default `$DUKASCOPY_MC_OUT_DIR/timeseries_viewer`)

@@ -159,24 +159,36 @@ def write_viewer_html(
     body {{ margin: 0; padding: 20px; background: #101114; color: #eee; }}
     h1 {{ margin-top: 0; font-size: 22px; }}
     .panel {{ background: #191b20; border: 1px solid #333842; border-radius: 10px; padding: 14px; margin-bottom: 16px; }}
-    .controls {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; }}
-    label {{ display: grid; gap: 5px; font-size: 13px; color: #cdd1d7; }}
-    select, input {{ width: 100%; box-sizing: border-box; padding: 8px; border-radius: 7px; border: 1px solid #454b57; background: #0d0e11; color: #eee; }}
-    canvas {{ width: 100%; height: 260px; background: #08090b; border: 1px solid #343a46; border-radius: 8px; }}
-    .chart {{ margin-bottom: 18px; }}
+    .controls {{ display: grid; grid-template-columns: minmax(220px, 1fr) minmax(320px, 3fr); gap: 16px; align-items: start; }}
+    .global-toggles, .sample-toggles {{ display: flex; flex-wrap: wrap; gap: 10px 14px; }}
+    label {{ display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: #cdd1d7; }}
+    input {{ accent-color: #58a6ff; }}
+    canvas {{ width: 100%; height: 240px; background: #08090b; border: 1px solid #343a46; border-radius: 8px; }}
+    .chart {{ margin-bottom: 22px; }}
+    .chart h2 {{ margin: 0 0 8px; font-size: 16px; }}
     .legend {{ display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; margin-top: 8px; }}
     .legend span {{ display: inline-flex; align-items: center; gap: 5px; }}
     .swatch {{ width: 18px; height: 3px; display: inline-block; }}
-    .meta {{ color: #aeb4bf; font-size: 13px; }}
+    .meta {{ color: #aeb4bf; font-size: 13px; margin-bottom: 14px; }}
+    .hint {{ color: #aeb4bf; font-size: 12px; margin-top: 8px; }}
   </style>
 </head>
 <body>
   <h1>{escaped_title}</h1>
   <section class=\"panel controls\">
-    <label>Column<select id=\"columnSelect\"></select></label>
-    <label><input id=\"showPrompt\" type=\"checkbox\" checked /> Show prompt tail</label>
-    <label><input id=\"showTruth\" type=\"checkbox\" checked /> Show ground truth holdout</label>
-    <label><input id=\"showSamples\" type=\"checkbox\" checked /> Show sampled forecasts</label>
+    <div>
+      <strong>Global series</strong>
+      <div class=\"global-toggles\">
+        <label><input id=\"showPrompt\" type=\"checkbox\" checked /> prompt tail</label>
+        <label><input id=\"showTruth\" type=\"checkbox\" checked /> ground truth holdout</label>
+      </div>
+      <div class=\"hint\">All columns are shown below at the same time.</div>
+    </div>
+    <div>
+      <strong>Inference runs</strong>
+      <div class=\"sample-toggles\" id=\"sampleToggles\"></div>
+      <div class=\"hint\">Turn individual seeds/top-k runs on or off without regenerating the page.</div>
+    </div>
   </section>
   <section class=\"panel\">
     <div class=\"meta\" id=\"meta\"></div>
@@ -185,13 +197,19 @@ def write_viewer_html(
 <script id=\"payload\" type=\"application/json\">{json_payload}</script>
 <script>
 const data = JSON.parse(document.getElementById('payload').textContent);
-const colors = ['#ffb000', '#00d1ff', '#f05cff', '#5cff92', '#ff6b6b', '#9b8cff', '#f6ff5c', '#58a6ff'];
-const select = document.getElementById('columnSelect');
-data.header.forEach((name, idx) => select.append(new Option(name, String(idx))));
-document.getElementById('meta').textContent = `created ${{data.createdAt}} · prompt rows ${{data.promptRows.length}} · holdout rows ${{data.truthRows.length}} · samples ${{data.samples.length}}`;
-['columnSelect', 'showPrompt', 'showTruth', 'showSamples'].forEach(id => document.getElementById(id).addEventListener('change', render));
+const colors = ['#ffb000', '#00d1ff', '#f05cff', '#5cff92', '#ff6b6b', '#9b8cff', '#f6ff5c', '#58a6ff', '#ffa657', '#7ee787', '#d2a8ff', '#ff7b72', '#a5d6ff', '#f2cc60', '#56d364'];
+document.getElementById('meta').textContent = `created ${{data.createdAt}} · columns ${{data.header.length}} · prompt rows ${{data.promptRows.length}} · holdout rows ${{data.truthRows.length}} · inference runs ${{data.samples.length}}`;
+const sampleToggles = document.getElementById('sampleToggles');
+data.samples.forEach((sample, idx) => {{
+  const id = `sample_${{idx}}`;
+  const label = document.createElement('label');
+  label.innerHTML = `<input id="${{id}}" data-sample-idx="${{idx}}" type="checkbox" checked /> <span class="swatch" style="background:${{colors[idx % colors.length]}}"></span>${{sample.label}}`;
+  sampleToggles.append(label);
+}});
+document.getElementById('showPrompt').addEventListener('change', render);
+document.getElementById('showTruth').addEventListener('change', render);
+sampleToggles.addEventListener('change', render);
 function finite(v) {{ return typeof v === 'number' && Number.isFinite(v); }}
-function seriesValues(rows, col) {{ return rows.map(r => r[col]).filter(finite); }}
 function extent(seriesList) {{
   const vals = seriesList.flat().filter(finite);
   if (!vals.length) return [0, 1];
@@ -210,21 +228,29 @@ function drawLine(ctx, values, xStart, xScale, yScale, yMax, color, width, dash=
   }});
   ctx.stroke(); ctx.restore();
 }}
-function render() {{
-  const col = Number(select.value || 0);
-  const charts = document.getElementById('charts'); charts.innerHTML = '';
+function addLegend(legend, label, color) {{
+  const item = document.createElement('span');
+  item.innerHTML = `<i class="swatch" style="background:${{color}}"></i>${{label}}`;
+  legend.append(item);
+}}
+function enabledSamplesForColumn(col) {{
+  return data.samples
+    .map((sample, idx) => ({{idx, label: sample.label, values: sample.rows.map(r => r[col])}}))
+    .filter(s => {{ const box = document.getElementById(`sample_${{s.idx}}`); return box && box.checked; }});
+}}
+function renderColumn(col, charts) {{
   const holder = document.createElement('div'); holder.className = 'chart';
-  const title = document.createElement('h2'); title.textContent = data.header[col]; title.style.fontSize = '16px';
-  const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 320;
+  const title = document.createElement('h2'); title.textContent = data.header[col];
+  const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 300;
   const legend = document.createElement('div'); legend.className = 'legend';
   holder.append(title, canvas, legend); charts.append(holder);
   const prompt = data.promptRows.slice(Math.max(0, data.promptRows.length - 128)).map(r => r[col]);
   const truth = data.truthRows.map(r => r[col]);
-  const sampleSeries = data.samples.map(s => ({{label: s.label, values: s.rows.map(r => r[col])}}));
+  const sampleSeries = enabledSamplesForColumn(col);
   const visibleSeries = [];
   if (document.getElementById('showPrompt').checked) visibleSeries.push(prompt);
   if (document.getElementById('showTruth').checked) visibleSeries.push(truth);
-  if (document.getElementById('showSamples').checked) sampleSeries.forEach(s => visibleSeries.push(s.values));
+  sampleSeries.forEach(s => visibleSeries.push(s.values));
   const [yMin, yMax] = extent(visibleSeries);
   const totalX = prompt.length + Math.max(truth.length, ...sampleSeries.map(s => s.values.length), 1);
   const plotW = canvas.width - 70, plotH = canvas.height - 50;
@@ -234,10 +260,13 @@ function render() {{
   for (let i = 0; i <= 5; i++) {{ const y = 18 + i * plotH / 5; ctx.beginPath(); ctx.moveTo(50, y); ctx.lineTo(50 + plotW, y); ctx.stroke(); }}
   ctx.fillStyle = '#cfd6e4'; ctx.font = '12px ui-monospace, monospace'; ctx.fillText(yMax.toFixed(2), 6, 24); ctx.fillText(yMin.toFixed(2), 6, 18 + plotH);
   const splitX = 50 + Math.max(prompt.length - 1, 0) * xScale; ctx.strokeStyle = '#666'; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(splitX, 18); ctx.lineTo(splitX, 18 + plotH); ctx.stroke(); ctx.setLineDash([]);
-  function addLegend(label, color) {{ const item = document.createElement('span'); item.innerHTML = `<i class=\"swatch\" style=\"background:${{color}}\"></i>${{label}}`; legend.append(item); }}
-  if (document.getElementById('showPrompt').checked) {{ drawLine(ctx, prompt, 0, xScale, yScale, yMax, '#8a96a8', 2); addLegend('prompt tail', '#8a96a8'); }}
-  if (document.getElementById('showTruth').checked) {{ drawLine(ctx, truth, prompt.length, xScale, yScale, yMax, '#ffffff', 3); addLegend('ground truth holdout', '#ffffff'); }}
-  if (document.getElementById('showSamples').checked) sampleSeries.forEach((s, idx) => {{ const c = colors[idx % colors.length]; drawLine(ctx, s.values, prompt.length, xScale, yScale, yMax, c, 2, [6,3]); addLegend(s.label, c); }});
+  if (document.getElementById('showPrompt').checked) {{ drawLine(ctx, prompt, 0, xScale, yScale, yMax, '#8a96a8', 2); addLegend(legend, 'prompt tail', '#8a96a8'); }}
+  if (document.getElementById('showTruth').checked) {{ drawLine(ctx, truth, prompt.length, xScale, yScale, yMax, '#ffffff', 3); addLegend(legend, 'ground truth holdout', '#ffffff'); }}
+  sampleSeries.forEach(s => {{ const c = colors[s.idx % colors.length]; drawLine(ctx, s.values, prompt.length, xScale, yScale, yMax, c, 2, [6,3]); addLegend(legend, s.label, c); }});
+}}
+function render() {{
+  const charts = document.getElementById('charts'); charts.innerHTML = '';
+  data.header.forEach((_, col) => renderColumn(col, charts));
 }}
 render();
 </script>
@@ -247,7 +276,6 @@ render();
         encoding="utf-8",
     )
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run seeded top-k samples and render prediction-vs-ground-truth time-series HTML.")
     parser.add_argument("--input_csv", default="data/dukascopy_fx_m1/input.csv", help="Prepared integer CSV containing the full series.")
@@ -256,8 +284,8 @@ def main() -> None:
     parser.add_argument("--work_dir", default="out/dukascopy_fx_m1/timeseries_viewer", help="Directory for prompt, truth, samples, and HTML.")
     parser.add_argument("--holdout_rows", type=int, default=128, help="Tail rows excluded from prompt and used as ground truth.")
     parser.add_argument("--prompt_rows", type=int, default=512, help="Rows immediately before holdout used as inference prompt; 0 uses all prior rows.")
-    parser.add_argument("--seeds", nargs="+", type=int, default=[1337, 1338, 1339], help="Random seeds to sample for each top-k value.")
-    parser.add_argument("--top_k", nargs="+", type=int, default=[1, 5], help="Top-k settings to run for every seed.")
+    parser.add_argument("--seeds", nargs="+", type=int, default=[1337, 1338, 1339, 1340, 1341], help="Random seeds to sample for each top-k value.")
+    parser.add_argument("--top_k", nargs="+", type=int, default=[1, 5, 10], help="Top-k settings to run for every seed.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--compile", dest="compile_model", default=True, action=argparse.BooleanOptionalAction)
