@@ -154,6 +154,7 @@ def write_viewer_html(
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>{escaped_title}</title>
+  <script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script>
   <style>
     :root {{ color-scheme: dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }}
     body {{ margin: 0; padding: 20px; background: #101114; color: #eee; }}
@@ -163,11 +164,9 @@ def write_viewer_html(
     .global-toggles, .sample-toggles {{ display: flex; flex-wrap: wrap; gap: 10px 14px; }}
     label {{ display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: #cdd1d7; }}
     input {{ accent-color: #58a6ff; }}
-    canvas {{ width: 100%; height: 240px; background: #08090b; border: 1px solid #343a46; border-radius: 8px; }}
     .chart {{ margin-bottom: 22px; }}
     .chart h2 {{ margin: 0 0 8px; font-size: 16px; }}
-    .legend {{ display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; margin-top: 8px; }}
-    .legend span {{ display: inline-flex; align-items: center; gap: 5px; }}
+    .plot {{ width: 100%; height: 340px; border: 1px solid #343a46; border-radius: 8px; overflow: hidden; }}
     .swatch {{ width: 18px; height: 3px; display: inline-block; }}
     .meta {{ color: #aeb4bf; font-size: 13px; margin-bottom: 14px; }}
     .hint {{ color: #aeb4bf; font-size: 12px; margin-top: 8px; }}
@@ -182,7 +181,7 @@ def write_viewer_html(
         <label><input id=\"showPrompt\" type=\"checkbox\" checked /> prompt tail</label>
         <label><input id=\"showTruth\" type=\"checkbox\" checked /> ground truth holdout</label>
       </div>
-      <div class=\"hint\">All columns are shown below at the same time.</div>
+      <div class=\"hint\">All columns are shown below at the same time as Plotly graphs.</div>
     </div>
     <div>
       <strong>Inference runs</strong>
@@ -209,72 +208,67 @@ data.samples.forEach((sample, idx) => {{
 document.getElementById('showPrompt').addEventListener('change', render);
 document.getElementById('showTruth').addEventListener('change', render);
 sampleToggles.addEventListener('change', render);
-function finite(v) {{ return typeof v === 'number' && Number.isFinite(v); }}
-function extent(seriesList) {{
-  const vals = seriesList.flat().filter(finite);
-  if (!vals.length) return [0, 1];
-  let lo = Math.min(...vals), hi = Math.max(...vals);
-  if (lo === hi) {{ lo -= 1; hi += 1; }}
-  return [lo, hi];
-}}
-function drawLine(ctx, values, xStart, xScale, yScale, yMax, color, width, dash=[]) {{
-  ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash); ctx.beginPath();
-  let started = false;
-  values.forEach((v, i) => {{
-    if (!finite(v)) return;
-    const x = 50 + (xStart + i) * xScale;
-    const y = 18 + (yMax - v) * yScale;
-    if (!started) {{ ctx.moveTo(x, y); started = true; }} else {{ ctx.lineTo(x, y); }}
-  }});
-  ctx.stroke(); ctx.restore();
-}}
-function addLegend(legend, label, color) {{
-  const item = document.createElement('span');
-  item.innerHTML = `<i class="swatch" style="background:${{color}}"></i>${{label}}`;
-  legend.append(item);
-}}
+function finiteOrNull(v) {{ return typeof v === 'number' && Number.isFinite(v) ? v : null; }}
+function xRange(start, length) {{ return Array.from({{length}}, (_, idx) => start + idx); }}
 function enabledSamplesForColumn(col) {{
   return data.samples
-    .map((sample, idx) => ({{idx, label: sample.label, values: sample.rows.map(r => r[col])}}))
+    .map((sample, idx) => ({{idx, label: sample.label, values: sample.rows.map(r => finiteOrNull(r[col]))}}))
     .filter(s => {{ const box = document.getElementById(`sample_${{s.idx}}`); return box && box.checked; }});
+}}
+function trace(name, x, y, color, width, dash='solid') {{
+  return {{
+    type: 'scatter',
+    mode: 'lines',
+    name,
+    x,
+    y,
+    line: {{color, width, dash}},
+    hovertemplate: 'row=%{{x}}<br>value=%{{y}}<extra>' + name + '</extra>'
+  }};
 }}
 function renderColumn(col, charts) {{
   const holder = document.createElement('div'); holder.className = 'chart';
   const title = document.createElement('h2'); title.textContent = data.header[col];
-  const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 300;
-  const legend = document.createElement('div'); legend.className = 'legend';
-  holder.append(title, canvas, legend); charts.append(holder);
-  const prompt = data.promptRows.slice(Math.max(0, data.promptRows.length - 128)).map(r => r[col]);
-  const truth = data.truthRows.map(r => r[col]);
-  const sampleSeries = enabledSamplesForColumn(col);
-  const visibleSeries = [];
-  if (document.getElementById('showPrompt').checked) visibleSeries.push(prompt);
-  if (document.getElementById('showTruth').checked) visibleSeries.push(truth);
-  sampleSeries.forEach(s => visibleSeries.push(s.values));
-  const [yMin, yMax] = extent(visibleSeries);
-  const totalX = prompt.length + Math.max(truth.length, ...sampleSeries.map(s => s.values.length), 1);
-  const plotW = canvas.width - 70, plotH = canvas.height - 50;
-  const xScale = plotW / Math.max(totalX - 1, 1), yScale = plotH / (yMax - yMin);
-  const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = '#38404d'; ctx.lineWidth = 1;
-  for (let i = 0; i <= 5; i++) {{ const y = 18 + i * plotH / 5; ctx.beginPath(); ctx.moveTo(50, y); ctx.lineTo(50 + plotW, y); ctx.stroke(); }}
-  ctx.fillStyle = '#cfd6e4'; ctx.font = '12px ui-monospace, monospace'; ctx.fillText(yMax.toFixed(2), 6, 24); ctx.fillText(yMin.toFixed(2), 6, 18 + plotH);
-  const splitX = 50 + Math.max(prompt.length - 1, 0) * xScale; ctx.strokeStyle = '#666'; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(splitX, 18); ctx.lineTo(splitX, 18 + plotH); ctx.stroke(); ctx.setLineDash([]);
-  if (document.getElementById('showPrompt').checked) {{ drawLine(ctx, prompt, 0, xScale, yScale, yMax, '#8a96a8', 2); addLegend(legend, 'prompt tail', '#8a96a8'); }}
-  if (document.getElementById('showTruth').checked) {{ drawLine(ctx, truth, prompt.length, xScale, yScale, yMax, '#ffffff', 3); addLegend(legend, 'ground truth holdout', '#ffffff'); }}
-  sampleSeries.forEach(s => {{ const c = colors[s.idx % colors.length]; drawLine(ctx, s.values, prompt.length, xScale, yScale, yMax, c, 2, [6,3]); addLegend(legend, s.label, c); }});
+  const plot = document.createElement('div'); plot.className = 'plot'; plot.id = `plot_${{col}}`;
+  holder.append(title, plot); charts.append(holder);
+  const prompt = data.promptRows.slice(Math.max(0, data.promptRows.length - 128)).map(r => finiteOrNull(r[col]));
+  const truth = data.truthRows.map(r => finiteOrNull(r[col]));
+  const promptStart = 0;
+  const forecastStart = prompt.length;
+  const traces = [];
+  if (document.getElementById('showPrompt').checked) traces.push(trace('prompt tail', xRange(promptStart, prompt.length), prompt, '#8a96a8', 2));
+  if (document.getElementById('showTruth').checked) traces.push(trace('ground truth holdout', xRange(forecastStart, truth.length), truth, '#ffffff', 3));
+  enabledSamplesForColumn(col).forEach(s => traces.push(trace(s.label, xRange(forecastStart, s.values.length), s.values, colors[s.idx % colors.length], 2, 'dash')));
+  const splitX = Math.max(forecastStart - 0.5, 0);
+  const layout = {{
+    paper_bgcolor: '#08090b',
+    plot_bgcolor: '#08090b',
+    font: {{color: '#d6deeb'}},
+    margin: {{l: 58, r: 20, t: 12, b: 42}},
+    hovermode: 'x unified',
+    legend: {{orientation: 'h', x: 0, y: -0.22}},
+    xaxis: {{title: 'row index relative to prompt tail', gridcolor: '#27303b', zerolinecolor: '#3a4350'}},
+    yaxis: {{title: data.header[col], gridcolor: '#27303b', zerolinecolor: '#3a4350'}},
+    shapes: [{{type: 'line', x0: splitX, x1: splitX, y0: 0, y1: 1, yref: 'paper', line: {{color: '#777', dash: 'dot', width: 1}}}}]
+  }};
+  Plotly.newPlot(plot, traces, layout, {{responsive: true, displaylogo: false}});
 }}
 function render() {{
   const charts = document.getElementById('charts'); charts.innerHTML = '';
   data.header.forEach((_, col) => renderColumn(col, charts));
 }}
-render();
+if (!window.Plotly) {{
+  document.getElementById('charts').innerHTML = '<div class="panel">Plotly failed to load. Check network access to the Plotly CDN.</div>';
+}} else {{
+  render();
+}}
 </script>
 </body>
 </html>
 """,
         encoding="utf-8",
     )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run seeded top-k samples and render prediction-vs-ground-truth time-series HTML.")

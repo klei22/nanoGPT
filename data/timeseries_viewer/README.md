@@ -9,8 +9,8 @@ integer multicontext CSV time series:
 3. Write an HTML page that overlays the prompt tail, ground-truth holdout, and
    every sampled forecast for every column at the same time.
 
-The generated HTML is self-contained and uses browser canvas rendering, so it
-has no Plotly or JavaScript package dependency.
+The generated HTML uses one Plotly graph per column and loads Plotly from the
+official CDN, so no Python Plotly package is required to generate the file.
 
 ## Dukascopy example
 
