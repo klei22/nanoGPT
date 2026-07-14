@@ -7,13 +7,43 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
-AUDIO_INPUT="${1:?Usage: $0 input.wav|input.mp3|input.flac}"
+AUDIO_INPUT="${1:-data/audio_mel_csv/demo_audio}"
 OUTPUT_ROOT="${AUDIO_MEL_OUTPUT_ROOT:-audio_mel_csv}"
 WORK_DIR="${AUDIO_MEL_WORK_DIR:-data/audio_mel_csv/work}"
 OUT_DIR="${AUDIO_MEL_OUT_DIR:-out/audio_mel_csv}"
 MAX_ITERS="${AUDIO_MEL_MAX_ITERS:-1000}"
 DEVICE="${AUDIO_MEL_DEVICE:-cuda:0}"
 DTYPE="${AUDIO_MEL_DTYPE:-bfloat16}"
+
+find_audio_files() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    printf '%s\n' "$path"
+  elif [[ -d "$path" ]]; then
+    find "$path" -type f \( -iname "*.wav" -o -iname "*.wave" -o -iname "*.mp3" -o -iname "*.flac" -o -iname "*.ogg" -o -iname "*.m4a" \) -print
+  fi
+}
+
+create_demo_audio_folder() {
+  local folder="$1"
+  if ! command -v sox >/dev/null 2>&1; then
+    echo "No audio files found at '$folder' and sox is not installed. Install sox or pass an audio file/folder." >&2
+    exit 1
+  fi
+  mkdir -p "$folder"
+  echo "No audio files found at '$folder'; generating demo WAV files with sox."
+  sox -n -r 16000 -c 1 "$folder/000_sine_220hz.wav" synth 1.5 sine 220 fade 0.02 1.5 0.02 gain -6
+  sox -n -r 16000 -c 1 "$folder/001_sine_330hz.wav" synth 1.5 sine 330 fade 0.02 1.5 0.02 gain -6
+  sox -n -r 16000 -c 1 "$folder/002_chord.wav" synth 1.5 sine 261.63 sine 329.63 sine 392.00 fade 0.02 1.5 0.02 gain -10
+}
+
+if [[ -z "$(find_audio_files "$AUDIO_INPUT" | head -n 1)" ]]; then
+  if [[ -f "$AUDIO_INPUT" ]]; then
+    echo "'$AUDIO_INPUT' exists but is not a supported audio file (.wav/.wave/.mp3/.flac/.ogg/.m4a)." >&2
+    exit 1
+  fi
+  create_demo_audio_folder "$AUDIO_INPUT"
+fi
 
 python3 data/audio_mel_csv/prepare_audio_mel_csv.py "$AUDIO_INPUT" \
   --output_root "$OUTPUT_ROOT" \
