@@ -10,10 +10,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-RAW_INPUT="${1:-data/dukascopy_fx_m1_copy/raw/eurusd}"
-OUTPUT_ROOT="${DUKASCOPY_MC_OUTPUT_ROOT:-dukascopy_fx_m1_copy}"
-CSV_INPUT="${DUKASCOPY_MC_INPUT_CSV:-data/dukascopy_fx_m1_copy/input.csv}"
-OUT_DIR="${DUKASCOPY_MC_OUT_DIR:-out/dukascopy_fx_m1_copy}"
+RAW_INPUT="${1:-data/dukascopy_fx_m1/raw/eurusd}"
+OUTPUT_ROOT="${DUKASCOPY_MC_OUTPUT_ROOT:-dukascopy_fx_m1}"
+CSV_INPUT="${DUKASCOPY_MC_INPUT_CSV:-data/dukascopy_fx_m1/input.csv}"
+OUT_DIR="${DUKASCOPY_MC_OUT_DIR:-out/dukascopy_fx_m1}"
 MAX_ITERS="${DUKASCOPY_MC_MAX_ITERS:-10000}"
 DEVICE="${DUKASCOPY_MC_DEVICE:-cuda:0}"
 DTYPE="${DUKASCOPY_MC_DTYPE:-bfloat16}"
@@ -21,7 +21,7 @@ DOWNLOAD_START="${DUKASCOPY_DEMO_START:-2015-01-02}"
 DOWNLOAD_END="${DUKASCOPY_DEMO_END:-2026-01-03}"
 DOWNLOAD_SIDE="${DUKASCOPY_DEMO_SIDE:-BID}"
 DOWNLOAD_UNIVERSE="${DUKASCOPY_DEMO_UNIVERSE:-majors}"
-DOWNLOAD_OUT="${DUKASCOPY_DEMO_RAW_OUT:-data/dukascopy_fx_m1_copy/raw}"
+DOWNLOAD_OUT="${DUKASCOPY_DEMO_RAW_OUT:-data/dukascopy_fx_m1/raw}"
 
 has_candle_csvs() {
   local path="$1"
@@ -36,7 +36,7 @@ has_candle_csvs() {
 
 if ! has_candle_csvs "$RAW_INPUT"; then
   echo "No Dukascopy candle CSVs found at $RAW_INPUT; downloading $DOWNLOAD_UNIVERSE $DOWNLOAD_SIDE data for [$DOWNLOAD_START, $DOWNLOAD_END)."
-  python3 data/dukascopy_fx_m1_copy/download_dukascopy_fx_m1.py \
+  python3 data/dukascopy_fx_m1/download_dukascopy_fx_m1.py \
     --start "$DOWNLOAD_START" \
     --end "$DOWNLOAD_END" \
     --universe "$DOWNLOAD_UNIVERSE" \
@@ -48,7 +48,7 @@ fi
 
 # Reuse the same dataset preparation path as csv_mc_int_demo.sh, with a
 # Dukascopy-specific float-to-integer conditioning step in front.
-data/dukascopy_fx_m1_copy/get_dataset.sh "$RAW_INPUT"
+data/dukascopy_fx_m1/get_dataset.sh "$RAW_INPUT"
 
 mapfile -t DATASETS < <(python3 - <<PY
 import json
