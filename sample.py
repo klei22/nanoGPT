@@ -45,6 +45,9 @@ def parse_args():
     parser.add_argument("--num_samples", type=int, default=3, help="Number of inference streams to draw")
     parser.add_argument("--max_new_tokens", type=int, default=500, help="Number of tokens to generate in each sample")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for predictions (1.0 = no change, < 1.0 = less random, > 1.0 = more random)")
+    parser.add_argument("--dynamic_temperature", default=False, action=argparse.BooleanOptionalAction, help="Scale sampling temperature by the flatness of the next-token logit distribution.")
+    parser.add_argument("--dynamic_temperature_min", type=float, default=0.25, help="Lower multiplier for --dynamic_temperature when the distribution is sharp.")
+    parser.add_argument("--dynamic_temperature_max", type=float, default=2.0, help="Upper multiplier for --dynamic_temperature when the distribution is flat.")
     parser.add_argument("--top_k", type=int, nargs='+', default=[1, 200], help="Retain only the top_k most likely tokens")
     parser.add_argument("--seed", type=int, default=1337, help="Seed for pseudorandom number generator")
     parser.add_argument("--dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"], help="Torch data type for inference")
@@ -74,9 +77,9 @@ def parse_args():
 
     # Output Confidence
     parser.add_argument('--colorize_mode', type=str, default='minmax',
-                        choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'all'],
+                        choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'dynamic_temperature', 'topk', 'all'],
                         help="Mode to colorize text: 'minmax' (default), 'softmax', 'softmax_top_k' for softmax over top-k values,"
-                             " 'rank', 'dot_product', or 'topk' to display a prediction table. "
+                             " 'rank', 'dot_product', 'dynamic_temperature', or 'topk' to display a prediction table. "
                              "Requires --colorize_output (enabled by default).")
     parser.add_argument('--colorize_topk', type=int, default=10,
                         help="Number of top predictions to display when colorize_mode='topk'")
@@ -175,6 +178,35 @@ def parse_args():
 
 
 
+
+def dynamic_temperature_from_logits(
+    logits: torch.Tensor,
+    base_temperature: float,
+    min_multiplier: float = 0.25,
+    max_multiplier: float = 2.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return per-row temperatures proportional to logit-distribution flatness.
+
+    Flatness is measured as normalized entropy of the softmax distribution
+    computed at temperature 1.0. A one-hot/sharp distribution approaches 0,
+    a uniform/flat distribution approaches 1, and the returned temperature is
+    linearly interpolated between ``base * min_multiplier`` and
+    ``base * max_multiplier``.
+    """
+    if base_temperature <= 0:
+        raise ValueError("base_temperature must be positive")
+    if min_multiplier <= 0 or max_multiplier <= 0:
+        raise ValueError("dynamic temperature multipliers must be positive")
+    if min_multiplier > max_multiplier:
+        raise ValueError("dynamic_temperature_min must be <= dynamic_temperature_max")
+
+    finite_counts = torch.isfinite(logits).sum(dim=-1).clamp_min(2).to(logits.dtype)
+    probs = F.softmax(logits, dim=-1)
+    entropy = -(probs * torch.log(probs.clamp_min(torch.finfo(probs.dtype).tiny))).sum(dim=-1)
+    flatness = (entropy / torch.log(finite_counts)).clamp(0.0, 1.0)
+    multiplier = min_multiplier + flatness * (max_multiplier - min_multiplier)
+    return base_temperature * multiplier, flatness
+
 def convert_rich_renderable_to_ansi(renderable) -> str:
     """Convert any Rich renderable (Text, Table, etc.) into an ANSI string."""
     buffer = io.StringIO()
@@ -222,6 +254,9 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
       - 'softmax': data_for_color is a 2D list/array (T, vocab_size) containing
                    the *full* distribution at each step. We extract the chosen
                    token's probability for each step, then min-max normalize.
+      - 'dynamic_temperature': data_for_color is a 1D list/array of effective
+                   per-token temperatures. Lower temperatures render greener
+                   (more confident/sharp), higher temperatures render redder.
     """
     text = Text()
 
@@ -250,6 +285,11 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
         # Normalize the chosen values (probabilities or logits) to [0..1]
         norm_values = (values - values.min()) / (values.max() - values.min() + 1e-6)
+
+    if colorize_mode == 'dynamic_temperature':
+        values = torch.tensor(data_for_color, dtype=torch.float32)
+        normalized_temps = (values - values.min()) / (values.max() - values.min() + 1e-6)
+        norm_values = 1.0 - normalized_temps
 
     segments = _token_segments(tokens, decode)
     for i, token_str in enumerate(segments):
@@ -576,7 +616,7 @@ def sample_with_existing_model(
     console = Console()
     model.eval()
 
-    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank", "topk"]
+    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "dynamic_temperature", "rank", "topk"]
     modes_to_apply = valid_modes if colorize_mode == "all" else [colorize_mode]
 
 
@@ -591,6 +631,9 @@ def sample_with_existing_model(
         for sample_idx in range(num_samples):
             # ------------- LSV per-sample section -------------------
             kl_divergences = [] # To store the impact of the cosine penalty
+            dynamic_temperatures = []
+            dynamic_flatness_values = []
+            dynamic_temperatures_for_color: List[float] = []
 
             if args is not None:
                 # This block handles LSV for standalone sampling. When called from train.py,
@@ -666,7 +709,19 @@ def sample_with_existing_model(
                             kl_divergences.append(kl_div.item())
 
 
-                    logits = raw_logits_row / temperature        # Scaled logits for sampling
+                    step_temperature = temperature
+                    if args is not None and args.dynamic_temperature:
+                        step_temperature_tensor, flatness_tensor = dynamic_temperature_from_logits(
+                            raw_logits_row,
+                            temperature,
+                            args.dynamic_temperature_min,
+                            args.dynamic_temperature_max,
+                        )
+                        step_temperature = step_temperature_tensor.unsqueeze(-1)
+                        dynamic_temperatures.append(step_temperature_tensor.detach().cpu())
+                        dynamic_flatness_values.append(flatness_tensor.detach().cpu())
+
+                    logits = raw_logits_row / step_temperature        # Scaled logits for sampling
                     full_row = logits[0].clone()               # pre-mask
 
 
@@ -708,6 +763,11 @@ def sample_with_existing_model(
 
                     if colorize_output:
                         chosen = idx_next.item()
+                        if args is not None and args.dynamic_temperature:
+                            if isinstance(step_temperature, torch.Tensor):
+                                dynamic_temperatures_for_color.append(float(step_temperature.flatten()[0].detach().cpu()))
+                            else:
+                                dynamic_temperatures_for_color.append(float(step_temperature))
                         # rank: 1 = best
                         rank = (full_row > full_row[chosen]).sum().item() + 1
 
@@ -739,6 +799,15 @@ def sample_with_existing_model(
             if kl_divergences:
                 avg_kl = np.mean(kl_divergences)
                 console.print(f"\n[bold yellow]Cosine Penalty Impact (Avg KL Divergence):[/bold yellow] [bold cyan]{avg_kl:.4f}[/bold cyan]")
+
+            if dynamic_temperatures:
+                temp_values = torch.cat([t.flatten() for t in dynamic_temperatures]).numpy()
+                flat_values = torch.cat([f.flatten() for f in dynamic_flatness_values]).numpy()
+                console.print(
+                    "\n[bold yellow]Dynamic Temperature:[/bold yellow] "
+                    f"avg={temp_values.mean():.3f}, min={temp_values.min():.3f}, max={temp_values.max():.3f}, "
+                    f"avg_flatness={flat_values.mean():.3f}"
+                )
 
             # ---------- save minmax chart if requested ----------------------
             if args.show_minmax_chart and pre_temp_scalar_rows:
@@ -787,6 +856,8 @@ def sample_with_existing_model(
                         data_for_color = topk_rows
                     elif cm == "dot_product":
                         data_for_color = dot_product_values
+                    elif cm == "dynamic_temperature" and dynamic_temperatures_for_color:
+                        data_for_color = dynamic_temperatures_for_color
 
                     if data_for_color is not None:
                         coloured = colorize_text(              # type: ignore
@@ -1835,7 +1906,17 @@ def main():
 
                             idx_next = rounded.to(torch.long).unsqueeze(-1)
                         else:
-                            cur_logits = logits_list[i][:, -1, :] / args.temperature
+                            raw_cur_logits = logits_list[i][:, -1, :]
+                            cur_temperature = args.temperature
+                            if args is not None and args.dynamic_temperature:
+                                cur_temperature, _ = dynamic_temperature_from_logits(
+                                    raw_cur_logits,
+                                    args.temperature,
+                                    args.dynamic_temperature_min,
+                                    args.dynamic_temperature_max,
+                                )
+                                cur_temperature = cur_temperature.unsqueeze(-1)
+                            cur_logits = raw_cur_logits / cur_temperature
                             if args.top_k is not None:
                                 top_k_val = (
                                     args.top_k[0]
