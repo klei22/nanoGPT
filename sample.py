@@ -77,9 +77,9 @@ def parse_args():
 
     # Output Confidence
     parser.add_argument('--colorize_mode', type=str, default='minmax',
-                        choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'topk', 'all'],
+                        choices=['minmax', 'softmax', 'softmax_top_k', 'rank', 'dot_product', 'dynamic_temperature', 'topk', 'all'],
                         help="Mode to colorize text: 'minmax' (default), 'softmax', 'softmax_top_k' for softmax over top-k values,"
-                             " 'rank', 'dot_product', or 'topk' to display a prediction table. "
+                             " 'rank', 'dot_product', 'dynamic_temperature', or 'topk' to display a prediction table. "
                              "Requires --colorize_output (enabled by default).")
     parser.add_argument('--colorize_topk', type=int, default=10,
                         help="Number of top predictions to display when colorize_mode='topk'")
@@ -254,6 +254,9 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
       - 'softmax': data_for_color is a 2D list/array (T, vocab_size) containing
                    the *full* distribution at each step. We extract the chosen
                    token's probability for each step, then min-max normalize.
+      - 'dynamic_temperature': data_for_color is a 1D list/array of effective
+                   per-token temperatures. Lower temperatures render greener
+                   (more confident/sharp), higher temperatures render redder.
     """
     text = Text()
 
@@ -282,6 +285,11 @@ def colorize_text(tokens, data_for_color, decode, colorize_mode='minmax'):
 
         # Normalize the chosen values (probabilities or logits) to [0..1]
         norm_values = (values - values.min()) / (values.max() - values.min() + 1e-6)
+
+    if colorize_mode == 'dynamic_temperature':
+        values = torch.tensor(data_for_color, dtype=torch.float32)
+        normalized_temps = (values - values.min()) / (values.max() - values.min() + 1e-6)
+        norm_values = 1.0 - normalized_temps
 
     segments = _token_segments(tokens, decode)
     for i, token_str in enumerate(segments):
@@ -608,7 +616,7 @@ def sample_with_existing_model(
     console = Console()
     model.eval()
 
-    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "rank", "topk"]
+    valid_modes = ["minmax", "softmax", "softmax_top_k", "dot_product", "dynamic_temperature", "rank", "topk"]
     modes_to_apply = valid_modes if colorize_mode == "all" else [colorize_mode]
 
 
@@ -625,6 +633,7 @@ def sample_with_existing_model(
             kl_divergences = [] # To store the impact of the cosine penalty
             dynamic_temperatures = []
             dynamic_flatness_values = []
+            dynamic_temperatures_for_color: List[float] = []
 
             if args is not None:
                 # This block handles LSV for standalone sampling. When called from train.py,
@@ -754,6 +763,11 @@ def sample_with_existing_model(
 
                     if colorize_output:
                         chosen = idx_next.item()
+                        if args is not None and args.dynamic_temperature:
+                            if isinstance(step_temperature, torch.Tensor):
+                                dynamic_temperatures_for_color.append(float(step_temperature.flatten()[0].detach().cpu()))
+                            else:
+                                dynamic_temperatures_for_color.append(float(step_temperature))
                         # rank: 1 = best
                         rank = (full_row > full_row[chosen]).sum().item() + 1
 
@@ -842,6 +856,8 @@ def sample_with_existing_model(
                         data_for_color = topk_rows
                     elif cm == "dot_product":
                         data_for_color = dot_product_values
+                    elif cm == "dynamic_temperature" and dynamic_temperatures_for_color:
+                        data_for_color = dynamic_temperatures_for_color
 
                     if data_for_color is not None:
                         coloured = colorize_text(              # type: ignore
