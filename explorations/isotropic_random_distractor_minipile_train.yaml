@@ -1,0 +1,115 @@
+# Minipile training sweep for the Isotropic Random-Distractor diagnostics.
+# This file is a list of concrete train.py configs consumed by:
+#   python3 optimization_and_search/run_from_yaml.py --yaml explorations/isotropic_random_distractor_minipile_train.yaml --output_dir out_isotropic_minipile --prefix ird_minipile
+# Keep checkpoint saving enabled so analyze_minipile_sweep.py can inspect lm_head/unembedding geometry.
+
+- dataset: minipile
+  n_layer: 4
+  n_head: 4
+  n_embd: 128
+  block_size: 256
+  batch_size: 64
+  gradient_accumulation_steps: 2
+  max_iters: 2000
+  eval_interval: 500
+  eval_iters: 100
+  learning_rate: 0.0006
+  min_lr: 0.00006
+  dtype: bfloat16
+  device: cuda
+  use_rotary_embeddings: true
+  use_abs_pos_embeddings: false
+  use_qk_norm: true
+  use_qk_norm_scale: true
+  use_peri_ln: true
+  never_save_checkpoint: false
+  always_save_checkpoint: true
+
+- dataset: minipile
+  n_layer: 4
+  n_head: 6
+  n_embd: 192
+  block_size: 256
+  batch_size: 48
+  gradient_accumulation_steps: 2
+  max_iters: 2000
+  eval_interval: 500
+  eval_iters: 100
+  learning_rate: 0.0006
+  min_lr: 0.00006
+  dtype: bfloat16
+  device: cuda
+  use_rotary_embeddings: true
+  use_abs_pos_embeddings: false
+  use_qk_norm: true
+  use_qk_norm_scale: true
+  use_peri_ln: true
+  never_save_checkpoint: false
+  always_save_checkpoint: true
+
+- dataset: minipile
+  n_layer: 4
+  n_head: 8
+  n_embd: 256
+  block_size: 256
+  batch_size: 32
+  gradient_accumulation_steps: 2
+  max_iters: 2000
+  eval_interval: 500
+  eval_iters: 100
+  learning_rate: 0.0006
+  min_lr: 0.00006
+  dtype: bfloat16
+  device: cuda
+  use_rotary_embeddings: true
+  use_abs_pos_embeddings: false
+  use_qk_norm: true
+  use_qk_norm_scale: true
+  use_peri_ln: true
+  never_save_checkpoint: false
+  always_save_checkpoint: true
+
+# A balanced-width/depth path: N roughly grows faster than width-only.
+- dataset: minipile
+  n_layer: 6
+  n_head: 6
+  n_embd: 192
+  block_size: 256
+  batch_size: 48
+  gradient_accumulation_steps: 2
+  max_iters: 2000
+  eval_interval: 500
+  eval_iters: 100
+  learning_rate: 0.0006
+  min_lr: 0.00006
+  dtype: bfloat16
+  device: cuda
+  use_rotary_embeddings: true
+  use_abs_pos_embeddings: false
+  use_qk_norm: true
+  use_qk_norm_scale: true
+  use_peri_ln: true
+  never_save_checkpoint: false
+  always_save_checkpoint: true
+
+- dataset: minipile
+  n_layer: 8
+  n_head: 8
+  n_embd: 256
+  block_size: 256
+  batch_size: 32
+  gradient_accumulation_steps: 2
+  max_iters: 2000
+  eval_interval: 500
+  eval_iters: 100
+  learning_rate: 0.0006
+  min_lr: 0.00006
+  dtype: bfloat16
+  device: cuda
+  use_rotary_embeddings: true
+  use_abs_pos_embeddings: false
+  use_qk_norm: true
+  use_qk_norm_scale: true
+  use_peri_ln: true
+  never_save_checkpoint: false
+  always_save_checkpoint: true
