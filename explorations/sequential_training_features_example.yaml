@@ -1,0 +1,62 @@
+# Demonstrates the sequential runner features:
+# - script/train_script aliases for train.py, train_mezo.py, and train_recurrent.py
+# - per-stage out_dir creation under the parent run directory
+# - resume_from_previous checkpoint handoff
+# - reset_best_val_loss_on_resume between datasets/modes
+# - ${RUN_NAME}, ${STAGE_OUT_DIR}, ${PREV_OUT_DIR}, and ${PREV_CKPT} placeholders
+---
+named_static_groups:
+  - named_group: "smoke_arch"
+    n_layer: [2]
+    n_head: [2]
+    n_embd: [128]
+    block_size: [64]
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+named_group_static: ["smoke_arch"]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  batch_size: [4]
+  gradient_accumulation_steps: [1]
+  learning_rate: [0.0003]
+  eval_interval: [50]
+  eval_iters: [10]
+  log_interval: [10]
+  always_save_checkpoint: [true]
+  compile: [false]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+
+parameter_groups:
+  - run_name_override: ["sequential_feature_demo"]
+    training_sequence:
+      - stage_name: "scratch_train"
+        train_script: "train"
+        init_from: "scratch"
+        max_iters: 100
+        sample_file: "${STAGE_OUT_DIR}/${RUN_NAME}_scratch_sample.txt"
+      - stage_name: "resume_train_new_budget"
+        train_script: "train.py"
+        max_iters: 150
+        resume_from_previous: true
+        reset_best_val_loss_on_resume: true
+        sample_file: "${STAGE_OUT_DIR}/${RUN_NAME}_resume_sample.txt"
+      - stage_name: "mezo_resume"
+        train_script: "mezo"
+        max_iters: 175
+        resume_from_previous: true
+        reset_best_val_loss_on_resume: true
+        mezo_epsilon: 0.001
+      - stage_name: "recurrent_from_mezo"
+        train_script: "recurrent"
+        max_iters: 200
+        resume_from_previous: true
+        reset_best_val_loss_on_resume: true
+        reset_optim: true
+        latent_steps: 1
+        latent_mix_mode: "slerp"
+        latent_mix_alpha: 0.25
+        learn_latent_mix_alpha: true
+        sample_file: "${STAGE_OUT_DIR}/${RUN_NAME}_from_${PREV_OUT_DIR}_sample.txt"

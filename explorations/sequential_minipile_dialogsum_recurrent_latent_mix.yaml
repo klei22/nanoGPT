@@ -1,0 +1,97 @@
+# Sequential train.py -> train.py -> train_recurrent.py sweep.
+# Each parameter_group is one full three-stage run. The architecture/model
+# settings live in the named static group plus common_group and are inherited
+# by all stages so resumed checkpoints keep compatible model_args.
+---
+named_static_groups:
+  - named_group: "tiny_rotary"
+    n_layer: [6]
+    n_head: [6]
+    n_embd: [384]
+    block_size: [256]
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+named_group_static: ["tiny_rotary"]
+
+common_group:
+  batch_size: [8]
+  gradient_accumulation_steps: [1]
+  learning_rate: [0.0006]
+  eval_interval: [500]
+  eval_iters: [100]
+  log_interval: [10]
+  always_save_checkpoint: [true]
+  compile: [false]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+
+parameter_groups:
+  - run_name_override: ["seq_minipile_dialogsum_recurrent_direct"]
+    training_sequence:
+      - stage_name: "pretrain_minipile"
+        script: "train.py"
+        dataset: "minipile"
+        init_from: "scratch"
+        max_iters: 10000
+      - stage_name: "finetune_dialogsum"
+        script: "train.py"
+        dataset: "dialogsum"
+        max_iters: 1000
+        resume_from_previous: true
+        reset_best_val_loss_on_resume: true
+      - stage_name: "recurrent_dialogsum_direct"
+        script: "train_recurrent.py"
+        dataset: "dialogsum"
+        max_iters: 1000
+        latent_steps: 1
+        latent_mix_mode: "direct"
+        reset_best_val_loss_on_resume: true
+        resume_from_previous: true
+        reset_optim: true
+  - run_name_override: ["seq_minipile_dialogsum_recurrent_slerp"]
+    training_sequence:
+      - stage_name: "pretrain_minipile"
+        script: "train.py"
+        dataset: "minipile"
+        init_from: "scratch"
+        max_iters: 10000
+      - stage_name: "finetune_dialogsum"
+        script: "train.py"
+        dataset: "dialogsum"
+        max_iters: 1000
+        resume_from_previous: true
+        reset_best_val_loss_on_resume: true
+      - stage_name: "recurrent_dialogsum_slerp"
+        script: "train_recurrent.py"
+        dataset: "dialogsum"
+        max_iters: 1000
+        latent_steps: 1
+        latent_mix_mode: "slerp"
+        latent_mix_alpha: 0.5
+        learn_latent_mix_alpha: true
+        reset_best_val_loss_on_resume: true
+        resume_from_previous: true
+        reset_optim: true
+  - run_name_override: ["seq_minipile_dialogsum_recurrent_add_norm"]
+    training_sequence:
+      - stage_name: "pretrain_minipile"
+        script: "train.py"
+        dataset: "minipile"
+        init_from: "scratch"
+        max_iters: 10000
+      - stage_name: "finetune_dialogsum"
+        script: "train.py"
+        dataset: "dialogsum"
+        max_iters: 1000
+        resume_from_previous: true
+        reset_best_val_loss_on_resume: true
+      - stage_name: "recurrent_dialogsum_add_norm"
+        script: "train_recurrent.py"
+        dataset: "dialogsum"
+        max_iters: 1000
+        latent_steps: 1
+        latent_mix_mode: "add_norm"
+        reset_best_val_loss_on_resume: true
+        resume_from_previous: true
+        reset_optim: true

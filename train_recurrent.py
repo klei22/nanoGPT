@@ -45,6 +45,14 @@ recur_parser.add_argument("--skip_steps",    type=int, default=0,
 recur_parser.add_argument("--weight_start",  type=float, default=1.0)
 recur_parser.add_argument("--weight_end",    type=float, default=1.0)
 recur_parser.add_argument("--reset_optim", action="store_true", help="Ignore optimiser state in the checkpoint")
+recur_parser.add_argument("--reset_best_val_loss_on_resume", default=False, action=argparse.BooleanOptionalAction,
+                          help="Reset best_val_loss instead of inheriting it from --resume_ckpt")
+recur_parser.add_argument("--latent_mix_mode", choices=("direct", "slerp", "add_norm"), default="direct",
+                          help="How to turn a recurrent latent into the next input: reuse it directly, slerp toward the correct token embedding, or add then L2-normalize")
+recur_parser.add_argument("--latent_mix_alpha", type=float, default=0.5,
+                          help="Blend amount for --latent_mix_mode=slerp; ignored by direct/add_norm unless --learn_latent_mix_alpha is set for checkpointing consistency")
+recur_parser.add_argument("--learn_latent_mix_alpha", action="store_true",
+                          help="Learn the slerp blend amount as a sigmoid-constrained scalar")
 
 # -- split cmdline -----------------------------------------------------
 latent_args, remaining = recur_parser.parse_known_args()
@@ -98,9 +106,20 @@ if unexpected:
 embed_tokens     = model.embed_tokens
 forward_embedded = lambda x: model.forward_embedded(x, return_hidden=True)
 
+latent_mix_logit = None
+if args.learn_latent_mix_alpha:
+    initial_alpha = min(max(args.latent_mix_alpha, 1e-6), 1.0 - 1e-6)
+    latent_mix_logit = torch.nn.Parameter(
+        torch.logit(torch.tensor(initial_alpha, device=device))
+    )
+    if ckpt.get("latent_mix_logit") is not None:
+        latent_mix_logit.data.copy_(ckpt["latent_mix_logit"].to(device))
+
 decay, no_decay = [], []
 for n, p in model.named_parameters():
     (decay if p.dim() >= 2 else no_decay).append(p)
+if latent_mix_logit is not None:
+    no_decay.append(latent_mix_logit)
 
 param_groups = [
     {"params": decay,     "weight_decay": args.opt_weight_decay},
@@ -110,12 +129,17 @@ param_groups = [
 optimizer = optimizer_dictionary[args.optimizer](param_groups, args)
 
 if ckpt.get("optimizer") and not getattr(args, "reset_optim", False):
-    optimizer.load_state_dict(ckpt["optimizer"])
+    try:
+        optimizer.load_state_dict(ckpt["optimizer"])
+    except ValueError as exc:
+        print(f"warning: optimizer state not loaded ({exc})")
 
 
-best_val_loss = ckpt["best_val_loss"].item()
+best_val_loss_raw = ckpt.get("best_val_loss", float("inf"))
+best_val_loss = best_val_loss_raw.item() if hasattr(best_val_loss_raw, "item") else float(best_val_loss_raw)
+if args.reset_best_val_loss_on_resume:
+    best_val_loss = float("inf")
 print("best_val_loss", best_val_loss)
-best_val_loss=5.00 # TODO: set a flag so that we can choose to definitely start saving checkpoints in recurrent mode
 iter_num      = ckpt["iter_num"]          # not used, but preserved
 
 block_size = gpt_conf.block_size
@@ -140,8 +164,46 @@ def make_loss_weights(bsz: int, T: int, device):
     return w
 
 # ----------------------------------------------------------------------
-# 5)  ONE BLOCK (B,T)  →  scalar loss
+# 5)  LATENT MIXING + ONE BLOCK (B,T)  →  scalar loss
 # ----------------------------------------------------------------------
+def current_latent_mix_alpha():
+    if latent_mix_logit is not None:
+        return torch.sigmoid(latent_mix_logit)
+    return torch.tensor(args.latent_mix_alpha, device=device)
+
+
+def slerp_latent(latent, target, amount, eps=1e-8):
+    """
+    Spherical interpolation from `latent` toward the correct-token embedding.
+    Norms are interpolated linearly so the result keeps a sensible magnitude
+    even when the two input vectors have different lengths.
+    """
+    latent_norm = latent.norm(dim=-1, keepdim=True).clamp_min(eps)
+    target_norm = target.norm(dim=-1, keepdim=True).clamp_min(eps)
+    latent_unit = latent / latent_norm
+    target_unit = target / target_norm
+    dot = (latent_unit * target_unit).sum(dim=-1, keepdim=True).clamp(-1.0 + eps, 1.0 - eps)
+    omega = torch.acos(dot)
+    sin_omega = torch.sin(omega).clamp_min(eps)
+    mixed_unit = (
+        torch.sin((1.0 - amount) * omega) / sin_omega * latent_unit
+        + torch.sin(amount * omega) / sin_omega * target_unit
+    )
+    mixed_norm = (1.0 - amount) * latent_norm + amount * target_norm
+    return mixed_unit * mixed_norm
+
+
+def mix_recurrent_latent(latent, correct_token_emb):
+    if args.latent_mix_mode == "direct":
+        return latent
+    if args.latent_mix_mode == "slerp":
+        return slerp_latent(latent, correct_token_emb, current_latent_mix_alpha())
+    if args.latent_mix_mode == "add_norm":
+        mixed = latent + correct_token_emb
+        return F.normalize(mixed, p=2, dim=-1) * math.sqrt(gpt_conf.n_embd)
+    raise ValueError(f"unknown latent_mix_mode: {args.latent_mix_mode}")
+
+
 def train_block(x_tokens, y_tokens):
     """
     One recurrent block that **preserves full self-attention context**.
@@ -161,11 +223,13 @@ def train_block(x_tokens, y_tokens):
 
     for t in range(T):
         # ---- decide what to append ---------------------------------
-        # ↳ Teacher-force **until** we reach latent_steps
-        if t < args.latent_steps:
-            new_piece = embed_tokens(x_tokens[:, t:t+1])  # GT token
+        correct_piece = embed_tokens(x_tokens[:, t:t+1])  # GT token embedding
+        # ↳ Seed with GT embeddings, then feed back the previous latent.
+        #    Optional modes can bias that latent back toward the correct token.
+        if t < args.latent_steps or hidden_prev is None:
+            new_piece = correct_piece
         else:
-            new_piece = hidden_prev                       # latent
+            new_piece = mix_recurrent_latent(hidden_prev, correct_piece)
 
         # ---- grow the buffer ---------------------------------------
         hidden_buf = new_piece if hidden_buf is None else \
@@ -224,7 +288,8 @@ def run_epoch(split):
                         {"model": model.state_dict(),
                          "model_args": ckpt["model_args"],
                          "iter_num":   global_step,
-                         "best_val_loss": best_val_loss},
+                         "best_val_loss": best_val_loss,
+                         "latent_mix_logit": None if latent_mix_logit is None else latent_mix_logit.detach().cpu()},
                         best_ckpt_path)
                     print(f"  ➜ new best @ step {global_step}; "
                           f"checkpoint saved to {best_ckpt_path}")
@@ -244,7 +309,8 @@ def run_epoch(split):
 # 7)  TRAINING DRIVER
 # ----------------------------------------------------------------------
 tb = SummaryWriter() if getattr(args, "tensorboard_log", False) else None
-best_ckpt_path = os.path.join(os.path.dirname(args.resume_ckpt), "ckpt_lat.pt")
+os.makedirs(args.out_dir, exist_ok=True)
+best_ckpt_path = os.path.join(args.out_dir, "ckpt.pt")
 
 val_loss = 999.9
 while global_step < args.max_iters:
@@ -264,7 +330,8 @@ while global_step < args.max_iters:
                 {"model": model.state_dict(),
                  "model_args": ckpt["model_args"],
                  "iter_num":   global_step,
-                 "best_val_loss": best_val_loss},
+                 "best_val_loss": best_val_loss,
+                 "latent_mix_logit": None if latent_mix_logit is None else latent_mix_logit.detach().cpu()},
                 best_ckpt_path)
             print(f"  ➜ new best @ step {global_step}; "
                   f"checkpoint saved to {best_ckpt_path}")
