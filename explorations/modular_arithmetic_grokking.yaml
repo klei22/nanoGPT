@@ -13,29 +13,38 @@ common_group:
   n_head: [4]
   n_embd: [128]
   dropout: [0.0]
-  bias: [true]
   learning_rate: [0.001]
-  weight_decay: [1.0]
-  warmup_iters: [100]
-  decay_lr: [true]
   min_lr: [0.00001]
   eval_interval: [500]
   eval_iters: [100]
   max_iters: [20000]
   always_save_checkpoint: [true]
   only_save_checkpoint_at_end: [true]
-  compile: [false]
+  compile: [true]
   dtype: ["float16"]
   device: ["cuda:0"]
+  log_lm_head_vector_stats: [true]
+  log_post_norm_lm_head_vector_stats: [true]
 
 parameter_groups:
   # Main replication setting; prepare with:
   # python data/modular_arithmetic/prepare.py --modulus 113 --train-fraction 0.3 --train-repeats 200 --val-repeats 20
   - run_name_override: ["mod_add_p113_train30_wd1"]
     tensorboard_run_name: ["mod_add_p113_train30_wd1"]
+    norm_variant_lm_head: ["cappedhyperspherenorm"]
 
-  # Faster/smaller comparison often used in modular-arithmetic papers; prepare
-  # data separately with --modulus 97 before launching this group.
-  - run_name_override: ["mod_add_p97_train50_wd1"]
-    tensorboard_run_name: ["mod_add_p97_train50_wd1"]
-    max_iters: [15000]
+  - run_name_override: ["mod_add_p113_train30_wd1"]
+    tensorboard_run_name: ["mod_add_p113_train30_wd1"]
+    weight_decay: [1.0, 5.0, 10.0, 50.0, 100.0]
+    norm_variant_lm_head: ["cappedhyperspherenorm"]
+
+  - run_name_override: ["mod_add_p113_train30_wd1"]
+    tensorboard_run_name: ["mod_add_p113_train30_wd1"]
+    optimizer: ["muon"]
+    weight_decay: [0]
+
+  - run_name_override: ["mod_add_p113_train30_wd1"]
+    tensorboard_run_name: ["mod_add_p113_train30_wd1"]
+    norm_variant_lm_head: ["cappedhyperspherenorm"]
+    optimizer: ["muon"]
+    weight_decay: [0]
