@@ -48,7 +48,7 @@ def test_slerp_interpolates_direction_and_magnitude() -> None:
         "B": np.array([0.0, 4.0, 0.0]),
     }
     midpoint, references = evaluate_vector_expression("slerp(A, B, 0.5)", aliases)
-    expected_direction = np.array([2 ** -0.5, 2 ** -0.5, 0.0])
+    expected_direction = np.array([2**-0.5, 2**-0.5, 0.0])
     np.testing.assert_allclose(midpoint, expected_direction * 3.0, atol=1e-8)
     assert references == ("A", "B")
 
@@ -58,10 +58,11 @@ def test_slerp_interpolates_direction_and_magnitude() -> None:
     np.testing.assert_allclose(end, aliases["B"])
 
 
-def test_slerp_rejects_invalid_fraction() -> None:
+def test_slerp_allows_finite_extrapolation() -> None:
     aliases = {"A": np.array([1.0, 0.0]), "B": np.array([0.0, 1.0])}
-    with pytest.raises(ValueError, match="interval"):
-        evaluate_vector_expression("slerp(A, B, 1.5)", aliases)
+    result, references = evaluate_vector_expression("slerp(A, B, -0.5)", aliases)
+    assert references == ("A", "B")
+    assert np.all(np.isfinite(result))
 
 
 def test_unsafe_vector_math_is_rejected() -> None:
@@ -78,3 +79,19 @@ def test_zero_resultant_is_rejected() -> None:
             vectors,
             [SimpleNamespace(expression="A - A", label="zero")],
         )
+
+
+def test_model_functions_can_be_nested() -> None:
+    aliases = {"A": np.array([1.0, 2.0])}
+    calls: list[str] = []
+
+    def model_function(name, args):
+        calls.append(name)
+        return np.asarray(args[0]) * (2.0 if name == "norm" else 0.5)
+
+    result, references = evaluate_vector_expression(
+        "invnorm(norm(A, 0, 'attn', 'input'), 'final')", aliases, model_function=model_function
+    )
+    np.testing.assert_allclose(result, aliases["A"])
+    assert references == ("A",)
+    assert calls == ["norm", "invnorm"]

@@ -1354,7 +1354,8 @@ function renderArithmeticPanel() {
 async function addArithmeticResult() {
   const rows = selectedRows();
   const slerpMode = $('arithmeticModeSelect').value === 'slerp';
-  const fraction = Math.max(0, Math.min(1, Number($('slerpFractionInput').value) || 0));
+  const rawFraction = Number($('slerpFractionInput').value);
+  const fraction = Number.isFinite(rawFraction) ? rawFraction : 0;
   const fromAlias = $('slerpFromSelect').value;
   const toAlias = $('slerpToSelect').value;
   const expression = slerpMode
@@ -1848,7 +1849,7 @@ function normalizedWorkspace(snapshot) {
       label: stringValue(editor.label, '', 120),
       slerpFrom: stringValue(editor.slerp_from, 'A', 20),
       slerpTo: stringValue(editor.slerp_to, 'B', 20),
-      slerpFraction: finiteNumber(editor.slerp_fraction, 0.5, 0, 1),
+      slerpFraction: finiteNumber(editor.slerp_fraction, 0.5, -1e9, 1e9),
     },
   };
 }

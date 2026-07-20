@@ -6,7 +6,6 @@ from html import escape as html_escape
 from pathlib import Path
 
 import numpy as np
-
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,12 +18,13 @@ from .model_store import (
     list_local_models,
     load_model,
     model_status,
+    model_vector_function,
     nearest_neighbors,
     search_tokens,
-    tokenize_text,
     selected_token_rows,
     selected_vectors,
     token_record,
+    tokenize_text,
     unload_model,
 )
 from .projections import nearest_neighbor_edges, project_vectors, projection_catalog
@@ -237,7 +237,11 @@ def _prepare_projection_selection(
         requested_ids.insert(0, anchor_id)
     ids, base_vectors = selected_vectors(assets, requested_ids)
     anchor_index = ids.index(anchor_id) if anchor_id is not None else None
-    resultants = evaluate_vector_expressions(base_vectors, arithmetic_expressions or [])
+    resultants = evaluate_vector_expressions(
+        base_vectors,
+        arithmetic_expressions or [],
+        model_function=lambda name, args: model_vector_function(assets, name, args),
+    )
     if resultants:
         vectors = np.vstack([base_vectors, *(item.vector[None, :] for item in resultants)])
     else:
