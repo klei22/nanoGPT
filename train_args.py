@@ -914,6 +914,7 @@ def parse_args():
                           "mla",
                           "co4",
                           "triadic_hyperrot",
+                          "triadic_slerp",
                           ]
 
     model_group.add_argument(
@@ -975,6 +976,25 @@ def parse_args():
     model_group.add_argument("--trirot_eps", type=float, default=1e-6,
                              help="epsilon used by triadic hyperrotation geometry")
     model_group.add_argument("--trirot_require_distinct_values", default=False,
+                             action=argparse.BooleanOptionalAction,
+                             help="require n_kv_group == n_head so A/B/C use distinct W_V projections")
+
+    ## Triadic Signed Slerp Attention Variations
+    model_group.add_argument("--trislerp_n_triplets", type=int, default=None,
+                             help="number of leading A/B/C head triples to slerp")
+    model_group.add_argument("--trislerp_t_max", type=float, default=1.0,
+                             help="maximum signed slerp amount; positive moves A toward B, negative moves away")
+    model_group.add_argument("--trislerp_amount_gain_init", type=float, default=0.0,
+                             help="initial scalar gain for C-derived signed slerp amount")
+    model_group.add_argument("--trislerp_controller_rmsnorm", default=True,
+                             action=argparse.BooleanOptionalAction,
+                             help="RMS-normalize C before reading the signed slerp amount")
+    model_group.add_argument("--trislerp_eps", type=float, default=1e-6,
+                             help="epsilon used by triadic signed slerp geometry")
+    model_group.add_argument("--trislerp_keep_radius", default=True,
+                             action=argparse.BooleanOptionalAction,
+                             help="restore A's radius after slerping directions")
+    model_group.add_argument("--trislerp_require_distinct_values", default=False,
                              action=argparse.BooleanOptionalAction,
                              help="require n_kv_group == n_head so A/B/C use distinct W_V projections")
 

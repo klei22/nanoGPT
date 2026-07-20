@@ -188,6 +188,15 @@ class GPTConfig:
     trirot_eps: float = 1e-6
     trirot_require_distinct_values: bool = False
 
+    # Triadic head signed slerp attention
+    trislerp_n_triplets: int | None = None
+    trislerp_t_max: float = 1.0
+    trislerp_amount_gain_init: float = 0.0
+    trislerp_controller_rmsnorm: bool = True
+    trislerp_eps: float = 1e-6
+    trislerp_keep_radius: bool = True
+    trislerp_require_distinct_values: bool = False
+
     # QK Norm Options
     use_qk_norm: bool = False
     use_qk_norm_scale: bool = False
