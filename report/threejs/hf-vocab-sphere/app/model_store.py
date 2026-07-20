@@ -1051,40 +1051,64 @@ def _find_tensor(
     ]
 
 
+def _norm_weight_for_args(
+    tensors: dict[str, torch.Tensor], args: list[float | str | np.ndarray]
+) -> tuple[np.ndarray, torch.Tensor]:
+    if len(args) == 2 and str(args[1]).casefold() == "final":
+        vector = np.asarray(args[0], dtype=np.float64)
+        _name, weight = _find_tensor(
+            tensors, ("model.norm.weight", "final_layernorm.weight", "ln_f.weight", "norm.weight"), ndim=1
+        )
+        return vector, weight
+    if len(args) != 4:
+        raise ValueError("norm/invnorm expect (vector, layer, 'attn'|'ffn', 'input'|'output') or (vector, 'final').")
+
+    vector = np.asarray(args[0], dtype=np.float64)
+    layer = int(args[1])
+    block = str(args[2]).casefold()
+    position = str(args[3]).casefold()
+    if block in {"attn", "attention"} and position in {"input", "before", "in"}:
+        needles = ("input_layernorm.weight", "ln_1.weight", "attention_norm.weight")
+    elif block in {"attn", "attention"} and position in {"output", "after", "out"}:
+        needles = ("post_attention_layernorm.weight", "post_attention_norm.weight", "ln_2.weight")
+    elif block in {"ffn", "mlp"} and position in {"input", "before", "in"}:
+        needles = ("pre_feedforward_layernorm.weight", "post_attention_layernorm.weight", "ln_2.weight")
+    elif block in {"ffn", "mlp"} and position in {"output", "after", "out"}:
+        needles = ("post_feedforward_layernorm.weight", "post_feedforward_norm.weight")
+    else:
+        raise ValueError("norm/invnorm expect (vector, layer, 'attn'|'ffn', 'input'|'output') or (vector, 'final').")
+    _name, weight = _find_tensor(tensors, needles, layer=layer, ndim=1)
+    return vector, weight
+
+
+def _apply_rms_norm(vector: np.ndarray, weight: torch.Tensor) -> np.ndarray:
+    w = weight.numpy().astype(np.float64)
+    if w.shape[0] != vector.shape[0]:
+        raise ValueError(f"Norm width {w.shape[0]} does not match vector width {vector.shape[0]}.")
+    return vector * w / math.sqrt(float(np.mean(vector * vector)) + 1e-6)
+
+
+def _apply_inverse_rms_norm(vector: np.ndarray, weight: torch.Tensor) -> np.ndarray:
+    w = weight.numpy().astype(np.float64)
+    if w.shape[0] != vector.shape[0]:
+        raise ValueError(f"Norm width {w.shape[0]} does not match vector width {vector.shape[0]}.")
+    if np.any(np.abs(w) <= 1e-15):
+        raise ValueError("Cannot invert a norm with zero or near-zero weights.")
+    unweighted = vector / w
+    normalized_square_mean = float(np.mean(unweighted * unweighted))
+    if normalized_square_mean >= 1.0:
+        raise ValueError("Cannot invert this norm result because its implied pre-norm magnitude is not finite.")
+    scale = math.sqrt(1e-6 / max(1.0 - normalized_square_mean, 1e-15))
+    return unweighted * scale
+
+
 def model_vector_function(assets: ModelAssets, name: str, args: list[float | str | np.ndarray]) -> np.ndarray:
     tensors = _all_safetensor_tensors(assets.model_name, revision=assets.revision, allow_download=True)
-    if name == "norm":
-        if len(args) == 2 and str(args[1]).casefold() == "final":
-            vector = np.asarray(args[0], dtype=np.float64)
-            _n, weight = _find_tensor(
-                tensors, ("model.norm.weight", "final_layernorm.weight", "ln_f.weight", "norm.weight"), ndim=1
-            )
-        elif len(args) == 4:
-            vector = np.asarray(args[0], dtype=np.float64)
-            layer = int(args[1])
-            block = str(args[2]).casefold()
-            position = str(args[3]).casefold()
-            if block in {"attn", "attention"} and position in {"input", "before", "in"}:
-                needles = ("input_layernorm.weight", "ln_1.weight", "attention_norm.weight")
-            elif block in {"attn", "attention"} and position in {"output", "after", "out"}:
-                needles = ("post_attention_layernorm.weight", "post_attention_norm.weight", "ln_2.weight")
-            elif block in {"ffn", "mlp"} and position in {"input", "before", "in"}:
-                needles = ("pre_feedforward_layernorm.weight", "post_attention_layernorm.weight", "ln_2.weight")
-            elif block in {"ffn", "mlp"} and position in {"output", "after", "out"}:
-                needles = ("post_feedforward_layernorm.weight", "post_feedforward_norm.weight")
-            else:
-                raise ValueError(
-                    "norm expects norm(vector, layer, 'attn'|'ffn', 'input'|'output') or norm(vector, 'final')."
-                )
-            _n, weight = _find_tensor(tensors, needles, layer=layer, ndim=1)
-        else:
-            raise ValueError(
-                "norm expects norm(vector, layer, 'attn'|'ffn', 'input'|'output') or norm(vector, 'final')."
-            )
-        w = weight.numpy().astype(np.float64)
-        if w.shape[0] != vector.shape[0]:
-            raise ValueError(f"Norm width {w.shape[0]} does not match vector width {vector.shape[0]}.")
-        return vector * w / math.sqrt(float(np.mean(vector * vector)) + 1e-6)
+    if name in {"norm", "invnorm", "inverse_norm"}:
+        vector, weight = _norm_weight_for_args(tensors, args)
+        if name == "norm":
+            return _apply_rms_norm(vector, weight)
+        return _apply_inverse_rms_norm(vector, weight)
     if name == "wov":
         if len(args) != 3:
             raise ValueError("wov expects wov(vector, layer, head).")

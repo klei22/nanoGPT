@@ -269,7 +269,7 @@
         <label class="field-label top-gap" for="arithmeticLabelInput">Result label</label>
         <input id="arithmeticLabelInput" type="text" placeholder="e.g. analogy result" maxlength="120" />
         <button class="primary hero-button" id="addArithmeticBtn">Add resultant to map</button>
-        <div class="small top-gap">Expressions support aliases, scalars, parentheses, <span class="mono">+ - * /</span>, <span class="mono">mean(...)</span>, <span class="mono">slerp(A,B,t)</span>, <span class="mono">norm(A,0,'attn','input')</span>/<span class="mono">norm(A,'final')</span>, and <span class="mono">wov(A,0,0)</span>. Functions can be nested. Example average: <span class="mono">(A+B+C)/3 + D</span>. Resultants are projected from the original model space, never by adding screen coordinates.</div>
+        <div class="small top-gap">Expressions support aliases, scalars, parentheses, <span class="mono">+ - * /</span>, <span class="mono">mean(...)</span>, <span class="mono">slerp(A,B,t)</span>, <span class="mono">norm(A,0,'attn','input')</span>/<span class="mono">norm(A,'final')</span>, <span class="mono">invnorm(A,...)</span>, and <span class="mono">wov(A,0,0)</span>. Functions can be nested. Example average: <span class="mono">(A+B+C)/3 + D</span>. Resultants are projected from the original model space, never by adding screen coordinates.</div>
         <div id="arithmeticResults" class="arithmetic-result-list top-gap"><div class="empty-selection">No resultants defined.</div></div>
       </section>
 

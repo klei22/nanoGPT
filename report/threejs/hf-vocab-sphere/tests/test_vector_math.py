@@ -83,13 +83,15 @@ def test_zero_resultant_is_rejected() -> None:
 
 def test_model_functions_can_be_nested() -> None:
     aliases = {"A": np.array([1.0, 2.0])}
+    calls: list[str] = []
 
     def model_function(name, args):
-        assert name == "norm"
-        return np.asarray(args[0]) * 2.0
+        calls.append(name)
+        return np.asarray(args[0]) * (2.0 if name == "norm" else 0.5)
 
     result, references = evaluate_vector_expression(
-        "norm(norm(A, 0, 'attn', 'input'), 'final')", aliases, model_function=model_function
+        "invnorm(norm(A, 0, 'attn', 'input'), 'final')", aliases, model_function=model_function
     )
-    np.testing.assert_allclose(result, np.array([4.0, 8.0]))
+    np.testing.assert_allclose(result, aliases["A"])
     assert references == ("A",)
+    assert calls == ["norm", "invnorm"]
