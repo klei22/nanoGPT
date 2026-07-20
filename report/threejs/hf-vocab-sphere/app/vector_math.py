@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import ast
 import math
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 import numpy as np
 
@@ -43,7 +43,7 @@ def alias_map(vectors: np.ndarray) -> dict[str, np.ndarray]:
 @dataclass(slots=True)
 class _Value:
     kind: str
-    value: float | np.ndarray
+    value: float | str | np.ndarray
 
 
 def spherical_linear_interpolation(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
@@ -56,17 +56,12 @@ def spherical_linear_interpolation(a: np.ndarray, b: np.ndarray, t: float) -> np
     first = np.asarray(a, dtype=np.float64)
     second = np.asarray(b, dtype=np.float64)
     fraction = float(t)
-    if not math.isfinite(fraction) or fraction < 0.0 or fraction > 1.0:
-        raise ValueError("SLERP t must be a finite scalar in the interval [0, 1].")
+    if not math.isfinite(fraction):
+        raise ValueError("SLERP t must be a finite scalar.")
     norm_a = float(np.linalg.norm(first))
     norm_b = float(np.linalg.norm(second))
     if norm_a <= 1e-15 or norm_b <= 1e-15:
         raise ValueError("SLERP requires two non-zero vectors.")
-    if fraction <= 0.0:
-        return first.copy()
-    if fraction >= 1.0:
-        return second.copy()
-
     unit_a = first / norm_a
     unit_b = second / norm_b
     dot = float(np.clip(np.dot(unit_a, unit_b), -1.0, 1.0))
@@ -85,19 +80,20 @@ def spherical_linear_interpolation(a: np.ndarray, b: np.ndarray, t: float) -> np
     else:
         angle = math.acos(dot)
         sine = math.sin(angle)
-        direction = (
-            math.sin((1.0 - fraction) * angle) / sine * unit_a
-            + math.sin(fraction * angle) / sine * unit_b
-        )
+        direction = math.sin((1.0 - fraction) * angle) / sine * unit_a + math.sin(fraction * angle) / sine * unit_b
         direction /= max(float(np.linalg.norm(direction)), 1e-15)
 
     magnitude = (1.0 - fraction) * norm_a + fraction * norm_b
     return direction * magnitude
 
 
+ModelFunction = Callable[[str, list[float | str | np.ndarray]], np.ndarray]
+
+
 class _SafeVectorEvaluator:
-    def __init__(self, aliases: dict[str, np.ndarray]):
+    def __init__(self, aliases: dict[str, np.ndarray], model_function: ModelFunction | None = None):
         self.aliases = {name.upper(): np.asarray(vector, dtype=np.float64) for name, vector in aliases.items()}
+        self.model_function = model_function
         self.referenced: set[str] = set()
 
     def evaluate(self, expression: str) -> np.ndarray:
@@ -138,6 +134,12 @@ class _SafeVectorEvaluator:
                 raise ValueError("Scalar constants must be finite and reasonably sized.")
             return _Value("scalar", scalar)
 
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value.strip().casefold()
+            if not text or len(text) > 40:
+                raise ValueError("String arguments must be short, non-blank selectors.")
+            return _Value("string", text)
+
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             operand = self._visit(node.operand)
             sign = 1.0 if isinstance(node.op, ast.UAdd) else -1.0
@@ -145,7 +147,7 @@ class _SafeVectorEvaluator:
 
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):
-                raise ValueError("Only mean(...) and slerp(A, B, t) vector functions are supported.")
+                raise ValueError("Only named vector functions are supported.")
             function_name = node.func.id.casefold()
             if node.keywords:
                 raise ValueError("Vector functions accept positional arguments only.")
@@ -159,15 +161,28 @@ class _SafeVectorEvaluator:
                     "vector",
                     np.mean(np.stack([np.asarray(value.value) for value in values], axis=0), axis=0),
                 )
+            if function_name in {"norm", "wov"}:
+                if self.model_function is None:
+                    raise ValueError(f"{node.func.id} requires model auxiliary tensors loaded by the projection API.")
+                values = [self._visit(argument) for argument in node.args]
+                args: list[float | str | np.ndarray] = [
+                    np.asarray(value.value)
+                    if value.kind == "vector"
+                    else (str(value.value) if value.kind == "string" else float(value.value))
+                    for value in values
+                ]
+                return _Value("vector", self.model_function(function_name, args))
             if function_name != "slerp":
-                raise ValueError("Only mean(...) and slerp(A, B, t) vector functions are supported.")
+                raise ValueError(
+                    "Only mean(...), slerp(A, B, t), norm(...), and wov(...) vector functions are supported."
+                )
             if len(node.args) != 3:
                 raise ValueError("slerp requires exactly three positional arguments: slerp(A, B, t).")
             first = self._visit(node.args[0])
             second = self._visit(node.args[1])
             fraction = self._visit(node.args[2])
             if first.kind != "vector" or second.kind != "vector" or fraction.kind != "scalar":
-                raise ValueError("slerp requires two vectors followed by a scalar t in [0, 1].")
+                raise ValueError("slerp requires two vectors followed by a scalar t.")
             return _Value(
                 "vector",
                 spherical_linear_interpolation(
@@ -206,12 +221,14 @@ class _SafeVectorEvaluator:
                 return _Value("vector", np.asarray(left.value) / denominator)
 
         raise ValueError(
-            "Unsupported expression syntax. Use vector aliases, numeric scalars, parentheses, +, -, *, /, mean(...), and slerp(A, B, t)."
+            "Unsupported expression syntax. Use vector aliases, numeric scalars, parentheses, +, -, *, /, mean(...), slerp(A, B, t), norm(...), and wov(...)."
         )
 
 
-def evaluate_vector_expression(expression: str, aliases: dict[str, np.ndarray]) -> tuple[np.ndarray, tuple[str, ...]]:
-    evaluator = _SafeVectorEvaluator(aliases)
+def evaluate_vector_expression(
+    expression: str, aliases: dict[str, np.ndarray], model_function: ModelFunction | None = None
+) -> tuple[np.ndarray, tuple[str, ...]]:
+    evaluator = _SafeVectorEvaluator(aliases, model_function=model_function)
     vector = evaluator.evaluate(expression)
     return vector, tuple(sorted(evaluator.referenced, key=lambda name: (len(name), name)))
 
@@ -219,6 +236,7 @@ def evaluate_vector_expression(expression: str, aliases: dict[str, np.ndarray]) 
 def evaluate_vector_expressions(
     vectors: np.ndarray,
     expressions: Iterable[object],
+    model_function: ModelFunction | None = None,
 ) -> list[VectorExpressionResult]:
     """Evaluate request-like objects with ``expression`` and optional ``label`` attributes."""
     aliases = alias_map(vectors)
@@ -226,14 +244,12 @@ def evaluate_vector_expressions(
     for index, item in enumerate(expressions):
         expression = str(getattr(item, "expression", "") or "").strip()
         requested_label = str(getattr(item, "label", "") or "").strip()
-        vector, referenced = evaluate_vector_expression(expression, aliases)
+        vector, referenced = evaluate_vector_expression(expression, aliases, model_function=model_function)
         magnitude = float(np.linalg.norm(vector))
         if not math.isfinite(magnitude):
             raise ValueError(f"Resultant {index + 1} has a non-finite magnitude.")
         if magnitude <= 1e-12:
-            raise ValueError(
-                f"Resultant {index + 1} is zero or near-zero and has no direction to project."
-            )
+            raise ValueError(f"Resultant {index + 1} is zero or near-zero and has no direction to project.")
         alias = f"R{index + 1}"
         results.append(
             VectorExpressionResult(

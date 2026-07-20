@@ -6,9 +6,10 @@ import math
 import os
 import re
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import torch
@@ -102,7 +103,10 @@ class ModelAssets:
 
     @property
     def memory_bytes(self) -> int:
-        return int(self.weight.nelement() * self.weight.element_size() + self.magnitudes.nelement() * self.magnitudes.element_size())
+        return int(
+            self.weight.nelement() * self.weight.element_size()
+            + self.magnitudes.nelement() * self.magnitudes.element_size()
+        )
 
     def token(self, token_id: int) -> TokenInfo:
         if token_id < 0 or token_id >= self.vocab_size:
@@ -346,7 +350,9 @@ def _load_full_model(
         try:
             model = model_class.from_pretrained(model_name, **kwargs)
             output = model.get_output_embeddings() if callable(getattr(model, "get_output_embeddings", None)) else None
-            input_embedding = model.get_input_embeddings() if callable(getattr(model, "get_input_embeddings", None)) else None
+            input_embedding = (
+                model.get_input_embeddings() if callable(getattr(model, "get_input_embeddings", None)) else None
+            )
             if requested_source == "output":
                 chosen, source = output, "output"
             elif requested_source == "input":
@@ -354,7 +360,9 @@ def _load_full_model(
             else:
                 chosen, source = (output, "output") if output is not None else (input_embedding, "input")
             if chosen is None or getattr(chosen, "weight", None) is None:
-                raise ValueError(f"{model_class.__name__} does not expose a usable {requested_source} vocabulary matrix.")
+                raise ValueError(
+                    f"{model_class.__name__} does not expose a usable {requested_source} vocabulary matrix."
+                )
             tensor = chosen.weight.detach().cpu().contiguous()
             name = "get_output_embeddings().weight" if source == "output" else "get_input_embeddings().weight"
             return tensor, name, source
@@ -975,3 +983,148 @@ def list_local_models() -> list[LocalModelInfo]:
                 modified = None
             records[name] = LocalModelInfo(name, str(path), None, modified)
     return sorted(records.values(), key=lambda item: item.model_name.casefold())
+
+
+_AUX_TENSOR_CACHE: dict[tuple[str, str, bool], dict[str, torch.Tensor]] = {}
+
+
+def _all_safetensor_tensors(model_name: str, *, revision: str, allow_download: bool = True) -> dict[str, torch.Tensor]:
+    cache_key = (model_name, revision, allow_download)
+    cached = _AUX_TENSOR_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    tensors: dict[str, torch.Tensor] = {}
+    index_path = _try_repo_file(
+        model_name, "model.safetensors.index.json", revision=revision, allow_download=allow_download
+    )
+    if index_path is not None:
+        with index_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        weight_map = data.get("weight_map") or {}
+        files = sorted(set(str(value) for value in weight_map.values() if isinstance(value, str)))
+    else:
+        files = _list_safetensors_files(model_name, revision=revision, allow_download=allow_download)
+    for filename in files:
+        path = _try_repo_file(model_name, filename, revision=revision, allow_download=allow_download)
+        if path is None:
+            continue
+        with safe_open(str(path), framework="pt", device="cpu") as handle:
+            for name in handle.keys():
+                lname = str(name).casefold()
+                if (
+                    lname.endswith(("norm.weight", "norm.bias", "layernorm.weight", "layernorm.bias"))
+                    or ".v_proj.weight" in lname
+                    or ".value.weight" in lname
+                    or ".o_proj.weight" in lname
+                    or ".out_proj.weight" in lname
+                ):
+                    tensors[str(name)] = (
+                        handle.get_tensor(str(name)).detach().cpu().to(dtype=torch.float32).contiguous()
+                    )
+    _AUX_TENSOR_CACHE[cache_key] = tensors
+    return tensors
+
+
+def _layer_prefix(tensor_name: str, layer: int) -> str:
+    markers = (f"layers.{layer}.", f"h.{layer}.", f"blocks.{layer}.", f"layer.{layer}.")
+    for marker in markers:
+        if marker in tensor_name:
+            return tensor_name.split(marker, 1)[0] + marker
+    return ""
+
+
+def _find_tensor(
+    tensors: dict[str, torch.Tensor], needles: Iterable[str], *, layer: int | None = None, ndim: int | None = None
+) -> tuple[str, torch.Tensor]:
+    names = list(tensors)
+    if layer is not None:
+        names = [name for name in names if _layer_prefix(name, layer)]
+    needle_list = [needle.casefold() for needle in needles]
+    matches = [name for name in names if any(needle in name.casefold() for needle in needle_list)]
+    if ndim is not None:
+        matches = [name for name in matches if tensors[name].ndim == ndim]
+    if not matches:
+        scope = f" layer {layer}" if layer is not None else ""
+        raise ValueError(f"Could not find model tensor matching {', '.join(needles)}{scope}.")
+    return sorted(matches, key=lambda name: (len(name), name))[0], tensors[
+        sorted(matches, key=lambda name: (len(name), name))[0]
+    ]
+
+
+def model_vector_function(assets: ModelAssets, name: str, args: list[float | str | np.ndarray]) -> np.ndarray:
+    tensors = _all_safetensor_tensors(assets.model_name, revision=assets.revision, allow_download=True)
+    if name == "norm":
+        if len(args) == 2 and str(args[1]).casefold() == "final":
+            vector = np.asarray(args[0], dtype=np.float64)
+            _n, weight = _find_tensor(
+                tensors, ("model.norm.weight", "final_layernorm.weight", "ln_f.weight", "norm.weight"), ndim=1
+            )
+        elif len(args) == 4:
+            vector = np.asarray(args[0], dtype=np.float64)
+            layer = int(args[1])
+            block = str(args[2]).casefold()
+            position = str(args[3]).casefold()
+            if block in {"attn", "attention"} and position in {"input", "before", "in"}:
+                needles = ("input_layernorm.weight", "ln_1.weight", "attention_norm.weight")
+            elif block in {"attn", "attention"} and position in {"output", "after", "out"}:
+                needles = ("post_attention_layernorm.weight", "post_attention_norm.weight", "ln_2.weight")
+            elif block in {"ffn", "mlp"} and position in {"input", "before", "in"}:
+                needles = ("pre_feedforward_layernorm.weight", "post_attention_layernorm.weight", "ln_2.weight")
+            elif block in {"ffn", "mlp"} and position in {"output", "after", "out"}:
+                needles = ("post_feedforward_layernorm.weight", "post_feedforward_norm.weight")
+            else:
+                raise ValueError(
+                    "norm expects norm(vector, layer, 'attn'|'ffn', 'input'|'output') or norm(vector, 'final')."
+                )
+            _n, weight = _find_tensor(tensors, needles, layer=layer, ndim=1)
+        else:
+            raise ValueError(
+                "norm expects norm(vector, layer, 'attn'|'ffn', 'input'|'output') or norm(vector, 'final')."
+            )
+        w = weight.numpy().astype(np.float64)
+        if w.shape[0] != vector.shape[0]:
+            raise ValueError(f"Norm width {w.shape[0]} does not match vector width {vector.shape[0]}.")
+        return vector * w / math.sqrt(float(np.mean(vector * vector)) + 1e-6)
+    if name == "wov":
+        if len(args) != 3:
+            raise ValueError("wov expects wov(vector, layer, head).")
+        vector = np.asarray(args[0], dtype=np.float64)
+        layer = int(args[1])
+        head = int(args[2])
+        _vn, v_weight = _find_tensor(
+            tensors,
+            ("self_attn.v_proj.weight", "attention.v_proj.weight", "attn.v_proj.weight", "value.weight"),
+            layer=layer,
+            ndim=2,
+        )
+        _on, o_weight = _find_tensor(
+            tensors,
+            ("self_attn.o_proj.weight", "attention.o_proj.weight", "attn.o_proj.weight", "out_proj.weight"),
+            layer=layer,
+            ndim=2,
+        )
+        v = v_weight.numpy().astype(np.float64)
+        o = o_weight.numpy().astype(np.float64)
+        if v.shape[1] != vector.shape[0] or o.shape[0] != vector.shape[0]:
+            raise ValueError("Attention projection widths do not match the selected vector space.")
+        if v.shape[0] != o.shape[1]:
+            raise ValueError("Wv output width and Wo input width do not match.")
+        head_count = 0
+        config_path = _try_repo_file(assets.model_name, "config.json", revision=assets.revision, allow_download=True)
+        if config_path is not None:
+            with config_path.open("r", encoding="utf-8") as handle:
+                config = json.load(handle)
+            head_count = int(
+                config.get("num_key_value_heads") or config.get("num_attention_heads") or config.get("n_head") or 0
+            )
+        if head_count <= 0:
+            head_count = 1
+        # Prefer an even partition; users can still select head 0 for single-head or unknown configs.
+        if v.shape[0] % max(head_count, 1) != 0:
+            head_count = 1
+        head_dim = v.shape[0] // head_count
+        if head < 0 or head >= head_count:
+            raise ValueError(f"head must be in [0, {head_count - 1}], got {head}.")
+        start, end = head * head_dim, (head + 1) * head_dim
+        return (vector @ v[start:end, :].T) @ o[:, start:end].T
+    raise ValueError(f"Unknown model function {name!r}.")
