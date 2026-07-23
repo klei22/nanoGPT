@@ -48,6 +48,57 @@ from initializations.initialization_variations import init_dictionary
 from shared_param_utils import SharedParamGroupCreator
 from variations.block_variations import Block
 
+class FinalResidualStreamAttention(nn.Module):
+    """Final attention from the last residual stream into saved block unit outputs."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.n_embd = config.n_embd
+        self.n_head = config.final_residual_attention_n_head or config.n_head
+        default_head_dim = config.n_embd // self.n_head
+        self.n_qk_head_dim = (
+            config.final_residual_attention_n_qk_head_dim
+            or config.n_qk_head_dim
+            or default_head_dim
+        )
+        self.n_v_head_dim = (
+            config.final_residual_attention_n_v_head_dim
+            or config.n_v_head_dim
+            or default_head_dim
+        )
+
+        linear_cls = linear_dictionary[config.linear_variant_attn]
+        self.wq = linear_cls(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
+        self.wk = linear_cls(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
+        self.wv = linear_cls(self.n_embd, self.n_head * self.n_v_head_dim, config, bias=config.bias)
+        self.c_proj = linear_cls(self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias)
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+
+    def forward(self, query_source, saved_outputs):
+        if not saved_outputs:
+            return query_source
+
+        B, T, _ = query_source.size()
+        memory = torch.cat(saved_outputs, dim=1)
+        S = memory.size(1)
+        q = self.wq(query_source).view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2)
+        k = self.wk(memory).view(B, S, self.n_head, self.n_qk_head_dim).transpose(1, 2)
+        v = self.wv(memory).view(B, S, self.n_head, self.n_v_head_dim).transpose(1, 2)
+
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.n_qk_head_dim)
+        q_pos = torch.arange(T, device=query_source.device).view(1, 1, T, 1)
+        repeats = len(saved_outputs)
+        kv_pos = torch.arange(T, device=query_source.device).repeat(repeats).view(1, 1, 1, S)
+        att = att.masked_fill(q_pos < kv_pos, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        att = self.attn_dropout(att)
+        y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
+        y = self.c_proj(y)
+        return self.resid_dropout(y)
+
+
 class GPT(nn.Module):
 
     def __init__(self, config):
@@ -144,6 +195,9 @@ class GPT(nn.Module):
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
+        if config.use_final_residual_attention:
+            self.transformer['final_residual_attn'] = FinalResidualStreamAttention(config)
+            self.transformer['final_residual_attn_norm'] = norm_dictionary[config.final_residual_attention_norm_variant](config)
 
         # Optional post-embedding normalizations
         if self.config.norm_variant_wte is not None:
@@ -390,6 +444,18 @@ class GPT(nn.Module):
             return embeddings + noise
         return embeddings
 
+
+    def _append_final_residual_saved_outputs(self, saved_outputs, block):
+        if self.config.use_final_residual_attention:
+            saved_outputs.extend(block.last_residual_outputs)
+
+    def _apply_final_residual_attention(self, x, saved_outputs):
+        x = self.transformer.ln_f(x)
+        if self.config.use_final_residual_attention:
+            x = self.transformer.final_residual_attn(x, saved_outputs)
+            x = self.transformer.final_residual_attn_norm(x)
+        return x
+
     def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
         if token_dict is not None:
             token_list = list(token_dict.values())
@@ -439,10 +505,12 @@ class GPT(nn.Module):
 
             if self.use_ln_f_input_mixer:
                 layer_outputs = [x]
+            final_residual_saved_outputs = []
 
             layer_idx = 1
             for block in self.transformer.h:
                 x = block(x, iter_num)
+                self._append_final_residual_saved_outputs(final_residual_saved_outputs, block)
 
                 # Steering logic
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -462,8 +530,8 @@ class GPT(nn.Module):
             if self.use_ln_f_input_mixer:
                 x = self.ln_f_mixer(layer_outputs)
 
-            # 3. Final layer norm
-            x = self.transformer.ln_f(x)
+            # 3. Final layer norm and optional final residual-stream attention
+            x = self._apply_final_residual_attention(x, final_residual_saved_outputs)
 
             # 4. Optionally scale down
             if self.n_embd_wte:
@@ -582,11 +650,13 @@ class GPT(nn.Module):
 
             if self.use_ln_f_input_mixer:
                 layer_outputs = [x]
+            final_residual_saved_outputs = []
 
             layer_idx = 1
             for block in self.transformer.h:
                 # Propagate tokens through layers
                 x = block(x, iter_num)
+                self._append_final_residual_saved_outputs(final_residual_saved_outputs, block)
 
                 # Intercept for Learned Steering Vectors
                 if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
@@ -608,7 +678,7 @@ class GPT(nn.Module):
             if self.use_ln_f_input_mixer:
                 x = self.ln_f_mixer(layer_outputs)
 
-            x = self.transformer.ln_f(x)
+            x = self._apply_final_residual_attention(x, final_residual_saved_outputs)
 
             if self.n_embd_wte:
                 x = F.linear(x, self.transformer.scale_down.weight.t())
@@ -704,6 +774,7 @@ class GPT(nn.Module):
         layer_idx = 1
         for block in self.transformer.h:
             x = block(x, iter_num)
+            self._append_final_residual_saved_outputs(final_residual_saved_outputs, block)
             if self.use_lsv and layer_idx == self.config.apply_lsv_at_layer_idx:
                 x = self.lsv_matrix(x)
             if self.use_ln_f_input_mixer:
@@ -713,7 +784,7 @@ class GPT(nn.Module):
         if self.use_ln_f_input_mixer:
             x = self.ln_f_mixer(layer_outputs)
 
-        x = self.transformer.ln_f(x)
+        x = self._apply_final_residual_attention(x, final_residual_saved_outputs)
         if self.n_embd_wte:
             x = F.linear(x, self.transformer.scale_down.weight.t())
 

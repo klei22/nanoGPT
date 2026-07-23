@@ -1011,6 +1011,13 @@ def parse_args():
                              help="L2 normalize attention outputs before c_proj (Infinite Attention)")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
 
+    ## Final residual-stream attention
+    model_group.add_argument("--use_final_residual_attention", type=bool, default=False, action=argparse.BooleanOptionalAction, help="Route final residual through attention over saved block attention/MLP outputs before LM head")
+    model_group.add_argument("--final_residual_attention_n_head", default=None, type=int, help="Number of heads for final residual-stream attention (defaults to n_head)")
+    model_group.add_argument("--final_residual_attention_n_qk_head_dim", default=None, type=int, help="Q/K head dimension for final residual-stream attention (defaults to n_qk_head_dim or n_embd // n_head)")
+    model_group.add_argument("--final_residual_attention_n_v_head_dim", default=None, type=int, help="V head dimension for final residual-stream attention (defaults to n_v_head_dim or n_embd // n_head)")
+    model_group.add_argument("--final_residual_attention_norm_variant", type=str, default="rmsnorm", choices=norm_variations, help="Norm after final residual-stream attention")
+
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
     model_group.add_argument("--use_qk_norm_scale",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies norm scale, preloads scale for flash attn, post qk multiplication in manual attn")
