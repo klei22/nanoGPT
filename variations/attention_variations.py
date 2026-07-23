@@ -833,6 +833,102 @@ class LinearAttention(nn.Module):
 
         return y
 
+
+class KimiDeltaAttention(nn.Module):
+    """Kimi-Delta-inspired recurrent linear attention.
+
+    This implementation follows the Kimi Delta Attention idea at the model
+    level: each head maintains a finite recurrent key/value memory, applies a
+    fine-grained input-dependent decay gate to that memory, and writes a
+    delta-rule correction ``v - k^T S``. It is intentionally written in plain
+    PyTorch so it can run anywhere nanoGPT runs; optimized chunkwise/DPLR
+    kernels can be swapped in later without changing the attention variant API.
+    """
+    def __init__(self, config, fire_pos_enc=None):
+        super().__init__()
+
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.n_qk_head_dim = config.n_qk_head_dim or (config.n_embd // config.n_head)
+        self.n_v_head_dim = config.n_v_head_dim or self.n_qk_head_dim
+        self.dropout = config.dropout
+        self.use_v_norm = getattr(config, "use_v_norm", False)
+        self.post_act_l2_norm = getattr(config, "attn_post_act_l2_norm", False)
+        self.cproj_scale = getattr(config, "attn_cproj_scale", 1.0)
+
+        self.linear_variant_q = linear_dictionary[config.linear_variant_attn]
+        self.linear_variant_k = linear_dictionary[config.linear_variant_attn]
+        self.linear_variant_v = linear_dictionary[config.linear_variant_attn]
+        self.linear_variant_attn_proj = linear_dictionary[config.linear_variant_attn]
+
+        self.c_attn_q = self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
+        self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
+        self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_head * self.n_v_head_dim, config, bias=config.bias)
+
+        # KDA-style fine-grained gating: beta controls the delta-rule write,
+        # alpha decays each key-memory channel before the write.
+        self.c_beta = nn.Linear(self.n_embd, self.n_head, bias=True)
+        self.c_alpha = nn.Linear(self.n_embd, self.n_head * self.n_qk_head_dim, bias=True)
+        self.c_proj = self.linear_variant_attn_proj(self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias)
+        self.resid_dropout = nn.Dropout(config.dropout)
+
+        self.rotary_emb_q = None
+        self.rotary_emb_k = None
+        if config.use_rotary_embeddings:
+            if config.rope_variant == "soap":
+                self.rotary_emb_q = SymmetricalOverlapAngularPositions(config, size=self.n_qk_head_dim, num_angles=config.sym_rot_num_angles)
+                self.rotary_emb_k = SymmetricalOverlapAngularPositions(config, size=self.n_qk_head_dim, num_angles=config.sym_rot_num_angles)
+            elif config.rope_variant == "rope":
+                self.rotary_emb_q = RotaryEmbedding(config, size=self.n_qk_head_dim)
+                self.rotary_emb_k = RotaryEmbedding(config, size=self.n_qk_head_dim)
+
+    @staticmethod
+    def _feature_map(x):
+        return F.elu(x) + 1.0
+
+    def forward(self, x, iter_num=None):
+        B, T, C = x.size()
+
+        q = self.c_attn_q(x).view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2)
+        k = self.c_attn_k(x).view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2)
+        v = self.c_attn_v(x).view(B, T, self.n_head, self.n_v_head_dim).transpose(1, 2)
+
+        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
+            q = self.rotary_emb_q(q)
+            k = self.rotary_emb_k(k)
+
+        q = self._feature_map(q) / math.sqrt(self.n_qk_head_dim)
+        k = self._feature_map(k)
+        k = k / k.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        if self.use_v_norm:
+            v = v / v.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        beta = torch.sigmoid(self.c_beta(x)).transpose(1, 2).unsqueeze(-1)
+        alpha = torch.sigmoid(self.c_alpha(x).view(B, T, self.n_head, self.n_qk_head_dim)).transpose(1, 2)
+
+        state = x.new_zeros(B, self.n_head, self.n_qk_head_dim, self.n_v_head_dim)
+        outputs = []
+        for t in range(T):
+            kt = k[:, :, t, :]
+            vt = v[:, :, t, :]
+            state = state * alpha[:, :, t, :, None]
+            predicted_v = torch.einsum("bhd,bhdv->bhv", kt, state)
+            delta_v = vt - predicted_v
+            state = state + beta[:, :, t, None, :] * kt.unsqueeze(-1) * delta_v.unsqueeze(-2)
+            yt = torch.einsum("bhd,bhdv->bhv", q[:, :, t, :], state)
+            outputs.append(yt)
+
+        y = torch.stack(outputs, dim=2)
+        if self.post_act_l2_norm:
+            y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            y = y / self.cproj_scale
+
+        y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
+        y = self.resid_dropout(self.c_proj(y))
+        return y
+
 # class HymbaRMSNorm(nn.Module):
 #     def __init__(self, hidden_size, eps=1e-6):
 #         """
@@ -1538,6 +1634,7 @@ attention_dictionary = {
     "causal": CausalSelfAttention,
     "edgellm_asic_attn": EdgeLLMASICAttention,
     "linear": LinearAttention,
+    "kimi_delta": KimiDeltaAttention,
     # "ssm": MambaBlock,
     "identity": AttnIdentity,
     "infinite": InfiniteHeadAttention,
