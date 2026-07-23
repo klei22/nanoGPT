@@ -26,7 +26,7 @@ common_group:
   log_interval: [10]
   always_save_checkpoint: [true]
   compile: [false]
-  device: ["cuda"]
+  device: ["cuda:0"]
   dtype: ["bfloat16"]
 
 parameter_groups:
