@@ -36,6 +36,8 @@ def test_frontend_control_contract_and_unique_ids() -> None:
         "addAllTokenizedBtn",
         "replaceTokenizedBtn",
         "arithmeticModeSelect",
+        "insertAttentionLayerBtn",
+        "insertMlpLayerBtn",
         "slerpFromSelect",
         "slerpToSelect",
         "slerpFractionInput",
@@ -84,6 +86,8 @@ def test_label_component_and_settings_contract() -> None:
     assert "event.key.toLowerCase() === 'i'" in javascript
     assert "event.key.toLowerCase() === 'm'" in javascript
     assert "event.key.toLowerCase() === 'p'" in javascript
+    assert "function insertAttentionLayerExpression()" in javascript
+    assert "function insertMlpLayerExpression()" in javascript
 
     assert "const SETTINGS_SCHEMA = 'hf-vocab-sphere/settings'" in javascript
     assert "function buildSettingsSnapshot()" in javascript

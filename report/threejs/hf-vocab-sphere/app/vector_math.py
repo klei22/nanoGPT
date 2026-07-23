@@ -200,7 +200,7 @@ class _SafeVectorEvaluator:
                     "vector",
                     np.mean(np.stack([np.asarray(value.value) for value in values], axis=0), axis=0),
                 )
-            if function_name in {"norm", "invnorm", "inverse_norm", "wov", "wqk", "wkq"}:
+            if function_name in {"norm", "invnorm", "inverse_norm", "wov", "wqk", "wkq", "attn_layer", "mlp_layer"}:
                 if self.model_function is None:
                     raise ValueError(f"{node.func.id} requires model auxiliary tensors loaded by the projection API.")
                 values = [self._visit(argument) for argument in node.args]
@@ -213,7 +213,7 @@ class _SafeVectorEvaluator:
                 return _Value("vector", self.model_function(function_name, args))
             if function_name != "slerp":
                 raise ValueError(
-                    "Only mean(...), slerp(A, B, t), norm(...), invnorm(...), wov(...), wqk(...), and wkq(...) vector functions are supported."
+                    "Only mean(...), slerp(A, B, t), norm(...), invnorm(...), wov(...), wqk(...), wkq(...), attn_layer(...), and mlp_layer(...) vector functions are supported."
                 )
             if len(node.args) != 3:
                 raise ValueError("slerp requires exactly three positional arguments: slerp(A, B, t).")
@@ -260,7 +260,7 @@ class _SafeVectorEvaluator:
                 return _Value("vector", np.asarray(left.value) / denominator)
 
         raise ValueError(
-            "Unsupported expression syntax. Use vector aliases, numeric scalars, parentheses, +, -, *, /, mean(...), slerp(A, B, t), norm(...), invnorm(...), wov(...), wqk(...), and wkq(...)."
+            "Unsupported expression syntax. Use vector aliases, numeric scalars, parentheses, +, -, *, /, mean(...), slerp(A, B, t), norm(...), invnorm(...), wov(...), wqk(...), wkq(...), attn_layer(...), and mlp_layer(...)."
         )
 
 

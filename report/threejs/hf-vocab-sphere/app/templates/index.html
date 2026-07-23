@@ -248,6 +248,10 @@
         <div id="arithmeticExpressionWrap" class="top-gap">
           <label class="field-label" for="arithmeticExpressionInput">Expression</label>
           <input id="arithmeticExpressionInput" type="text" value="(A - B) + C" spellcheck="false" placeholder="(A - B) + C" />
+          <div class="button-grid top-gap">
+            <button class="small-button" id="insertAttentionLayerBtn" type="button">Add attention layer helper</button>
+            <button class="small-button" id="insertMlpLayerBtn" type="button">Add MLP layer helper</button>
+          </div>
         </div>
         <div id="slerpControlsWrap" class="hidden top-gap">
           <div class="controls-row slerp-vector-row">
@@ -269,7 +273,7 @@
         <label class="field-label top-gap" for="arithmeticLabelInput">Result label</label>
         <input id="arithmeticLabelInput" type="text" placeholder="e.g. analogy result" maxlength="120" />
         <button class="primary hero-button" id="addArithmeticBtn">Add resultant to map</button>
-        <div class="small top-gap">Expressions support aliases, scalars, parentheses, <span class="mono">+ - * /</span>, <span class="mono">mean(...)</span>, <span class="mono">slerp(A,B,t)</span>, <span class="mono">norm(A,0,'attn','input')</span>/<span class="mono">norm(A,'final')</span>, <span class="mono">invnorm(A,...)</span>, <span class="mono">wov(A,0,0)</span>, <span class="mono">wqk(A,0,0,0)</span>, and <span class="mono">wkq(A,0,0,0)</span>. Functions can be nested. Example average: <span class="mono">(A+B+C)/3 + D</span>. Resultants are projected from the original model space, never by adding screen coordinates.</div>
+        <div class="small top-gap">Expressions support aliases, scalars, parentheses, <span class="mono">+ - * /</span>, <span class="mono">mean(...)</span>, <span class="mono">slerp(A,B,t)</span>, <span class="mono">norm(A,0,'attn','input')</span>/<span class="mono">norm(A,'final')</span>, <span class="mono">invnorm(A,...)</span>, <span class="mono">wov(A,0,0)</span>, <span class="mono">wqk(A,0,0,0)</span>, <span class="mono">wkq(A,0,0,0)</span>, <span class="mono">attn_layer(A,0,B,C)</span>, and <span class="mono">mlp_layer(A,0)</span>. Functions can be nested. Example average: <span class="mono">(A+B+C)/3 + D</span>. Resultants are projected from the original model space, never by adding screen coordinates.</div>
         <div id="arithmeticResults" class="arithmetic-result-list top-gap"><div class="empty-selection">No resultants defined.</div></div>
       </section>
 

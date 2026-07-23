@@ -1021,6 +1021,13 @@ def _all_safetensor_tensors(model_name: str, *, revision: str, allow_download: b
                     or ".value.weight" in lname
                     or ".o_proj.weight" in lname
                     or ".out_proj.weight" in lname
+                    or ".gate_proj.weight" in lname
+                    or ".up_proj.weight" in lname
+                    or ".down_proj.weight" in lname
+                    or ".fc1.weight" in lname
+                    or ".fc2.weight" in lname
+                    or ".c_fc.weight" in lname
+                    or ".c_proj.weight" in lname
                 ):
                     tensors[str(name)] = (
                         handle.get_tensor(str(name)).detach().cpu().to(dtype=torch.float32).contiguous()
@@ -1199,6 +1206,133 @@ def _qk_head_slices(
     return slice(q_start, q_start + q_head_dim), slice(k_start, k_start + q_head_dim)
 
 
+def _optional_norm(tensors: dict[str, torch.Tensor], args: list[float | str | np.ndarray]) -> np.ndarray:
+    try:
+        vector, weight = _norm_weight_for_args(tensors, args)
+    except ValueError:
+        return np.asarray(args[0], dtype=np.float64)
+    return _apply_rms_norm(vector, weight)
+
+
+def _softmax(values: np.ndarray) -> np.ndarray:
+    shifted = values - float(np.max(values))
+    exp = np.exp(shifted)
+    return exp / max(float(np.sum(exp)), 1e-15)
+
+
+def _apply_attention_layer(
+    assets: ModelAssets,
+    tensors: dict[str, torch.Tensor],
+    latest_vector: np.ndarray,
+    layer: int,
+    kv_vectors: list[np.ndarray],
+) -> np.ndarray:
+    _qn, q_weight = _find_tensor(
+        tensors,
+        ("self_attn.q_proj.weight", "attention.q_proj.weight", "attn.q_proj.weight", "query.weight"),
+        layer=layer,
+        ndim=2,
+    )
+    _kn, k_weight = _find_tensor(
+        tensors,
+        ("self_attn.k_proj.weight", "attention.k_proj.weight", "attn.k_proj.weight", "key.weight"),
+        layer=layer,
+        ndim=2,
+    )
+    _vn, v_weight = _find_tensor(
+        tensors,
+        ("self_attn.v_proj.weight", "attention.v_proj.weight", "attn.v_proj.weight", "value.weight"),
+        layer=layer,
+        ndim=2,
+    )
+    _on, o_weight = _find_tensor(
+        tensors,
+        ("self_attn.o_proj.weight", "attention.o_proj.weight", "attn.o_proj.weight", "out_proj.weight"),
+        layer=layer,
+        ndim=2,
+    )
+    q = q_weight.numpy().astype(np.float64)
+    k = k_weight.numpy().astype(np.float64)
+    v = v_weight.numpy().astype(np.float64)
+    o = o_weight.numpy().astype(np.float64)
+    width = latest_vector.shape[0]
+    if q.shape[1] != width or k.shape[1] != width or v.shape[1] != width or o.shape[0] != width:
+        raise ValueError("Attention layer projection widths do not match the selected vector space.")
+    latest_norm = _apply_rms_norm(*_norm_weight_for_args(tensors, [latest_vector, layer, "attn", "input"]))
+    kv_norms = [
+        _apply_rms_norm(*_norm_weight_for_args(tensors, [vector, layer, "attn", "input"])) for vector in kv_vectors
+    ]
+    # The latest/query token also contributes its own K/V entry after the supplied cache order.
+    kv_norms.append(latest_norm)
+    attention_heads, key_value_heads = _attention_head_counts(assets)
+    output = np.zeros(width, dtype=np.float64)
+    for query_head in range(attention_heads):
+        kv_head = min((query_head * key_value_heads) // attention_heads, key_value_heads - 1)
+        q_slice, k_slice = _qk_head_slices(
+            q_output_width=q.shape[0],
+            k_output_width=k.shape[0],
+            attention_heads=attention_heads,
+            key_value_heads=key_value_heads,
+            query_head=query_head,
+            key_head=kv_head,
+        )
+        v_slice, o_slice, _head_count = _wov_head_slices(
+            v_output_width=v.shape[0],
+            o_input_width=o.shape[1],
+            attention_heads=attention_heads,
+            key_value_heads=key_value_heads,
+            head=query_head,
+        )
+        query = latest_norm @ q[q_slice, :].T
+        keys = np.stack([vector @ k[k_slice, :].T for vector in kv_norms], axis=0)
+        values = np.stack([vector @ v[v_slice, :].T for vector in kv_norms], axis=0)
+        scores = keys @ query / math.sqrt(max(query.shape[0], 1))
+        context = _softmax(scores) @ values
+        output += context @ o[:, o_slice].T
+    return _optional_norm(tensors, [output, layer, "attn", "output"])
+
+
+def _activation(name: str, values: np.ndarray) -> np.ndarray:
+    key = name.casefold()
+    if key in {"gelu", "gelu_new"}:
+        return 0.5 * values * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (values + 0.044715 * values**3)))
+    return values / (1.0 + np.exp(-values))
+
+
+def _apply_mlp_layer(
+    assets: ModelAssets, tensors: dict[str, torch.Tensor], vector: np.ndarray, layer: int
+) -> np.ndarray:
+    hidden = _apply_rms_norm(*_norm_weight_for_args(tensors, [vector, layer, "ffn", "input"]))
+    try:
+        _gn, gate_weight = _find_tensor(
+            tensors, ("mlp.gate_proj.weight", "feed_forward.gate_proj.weight"), layer=layer, ndim=2
+        )
+        _un, up_weight = _find_tensor(
+            tensors, ("mlp.up_proj.weight", "feed_forward.up_proj.weight"), layer=layer, ndim=2
+        )
+        _dn, down_weight = _find_tensor(
+            tensors, ("mlp.down_proj.weight", "feed_forward.down_proj.weight"), layer=layer, ndim=2
+        )
+        gate = gate_weight.numpy().astype(np.float64)
+        up = up_weight.numpy().astype(np.float64)
+        down = down_weight.numpy().astype(np.float64)
+        output = (_activation("silu", hidden @ gate.T) * (hidden @ up.T)) @ down.T
+    except ValueError:
+        _fn, fc_weight = _find_tensor(
+            tensors, ("mlp.fc1.weight", "mlp.c_fc.weight", "feed_forward.fc1.weight"), layer=layer, ndim=2
+        )
+        _pn, proj_weight = _find_tensor(
+            tensors, ("mlp.fc2.weight", "mlp.c_proj.weight", "feed_forward.fc2.weight"), layer=layer, ndim=2
+        )
+        fc = fc_weight.numpy().astype(np.float64)
+        proj = proj_weight.numpy().astype(np.float64)
+        if fc.shape[1] == hidden.shape[0]:
+            output = _activation("gelu", hidden @ fc.T) @ proj.T
+        else:
+            output = _activation("gelu", hidden @ fc) @ proj
+    return _optional_norm(tensors, [output, layer, "ffn", "output"])
+
+
 def model_vector_function(assets: ModelAssets, name: str, args: list[float | str | np.ndarray]) -> np.ndarray:
     tensors = _all_safetensor_tensors(assets.model_name, revision=assets.revision, allow_download=True)
     if name in {"norm", "invnorm", "inverse_norm"}:
@@ -1240,6 +1374,19 @@ def model_vector_function(assets: ModelAssets, name: str, args: list[float | str
         # selected Wv-head output with zeros before/after its head slot and then
         # applying the full Wo matrix, but avoids materializing the padded vector.
         return (vector @ v[v_slice, :].T) @ o[:, o_slice].T
+    if name == "attn_layer":
+        if len(args) < 2:
+            raise ValueError("attn_layer expects (latest_vector, layer, optional_cache_vector, ...).")
+        latest_vector = np.asarray(args[0], dtype=np.float64)
+        layer = int(args[1])
+        kv_vectors = [np.asarray(value, dtype=np.float64) for value in args[2:]]
+        return _apply_attention_layer(assets, tensors, latest_vector, layer, kv_vectors)
+    if name == "mlp_layer":
+        if len(args) != 2:
+            raise ValueError("mlp_layer expects (vector, layer).")
+        vector = np.asarray(args[0], dtype=np.float64)
+        layer = int(args[1])
+        return _apply_mlp_layer(assets, tensors, vector, layer)
     if name in {"wqk", "wkq"}:
         if len(args) != 4:
             raise ValueError("wqk/wkq expect (vector, layer, query_head, key_head).")

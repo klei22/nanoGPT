@@ -1371,6 +1371,41 @@ function renderArithmeticPanel() {
   }
 }
 
+
+function insertAttentionLayerExpression() {
+  const rows = selectedRows();
+  if (!rows.length) return showToast('Select tokens before inserting an attention layer helper.', 'error');
+  const defaultLatest = aliasForIndex(rows.length - 1);
+  const latest = (window.prompt('Latest token alias for Wq plus its final Wk/Wv cache entry:', defaultLatest) || '').trim().toUpperCase();
+  if (!latest) return;
+  const layerText = (window.prompt('Attention layer index:', '0') || '').trim();
+  const layer = Number(layerText);
+  if (!Number.isInteger(layer) || layer < 0) return showToast('Layer must be a non-negative integer.', 'error');
+  const defaultKv = rows.slice(0, Math.max(0, rows.length - 1)).map((_, index) => aliasForIndex(index)).join(',');
+  const kvText = (window.prompt('Comma-separated prior KV-cache aliases in order; latest is appended automatically:', defaultKv) || '').trim();
+  const kvAliases = kvText.split(',').map((value) => value.trim().toUpperCase()).filter(Boolean);
+  const cacheSuffix = kvAliases.length ? `, ${kvAliases.join(', ')}` : '';
+  $('arithmeticExpressionInput').value = `attn_layer(${latest}, ${layer}${cacheSuffix})`;
+  $('arithmeticModeSelect').value = 'expression';
+  syncArithmeticMode();
+  $('arithmeticExpressionInput').focus();
+}
+
+function insertMlpLayerExpression() {
+  const rows = selectedRows();
+  if (!rows.length) return showToast('Select tokens before inserting an MLP layer helper.', 'error');
+  const defaultTarget = aliasForIndex(rows.length - 1);
+  const target = (window.prompt('Target token alias for the MLP layer:', defaultTarget) || '').trim().toUpperCase();
+  if (!target) return;
+  const layerText = (window.prompt('MLP layer index:', '0') || '').trim();
+  const layer = Number(layerText);
+  if (!Number.isInteger(layer) || layer < 0) return showToast('Layer must be a non-negative integer.', 'error');
+  $('arithmeticExpressionInput').value = `mlp_layer(${target}, ${layer})`;
+  $('arithmeticModeSelect').value = 'expression';
+  syncArithmeticMode();
+  $('arithmeticExpressionInput').focus();
+}
+
 async function addArithmeticResult() {
   const rows = selectedRows();
   const slerpMode = $('arithmeticModeSelect').value === 'slerp';
@@ -2184,6 +2219,8 @@ $('selectedTokens').addEventListener('click', (event) => {
 });
 $('anchorIdInput').addEventListener('change', () => { renderSelected(); markProjectionStale(); });
 $('arithmeticModeSelect').addEventListener('change', syncArithmeticMode);
+$('insertAttentionLayerBtn').addEventListener('click', insertAttentionLayerExpression);
+$('insertMlpLayerBtn').addEventListener('click', insertMlpLayerExpression);
 $('slerpFractionInput').addEventListener('input', (event) => {
   $('slerpFractionLabel').textContent = `t = ${Number(event.target.value).toFixed(2)}`;
 });

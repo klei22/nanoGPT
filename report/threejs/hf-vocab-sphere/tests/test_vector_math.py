@@ -124,3 +124,19 @@ def test_qk_model_functions_are_dispatched() -> None:
     np.testing.assert_allclose(result, np.array([4.0, 5.0]))
     assert references == ("A",)
     assert calls == ["wqk", "wkq"]
+
+
+def test_layer_model_functions_are_dispatched() -> None:
+    aliases = {"A": np.array([1.0, 2.0]), "B": np.array([3.0, 4.0])}
+    calls: list[str] = []
+
+    def model_function(name, args):
+        calls.append(name)
+        return np.asarray(args[0]) + (10.0 if name == "attn_layer" else 100.0)
+
+    result, references = evaluate_vector_expression(
+        "mlp_layer(attn_layer(A, 0, A, B), 0)", aliases, model_function=model_function
+    )
+    np.testing.assert_allclose(result, np.array([111.0, 112.0]))
+    assert references == ("A", "B")
+    assert calls == ["attn_layer", "mlp_layer"]
