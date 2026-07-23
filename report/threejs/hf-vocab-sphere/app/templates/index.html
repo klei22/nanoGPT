@@ -248,6 +248,10 @@
         <div id="arithmeticExpressionWrap" class="top-gap">
           <label class="field-label" for="arithmeticExpressionInput">Expression</label>
           <input id="arithmeticExpressionInput" type="text" value="(A - B) + C" spellcheck="false" placeholder="(A - B) + C" />
+          <div class="button-grid top-gap">
+            <button class="small-button" id="insertAttentionLayerBtn" type="button">Add attention layer helper</button>
+            <button class="small-button" id="insertMlpLayerBtn" type="button">Add MLP layer helper</button>
+          </div>
         </div>
         <div id="slerpControlsWrap" class="hidden top-gap">
           <div class="controls-row slerp-vector-row">
@@ -261,15 +265,15 @@
             </div>
           </div>
           <div class="range-wrap top-gap">
-            <div class="range-row"><span>Interpolation fraction</span><span id="slerpFractionLabel">t = 0.50</span></div>
-            <input id="slerpFractionInput" type="range" min="0" max="1" step="0.01" value="0.5" />
+            <div class="range-row"><span>Interpolation / extrapolation value</span><span id="slerpFractionLabel">t = 0.50</span></div>
+            <input id="slerpFractionInput" type="number" step="0.01" value="0.5" />
           </div>
-          <div class="small top-gap">SLERP follows the shortest geodesic between normalized full-dimensional vectors while linearly interpolating their original L2 magnitudes.</div>
+          <div class="small top-gap">SLERP follows the shortest geodesic between normalized full-dimensional vectors while linearly interpolating their original L2 magnitudes; finite negative and positive t values are accepted for extrapolation.</div>
         </div>
         <label class="field-label top-gap" for="arithmeticLabelInput">Result label</label>
         <input id="arithmeticLabelInput" type="text" placeholder="e.g. analogy result" maxlength="120" />
         <button class="primary hero-button" id="addArithmeticBtn">Add resultant to map</button>
-        <div class="small top-gap">Expressions support aliases, scalars, parentheses, <span class="mono">+ - * /</span>, <span class="mono">mean(...)</span>, and <span class="mono">slerp(A,B,t)</span>. Example average: <span class="mono">(A+B+C)/3 + D</span>. Resultants are projected from the original model space, never by adding screen coordinates.</div>
+        <div class="small top-gap">Expressions support aliases, scalars, parentheses, <span class="mono">+ - * /</span>, <span class="mono">mean(...)</span>, <span class="mono">slerp(A,B,t)</span>, <span class="mono">norm(A,0,'attn','input')</span>/<span class="mono">norm(A,'final')</span>, <span class="mono">invnorm(A,...)</span>, <span class="mono">wov(A,0,0)</span>, <span class="mono">wqk(A,0,0,0)</span>, <span class="mono">wkq(A,0,0,0)</span>, <span class="mono">attn_layer(A,0,B,C)</span>, and <span class="mono">mlp_layer(A,0)</span>. Functions can be nested. Example average: <span class="mono">(A+B+C)/3 + D</span>. Resultants are projected from the original model space, never by adding screen coordinates.</div>
         <div id="arithmeticResults" class="arithmetic-result-list top-gap"><div class="empty-selection">No resultants defined.</div></div>
       </section>
 
@@ -452,6 +456,8 @@
           <label class="toggle"><span>Show node labels</span><input id="showLabelsInput" type="checkbox" /></label>
           <label class="toggle label-component-toggle"><span>Include A/B/C alias letters <small>T</small></span><input id="showLabelAliasesInput" type="checkbox" checked /></label>
           <label class="toggle label-component-toggle"><span>Include token IDs in labels <small>I</small></span><input id="showLabelIdsInput" type="checkbox" checked /></label>
+          <label class="toggle label-component-toggle"><span>Include vector magnitudes <small>M</small></span><input id="showLabelMagnitudesInput" type="checkbox" /></label>
+          <label class="toggle label-component-toggle"><span>Include participation ratio <small>P</small></span><input id="showLabelParticipationInput" type="checkbox" /></label>
           <label class="inline-number edge-label-limit">Angle label cap (0 = all) <input id="edgeLabelLimitInput" type="number" min="0" max="20000" value="0" /></label>
         </div>
       </section>
@@ -468,6 +474,8 @@
           <kbd>L</kbd><span>Toggle node labels</span>
           <kbd>T</kbd><span>Show / hide A/B/C alias tags</span>
           <kbd>I</kbd><span>Show / hide token IDs in labels</span>
+          <kbd>M</kbd><span>Show / hide vector magnitudes in labels</span>
+          <kbd>P</kbd><span>Show / hide participation ratio in labels</span>
           <kbd>Esc</kbd><span>Clear pinned token</span>
         </div>
       </section>

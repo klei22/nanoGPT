@@ -6,9 +6,10 @@ import math
 import os
 import re
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import torch
@@ -102,7 +103,10 @@ class ModelAssets:
 
     @property
     def memory_bytes(self) -> int:
-        return int(self.weight.nelement() * self.weight.element_size() + self.magnitudes.nelement() * self.magnitudes.element_size())
+        return int(
+            self.weight.nelement() * self.weight.element_size()
+            + self.magnitudes.nelement() * self.magnitudes.element_size()
+        )
 
     def token(self, token_id: int) -> TokenInfo:
         if token_id < 0 or token_id >= self.vocab_size:
@@ -346,7 +350,9 @@ def _load_full_model(
         try:
             model = model_class.from_pretrained(model_name, **kwargs)
             output = model.get_output_embeddings() if callable(getattr(model, "get_output_embeddings", None)) else None
-            input_embedding = model.get_input_embeddings() if callable(getattr(model, "get_input_embeddings", None)) else None
+            input_embedding = (
+                model.get_input_embeddings() if callable(getattr(model, "get_input_embeddings", None)) else None
+            )
             if requested_source == "output":
                 chosen, source = output, "output"
             elif requested_source == "input":
@@ -354,7 +360,9 @@ def _load_full_model(
             else:
                 chosen, source = (output, "output") if output is not None else (input_embedding, "input")
             if chosen is None or getattr(chosen, "weight", None) is None:
-                raise ValueError(f"{model_class.__name__} does not expose a usable {requested_source} vocabulary matrix.")
+                raise ValueError(
+                    f"{model_class.__name__} does not expose a usable {requested_source} vocabulary matrix."
+                )
             tensor = chosen.weight.detach().cpu().contiguous()
             name = "get_output_embeddings().weight" if source == "output" else "get_input_embeddings().weight"
             return tensor, name, source
@@ -975,3 +983,443 @@ def list_local_models() -> list[LocalModelInfo]:
                 modified = None
             records[name] = LocalModelInfo(name, str(path), None, modified)
     return sorted(records.values(), key=lambda item: item.model_name.casefold())
+
+
+_AUX_TENSOR_CACHE: dict[tuple[str, str, bool], dict[str, torch.Tensor]] = {}
+
+
+def _all_safetensor_tensors(model_name: str, *, revision: str, allow_download: bool = True) -> dict[str, torch.Tensor]:
+    cache_key = (model_name, revision, allow_download)
+    cached = _AUX_TENSOR_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    tensors: dict[str, torch.Tensor] = {}
+    index_path = _try_repo_file(
+        model_name, "model.safetensors.index.json", revision=revision, allow_download=allow_download
+    )
+    if index_path is not None:
+        with index_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        weight_map = data.get("weight_map") or {}
+        files = sorted(set(str(value) for value in weight_map.values() if isinstance(value, str)))
+    else:
+        files = _list_safetensors_files(model_name, revision=revision, allow_download=allow_download)
+    for filename in files:
+        path = _try_repo_file(model_name, filename, revision=revision, allow_download=allow_download)
+        if path is None:
+            continue
+        with safe_open(str(path), framework="pt", device="cpu") as handle:
+            for name in handle.keys():
+                lname = str(name).casefold()
+                if (
+                    lname.endswith(("norm.weight", "norm.bias", "layernorm.weight", "layernorm.bias"))
+                    or ".q_proj.weight" in lname
+                    or ".query.weight" in lname
+                    or ".k_proj.weight" in lname
+                    or ".key.weight" in lname
+                    or ".v_proj.weight" in lname
+                    or ".value.weight" in lname
+                    or ".o_proj.weight" in lname
+                    or ".out_proj.weight" in lname
+                    or ".gate_proj.weight" in lname
+                    or ".up_proj.weight" in lname
+                    or ".down_proj.weight" in lname
+                    or ".fc1.weight" in lname
+                    or ".fc2.weight" in lname
+                    or ".c_fc.weight" in lname
+                    or ".c_proj.weight" in lname
+                ):
+                    tensors[str(name)] = (
+                        handle.get_tensor(str(name)).detach().cpu().to(dtype=torch.float32).contiguous()
+                    )
+    _AUX_TENSOR_CACHE[cache_key] = tensors
+    return tensors
+
+
+def _layer_prefix(tensor_name: str, layer: int) -> str:
+    markers = (f"layers.{layer}.", f"h.{layer}.", f"blocks.{layer}.", f"layer.{layer}.")
+    for marker in markers:
+        if marker in tensor_name:
+            return tensor_name.split(marker, 1)[0] + marker
+    return ""
+
+
+def _find_tensor(
+    tensors: dict[str, torch.Tensor], needles: Iterable[str], *, layer: int | None = None, ndim: int | None = None
+) -> tuple[str, torch.Tensor]:
+    names = list(tensors)
+    if layer is not None:
+        names = [name for name in names if _layer_prefix(name, layer)]
+    needle_list = [needle.casefold() for needle in needles]
+    matches = [name for name in names if any(needle in name.casefold() for needle in needle_list)]
+    if ndim is not None:
+        matches = [name for name in matches if tensors[name].ndim == ndim]
+    if not matches:
+        scope = f" layer {layer}" if layer is not None else ""
+        raise ValueError(f"Could not find model tensor matching {', '.join(needles)}{scope}.")
+    return sorted(matches, key=lambda name: (len(name), name))[0], tensors[
+        sorted(matches, key=lambda name: (len(name), name))[0]
+    ]
+
+
+def _norm_weight_for_args(
+    tensors: dict[str, torch.Tensor], args: list[float | str | np.ndarray]
+) -> tuple[np.ndarray, torch.Tensor]:
+    if len(args) == 2 and str(args[1]).casefold() == "final":
+        vector = np.asarray(args[0], dtype=np.float64)
+        _name, weight = _find_tensor(
+            tensors, ("model.norm.weight", "final_layernorm.weight", "ln_f.weight", "norm.weight"), ndim=1
+        )
+        return vector, weight
+    if len(args) != 4:
+        raise ValueError("norm/invnorm expect (vector, layer, 'attn'|'ffn', 'input'|'output') or (vector, 'final').")
+
+    vector = np.asarray(args[0], dtype=np.float64)
+    layer = int(args[1])
+    block = str(args[2]).casefold()
+    position = str(args[3]).casefold()
+    if block in {"attn", "attention"} and position in {"input", "before", "in"}:
+        needles = ("input_layernorm.weight", "ln_1.weight", "attention_norm.weight")
+    elif block in {"attn", "attention"} and position in {"output", "after", "out"}:
+        needles = ("post_attention_layernorm.weight", "post_attention_norm.weight", "ln_2.weight")
+    elif block in {"ffn", "mlp"} and position in {"input", "before", "in"}:
+        needles = ("pre_feedforward_layernorm.weight", "post_attention_layernorm.weight", "ln_2.weight")
+    elif block in {"ffn", "mlp"} and position in {"output", "after", "out"}:
+        needles = ("post_feedforward_layernorm.weight", "post_feedforward_norm.weight")
+    else:
+        raise ValueError("norm/invnorm expect (vector, layer, 'attn'|'ffn', 'input'|'output') or (vector, 'final').")
+    _name, weight = _find_tensor(tensors, needles, layer=layer, ndim=1)
+    return vector, weight
+
+
+def _apply_rms_norm(vector: np.ndarray, weight: torch.Tensor) -> np.ndarray:
+    w = weight.numpy().astype(np.float64)
+    if w.shape[0] != vector.shape[0]:
+        raise ValueError(f"Norm width {w.shape[0]} does not match vector width {vector.shape[0]}.")
+    return vector * w / math.sqrt(float(np.mean(vector * vector)) + 1e-6)
+
+
+def _apply_inverse_rms_norm(vector: np.ndarray, weight: torch.Tensor) -> np.ndarray:
+    w = weight.numpy().astype(np.float64)
+    if w.shape[0] != vector.shape[0]:
+        raise ValueError(f"Norm width {w.shape[0]} does not match vector width {vector.shape[0]}.")
+    if np.any(np.abs(w) <= 1e-15):
+        raise ValueError("Cannot invert a norm with zero or near-zero weights.")
+    unweighted = vector / w
+    normalized_square_mean = float(np.mean(unweighted * unweighted))
+    if normalized_square_mean >= 1.0:
+        raise ValueError("Cannot invert this norm result because its implied pre-norm magnitude is not finite.")
+    scale = math.sqrt(1e-6 / max(1.0 - normalized_square_mean, 1e-15))
+    return unweighted * scale
+
+
+def _attention_head_counts(assets: ModelAssets) -> tuple[int, int]:
+    config_path = _try_repo_file(assets.model_name, "config.json", revision=assets.revision, allow_download=True)
+    if config_path is None:
+        return 1, 1
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = json.load(handle)
+    attention_heads = int(config.get("num_attention_heads") or config.get("n_head") or 0)
+    key_value_heads = int(config.get("num_key_value_heads") or attention_heads or 0)
+    return max(attention_heads, 1), max(key_value_heads, 1)
+
+
+def _wov_head_slices(
+    *,
+    v_output_width: int,
+    o_input_width: int,
+    attention_heads: int,
+    key_value_heads: int,
+    head: int,
+) -> tuple[slice, slice, int]:
+    if attention_heads <= 0:
+        attention_heads = 1
+    if key_value_heads <= 0:
+        key_value_heads = attention_heads
+    if o_input_width % attention_heads != 0:
+        # Fall back to treating Wo as one concatenated head space when the config
+        # does not divide the tensor cleanly.
+        attention_heads = 1
+    head_dim = o_input_width // attention_heads
+    if head_dim <= 0:
+        raise ValueError("Wo input width is not usable for head slicing.")
+    if head < 0 or head >= attention_heads:
+        raise ValueError(f"head must be in [0, {attention_heads - 1}], got {head}.")
+
+    if v_output_width == o_input_width:
+        key_value_heads = attention_heads
+    elif v_output_width % key_value_heads != 0:
+        if v_output_width == head_dim:
+            key_value_heads = 1
+        elif v_output_width % head_dim == 0:
+            key_value_heads = v_output_width // head_dim
+        else:
+            raise ValueError("Wv output width cannot be partitioned into Wo-compatible heads.")
+
+    v_head_dim = v_output_width // key_value_heads
+    if v_head_dim != head_dim:
+        raise ValueError("Wv head width and Wo head width do not match.")
+    kv_head = min((head * key_value_heads) // attention_heads, key_value_heads - 1)
+    v_start = kv_head * head_dim
+    o_start = head * head_dim
+    return slice(v_start, v_start + head_dim), slice(o_start, o_start + head_dim), attention_heads
+
+
+def _qk_head_slices(
+    *,
+    q_output_width: int,
+    k_output_width: int,
+    attention_heads: int,
+    key_value_heads: int,
+    query_head: int,
+    key_head: int,
+) -> tuple[slice, slice]:
+    if attention_heads <= 0:
+        attention_heads = 1
+    if key_value_heads <= 0:
+        key_value_heads = attention_heads
+    if q_output_width % attention_heads != 0:
+        attention_heads = 1
+    q_head_dim = q_output_width // attention_heads
+    if q_head_dim <= 0:
+        raise ValueError("Wq output width is not usable for head slicing.")
+    if query_head < 0 or query_head >= attention_heads:
+        raise ValueError(f"query head must be in [0, {attention_heads - 1}], got {query_head}.")
+
+    if k_output_width == q_output_width:
+        key_value_heads = attention_heads
+    elif k_output_width % key_value_heads != 0:
+        if k_output_width == q_head_dim:
+            key_value_heads = 1
+        elif k_output_width % q_head_dim == 0:
+            key_value_heads = k_output_width // q_head_dim
+        else:
+            raise ValueError("Wk output width cannot be partitioned into Wq-compatible heads.")
+
+    k_head_dim = k_output_width // key_value_heads
+    if k_head_dim != q_head_dim:
+        raise ValueError("Wq head width and Wk head width do not match.")
+    if key_head < 0 or key_head >= key_value_heads:
+        raise ValueError(f"key head must be in [0, {key_value_heads - 1}], got {key_head}.")
+    q_start = query_head * q_head_dim
+    k_start = key_head * q_head_dim
+    return slice(q_start, q_start + q_head_dim), slice(k_start, k_start + q_head_dim)
+
+
+def _optional_norm(tensors: dict[str, torch.Tensor], args: list[float | str | np.ndarray]) -> np.ndarray:
+    try:
+        vector, weight = _norm_weight_for_args(tensors, args)
+    except ValueError:
+        return np.asarray(args[0], dtype=np.float64)
+    return _apply_rms_norm(vector, weight)
+
+
+def _softmax(values: np.ndarray) -> np.ndarray:
+    shifted = values - float(np.max(values))
+    exp = np.exp(shifted)
+    return exp / max(float(np.sum(exp)), 1e-15)
+
+
+def _apply_attention_layer(
+    assets: ModelAssets,
+    tensors: dict[str, torch.Tensor],
+    latest_vector: np.ndarray,
+    layer: int,
+    kv_vectors: list[np.ndarray],
+) -> np.ndarray:
+    _qn, q_weight = _find_tensor(
+        tensors,
+        ("self_attn.q_proj.weight", "attention.q_proj.weight", "attn.q_proj.weight", "query.weight"),
+        layer=layer,
+        ndim=2,
+    )
+    _kn, k_weight = _find_tensor(
+        tensors,
+        ("self_attn.k_proj.weight", "attention.k_proj.weight", "attn.k_proj.weight", "key.weight"),
+        layer=layer,
+        ndim=2,
+    )
+    _vn, v_weight = _find_tensor(
+        tensors,
+        ("self_attn.v_proj.weight", "attention.v_proj.weight", "attn.v_proj.weight", "value.weight"),
+        layer=layer,
+        ndim=2,
+    )
+    _on, o_weight = _find_tensor(
+        tensors,
+        ("self_attn.o_proj.weight", "attention.o_proj.weight", "attn.o_proj.weight", "out_proj.weight"),
+        layer=layer,
+        ndim=2,
+    )
+    q = q_weight.numpy().astype(np.float64)
+    k = k_weight.numpy().astype(np.float64)
+    v = v_weight.numpy().astype(np.float64)
+    o = o_weight.numpy().astype(np.float64)
+    width = latest_vector.shape[0]
+    if q.shape[1] != width or k.shape[1] != width or v.shape[1] != width or o.shape[0] != width:
+        raise ValueError("Attention layer projection widths do not match the selected vector space.")
+    latest_norm = _apply_rms_norm(*_norm_weight_for_args(tensors, [latest_vector, layer, "attn", "input"]))
+    kv_norms = [
+        _apply_rms_norm(*_norm_weight_for_args(tensors, [vector, layer, "attn", "input"])) for vector in kv_vectors
+    ]
+    # The latest/query token also contributes its own K/V entry after the supplied cache order.
+    kv_norms.append(latest_norm)
+    attention_heads, key_value_heads = _attention_head_counts(assets)
+    output = np.zeros(width, dtype=np.float64)
+    for query_head in range(attention_heads):
+        kv_head = min((query_head * key_value_heads) // attention_heads, key_value_heads - 1)
+        q_slice, k_slice = _qk_head_slices(
+            q_output_width=q.shape[0],
+            k_output_width=k.shape[0],
+            attention_heads=attention_heads,
+            key_value_heads=key_value_heads,
+            query_head=query_head,
+            key_head=kv_head,
+        )
+        v_slice, o_slice, _head_count = _wov_head_slices(
+            v_output_width=v.shape[0],
+            o_input_width=o.shape[1],
+            attention_heads=attention_heads,
+            key_value_heads=key_value_heads,
+            head=query_head,
+        )
+        query = latest_norm @ q[q_slice, :].T
+        keys = np.stack([vector @ k[k_slice, :].T for vector in kv_norms], axis=0)
+        values = np.stack([vector @ v[v_slice, :].T for vector in kv_norms], axis=0)
+        scores = keys @ query / math.sqrt(max(query.shape[0], 1))
+        context = _softmax(scores) @ values
+        output += context @ o[:, o_slice].T
+    return _optional_norm(tensors, [output, layer, "attn", "output"])
+
+
+def _activation(name: str, values: np.ndarray) -> np.ndarray:
+    key = name.casefold()
+    if key in {"gelu", "gelu_new"}:
+        return 0.5 * values * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (values + 0.044715 * values**3)))
+    return values / (1.0 + np.exp(-values))
+
+
+def _apply_mlp_layer(
+    assets: ModelAssets, tensors: dict[str, torch.Tensor], vector: np.ndarray, layer: int
+) -> np.ndarray:
+    hidden = _apply_rms_norm(*_norm_weight_for_args(tensors, [vector, layer, "ffn", "input"]))
+    try:
+        _gn, gate_weight = _find_tensor(
+            tensors, ("mlp.gate_proj.weight", "feed_forward.gate_proj.weight"), layer=layer, ndim=2
+        )
+        _un, up_weight = _find_tensor(
+            tensors, ("mlp.up_proj.weight", "feed_forward.up_proj.weight"), layer=layer, ndim=2
+        )
+        _dn, down_weight = _find_tensor(
+            tensors, ("mlp.down_proj.weight", "feed_forward.down_proj.weight"), layer=layer, ndim=2
+        )
+        gate = gate_weight.numpy().astype(np.float64)
+        up = up_weight.numpy().astype(np.float64)
+        down = down_weight.numpy().astype(np.float64)
+        output = (_activation("silu", hidden @ gate.T) * (hidden @ up.T)) @ down.T
+    except ValueError:
+        _fn, fc_weight = _find_tensor(
+            tensors, ("mlp.fc1.weight", "mlp.c_fc.weight", "feed_forward.fc1.weight"), layer=layer, ndim=2
+        )
+        _pn, proj_weight = _find_tensor(
+            tensors, ("mlp.fc2.weight", "mlp.c_proj.weight", "feed_forward.fc2.weight"), layer=layer, ndim=2
+        )
+        fc = fc_weight.numpy().astype(np.float64)
+        proj = proj_weight.numpy().astype(np.float64)
+        if fc.shape[1] == hidden.shape[0]:
+            output = _activation("gelu", hidden @ fc.T) @ proj.T
+        else:
+            output = _activation("gelu", hidden @ fc) @ proj
+    return _optional_norm(tensors, [output, layer, "ffn", "output"])
+
+
+def model_vector_function(assets: ModelAssets, name: str, args: list[float | str | np.ndarray]) -> np.ndarray:
+    tensors = _all_safetensor_tensors(assets.model_name, revision=assets.revision, allow_download=True)
+    if name in {"norm", "invnorm", "inverse_norm"}:
+        vector, weight = _norm_weight_for_args(tensors, args)
+        if name == "norm":
+            return _apply_rms_norm(vector, weight)
+        return _apply_inverse_rms_norm(vector, weight)
+    if name == "wov":
+        if len(args) != 3:
+            raise ValueError("wov expects wov(vector, layer, head).")
+        vector = np.asarray(args[0], dtype=np.float64)
+        layer = int(args[1])
+        head = int(args[2])
+        _vn, v_weight = _find_tensor(
+            tensors,
+            ("self_attn.v_proj.weight", "attention.v_proj.weight", "attn.v_proj.weight", "value.weight"),
+            layer=layer,
+            ndim=2,
+        )
+        _on, o_weight = _find_tensor(
+            tensors,
+            ("self_attn.o_proj.weight", "attention.o_proj.weight", "attn.o_proj.weight", "out_proj.weight"),
+            layer=layer,
+            ndim=2,
+        )
+        v = v_weight.numpy().astype(np.float64)
+        o = o_weight.numpy().astype(np.float64)
+        if v.shape[1] != vector.shape[0] or o.shape[0] != vector.shape[0]:
+            raise ValueError("Attention projection widths do not match the selected vector space.")
+        attention_heads, key_value_heads = _attention_head_counts(assets)
+        v_slice, o_slice, _head_count = _wov_head_slices(
+            v_output_width=v.shape[0],
+            o_input_width=o.shape[1],
+            attention_heads=attention_heads,
+            key_value_heads=key_value_heads,
+            head=head,
+        )
+        # Multiplying by the selected Wo slice is equivalent to padding the
+        # selected Wv-head output with zeros before/after its head slot and then
+        # applying the full Wo matrix, but avoids materializing the padded vector.
+        return (vector @ v[v_slice, :].T) @ o[:, o_slice].T
+    if name == "attn_layer":
+        if len(args) < 2:
+            raise ValueError("attn_layer expects (latest_vector, layer, optional_cache_vector, ...).")
+        latest_vector = np.asarray(args[0], dtype=np.float64)
+        layer = int(args[1])
+        kv_vectors = [np.asarray(value, dtype=np.float64) for value in args[2:]]
+        return _apply_attention_layer(assets, tensors, latest_vector, layer, kv_vectors)
+    if name == "mlp_layer":
+        if len(args) != 2:
+            raise ValueError("mlp_layer expects (vector, layer).")
+        vector = np.asarray(args[0], dtype=np.float64)
+        layer = int(args[1])
+        return _apply_mlp_layer(assets, tensors, vector, layer)
+    if name in {"wqk", "wkq"}:
+        if len(args) != 4:
+            raise ValueError("wqk/wkq expect (vector, layer, query_head, key_head).")
+        vector = np.asarray(args[0], dtype=np.float64)
+        layer = int(args[1])
+        query_head = int(args[2])
+        key_head = int(args[3])
+        _qn, q_weight = _find_tensor(
+            tensors,
+            ("self_attn.q_proj.weight", "attention.q_proj.weight", "attn.q_proj.weight", "query.weight"),
+            layer=layer,
+            ndim=2,
+        )
+        _kn, k_weight = _find_tensor(
+            tensors,
+            ("self_attn.k_proj.weight", "attention.k_proj.weight", "attn.k_proj.weight", "key.weight"),
+            layer=layer,
+            ndim=2,
+        )
+        q = q_weight.numpy().astype(np.float64)
+        k = k_weight.numpy().astype(np.float64)
+        if q.shape[1] != vector.shape[0] or k.shape[1] != vector.shape[0]:
+            raise ValueError("Attention Q/K projection widths do not match the selected vector space.")
+        attention_heads, key_value_heads = _attention_head_counts(assets)
+        q_slice, k_slice = _qk_head_slices(
+            q_output_width=q.shape[0],
+            k_output_width=k.shape[0],
+            attention_heads=attention_heads,
+            key_value_heads=key_value_heads,
+            query_head=query_head,
+            key_head=key_head,
+        )
+        if name == "wqk":
+            return (vector @ q[q_slice, :].T) @ k[k_slice, :]
+        return (vector @ k[k_slice, :].T) @ q[q_slice, :]
+    raise ValueError(f"Unknown model function {name!r}.")
