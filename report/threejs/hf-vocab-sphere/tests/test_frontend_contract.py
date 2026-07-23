@@ -4,7 +4,6 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 HTML_PATH = ROOT / "app" / "templates" / "index.html"
 JS_PATH = ROOT / "app" / "static" / "app.js"
@@ -42,6 +41,8 @@ def test_frontend_control_contract_and_unique_ids() -> None:
         "slerpFractionInput",
         "showLabelAliasesInput",
         "showLabelIdsInput",
+        "showLabelMagnitudesInput",
+        "showLabelParticipationInput",
         "saveSettingsBtn",
         "loadSettingsBtn",
         "settingsFileInput",
@@ -74,9 +75,15 @@ def test_label_component_and_settings_contract() -> None:
 
     assert "showLabelAliases: true" in javascript
     assert "showLabelIds: true" in javascript
+    assert "showLabelMagnitudes: false" in javascript
+    assert "showLabelParticipation: false" in javascript
+    assert "show_label_magnitudes: state.showLabelMagnitudes" in javascript
+    assert "show_label_participation: state.showLabelParticipation" in javascript
     assert "filter((value) => value.length).join(' · ')" in javascript
     assert "event.key.toLowerCase() === 't'" in javascript
     assert "event.key.toLowerCase() === 'i'" in javascript
+    assert "event.key.toLowerCase() === 'm'" in javascript
+    assert "event.key.toLowerCase() === 'p'" in javascript
 
     assert "const SETTINGS_SCHEMA = 'hf-vocab-sphere/settings'" in javascript
     assert "function buildSettingsSnapshot()" in javascript

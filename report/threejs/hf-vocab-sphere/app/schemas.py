@@ -46,6 +46,9 @@ class TokenRecord(BaseModel):
     special: bool = False
     present_in_tokenizer: bool = True
     magnitude: float | None = None
+    effective_dimension: float | None = None
+    dimensions_for_angle: int | None = Field(default=None, ge=0)
+    continuous_dimensions_for_angle: float | None = None
     rank: int | None = Field(default=None, ge=1)
     cosine_similarity: float | None = None
     angle_deg: float | None = None
@@ -138,6 +141,9 @@ class ProjectionPoint(BaseModel):
     special: bool = False
     present_in_tokenizer: bool = True
     magnitude: float | None = None
+    effective_dimension: float | None = None
+    dimensions_for_angle: int | None = Field(default=None, ge=0)
+    continuous_dimensions_for_angle: float | None = None
     rank: int | None = Field(default=None, ge=1)
     cosine_similarity: float | None = None
     angle_deg: float | None = None
