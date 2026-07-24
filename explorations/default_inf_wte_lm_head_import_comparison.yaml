@@ -1,6 +1,5 @@
 # Compare default infinite-attention runs against runs seeded with WTE/lm_head
-# weights from a prior checkpoint. Update the checkpoint path below before
-# launching imported runs.
+# weights from a prior checkpoint, including an imported-lm-head scale ablation.
 ---
 
 named_static_groups:
@@ -20,14 +19,6 @@ named_static_groups:
     use_rotary_embeddings: [true]
     use_abs_pos_embeddings: [false]
 
-  # Relu2Max
-  - named_group: "relu2max"
-    softmax_variant_attn: ["relu2max"]
-
-  # Softmax
-  - named_group: "softmax"
-    softmax_variant_attn: ["softmax"]
-
   # Infinite Attention
   - named_group: "infinite"
     attention_variant: ["infinite"]
@@ -38,14 +29,6 @@ named_static_groups:
     n_qk_head_dim: [100]
     n_v_head_dim: [100]
 
-  - named_group: "hd_150"
-    n_qk_head_dim: [150]
-    n_v_head_dim: [150]
-
-  - named_group: "hd_200"
-    n_qk_head_dim: [200]
-    n_v_head_dim: [200]
-
   # MQA
   - named_group: "mqa"
     n_kv_group: [1]
@@ -54,7 +37,7 @@ named_static_groups:
   - named_group: "default_wte_lm_head"
 
   - named_group: "import_wte_lm_head"
-    import_wte_lm_head_ckpt: &prior_wte_lm_head_ckpt ["out/default_inf_prior/ckpt.pt"]
+    import_wte_lm_head_ckpt: &prior_wte_lm_head_ckpt ["out/default_inf_wte_lm_head_import_comparison-qk_norm-peri_ln-rotary-infinite-mqa-hd_100-default_wte_lm_head/ckpt.pt"]
     import_wte_lm_head_freeze: [false]
 
   - named_group: "import_wte_lm_head_frozen"
@@ -63,19 +46,16 @@ named_static_groups:
 
 named_variation_groups:
   - named_group: "head_dim"
-    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+    named_group_alternates: ["hd_100"]
 
-  - named_group: "wte_lm_head_import_mode"
-    named_group_alternates:
-      - "default_wte_lm_head"
-      - "import_wte_lm_head"
-      - "import_wte_lm_head_frozen"
+  - named_group: "lm_head_scale_ablation"
+    import_lm_head_weight_scale: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
 
 common_group:
-  dataset: ["minipile"]
-  eval_interval: [2500]
-  max_iters: [10000]
-  never_save_checkpoint: [true]
+  dataset: ["shakespeare_char"]
+  eval_interval: [50]
+  max_iters: [1000]
+  never_save_checkpoint: [false]
   compile: [true]
   log_rankme: [true]
   log_areq: [true]
@@ -85,30 +65,30 @@ parameter_groups:
       - "qk_norm"
       - "peri_ln"
       - "rotary"
-      - "relu2max"
       - "infinite"
       - "mqa"
+      - "default_wte_lm_head"
     named_group_variations:
       - "head_dim"
-      - "wte_lm_head_import_mode"
-    n_head:
-      range:
-        start: 1
-        end: 12
-        step: 1
 
   - named_group_static:
       - "qk_norm"
       - "peri_ln"
       - "rotary"
-      - "softmax"
       - "infinite"
       - "mqa"
+      - "import_wte_lm_head"
     named_group_variations:
       - "head_dim"
-      - "wte_lm_head_import_mode"
-    n_head:
-      range:
-        start: 1
-        end: 12
-        step: 1
+      - "lm_head_scale_ablation"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "mqa"
+      - "import_wte_lm_head_frozen"
+    named_group_variations:
+      - "head_dim"
+      - "lm_head_scale_ablation"

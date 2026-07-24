@@ -207,6 +207,7 @@ class GPT(nn.Module):
             self.import_wte_lm_head_from_ckpt(
                 self.config.import_wte_lm_head_ckpt,
                 freeze=self.config.import_wte_lm_head_freeze,
+                lm_head_scale=self.config.import_lm_head_weight_scale,
             )
 
         # import scale_matrices
@@ -358,7 +359,7 @@ class GPT(nn.Module):
             )
         target_weight.copy_(source_weight.to(device=target_weight.device, dtype=target_weight.dtype))
 
-    def import_wte_lm_head_from_ckpt(self, checkpoint_path, freeze=False):
+    def import_wte_lm_head_from_ckpt(self, checkpoint_path, freeze=False, lm_head_scale=1.0):
         """Import the full token embedding table and lm_head from a checkpoint."""
         if self.config.multicontext or self.config.multidataset_wte or self.uses_numerical_multicontext:
             raise NotImplementedError(
@@ -384,9 +385,19 @@ class GPT(nn.Module):
             else:
                 self._copy_imported_weight(source_state_dict, lm_head_key)
 
+            lm_head_scale = float(lm_head_scale)
+            if lm_head_scale != 1.0:
+                if self.lm_head.weight is self.transformer.wte.weight:
+                    self.lm_head.weight = nn.Parameter(self.lm_head.weight.detach().clone())
+                    self.wte_weight_tying = False
+                self.lm_head.weight.mul_(lm_head_scale)
+
         self.transformer.wte.weight.requires_grad = not freeze
         self.lm_head.weight.requires_grad = not freeze
-        print(f"Imported wte and lm_head from {checkpoint_path}; freeze={freeze}")
+        print(
+            f"Imported wte and lm_head from {checkpoint_path}; "
+            f"freeze={freeze}; lm_head_scale={lm_head_scale}"
+        )
 
     def import_scale_matrices(self, file_path, weight_tying=False):
         """Import scale_up and scale_down matrices from a numpy file."""

@@ -124,6 +124,15 @@ To keep those imported matrices fixed during training, add
 python3 train.py --import_wte_lm_head_ckpt out_prior/ckpt.pt --import_wte_lm_head_freeze
 ```
 
+To ablate the decoder logit scale while keeping the imported embedding table unchanged,
+set `--import_lm_head_weight_scale`. When this multiplier is not `1.0` and
+WTE/LM-head weights would otherwise be tied, the LM head is cloned before scaling
+so only `lm_head.weight` is multiplied:
+
+```bash
+python3 train.py --import_wte_lm_head_ckpt out_prior/ckpt.pt --import_lm_head_weight_scale 0.8
+```
+
 If the source checkpoint has separate WTE and LM-head matrices, disable weight
 tying in the new run so both matrices can be imported independently:
 
