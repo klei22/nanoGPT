@@ -133,6 +133,15 @@ so only `lm_head.weight` is multiplied:
 python3 train.py --import_wte_lm_head_ckpt out_prior/ckpt.pt --import_lm_head_weight_scale 0.8
 ```
 
+To first L2-normalize each imported LM-head word vector and then apply the
+multiplier, add `--import_lm_head_weight_normalize`. This also clones a tied LM
+head so normalization and scaling do not modify the imported WTE:
+
+```bash
+python3 train.py --import_wte_lm_head_ckpt out_prior/ckpt.pt \
+  --import_lm_head_weight_normalize --import_lm_head_weight_scale 0.8
+```
+
 If the source checkpoint has separate WTE and LM-head matrices, disable weight
 tying in the new run so both matrices can be imported independently:
 

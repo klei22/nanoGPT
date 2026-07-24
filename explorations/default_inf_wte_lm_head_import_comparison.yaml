@@ -1,5 +1,6 @@
 # Compare default infinite-attention runs against runs seeded with WTE/lm_head
-# weights from a prior checkpoint, including an imported-lm-head scale ablation.
+# weights from a prior checkpoint, including raw and row-normalized lm-head
+# scale ablations.
 ---
 
 named_static_groups:
@@ -44,6 +45,11 @@ named_static_groups:
     import_wte_lm_head_ckpt: *prior_wte_lm_head_ckpt
     import_wte_lm_head_freeze: [true]
 
+  - named_group: "import_wte_lm_head_normalized"
+    import_wte_lm_head_ckpt: *prior_wte_lm_head_ckpt
+    import_wte_lm_head_freeze: [false]
+    import_lm_head_weight_normalize: [true]
+
 named_variation_groups:
   - named_group: "head_dim"
     named_group_alternates: ["hd_100"]
@@ -78,6 +84,17 @@ parameter_groups:
       - "infinite"
       - "mqa"
       - "import_wte_lm_head"
+    named_group_variations:
+      - "head_dim"
+      - "lm_head_scale_ablation"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "mqa"
+      - "import_wte_lm_head_normalized"
     named_group_variations:
       - "head_dim"
       - "lm_head_scale_ablation"
