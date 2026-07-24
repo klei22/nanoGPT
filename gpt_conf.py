@@ -396,6 +396,8 @@ class GPTConfig:
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
+    # Defaults to norm_variant_attn when None, preserving older configs/checkpoints.
+    norm_variant_mlp: str | None = None
     norm_variant_output: str = "rmsnorm"
 
     norm_variant_wte: str | None = None

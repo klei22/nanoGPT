@@ -833,6 +833,13 @@ def parse_args():
             ]
 
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)
+    model_group.add_argument(
+        "--norm_variant_mlp",
+        type=str,
+        default=None,
+        choices=norm_variations,
+        help="MLP input/peri/post norm variant. Defaults to --norm_variant_attn for backward compatibility.",
+    )
     model_group.add_argument("--norm_variant_output", type=str, default="rmsnorm", choices=norm_variations)
     model_group.add_argument("--use_flash_norm", type=bool, default=None, action=argparse.BooleanOptionalAction)
 
