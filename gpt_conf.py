@@ -103,6 +103,9 @@ class GPTConfig:
     final_residual_attention_n_head: int | None = None
     final_residual_attention_n_qk_head_dim: int | None = None
     final_residual_attention_n_v_head_dim: int | None = None
+    final_residual_attention_use_qk_norm: bool | None = None
+    final_residual_attention_use_qk_norm_scale: bool | None = None
+    final_residual_attention_softmax_variant: str | None = None
     final_residual_attention_norm_variant: str = "rmsnorm"
 
     # Softcapping params

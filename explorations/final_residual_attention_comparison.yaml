@@ -9,6 +9,9 @@ named_static_groups:
     attention_variant: ["infinite"]
     use_concat_heads: [true]
     use_final_residual_attention: [true]
+    final_residual_attention_use_qk_norm: [true]
+    final_residual_attention_use_qk_norm_scale: [true]
+    final_residual_attention_softmax_variant: ["relu2max"]
     final_residual_attention_norm_variant: ["rmsnorm"]
 
   - named_group: "rotary"

@@ -72,6 +72,29 @@ class FinalResidualStreamAttention(nn.Module):
         self.wk = linear_cls(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.wv = linear_cls(self.n_embd, self.n_head * self.n_v_head_dim, config, bias=config.bias)
         self.c_proj = linear_cls(self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias)
+
+        self.use_qk_norm = (
+            config.use_qk_norm
+            if config.final_residual_attention_use_qk_norm is None
+            else config.final_residual_attention_use_qk_norm
+        )
+        self.use_qk_norm_scale = (
+            config.use_qk_norm_scale
+            if config.final_residual_attention_use_qk_norm_scale is None
+            else config.final_residual_attention_use_qk_norm_scale
+        )
+        if self.use_qk_norm_scale:
+            L = config.block_size
+            g0 = math.log2(L * L - L)
+            self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
+
+        self.softmax_variant_attn = (
+            config.final_residual_attention_softmax_variant
+            or config.softmax_variant_attn
+        )
+        if self.softmax_variant_attn != "softmax":
+            self.softmax_layer_attn = softmax_dictionary[self.softmax_variant_attn](config)
+
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
@@ -86,12 +109,24 @@ class FinalResidualStreamAttention(nn.Module):
         k = self.wk(memory).view(B, S, self.n_head, self.n_qk_head_dim).transpose(1, 2)
         v = self.wv(memory).view(B, S, self.n_head, self.n_v_head_dim).transpose(1, 2)
 
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.n_qk_head_dim)
+        if self.use_qk_norm:
+            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+
+        att = q @ k.transpose(-2, -1)
+        if self.use_qk_norm_scale:
+            att = att * self.qk_norm_factor
+        else:
+            att = att / math.sqrt(self.n_qk_head_dim)
+
         q_pos = torch.arange(T, device=query_source.device).view(1, 1, T, 1)
         repeats = len(saved_outputs)
         kv_pos = torch.arange(T, device=query_source.device).repeat(repeats).view(1, 1, 1, S)
         att = att.masked_fill(q_pos < kv_pos, float('-inf'))
-        att = F.softmax(att, dim=-1)
+        if self.softmax_variant_attn != "softmax":
+            att = self.softmax_layer_attn(att)
+        else:
+            att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)

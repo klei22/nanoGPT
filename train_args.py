@@ -1016,6 +1016,9 @@ def parse_args():
     model_group.add_argument("--final_residual_attention_n_head", default=None, type=int, help="Number of heads for final residual-stream attention (defaults to n_head)")
     model_group.add_argument("--final_residual_attention_n_qk_head_dim", default=None, type=int, help="Q/K head dimension for final residual-stream attention (defaults to n_qk_head_dim or n_embd // n_head)")
     model_group.add_argument("--final_residual_attention_n_v_head_dim", default=None, type=int, help="V head dimension for final residual-stream attention (defaults to n_v_head_dim or n_embd // n_head)")
+    model_group.add_argument("--final_residual_attention_use_qk_norm", default=None, action=argparse.BooleanOptionalAction, help="Apply QK norm in final residual-stream attention (defaults to use_qk_norm when unset)")
+    model_group.add_argument("--final_residual_attention_use_qk_norm_scale", default=None, action=argparse.BooleanOptionalAction, help="Use learned QK norm scale in final residual-stream attention (defaults to use_qk_norm_scale when unset)")
+    model_group.add_argument("--final_residual_attention_softmax_variant", type=str, default=None, help="Softmax variant for final residual-stream attention (defaults to softmax_variant_attn when unset)")
     model_group.add_argument("--final_residual_attention_norm_variant", type=str, default="rmsnorm", choices=norm_variations, help="Norm after final residual-stream attention")
 
     ## qk_norm variations
