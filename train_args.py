@@ -12,6 +12,17 @@ def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
 
+
+def _normalize_explicit_none(value):
+    """Convert launcher-provided ``none`` strings into Python None."""
+    if isinstance(value, str) and value.lower() == "none":
+        return None
+    if isinstance(value, list):
+        return [_normalize_explicit_none(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _normalize_explicit_none(v) for k, v in value.items()}
+    return value
+
 def parse_args():
 
     parser = argparse.ArgumentParser()
@@ -1590,6 +1601,9 @@ def parse_args():
         # Update the args namespace with values from the JSON file
         for key, value in config.items():
             setattr(args, key, value)
+
+    for key, value in vars(args).items():
+        setattr(args, key, _normalize_explicit_none(value))
 
     # Save all params to provided json if flag is present
     if args.save_config_json is not None:

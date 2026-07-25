@@ -7,6 +7,7 @@ from itertools import product
 import argparse
 import os
 from copy import deepcopy
+from enum import Enum
 
 import yaml
 from rich import print
@@ -117,14 +118,46 @@ def load_configurations(path: str, fmt: str) -> list[dict]:
         loaded = list(yaml.safe_load_all(text))
         # Flatten if outer list-of-lists
         if len(loaded) == 1 and isinstance(loaded[0], list):
-            return loaded[0]
-        return loaded
+            return [normalize_experiment_value(cfg) for cfg in loaded[0]]
+        return [normalize_experiment_value(cfg) for cfg in loaded]
     else:
-        return json.loads(text)
+        return normalize_experiment_value(json.loads(text))
 
 
 RUN_NAME_VAR = "${RUN_NAME}"
 DISTILLATION_SOURCE_VAR = "${DISTILLATION_SOURCE}"
+
+
+class ExperimentValue(Enum):
+    DEFAULT = "default"
+
+
+DEFAULT_VALUE = ExperimentValue.DEFAULT
+NONE_VALUE = "none"
+
+
+def normalize_experiment_value(value):
+    """Normalize launcher-level YAML values.
+
+    YAML ``null``/``~`` means "do not pass this option" so the training
+    script keeps its default. The string ``none`` means "pass a manual None"
+    for arguments that distinguish an explicit None from their default.
+    """
+    if value is None:
+        return DEFAULT_VALUE
+    if isinstance(value, str) and value.lower() == NONE_VALUE:
+        return None
+    if isinstance(value, list):
+        return [normalize_experiment_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: normalize_experiment_value(v) for k, v in value.items()}
+    return value
+
+
+def is_default_value(value) -> bool:
+    return value is DEFAULT_VALUE
+
+
 RESERVED_CONFIG_KEYS = {
     "distillation_source_path",
     "distillation_source_run_name",
@@ -559,7 +592,12 @@ def format_run_name(
             continue
         if isinstance(v, str) and (RUN_NAME_VAR in v or DISTILLATION_SOURCE_VAR in v):
             continue
-        parts.append(str(v))
+        if is_default_value(v):
+            parts.append("default")
+        elif v is None:
+            parts.append("none")
+        else:
+            parts.append(str(v))
 
     base_name = f"{prefix}{base}"
     return f"{base_name}-{'-'.join(parts)}" if parts else base_name
@@ -715,18 +753,19 @@ def build_command(combo: dict) -> list[str]:
     """
     cmd = ['python3', 'train.py']
     for k, v in combo.items():
-        if k.startswith('_') or k in RESERVED_CONFIG_KEYS:
+        if k.startswith('_') or k in RESERVED_CONFIG_KEYS or is_default_value(v):
             continue
         if isinstance(v, bool):
             cmd.append(f"--{'' if v else 'no-'}{k}")
         elif isinstance(v, list):
-            if v:
+            values = [x for x in v if not is_default_value(x)]
+            if values:
                 cmd.append(f"--{k}")
-                cmd.extend([str(x) for x in v])
+                cmd.extend([NONE_VALUE if x is None else str(x) for x in values])
             else:
                 cmd.append(f"--{k}")
         else:
-            cmd += [f"--{k}", str(v)]
+            cmd += [f"--{k}", NONE_VALUE if v is None else str(v)]
     return cmd
 
 
@@ -753,6 +792,9 @@ def run_experiment(
     )
     if combo.get("run_name_override"):
         run_name = f"{args.prefix}{combo['run_name_override']}"
+
+    combo = {k: v for k, v in combo.items() if not is_default_value(v)}
+
     log_file = LOG_DIR / f"{base}.yaml"
     if run_name in completed_runs(log_file):
         print(f"[yellow]Skipping already-run:[/] {run_name}")
