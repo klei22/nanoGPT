@@ -1,0 +1,5 @@
+# Demonstrates the distinction between explicit None and an omitted override.
+# `none` explicitly sets the option to Python None, while `null` leaves the
+# corresponding train.py default unchanged.
+---
+property: [none, null, "1", "2"]

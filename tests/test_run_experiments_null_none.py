@@ -1,4 +1,3 @@
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,14 +12,8 @@ from optimization_and_search.run_experiments import (
 
 class NullNoneExperimentValuesTest(unittest.TestCase):
     def test_yaml_null_keeps_default_and_none_sets_none(self):
-        config_text = 'property: [none, null, "1", "2"]\n'
-        with tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False) as f:
-            f.write(config_text)
-            path = f.name
-        try:
-            configs = load_configurations(path, 'yaml')
-        finally:
-            Path(path).unlink()
+        config_path = Path(__file__).parents[1] / 'explorations' / 'test_null_none.yaml'
+        configs = load_configurations(config_path, 'yaml')
 
         combos = [combo for combo, _ in generate_combinations(configs[0])]
         values = [combo['property'] for combo in combos]
