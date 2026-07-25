@@ -1,6 +1,7 @@
 # sample.py
 import argparse
 import csv
+import functools
 import importlib.util
 import json
 import math
@@ -13,7 +14,7 @@ from datetime import datetime
 
 # from __future__ import annotations
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import io
 import matplotlib.pyplot as plt
@@ -1790,6 +1791,40 @@ def main():
         plotly_samples: List[Dict[str, List[float]]] = []
         prompt_lengths = {name: initial_tokens[name].size(1) for name in dataset_names}
 
+        is_numerical = bool(model.config.numerical_multicontext)
+        top_k_val = None
+        if args.top_k is not None:
+            top_k_val = (
+                args.top_k[0]
+                if isinstance(args.top_k, (list, tuple))
+                else args.top_k
+            )
+
+        dataset_decoders = [decode_lookup[name] for name in dataset_names]
+        numerical_clamp_bounds: List[Tuple[float, Optional[float]]] = []
+        numerical_series_decoders: Optional[List[Callable[[Sequence[int]], np.ndarray]]] = None
+        if is_numerical:
+            for name in dataset_names:
+                min_val = 0.0
+                max_val = None
+                meta_info = dataset_meta.get(name, {})
+                tokenizer_name = meta_info.get('tokenizer') if isinstance(meta_info, dict) else None
+                if tokenizer_name == 'sinewave':
+                    max_val = 255.0
+                elif isinstance(meta_info, dict) and 'vocab_size' in meta_info:
+                    max_val = float(meta_info['vocab_size'] - 1)
+                numerical_clamp_bounds.append((min_val, max_val))
+
+            if args.numerical_multicontext_plotly:
+                numerical_series_decoders = [
+                    functools.partial(
+                        decode_numerical_series,
+                        meta=dataset_meta[name],
+                        model_input_format=model.config.numerical_multicontext_input_format,
+                    )
+                    for name in dataset_names
+                ]
+
         with torch.no_grad(), ctx:
             for sample_idx in range(args.num_samples):
                 if args.use_lsv and hasattr(args, 'lsv_size'):
@@ -1813,21 +1848,13 @@ def main():
                     logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
 
                     for i, name in enumerate(dataset_names):
-                        if model.config.numerical_multicontext:
+                        if is_numerical:
                             preds = logits_list[i][:, -1]
                             preds = preds.squeeze(-1)
                             if preds.ndim == 0:
                                 preds = preds.unsqueeze(0)
                             rounded = preds.round()
-                            min_val = 0.0
-                            max_val = None
-                            meta_info = dataset_meta.get(name, {})
-                            tokenizer_name = meta_info.get('tokenizer') if isinstance(meta_info, dict) else None
-                            if tokenizer_name == 'sinewave':
-                                max_val = 255.0
-                            elif isinstance(meta_info, dict) and 'vocab_size' in meta_info:
-                                max_val = float(meta_info['vocab_size'] - 1)
-
+                            min_val, max_val = numerical_clamp_bounds[i]
                             if max_val is not None:
                                 rounded = torch.clamp(rounded, min=min_val, max=max_val)
                             else:
@@ -1836,12 +1863,7 @@ def main():
                             idx_next = rounded.to(torch.long).unsqueeze(-1)
                         else:
                             cur_logits = logits_list[i][:, -1, :] / args.temperature
-                            if args.top_k is not None:
-                                top_k_val = (
-                                    args.top_k[0]
-                                    if isinstance(args.top_k, (list, tuple))
-                                    else args.top_k
-                                )
+                            if top_k_val is not None:
                                 k = min(top_k_val, cur_logits.size(-1))
                                 v, _ = torch.topk(cur_logits, k)
                                 cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
@@ -1852,21 +1874,17 @@ def main():
                         token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
 
                 output_dict: Dict[str, str] = {}
-                for name in dataset_names:
-                    decode_fn = decode_lookup[name]
+                for name, decode_fn in zip(dataset_names, dataset_decoders):
                     output_dict[name] = decode_fn(token_state[name][0].tolist())
 
                 if args.numerical_multicontext_plotly:
-                    if not model.config.numerical_multicontext:
+                    if not is_numerical:
                         raise ValueError("--numerical_multicontext_plotly requires a numerical multicontext model")
 
                     sample_numeric_series: Dict[str, List[float]] = {}
-                    for name in dataset_names:
-                        decoded = decode_numerical_series(
-                            token_state[name][0].tolist(),
-                            dataset_meta[name],
-                            model.config.numerical_multicontext_input_format,
-                        )
+                    assert numerical_series_decoders is not None
+                    for name, decode_numeric in zip(dataset_names, numerical_series_decoders):
+                        decoded = decode_numeric(token_state[name][0].tolist())
                         sample_numeric_series[name] = decoded.tolist()
                     plotly_samples.append(sample_numeric_series)
 
