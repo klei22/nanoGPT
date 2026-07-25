@@ -140,3 +140,27 @@ def test_layer_model_functions_are_dispatched() -> None:
     np.testing.assert_allclose(result, np.array([111.0, 112.0]))
     assert references == ("A", "B")
     assert calls == ["attn_layer", "mlp_layer"]
+
+
+def test_model_state_function_dispatches_context_and_selectors() -> None:
+    aliases = {
+        "A": np.array([1.0, 0.0]),
+        "B": np.array([0.0, 1.0]),
+        "C": np.array([1.0, 1.0]),
+    }
+    captured = []
+
+    def model_function(name, args):
+        captured.append((name, args))
+        return np.asarray(args[0])
+
+    result, references = evaluate_vector_expression(
+        "model_state(C, 2, 'attn', 'heads', '0,2', A, B)", aliases, model_function=model_function
+    )
+
+    np.testing.assert_array_equal(result, aliases["C"])
+    assert references == ("A", "B", "C")
+    assert captured[0][0] == "model_state"
+    assert captured[0][1][1:5] == [2.0, "attn", "heads", "0,2"]
+    np.testing.assert_array_equal(captured[0][1][5], aliases["A"])
+    np.testing.assert_array_equal(captured[0][1][6], aliases["B"])

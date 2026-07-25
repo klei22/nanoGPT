@@ -1227,6 +1227,16 @@ def _apply_attention_layer(
     layer: int,
     kv_vectors: list[np.ndarray],
 ) -> np.ndarray:
+    return _attention_layer_stages(assets, tensors, latest_vector, layer, kv_vectors)["pre_skip"]
+
+
+def _attention_layer_stages(
+    assets: ModelAssets,
+    tensors: dict[str, torch.Tensor],
+    latest_vector: np.ndarray,
+    layer: int,
+    kv_vectors: list[np.ndarray],
+) -> dict[str, np.ndarray | list[np.ndarray]]:
     _qn, q_weight = _find_tensor(
         tensors,
         ("self_attn.q_proj.weight", "attention.q_proj.weight", "attn.q_proj.weight", "query.weight"),
@@ -1265,7 +1275,7 @@ def _apply_attention_layer(
     # The latest/query token also contributes its own K/V entry after the supplied cache order.
     kv_norms.append(latest_norm)
     attention_heads, key_value_heads = _attention_head_counts(assets)
-    output = np.zeros(width, dtype=np.float64)
+    head_outputs: list[np.ndarray] = []
     for query_head in range(attention_heads):
         kv_head = min((query_head * key_value_heads) // attention_heads, key_value_heads - 1)
         q_slice, k_slice = _qk_head_slices(
@@ -1288,8 +1298,14 @@ def _apply_attention_layer(
         values = np.stack([vector @ v[v_slice, :].T for vector in kv_norms], axis=0)
         scores = keys @ query / math.sqrt(max(query.shape[0], 1))
         context = _softmax(scores) @ values
-        output += context @ o[:, o_slice].T
-    return _optional_norm(tensors, [output, layer, "attn", "output"])
+        head_outputs.append(context @ o[:, o_slice].T)
+    output = np.sum(head_outputs, axis=0)
+    return {
+        "input_norm": latest_norm,
+        "pre_output_norm": output,
+        "pre_skip": _optional_norm(tensors, [output, layer, "attn", "output"]),
+        "heads": head_outputs,
+    }
 
 
 def _activation(name: str, values: np.ndarray) -> np.ndarray:
@@ -1302,6 +1318,12 @@ def _activation(name: str, values: np.ndarray) -> np.ndarray:
 def _apply_mlp_layer(
     assets: ModelAssets, tensors: dict[str, torch.Tensor], vector: np.ndarray, layer: int
 ) -> np.ndarray:
+    return _mlp_layer_stages(assets, tensors, vector, layer)["pre_skip"]
+
+
+def _mlp_layer_stages(
+    assets: ModelAssets, tensors: dict[str, torch.Tensor], vector: np.ndarray, layer: int
+) -> dict[str, np.ndarray]:
     hidden = _apply_rms_norm(*_norm_weight_for_args(tensors, [vector, layer, "ffn", "input"]))
     try:
         _gn, gate_weight = _find_tensor(
@@ -1330,7 +1352,77 @@ def _apply_mlp_layer(
             output = _activation("gelu", hidden @ fc.T) @ proj.T
         else:
             output = _activation("gelu", hidden @ fc) @ proj
-    return _optional_norm(tensors, [output, layer, "ffn", "output"])
+    return {
+        "input_norm": hidden,
+        "pre_output_norm": output,
+        "pre_skip": _optional_norm(tensors, [output, layer, "ffn", "output"]),
+    }
+
+
+def _selected_heads(selector: str, head_count: int) -> list[int]:
+    if selector.casefold() in {"all", "*"}:
+        return list(range(head_count))
+    heads: set[int] = set()
+    for part in selector.split(","):
+        part = part.strip()
+        if "-" in part:
+            start_text, end_text = part.split("-", 1)
+            start, end = int(start_text), int(end_text)
+            heads.update(range(start, end + 1))
+        elif part:
+            heads.add(int(part))
+    if not heads or min(heads) < 0 or max(heads) >= head_count:
+        raise ValueError(f"Head selector must choose heads in [0, {head_count - 1}].")
+    return sorted(heads)
+
+
+def _simulate_to_point(
+    assets: ModelAssets,
+    tensors: dict[str, torch.Tensor],
+    latest_vector: np.ndarray,
+    target_layer: int,
+    block: str,
+    point: str,
+    head_selector: str,
+    context_vectors: list[np.ndarray],
+) -> np.ndarray:
+    if target_layer < 0:
+        raise ValueError("Simulation layer must be non-negative.")
+    block = block.casefold()
+    point = point.casefold()
+    if block not in {"attn", "attention", "mlp", "ffn"}:
+        raise ValueError("Simulation block must be 'attn' or 'mlp'.")
+    if point not in {"input_norm", "pre_output_norm", "pre_skip", "post_skip", "heads"}:
+        raise ValueError("Simulation point must be input_norm, pre_output_norm, pre_skip, post_skip, or heads.")
+    if point == "heads" and block not in {"attn", "attention"}:
+        raise ValueError("The heads simulation point is available only for attention.")
+
+    # Keep every token's residual stream because each later attention layer needs
+    # a causal cache produced by all preceding layers, not the original embeddings.
+    residuals = [np.asarray(value, dtype=np.float64).copy() for value in context_vectors]
+    residuals.append(np.asarray(latest_vector, dtype=np.float64).copy())
+    for layer in range(target_layer + 1):
+        attention_updates: list[np.ndarray] = []
+        for index, residual in enumerate(residuals):
+            stages = _attention_layer_stages(assets, tensors, residual, layer, residuals[:index])
+            if layer == target_layer and index == len(residuals) - 1 and block in {"attn", "attention"}:
+                if point == "heads":
+                    outputs = stages["heads"]
+                    assert isinstance(outputs, list)
+                    chosen = _selected_heads(head_selector, len(outputs))
+                    return np.sum([outputs[head] for head in chosen], axis=0)
+                selected = np.asarray(stages[point if point != "post_skip" else "pre_skip"])
+                return residual + selected if point == "post_skip" else selected
+            attention_updates.append(np.asarray(stages["pre_skip"]))
+        residuals = [residual + update for residual, update in zip(residuals, attention_updates)]
+
+        for index, residual in enumerate(residuals):
+            stages = _mlp_layer_stages(assets, tensors, residual, layer)
+            if layer == target_layer and index == len(residuals) - 1 and block in {"mlp", "ffn"}:
+                selected = stages[point if point != "post_skip" else "pre_skip"]
+                return residual + selected if point == "post_skip" else selected
+            residuals[index] = residual + stages["pre_skip"]
+    raise ValueError("Could not reach the requested simulation point.")
 
 
 def model_vector_function(assets: ModelAssets, name: str, args: list[float | str | np.ndarray]) -> np.ndarray:
@@ -1387,6 +1479,21 @@ def model_vector_function(assets: ModelAssets, name: str, args: list[float | str
         vector = np.asarray(args[0], dtype=np.float64)
         layer = int(args[1])
         return _apply_mlp_layer(assets, tensors, vector, layer)
+    if name == "model_state":
+        if len(args) < 5:
+            raise ValueError(
+                "model_state expects (latest, layer, 'attn'|'mlp', point, head_selector, optional_context, ...)."
+            )
+        return _simulate_to_point(
+            assets,
+            tensors,
+            np.asarray(args[0], dtype=np.float64),
+            int(args[1]),
+            str(args[2]),
+            str(args[3]),
+            str(args[4]),
+            [np.asarray(value, dtype=np.float64) for value in args[5:]],
+        )
     if name in {"wqk", "wkq"}:
         if len(args) != 4:
             raise ValueError("wqk/wkq expect (vector, layer, query_head, key_head).")

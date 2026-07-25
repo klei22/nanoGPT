@@ -251,6 +251,7 @@
           <div class="button-grid top-gap">
             <button class="small-button" id="insertAttentionLayerBtn" type="button">Add attention layer helper</button>
             <button class="small-button" id="insertMlpLayerBtn" type="button">Add MLP layer helper</button>
+            <button class="small-button" id="insertModelStateBtn" type="button">Simulate to model point</button>
           </div>
         </div>
         <div id="slerpControlsWrap" class="hidden top-gap">
@@ -273,7 +274,7 @@
         <label class="field-label top-gap" for="arithmeticLabelInput">Result label</label>
         <input id="arithmeticLabelInput" type="text" placeholder="e.g. analogy result" maxlength="120" />
         <button class="primary hero-button" id="addArithmeticBtn">Add resultant to map</button>
-        <div class="small top-gap">Expressions support aliases, scalars, parentheses, <span class="mono">+ - * /</span>, <span class="mono">mean(...)</span>, <span class="mono">slerp(A,B,t)</span>, <span class="mono">norm(A,0,'attn','input')</span>/<span class="mono">norm(A,'final')</span>, <span class="mono">invnorm(A,...)</span>, <span class="mono">wov(A,0,0)</span>, <span class="mono">wqk(A,0,0,0)</span>, <span class="mono">wkq(A,0,0,0)</span>, <span class="mono">attn_layer(A,0,B,C)</span>, and <span class="mono">mlp_layer(A,0)</span>. Functions can be nested. Example average: <span class="mono">(A+B+C)/3 + D</span>. Resultants are projected from the original model space, never by adding screen coordinates.</div>
+        <div class="small top-gap">Expressions support aliases, scalars, parentheses, <span class="mono">+ - * /</span>, <span class="mono">mean(...)</span>, <span class="mono">slerp(A,B,t)</span>, <span class="mono">norm(A,0,'attn','input')</span>/<span class="mono">norm(A,'final')</span>, <span class="mono">invnorm(A,...)</span>, <span class="mono">wov(A,0,0)</span>, <span class="mono">wqk(A,0,0,0)</span>, <span class="mono">wkq(A,0,0,0)</span>, <span class="mono">attn_layer(A,0,B,C)</span>, <span class="mono">mlp_layer(A,0)</span>, and <span class="mono">model_state(C,2,'attn','post_skip','all',A,B)</span>. Simulation points are <span class="mono">input_norm</span>, <span class="mono">pre_output_norm</span>, <span class="mono">pre_skip</span>, <span class="mono">post_skip</span>, or <span class="mono">heads</span>; head selectors accept <span class="mono">all</span>, <span class="mono">0,2</span>, or <span class="mono">1-3</span>. Functions can be nested. Example average: <span class="mono">(A+B+C)/3 + D</span>. Resultants are projected from the original model space, never by adding screen coordinates.</div>
         <div id="arithmeticResults" class="arithmetic-result-list top-gap"><div class="empty-selection">No resultants defined.</div></div>
       </section>
 

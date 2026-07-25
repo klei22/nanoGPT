@@ -1406,6 +1406,32 @@ function insertMlpLayerExpression() {
   $('arithmeticExpressionInput').focus();
 }
 
+function insertModelStateExpression() {
+  const rows = selectedRows();
+  if (!rows.length) return showToast('Select context tokens before simulating the model.', 'error');
+  const latest = (window.prompt('Latest/target token alias:', aliasForIndex(rows.length - 1)) || '').trim().toUpperCase();
+  if (!latest) return;
+  const layer = Number((window.prompt('Stop at layer index:', '0') || '').trim());
+  if (!Number.isInteger(layer) || layer < 0) return showToast('Layer must be a non-negative integer.', 'error');
+  const block = (window.prompt("Block to inspect: 'attn' or 'mlp':", 'attn') || '').trim().toLowerCase();
+  if (!['attn', 'mlp'].includes(block)) return showToast("Block must be 'attn' or 'mlp'.", 'error');
+  const point = (window.prompt('Point: input_norm, pre_output_norm, pre_skip, post_skip, or heads:', 'post_skip') || '').trim().toLowerCase();
+  if (!['input_norm', 'pre_output_norm', 'pre_skip', 'post_skip', 'heads'].includes(point)) return showToast('Unknown simulation point.', 'error');
+  if (point === 'heads' && block !== 'attn') return showToast('Head sums are available only for attention.', 'error');
+  const heads = point === 'heads'
+    ? (window.prompt("Heads to sum ('all', '0,2', or '1-3'):", 'all') || '').trim().toLowerCase()
+    : 'all';
+  if (!heads) return;
+  const defaultContext = rows.slice(0, -1).map((_, index) => aliasForIndex(index)).join(',');
+  const contextText = (window.prompt('Prior context aliases in causal order:', defaultContext) || '').trim();
+  const context = contextText.split(',').map((value) => value.trim().toUpperCase()).filter(Boolean);
+  const contextSuffix = context.length ? `, ${context.join(', ')}` : '';
+  $('arithmeticExpressionInput').value = `model_state(${latest}, ${layer}, '${block}', '${point}', '${heads}'${contextSuffix})`;
+  $('arithmeticModeSelect').value = 'expression';
+  syncArithmeticMode();
+  $('arithmeticExpressionInput').focus();
+}
+
 async function addArithmeticResult() {
   const rows = selectedRows();
   const slerpMode = $('arithmeticModeSelect').value === 'slerp';
@@ -2221,6 +2247,7 @@ $('anchorIdInput').addEventListener('change', () => { renderSelected(); markProj
 $('arithmeticModeSelect').addEventListener('change', syncArithmeticMode);
 $('insertAttentionLayerBtn').addEventListener('click', insertAttentionLayerExpression);
 $('insertMlpLayerBtn').addEventListener('click', insertMlpLayerExpression);
+$('insertModelStateBtn').addEventListener('click', insertModelStateExpression);
 $('slerpFractionInput').addEventListener('input', (event) => {
   $('slerpFractionLabel').textContent = `t = ${Number(event.target.value).toFixed(2)}`;
 });
