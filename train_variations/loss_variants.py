@@ -336,62 +336,6 @@ def top1_ratio_loss(
     return ce + beta * ratio_penalty.mean()
 
 
-def top1_corrective_ce_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    *,
-    iter_num: int | None = None,
-    boost: float = 1.0,
-) -> torch.Tensor:
-    """Cross entropy that up-weights currently top-1-incorrect tokens.
-
-    This directly mirrors ``avg_top1_correct`` at batch scale: the loss estimates
-    the current batch's top-1 error rate and uses it to increase emphasis on
-    tokens whose argmax prediction is wrong.
-    """
-
-    logits_flat, targets_flat, mask = _flatten_logits_targets(logits, targets)
-    losses = F.cross_entropy(logits_flat, targets_flat, reduction="none", ignore_index=-1)
-    if not mask.any():
-        return losses.new_full((), 0.0)
-
-    with torch.no_grad():
-        predictions = torch.argmax(logits_flat, dim=-1)
-        incorrect = (predictions != targets_flat) & mask
-        batch_error_rate = incorrect.float().sum() / mask.float().sum().clamp_min(1.0)
-        weights = torch.ones_like(losses)
-        weights[incorrect] = 1.0 + boost * batch_error_rate
-
-    return (losses[mask] * weights[mask]).mean()
-
-
-def top1_confidence_gap_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    *,
-    iter_num: int | None = None,
-    beta: float = 0.5,
-) -> torch.Tensor:
-    """Cross entropy plus a differentiable surrogate for top-1 correctness.
-
-    ``avg_top1_correct`` changes only when the target crosses the top competing
-    class. This surrogate penalizes the softplus of that top-competitor gap,
-    providing gradients before the discrete top-1 decision flips.
-    """
-
-    ce = cross_entropy_loss(logits, targets)
-    logits_flat, targets_flat, mask = _flatten_logits_targets(logits, targets)
-    if not mask.any():
-        return ce
-    logits_sel = logits_flat[mask]
-    targets_sel = targets_flat[mask]
-    target_logits = logits_sel[torch.arange(logits_sel.size(0), device=logits.device), targets_sel]
-    others = logits_sel.clone()
-    others[torch.arange(logits_sel.size(0), device=logits.device), targets_sel] = float("-inf")
-    max_other = others.max(dim=-1).values
-    return ce + beta * F.softplus(max_other - target_logits).mean()
-
-
 # def rank_distance_loss(
 #     logits: torch.Tensor,
 #     targets: torch.Tensor,
@@ -472,6 +416,35 @@ def top1_confidence_gap_loss(
     others[torch.arange(logits_sel.size(0), device=logits.device), targets_sel] = float("-inf")
     max_other = others.max(dim=-1).values
     return ce + beta * F.softplus(max_other - target_logits).mean()
+
+
+def top1_corrective_confidence_gap_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    boost: float = 1.0,
+    beta: float = 0.5,
+) -> torch.Tensor:
+    """Combine incorrect-token corrective CE with the confidence-gap penalty.
+
+    The corrective term routes additional CE weight to tokens currently on the
+    wrong side of the top-1 decision, while the differentiable gap term pushes
+    the target logit above its strongest competitor.
+    """
+    corrective_ce = top1_corrective_ce_loss(logits, targets, boost=boost)
+    logits_flat, targets_flat, mask = _flatten_logits_targets(logits, targets)
+    if not mask.any():
+        return corrective_ce
+
+    logits_sel = logits_flat[mask]
+    targets_sel = targets_flat[mask]
+    row_indices = torch.arange(logits_sel.size(0), device=logits.device)
+    target_logits = logits_sel[row_indices, targets_sel]
+    others = logits_sel.clone()
+    others[row_indices, targets_sel] = float("-inf")
+    confidence_gap = F.softplus(others.max(dim=-1).values - target_logits).mean()
+    return corrective_ce + beta * confidence_gap
 
 
 def rank_distance_loss(
@@ -638,6 +611,7 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "top1_ratio": top1_ratio_loss,
     "top1_corrective_ce": top1_corrective_ce_loss,
     "top1_confidence_gap": top1_confidence_gap_loss,
+    "top1_corrective_confidence_gap": top1_corrective_confidence_gap_loss,
     "rank_distance": rank_distance_loss,
     "flatness_boost": flatness_boost_loss,
     "entropy_focal": entropy_focal_loss,
@@ -770,6 +744,13 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
         "top1_confidence_gap": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_confidence_gap"](
             l, t, iter_num=iter_num, beta=getattr(args, "top1_confidence_gap_beta", 0.5)
         ),
+        "top1_corrective_confidence_gap": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_corrective_confidence_gap"](
+            l,
+            t,
+            iter_num=iter_num,
+            boost=getattr(args, "top1_corrective_boost", 1.0),
+            beta=getattr(args, "top1_confidence_gap_beta", 0.5),
+        ),
         "rank_distance": lambda l, t, *, iter_num=None: LOSS_VARIANTS["rank_distance"](
             l, t, iter_num=iter_num, gamma=rank_gamma(iter_num)
         ),
@@ -817,4 +798,3 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
 
     loss_name = getattr(args, "loss_fn", "cross_entropy")
     return built_losses.get(loss_name, LOSS_VARIANTS["cross_entropy"])
-

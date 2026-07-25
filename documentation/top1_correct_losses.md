@@ -68,6 +68,30 @@ Example:
 python train.py --loss_fn top1_confidence_gap --top1_confidence_gap_beta 0.5
 ```
 
+The confidence-gap weight defaults to `0.5`.
+
+### `top1_corrective_confidence_gap`
+
+This merged objective applies both mechanisms at once: its cross-entropy term
+up-weights top-1-incorrect tokens using `--top1_corrective_boost`, and it adds
+the smooth strongest-competitor penalty using `--top1_confidence_gap_beta`.
+
+```text
+loss = corrective_CE(boost)
+     + beta * mean(softplus(best_non_target_logit - target_logit))
+```
+
+Example using the default confidence-gap weight of `0.5`:
+
+```bash
+python train.py --loss_fn top1_corrective_confidence_gap \
+  --top1_corrective_boost 1.0
+```
+
+The dedicated `explorations/top1_corrective_confidence_gap_sweep.yaml` runs a
+cross-entropy baseline and the full `0.25`, `0.5`, `0.75` Cartesian grid for
+both merged-loss hyperparameters.
+
 ## Practical sweep suggestion
 
 Start with cross entropy as a baseline, then compare one discrete-weighting loss
