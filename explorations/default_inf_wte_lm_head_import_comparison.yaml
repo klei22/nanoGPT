@@ -1,0 +1,111 @@
+# Compare default infinite-attention runs against runs seeded with WTE/lm_head
+# weights from a prior checkpoint, including raw and row-normalized lm-head
+# scale ablations.
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Infinite Attention
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  # Head Dimension
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+
+  # MQA
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+  # WTE/lm_head import modes
+  - named_group: "default_wte_lm_head"
+
+  - named_group: "import_wte_lm_head"
+    import_wte_lm_head_ckpt: &prior_wte_lm_head_ckpt ["out/default_inf_wte_lm_head_import_comparison-qk_norm-peri_ln-rotary-infinite-mqa-hd_100-default_wte_lm_head/ckpt.pt"]
+    import_wte_lm_head_freeze: [false]
+
+  - named_group: "import_wte_lm_head_frozen"
+    import_wte_lm_head_ckpt: *prior_wte_lm_head_ckpt
+    import_wte_lm_head_freeze: [true]
+
+  - named_group: "import_wte_lm_head_normalized"
+    import_wte_lm_head_ckpt: *prior_wte_lm_head_ckpt
+    import_wte_lm_head_freeze: [false]
+    import_lm_head_weight_normalize: [true]
+
+named_variation_groups:
+  - named_group: "head_dim"
+    named_group_alternates: ["hd_100"]
+
+  - named_group: "lm_head_scale_ablation"
+    import_lm_head_weight_scale: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  eval_interval: [50]
+  max_iters: [1000]
+  never_save_checkpoint: [false]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "mqa"
+      - "default_wte_lm_head"
+    named_group_variations:
+      - "head_dim"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "mqa"
+      - "import_wte_lm_head"
+    named_group_variations:
+      - "head_dim"
+      - "lm_head_scale_ablation"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "mqa"
+      - "import_wte_lm_head_normalized"
+    named_group_variations:
+      - "head_dim"
+      - "lm_head_scale_ablation"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "infinite"
+      - "mqa"
+      - "import_wte_lm_head_frozen"
+    named_group_variations:
+      - "head_dim"
+      - "lm_head_scale_ablation"
