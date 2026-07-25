@@ -296,54 +296,60 @@ def _resolve_unit_norm_flags(self, config) -> None:
 
 def _setup_norms_parallel(self, config, norm_classes) -> None:
     """Norm layout for the 'parallel_mlp' variation."""
-    attn_norm_cls, mlp_norm_cls = norm_classes
+    attn_input_norm_cls = norm_classes["attn_input"]
+    attn_output_norm_cls = norm_classes["attn_output"]
+    mlp_input_norm_cls = norm_classes["mlp_input"]
+    mlp_output_norm_cls = norm_classes["mlp_output"]
 
     # Pre-LN. If both branches use the same norm variant through the legacy
     # global flag, keep a shared ``pre_ln`` module for checkpoint compatibility.
-    if getattr(self, "use_pre_ln_attn", False) and getattr(self, "use_pre_ln_mlp", False) and attn_norm_cls is mlp_norm_cls:
-        self.pre_ln = attn_norm_cls(config)
+    if getattr(self, "use_pre_ln_attn", False) and getattr(self, "use_pre_ln_mlp", False) and attn_input_norm_cls is mlp_input_norm_cls:
+        self.pre_ln = attn_input_norm_cls(config)
     else:
         if getattr(self, "use_pre_ln_attn", False):
-            self.pre_ln_attn = attn_norm_cls(config)
+            self.pre_ln_attn = attn_input_norm_cls(config)
         if getattr(self, "use_pre_ln_mlp", False):
-            self.pre_ln_mlp = mlp_norm_cls(config)
+            self.pre_ln_mlp = mlp_input_norm_cls(config)
 
     # Peri-LN
     if getattr(self, "use_peri_ln_attn", False):
-        self.peri_ln_attn = attn_norm_cls(config)
+        self.peri_ln_attn = attn_output_norm_cls(config)
     if getattr(self, "use_peri_ln_mlp", False):
-        self.peri_ln_mlp = mlp_norm_cls(config)
+        self.peri_ln_mlp = mlp_output_norm_cls(config)
 
     # Post-LN. Preserve the historical shared post_ln when possible.
-    if getattr(self, "use_post_ln_attn", False) and getattr(self, "use_post_ln_mlp", False) and attn_norm_cls is mlp_norm_cls:
-        self.post_ln = attn_norm_cls(config)
+    if getattr(self, "use_post_ln_attn", False) and getattr(self, "use_post_ln_mlp", False) and attn_output_norm_cls is mlp_output_norm_cls:
+        self.post_ln = attn_output_norm_cls(config)
     else:
         if getattr(self, "use_post_ln_attn", False):
-            self.post_ln_attn = attn_norm_cls(config)
+            self.post_ln_attn = attn_output_norm_cls(config)
         if getattr(self, "use_post_ln_mlp", False):
-            self.post_ln_mlp = mlp_norm_cls(config)
+            self.post_ln_mlp = mlp_output_norm_cls(config)
 
 def _setup_norms_sequential(self, config, norm_classes) -> None:
     """Norm layout for the 'attn_then_mlp' variation."""
-    attn_norm_cls, mlp_norm_cls = norm_classes
+    attn_input_norm_cls = norm_classes["attn_input"]
+    attn_output_norm_cls = norm_classes["attn_output"]
+    mlp_input_norm_cls = norm_classes["mlp_input"]
+    mlp_output_norm_cls = norm_classes["mlp_output"]
 
     # Pre-Norm
     if getattr(self, "use_pre_ln_attn", False):
-        self.pre_ln_attn = attn_norm_cls(config)
+        self.pre_ln_attn = attn_input_norm_cls(config)
     if getattr(self, "use_pre_ln_mlp", False):
-        self.pre_ln_mlp = mlp_norm_cls(config)
+        self.pre_ln_mlp = mlp_input_norm_cls(config)
 
     # Peri-LN
     if getattr(self, "use_peri_ln_attn", False):
-        self.peri_ln_attn = attn_norm_cls(config)
+        self.peri_ln_attn = attn_output_norm_cls(config)
     if getattr(self, "use_peri_ln_mlp", False):
-        self.peri_ln_mlp = mlp_norm_cls(config)
+        self.peri_ln_mlp = mlp_output_norm_cls(config)
 
     # Post-LN
     if getattr(self, "use_post_ln_attn", False):
-        self.post_ln_attn = attn_norm_cls(config)
+        self.post_ln_attn = attn_output_norm_cls(config)
     if getattr(self, "use_post_ln_mlp", False):
-        self.post_ln_mlp = mlp_norm_cls(config)
+        self.post_ln_mlp = mlp_output_norm_cls(config)
 
 
 normalization_setup_variations = {
@@ -399,12 +405,18 @@ class Block(nn.Module):
     def __init__(self, config, mlp=None, attn=None):
         super().__init__()
 
-        # Choose norm classes for attention and MLP block norms.
-        # ``norm_variant_mlp=None`` intentionally falls back to the attention
-        # norm, so older configs and checkpoints keep their exact architecture.
-        attn_norm_cls = norm_dictionary[config.norm_variant_attn]
-        mlp_norm_variant = getattr(config, "norm_variant_mlp", None) or config.norm_variant_attn
-        mlp_norm_cls = norm_dictionary[mlp_norm_variant]
+        # Choose norm classes for attention and MLP block norms. Granular
+        # input/output variants fall back to their component defaults;
+        # ``norm_variant_mlp=None`` falls back to the attention default for
+        # older configs and checkpoints.
+        attn_norm_variant = config.norm_variant_attn
+        mlp_norm_variant = getattr(config, "norm_variant_mlp", None) or attn_norm_variant
+        norm_classes = {
+            "attn_input": norm_dictionary[getattr(config, "norm_variant_attn_input", None) or attn_norm_variant],
+            "attn_output": norm_dictionary[getattr(config, "norm_variant_attn_output", None) or attn_norm_variant],
+            "mlp_input": norm_dictionary[getattr(config, "norm_variant_mlp_input", None) or mlp_norm_variant],
+            "mlp_output": norm_dictionary[getattr(config, "norm_variant_mlp_output", None) or mlp_norm_variant],
+        }
 
         # Resolve per-unit norm flags from config (pre/post/peri × attn/mlp)
         _resolve_unit_norm_flags(self, config)
@@ -441,7 +453,7 @@ class Block(nn.Module):
         self.block_forward = partial(block_forward_variations[variant], self)
 
         ## Instantiate norms for Block Forward Variant
-        normalization_setup_variations[variant](self, config, (attn_norm_cls, mlp_norm_cls))
+        normalization_setup_variations[variant](self, config, norm_classes)
 
         ## Instantiate (Optional) learned residual scalers for Block Forward Variant
         resid_scaler_setup_variations[variant](self, config)
