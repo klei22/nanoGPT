@@ -133,6 +133,13 @@ class GPTConfig:
     # If Factorizing:
     n_embd_wte: int = None
 
+    # Writer-subspace factorization for residual writers and tied vocabulary.
+    # Ranks of 0 disable the corresponding factorization.
+    writer_attn_rank: int = 0
+    writer_mlp_rank: int = 0
+    writer_vocab_rank: int = 0
+    writer_coeff_bits: int = 16
+
     # weight tying
     n_embd_wte_scale_tying: bool = True
     wte_weight_tying: bool = True # Non-factorized wte weight tying
