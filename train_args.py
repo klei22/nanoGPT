@@ -61,6 +61,28 @@ def parse_args():
     model_group.add_argument('--l2_norm_attn_cproj_dim', type=str, default='embed', choices=['embed', 'hidden'],
                              help="Dimension for L2-normalizing attention output projections: 'embed' or 'hidden'")
 
+    # Approximate normalization factors (anGPT-style scaling)
+    model_group.add_argument('--use_approx_qkv_norm', default=False, action=argparse.BooleanOptionalAction,
+                             help='Apply approximate normalization scaling to attention Q/K/V projections')
+    model_group.add_argument('--approx_qkv_norm_factor', type=float, default=None,
+                             help='Override factor for approximate Q/K/V normalization (default uses n_embd / head_dim)')
+    model_group.add_argument('--use_approx_attn_out_norm', default=False, action=argparse.BooleanOptionalAction,
+                             help='Apply approximate normalization scaling to attention output projection')
+    model_group.add_argument('--approx_attn_out_norm_factor', type=float, default=None,
+                             help='Override factor for approximate attention output normalization (default uses head_dim / n_embd)')
+    model_group.add_argument('--use_approx_mlp_up_norm', default=False, action=argparse.BooleanOptionalAction,
+                             help='Apply approximate normalization scaling after MLP up projection')
+    model_group.add_argument('--approx_mlp_up_norm_factor', type=float, default=None,
+                             help='Override factor for approximate MLP up-projection normalization (default uses n_embd / mlp_size)')
+    model_group.add_argument('--use_approx_mlp_act_norm', default=False, action=argparse.BooleanOptionalAction,
+                             help='Apply approximate normalization scaling after MLP activation')
+    model_group.add_argument('--approx_mlp_act_norm_factor', type=float, default=None,
+                             help='Override factor for approximate MLP activation normalization (default 3.74)')
+    model_group.add_argument('--use_approx_mlp_down_norm', default=False, action=argparse.BooleanOptionalAction,
+                             help='Apply approximate normalization scaling after MLP down projection')
+    model_group.add_argument('--approx_mlp_down_norm_factor', type=float, default=None,
+                             help='Override factor for approximate MLP down-projection normalization (default uses mlp_size / n_embd)')
+
     # Export Args
     ## Factored WTE
     model_group.add_argument('--import_wte_npy', default=None, type=str, help='Path to import the embedding table as a .npy file')
