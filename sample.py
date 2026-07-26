@@ -1622,7 +1622,8 @@ def main():
         print_module_structure(model)
 
 
-    if args.compile:
+    compiled_multicontext_step = None
+    if args.compile and not args.multicontext:
         model = torch.compile(model)
 
     # Inference with different block size (note: for this one cannot use abs pos embeddings)
@@ -1636,6 +1637,12 @@ def main():
     # Inference with different Rope Length
     if args.rope_length:
         model.update_rope_length(args.rope_length)
+
+    if args.compile and args.multicontext:
+        # Multicontext prompts commonly have prompt-dependent prefill shapes.
+        # Keep those uncompiled and compile only the small decode-step wrapper
+        # that sample generation calls from inside the loop.
+        compiled_multicontext_step = torch.compile(model.generate_multicontext_step)
 
     if args.eval_only:
         print("Running in eval_only mode...")
@@ -1810,7 +1817,8 @@ def main():
                         tokens = token_state[name]
                         idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
 
-                    logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
+                    multicontext_step = compiled_multicontext_step or model.generate_multicontext_step
+                    logits_list, _ = multicontext_step(idx_cond_dict)
 
                     for i, name in enumerate(dataset_names):
                         if model.config.numerical_multicontext:
