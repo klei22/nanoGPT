@@ -714,6 +714,7 @@ def parse_args():
             "edgellm_asic_mlp",
             "kan",
             "swiglu",
+            "swiglu_2gate_pre_act",
             "dual_path",
             "dual_path_swiglu",
             "identity",
