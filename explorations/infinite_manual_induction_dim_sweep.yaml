@@ -1,0 +1,69 @@
+# Sweep manual-induction head dimensionality for Infinite Attention
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type (guided by explorations/default.yaml peri_ln setup)
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    named_group_settings:
+      use_rotary_embeddings: [true]
+      use_abs_pos_embeddings: [false]
+
+  # Embedding Norm
+  - named_group: "rmsnorm_wte"
+    named_group_settings:
+      norm_variant_wte: ["rmsnorm"]
+
+  # MLP Activation
+  - named_group: "squared_relu"
+    named_group_settings:
+      activation_variant: ["squared_relu"]
+
+  # Infinite Attention + manual induction heads
+  - named_group: "infinite_manual_induction"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+    # 1 induction head per layer (3 total over 3 layers)
+    n_layer: [3]
+    n_induction_head: [1]
+
+  # Sweep induction-head dimensions
+  - named_group: "ind_dim_32"
+    n_ind_head_dim: [32]
+
+  - named_group: "ind_dim_64"
+    n_ind_head_dim: [64]
+
+  - named_group: "ind_dim_128"
+    n_ind_head_dim: [128]
+
+  - named_group: "ind_dim_256"
+    n_ind_head_dim: [256]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [1000]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  - compile: [true]
+    named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "squared_relu"
+      - "infinite_manual_induction"
+    named_group_alternates:
+      ["ind_dim_32", "ind_dim_64", "ind_dim_128", "ind_dim_256"]
