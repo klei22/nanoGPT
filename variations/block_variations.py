@@ -74,7 +74,7 @@ def make_alpha_fn(mode: str, init: float, param=None, vec=None):
 # Block Forward Variations
 # -----------------------
 
-def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int, kv_cache=None, use_cache: bool = False, position_offset: int = 0) -> torch.Tensor:
     """Forward pass where attention and MLP run in parallel."""
 
     # Make sure not to override skip connection
@@ -85,7 +85,12 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
         x_in = block.pre_ln(x_in)
 
     # Perform Operations
-    attn_out = block.attn(x_in, iter_num)
+    attn_result = block.attn(x_in, iter_num, kv_cache=kv_cache, use_cache=use_cache, position_offset=position_offset)
+    if use_cache:
+        attn_out, present = attn_result
+    else:
+        attn_out = attn_result
+        present = None
     mlp_out = block.mlp(x_in, iter_num)
 
     # Peri-LN
@@ -108,10 +113,12 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     if block.use_post_ln:
         x = block.post_ln(x)
 
+    if use_cache:
+        return x, present
     return x
 
 
-def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int, kv_cache=None, use_cache: bool = False, position_offset: int = 0) -> torch.Tensor:
     """Attention followed by MLP."""
 
     # Make sure not to override skip connection
@@ -122,7 +129,12 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
         x_attn_in = block.pre_ln_attn(x_attn_in)
 
     # Attn Operation
-    attn_out = block.attn(x_attn_in, iter_num)
+    attn_result = block.attn(x_attn_in, iter_num, kv_cache=kv_cache, use_cache=use_cache, position_offset=position_offset)
+    if use_cache:
+        attn_out, present = attn_result
+    else:
+        attn_out = attn_result
+        present = None
 
     # Attn Peri-LN
     if block.use_peri_ln_attn:
@@ -164,10 +176,15 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     if block.use_post_ln_mlp:
         x = block.post_ln_mlp(x)
 
+    if use_cache:
+        return x, present
     return x
 
 
-def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int, kv_cache=None, use_cache: bool = False, position_offset: int = 0) -> torch.Tensor:
+    if use_cache or kv_cache is not None:
+        raise NotImplementedError("Cached generation is not implemented for EdgeLLM ASIC blocks")
+    del position_offset
     """EdgeLLM ASIC forward: Attention followed by MLP with skip connection accumulation between blocks."""
 
     # Separate Full Precision Residual 'x' from 'x_quantized_residual'
@@ -471,10 +488,16 @@ class Block(nn.Module):
         # Gradient checkpointing
         self.use_gradient_checkpointing = getattr(config, "use_gradient_checkpointing", False)
 
-    def forward(self, x: torch.Tensor, iter_num: int):
-        if self.use_gradient_checkpointing and x.requires_grad:
+    def forward(self, x: torch.Tensor, iter_num: int, kv_cache=None, use_cache: bool = False, position_offset: int = 0):
+        if self.use_gradient_checkpointing and x.requires_grad and not use_cache:
             return checkpoint.checkpoint(self.block_forward, x, iter_num, use_reentrant=False)
-        return self.block_forward(x, iter_num)
+        return self.block_forward(
+            x,
+            iter_num,
+            kv_cache=kv_cache,
+            use_cache=use_cache,
+            position_offset=position_offset,
+        )
 
     def _combine_resid(self, kind: str, x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
         """Helper method to streamline forward block skip connections"""

@@ -278,7 +278,7 @@ class CausalSelfAttention(nn.Module):
             return tensor
         return tensor.index_select(1, self.head_to_kv)
 
-    def forward(self, x, iter_num):
+    def forward(self, x, iter_num, kv_cache=None, use_cache=False, position_offset=0):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         if self.quantization_attn_dict["quantize_attn_act_input"]:
@@ -290,13 +290,26 @@ class CausalSelfAttention(nn.Module):
         k = self.c_attn_k(x)
         v = self.c_attn_v(x)
 
+        past_k = past_v = None
+        past_len = 0
+        if kv_cache is not None:
+            past_k, past_v = kv_cache
+            past_len = past_k.size(2)
+
+        if position_offset is None:
+            position_offset = past_len
+
+        total_len = past_len + T
+
         if self.window_size is not None:
             if self.use_flex_attn is not None:
                 self.block_masks = {}
             else:
-                self.window_mask = torch.ones((1, 1, T, T), device=x.device)
-                self.window_mask = torch.triu(self.window_mask, diagonal=-self.window_size)
-                self.window_mask = self.bias[:,:,:T,:T] * self.window_mask
+                q_pos = torch.arange(position_offset, position_offset + T, device=x.device)[:, None]
+                kv_pos = torch.arange(total_len, device=x.device)[None, :]
+                causal_mask = q_pos >= kv_pos
+                window_mask = (q_pos - kv_pos) <= self.window_size
+                self.window_mask = (causal_mask & window_mask).view(1, 1, T, total_len)
 
         if self.gate:
             if self.n_kv_group == self.n_head:
@@ -323,8 +336,8 @@ class CausalSelfAttention(nn.Module):
 
         # rotate q and k before evaluating with the heads
         if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
-            q = self.rotary_emb_q(q)
-            k = self.rotary_emb_k(k)
+            q = self.rotary_emb_q(q, start_index=position_offset)
+            k = self.rotary_emb_k(k, start_index=position_offset)
 
         y = None
 
@@ -334,6 +347,13 @@ class CausalSelfAttention(nn.Module):
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+
+        present = None
+        if past_k is not None:
+            k = torch.cat((past_k, k), dim=2)
+            v = torch.cat((past_v, v), dim=2)
+        if use_cache:
+            present = (k, v)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -367,15 +387,25 @@ class CausalSelfAttention(nn.Module):
 
 
             # Efficient attention using Flash Attention CUDA kernels
+            is_causal = past_len == 0 and position_offset == 0
+            if not is_causal:
+                q_pos = torch.arange(position_offset, position_offset + T, device=x.device)[:, None]
+                kv_pos = torch.arange(k_attn.size(2), device=x.device)[None, :]
+                causal_mask = (q_pos >= kv_pos).view(1, 1, T, k_attn.size(2))
+                if attn_bias is None:
+                    attn_bias = causal_mask
+                else:
+                    attn_bias = attn_bias.masked_fill(~causal_mask, float("-inf"))
+
             y = torch.nn.functional.scaled_dot_product_attention(
                 q,
                 k_attn,
                 v_attn,
                 attn_mask=attn_bias,
                 dropout_p=self.dropout if self.training else 0,
-                is_causal=True,
+                is_causal=is_causal,
             )
-        elif self.use_flex_attn and self.window_size is not None:
+        elif self.use_flex_attn and self.window_size is not None and past_len == 0 and position_offset == 0:
             block_mask = self.get_block_mask(T, x.device)
             y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
         else:
@@ -409,12 +439,19 @@ class CausalSelfAttention(nn.Module):
             if self.window_size is not None:
                 # add mask for sliding window attention
                 att = att.masked_fill(self.window_mask == 0, float('-inf'))
+            elif past_len != 0 or position_offset != 0:
+                q_pos = torch.arange(position_offset, position_offset + T, device=x.device)[:, None]
+                kv_pos = torch.arange(k_attn.size(-2), device=x.device)[None, :]
+                causal_mask = (q_pos >= kv_pos).view(1, 1, T, k_attn.size(-2))
+                att = att.masked_fill(causal_mask == 0, float('-inf'))
             else:
                 # regular lower triangle attention
                 att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
 
             # fire position embeddings
             if self.use_fire_embeddings is not None:
+                if past_len != 0 or position_offset != 0:
+                    raise NotImplementedError("Cached generation is not implemented for FIRE attention bias")
                 # add learned fire bias
                 att = att + self.fire_pos_enc(x)
 
@@ -458,6 +495,8 @@ class CausalSelfAttention(nn.Module):
             quant_method = self.quantization_attn_dict["activations_quant_method"]
             y = fake_quantize_act(self, "attn_act_output", y, num_bits, quant_method, iter_num)
 
+        if use_cache:
+            return y, present
         return y
 
 class EdgeLLMASICAttention(nn.Module):
