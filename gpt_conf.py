@@ -97,6 +97,18 @@ class GPTConfig:
     n_v_head_dim: int = None
     n_cproj: int = None
     use_concat_heads: bool = False
+    n_q_special_variant: str = "linear"
+    n_k_special_variant: str = "linear"
+    n_v_special_variant: str = "linear"
+    n_attn_cproj_special_variant: str = "linear"
+    n_q_hidden: int | None = None
+    n_k_hidden: int | None = None
+    n_v_hidden: int | None = None
+    n_attn_cproj_hidden: int | None = None
+    n_q_activation: str = "squared_relu"
+    n_k_activation: str = "squared_relu"
+    n_v_activation: str = "squared_relu"
+    n_attn_cproj_activation: str = "squared_relu"
 
     # Softcapping params
     attn_logit_softcapping: float | None = None
