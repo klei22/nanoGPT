@@ -194,6 +194,26 @@ python3 compare_meta_vocab_tui.py /path/to/first/meta.pkl /path/to/second/meta.p
 
 There are a number of methods to preprocess data before tokenization.
 
+#### Chinese metadata enrichment
+
+If your dataset contains Chinese text and you want to attach per-character
+metadata (pinyin, radicals, frequency data, etc.) before tokenization, use the
+`add_hanzi_metadata.py` helper. It reads a JSON/JSONL file produced by
+`get_dataset.sh`, adds a new field with hanzipy metadata for every record, and
+writes a companion file:
+
+```bash
+python utils/add_hanzi_metadata.py \
+  --input_json downloaded.json \
+  --text_key text \
+  --include_pinyin --include_radicals --include_frequency \
+  --output_json downloaded_with_hanzi.json
+```
+
+Additional flags allow you to emit full decompositions (`--include_decomposition`)
+or a deduplicated radical list per entry (`--deduplicate_radicals`). The output
+is UTF-8 and preserves the structure of the original JSON records.
+
 #### Phonemization
 
 To experiment with utilization of a phonemized version of the dataset, first
