@@ -45,7 +45,7 @@ from quantization.quant_utils import set_variant, create_activation_buffers
 
 from initializations.initialization_variations import init_dictionary
 
-from shared_param_utils import SharedParamGroupCreator
+from shared_param_utils import SharedParamGroupCreator, apply_layerlists_to_config
 from variations.block_variations import Block
 
 class GPT(nn.Module):
@@ -142,7 +142,7 @@ class GPT(nn.Module):
 
 
         self.transformer['drop'] = nn.Dropout(config.dropout)
-        self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
+        self.transformer['h'] = nn.ModuleList([Block(apply_layerlists_to_config(config, layer_idx=i), mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
 
         # Optional post-embedding normalizations

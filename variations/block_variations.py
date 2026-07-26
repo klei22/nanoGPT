@@ -11,6 +11,7 @@ from variations.mlp_variations import get_mlp_instance
 from variations.norm_variations import norm_dictionary
 from variations.learned_confidence_variations import learned_confidence_dictionary
 from quantization.quantize import fake_quantize_act
+from variations.linear_variations import linear_dictionary
 
 # type alias for the forward function
 BlockForward = Callable[['Block', torch.Tensor, int], torch.Tensor]
@@ -253,10 +254,58 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     return x
 
 
+
+
+class OptionalRouterLinear(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        linear_cls = linear_dictionary[getattr(config, "linear_variant_mlp", "linear")]
+        self.router = linear_cls(config.n_embd, 1, config=config, method=config.quantize_linear_method, bits=config.quantize_linear_bits, bias=True)
+        self.transform = linear_cls(config.n_embd, config.n_embd, config=config, method=config.quantize_linear_method, bits=config.quantize_linear_bits, bias=True)
+
+    def forward(self, x, _iter_num):
+        gate = torch.sigmoid(self.router(x))
+        return gate * self.transform(x)
+
+
+class CustomModuleBlock(nn.Module):
+    def __init__(self, config, attn_module, mlp_module):
+        super().__init__()
+        self.single_residual = getattr(config, "block_single_residual", False)
+        self.module_types = [m.strip().lower() for m in getattr(config, "block_module_order", "attention,mlp").split(",") if m.strip()]
+        self.modules_list = nn.ModuleList()
+        linear_cls = linear_dictionary[getattr(config, "linear_variant_mlp", "linear")]
+        for module_type in self.module_types:
+            if module_type == "attention":
+                self.modules_list.append(attn_module)
+            elif module_type == "mlp":
+                self.modules_list.append(mlp_module)
+            elif module_type == "linear":
+                self.modules_list.append(linear_cls(config.n_embd, config.n_embd, config=config, method=config.quantize_linear_method, bits=config.quantize_linear_bits, bias=True))
+            elif module_type == "router_linear":
+                self.modules_list.append(OptionalRouterLinear(config))
+            else:
+                raise ValueError(f"Unknown module type in block_module_order: {module_type}")
+
+    def forward(self, x, iter_num):
+        x0 = x
+        for module in self.modules_list:
+            try:
+                out = module(x, iter_num)
+            except TypeError:
+                out = module(x)
+            if self.single_residual:
+                x = out
+            else:
+                x = x + out
+        if self.single_residual:
+            x = x0 + x
+        return x
 block_forward_variations = {
     "parallel_mlp": parallel_mlp_forward,
     "attn_then_mlp": attn_then_mlp_forward,
     "edgellm_asic": edgellm_asic_forward,
+    "custom_module": attn_then_mlp_forward,
 }
 
 
@@ -325,6 +374,7 @@ normalization_setup_variations = {
     "parallel_mlp": _setup_norms_parallel,
     "attn_then_mlp": _setup_norms_sequential,
     "edgellm_asic": _setup_norms_sequential,
+    "custom_module": _setup_norms_sequential,
 }
 
 
@@ -365,6 +415,7 @@ resid_scaler_setup_variations = {
     "parallel_mlp": _setup_resid_scalers_parallel,
     "attn_then_mlp": _setup_resid_scalers_sequential,
     "edgellm_asic": _setup_resid_scalers_sequential,
+    "custom_module": _setup_resid_scalers_sequential,
 }
 
 
@@ -391,7 +442,10 @@ class Block(nn.Module):
 
         self.use_flash_norm = getattr(config, "use_flash_norm", False)
 
-        if self.use_parallel_mlp:
+        self.use_custom_module_block = getattr(config, "use_custom_module_block", False)
+        if self.use_custom_module_block:
+            variant = "custom_module"
+        elif self.use_parallel_mlp:
             variant = "parallel_mlp"
         elif self.use_edgellm_asic:
             variant = "edgellm_asic"
@@ -427,6 +481,10 @@ class Block(nn.Module):
             self.mlp = get_mlp_instance(config)
         else:
             self.mlp = mlp
+
+        if self.use_custom_module_block:
+            self.custom_module_block = CustomModuleBlock(config, self.attn, self.mlp)
+            self.block_forward = lambda x, iter_num: self.custom_module_block(x, iter_num)
 
         self.attn_resid_type = getattr(config, "attn_residual_combination", "add")
         self.mlp_resid_type = getattr(config, "mlp_residual_combination", "add")
