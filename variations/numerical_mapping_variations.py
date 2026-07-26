@@ -144,11 +144,28 @@ class NumericalScaledVectorEmbedding(nn.Module):
         return out
 
 
+class NumericalAttenuatedScaledVectorEmbedding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.vector = nn.Parameter(torch.empty(1, config.n_embd))
+        self.attenuation = float(config.numerical_scaled_vector_attenuation)
+        self.channel_norm = _build_channel_norm(config)
+        nn.init.normal_(self.vector, mean=0.0, std=0.02)
+
+    def forward(self, x):
+        vector = self.vector.to(device=x.device, dtype=x.dtype)
+        out = x * (self.attenuation * vector)
+        if self.channel_norm is not None:
+            out = self.channel_norm(out)
+        return out
+
+
 numerical_embedding_dictionary = {
     "mlp": NumericalMLPEmbedding,
     "linear": NumericalLinearEmbedding,
     "cayley": NumericalCayleyEmbedding,
     "scaled_vector": NumericalScaledVectorEmbedding,
+    "attenuated_scaled_vector": NumericalAttenuatedScaledVectorEmbedding,
 }
 
 numerical_output_dictionary = {
