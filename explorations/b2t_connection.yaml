@@ -1,0 +1,43 @@
+# explorations/b2t_connection.yaml
+#
+# Minimal sweep to compare Pre-LN, Post-LN, and Post-LN with the
+# Bottom-to-Top (B2T) residual connection. Demonstrates named
+# parameter group usage for succinct definitions.
+# Reference: arXiv:2206.00330.
+---
+
+# Reusable named configurations for the normalization choices
+named_static_groups:
+  - named_group: "pre_ln"
+    use_pre_ln: [true]
+    use_post_ln: [false]
+    use_b2t_connection: [false]
+
+  - named_group: "post_ln"
+    use_pre_ln: [false]
+    use_post_ln: [true]
+    use_b2t_connection: [false]
+
+  - named_group: "post_ln_b2t"
+    use_pre_ln: [false]
+    use_post_ln: [true]
+    use_b2t_connection: [true]
+
+# Settings that apply to every run but stay out of run names
+common_group:
+  n_layer: [18]
+  n_head: [8]
+  n_embd: [512]
+  block_size: [256]
+  max_iters: [5000]
+  eval_interval: [5000]
+  learning_rate: [3.0e-4]
+  dataset: ["minipile"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [false]
+  never_save_checkpoint: [true]
+
+# Enumerate the baseline and B2T variants via their named groups
+parameter_groups:
+  - named_group_alternates: ["pre_ln", "post_ln", "post_ln_b2t"]
