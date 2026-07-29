@@ -1353,6 +1353,12 @@ def parse_args():
 
     ### ReLU2Max Options
     model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
+    model_group.add_argument(
+        "--relu2max_use_kernel",
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="compile ReLU2Max into a fused Inductor pointwise kernel",
+    )
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
