@@ -1353,6 +1353,8 @@ def parse_args():
 
     ### ReLU2Max Options
     model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
+    model_group.add_argument('--use_fused_relu2max', default=True, action=argparse.BooleanOptionalAction,
+                             help='use the FlexAttention ReLU2Max CUDA kernel when supported')
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
