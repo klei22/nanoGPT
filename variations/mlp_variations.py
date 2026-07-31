@@ -590,6 +590,15 @@ class Swiglu(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout)
 
+        self.use_ngpt = config.use_ngpt
+        if self.use_ngpt:
+            stored = config.ngpt_scale_scale or 1.0 / (config.n_embd ** 0.5)
+            self.ngpt_scale_init = config.ngpt_scale_init
+            self.ngpt_scale_scale = stored
+            self.ngpt_su = nn.Parameter(torch.full((mlp_expansion_size,), stored))
+            self.ngpt_sv = nn.Parameter(torch.full((mlp_expansion_size,), stored))
+            self.ngpt_sqrt_dmodel = config.n_embd ** 0.5
+
     def forward(self, x, iter_num=None):
 
         if self.quantization_mlp_dict["quantize_mlp_act_input"]:
@@ -610,6 +619,9 @@ class Swiglu(nn.Module):
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
             x_in1 = fake_quantize_act(self, "mlp_act_activation_input", x_in1, num_bits, quant_method, iter_num)
 
+        if self.use_ngpt:
+            factor = self.ngpt_scale_init / self.ngpt_scale_scale
+            x_in1 = x_in1 * self.ngpt_sv * factor * self.ngpt_sqrt_dmodel
         x_in1 = self.activation_variant(x_in1 - self.activation_x_offset) - self.activation_y_offset
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
@@ -625,6 +637,8 @@ class Swiglu(nn.Module):
         else:
             x_in2 = self.c_fc_in2(x)
 
+        if self.use_ngpt:
+            x_in2 = x_in2 * self.ngpt_su * (self.ngpt_scale_init / self.ngpt_scale_scale)
         x_out = x_in1 * x_in2
 
         # Mitigate Cproj Down Spikes
@@ -899,4 +913,3 @@ def get_mlp_instance(config):
     if mlp_class is None:
         raise ValueError(f"Unsupported MLP variant: {mlp_type}")
     return mlp_class(config)
-

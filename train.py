@@ -2565,6 +2565,9 @@ class Trainer:
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                # nGPT constrains the optimizer-owned matrix Parameters, not
+                # merely functional copies used during the forward pass.
+                self.raw_model.normalize_ngpt_weights()
                 if self.scheduler:
                     if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                         self.scheduler.step(losses["val"])

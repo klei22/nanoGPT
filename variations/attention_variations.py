@@ -150,6 +150,12 @@ class CausalSelfAttention(nn.Module):
         self.use_qk_norm = config.use_qk_norm
         self.use_qk_norm_scale = config.use_qk_norm_scale
         self.use_v_norm = config.use_v_norm
+        self.use_ngpt = config.use_ngpt
+        if self.use_ngpt:
+            stored = config.ngpt_scale_scale or 1.0 / math.sqrt(config.n_embd)
+            self.ngpt_scale_init = config.ngpt_scale_init
+            self.ngpt_scale_scale = stored
+            self.ngpt_qk_scale = nn.Parameter(torch.full((self.head_dim,), stored))
 
         # Flash Lobo
         self.use_flash_lobo = config.use_flash_lobo
@@ -331,6 +337,10 @@ class CausalSelfAttention(nn.Module):
         if self.use_qk_norm:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
             k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+            if self.use_ngpt:
+                scale = self.ngpt_qk_scale * (self.ngpt_scale_init / self.ngpt_scale_scale)
+                q = q * scale
+                k = k * scale
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -340,6 +350,10 @@ class CausalSelfAttention(nn.Module):
 
             k_attn = self._expand_kv(k)
             v_attn = self._expand_kv(v)
+
+            # SDPA divides by sqrt(d); normalized attention requires sqrt(d).
+            if self.use_ngpt:
+                q = q * q.size(-1)
 
             # Flash QK Norm
             if self.use_qk_norm_scale:
@@ -396,6 +410,8 @@ class CausalSelfAttention(nn.Module):
 
             if self.use_qk_norm_scale:
                 att = att * self.qk_norm_factor
+            elif self.use_ngpt:
+                att = att * head_dim
             else:
                 att = att / head_dim
 

@@ -55,6 +55,18 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
 
+        if config.use_ngpt:
+            if config.n_embd_wte is not None:
+                raise ValueError("nGPT currently requires n_embd_wte=None")
+            # nGPT replaces all layer norms, additive residuals, and the GPT MLP.
+            config.use_pre_ln = config.use_peri_ln = config.use_post_ln = False
+            config.use_pre_ln_attn = config.use_pre_ln_mlp = False
+            config.use_peri_ln_attn = config.use_peri_ln_mlp = False
+            config.use_post_ln_attn = config.use_post_ln_mlp = False
+            config.norm_variant_output = "identity"
+            config.mlp_variant = "swiglu"
+            config.use_qk_norm = config.ngpt_normalize_qk
+
         self.config = config
 
         self.uses_numerical_multicontext = bool(config.numerical_multicontext)
@@ -199,6 +211,10 @@ class GPT(nn.Module):
             else:
                 self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
 
+        if config.use_ngpt:
+            scale = config.ngpt_scale_scale or 1.0 / math.sqrt(config.n_embd)
+            self.ngpt_logit_scale = nn.Parameter(torch.full((config.vocab_size,), scale))
+
         # import wte
         if self.config.import_wte_npy:
             # Replace wte with values from numpy and retie weights
@@ -212,6 +228,9 @@ class GPT(nn.Module):
             # apply special scaled init to the residual projections, per GPT-2 paper
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+
+        if config.use_ngpt and config.ngpt_normalize_weights:
+            self.normalize_ngpt_weights()
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
@@ -254,7 +273,31 @@ class GPT(nn.Module):
 
     def compute_lm_head_logits(self, x, lm_head_module):
         weight = self.apply_lm_head_norm(lm_head_module.weight)
-        return F.linear(x, weight, lm_head_module.bias)
+        logits = F.linear(x, weight, lm_head_module.bias)
+        if self.config.use_ngpt:
+            stored = self.config.ngpt_scale_scale or 1.0 / math.sqrt(self.config.n_embd)
+            logits = logits * (self.config.ngpt_scale_init / stored * self.ngpt_logit_scale)
+        return logits
+
+    @torch.no_grad()
+    def normalize_ngpt_weights(self):
+        """Retract every nGPT embedding/projection vector to the unit sphere.
+
+        PyTorch linear weights are ``[out, in]``: input projections are rows,
+        while block output projections are columns (the embedding dimension).
+        The optimizer-owned Parameters are modified in-place, avoiding the
+        common bug of normalizing only temporary forward tensors.
+        """
+        if not self.config.use_ngpt or not self.config.ngpt_normalize_weights:
+            return
+        eps = self.config.ngpt_eps
+        for name, module in self.named_modules():
+            weight = getattr(module, "weight", None)
+            if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+                continue
+            is_output = name.endswith(("c_proj", "c_fc_out"))
+            dim = 0 if is_output else 1
+            weight.copy_(F.normalize(weight, p=2, dim=dim, eps=eps))
 
     def _init_weights(self, module):
         """

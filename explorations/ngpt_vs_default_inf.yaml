@@ -1,0 +1,45 @@
+---
+# Controlled nGPT comparison using the dataset, budget, rotary positions, and
+# Infinite Attention setup from explorations/default_inf.yaml.
+named_static_groups:
+  - named_group: "default_inf"
+    use_ngpt: [false]
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "ngpt"
+    use_ngpt: [true]
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+    ngpt_normalize_qk: [true]
+    ngpt_normalize_weights: [true]
+    ngpt_alpha_init: [0.05]
+    optimizer: ["adamw"]
+    opt_weight_decay: [0.0]
+    warmup_iters: [0]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  softmax_variant_attn: ["softmax"]
+  n_kv_group: [1]
+  n_head: [6]
+  n_qk_head_dim: [100]
+  n_v_head_dim: [100]
+
+parameter_groups:
+  - named_group_static: ["default_inf"]
+  - named_group_static: ["ngpt"]
+

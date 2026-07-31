@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Callable
 from functools import partial
+import math
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
@@ -167,6 +168,18 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     return x
 
 
+def ngpt_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+    """nGPT's two normalized LERP/retraction updates."""
+    eps = block.ngpt_eps
+    x = torch.nn.functional.normalize(x, dim=-1, eps=eps)
+    attn_target = torch.nn.functional.normalize(block.attn(x, iter_num), dim=-1, eps=eps)
+    alpha_a = block.ngpt_alpha_init / block.ngpt_alpha_scale * block.attn_alpha_param.abs()
+    x = torch.nn.functional.normalize(x + alpha_a * (attn_target - x), dim=-1, eps=eps)
+    mlp_target = torch.nn.functional.normalize(block.mlp(x, iter_num), dim=-1, eps=eps)
+    alpha_m = block.ngpt_alpha_init / block.ngpt_alpha_scale * block.mlp_alpha_param.abs()
+    return torch.nn.functional.normalize(x + alpha_m * (mlp_target - x), dim=-1, eps=eps)
+
+
 def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """EdgeLLM ASIC forward: Attention followed by MLP with skip connection accumulation between blocks."""
 
@@ -257,6 +270,7 @@ block_forward_variations = {
     "parallel_mlp": parallel_mlp_forward,
     "attn_then_mlp": attn_then_mlp_forward,
     "edgellm_asic": edgellm_asic_forward,
+    "ngpt": ngpt_forward,
 }
 
 
@@ -391,7 +405,14 @@ class Block(nn.Module):
 
         self.use_flash_norm = getattr(config, "use_flash_norm", False)
 
-        if self.use_parallel_mlp:
+        if getattr(config, "use_ngpt", False):
+            variant = "ngpt"
+            self.ngpt_eps = config.ngpt_eps
+            self.ngpt_alpha_init = config.ngpt_alpha_init
+            self.ngpt_alpha_scale = config.ngpt_alpha_scale or 1.0 / math.sqrt(config.n_embd)
+            self.attn_alpha_param = nn.Parameter(torch.full((config.n_embd,), self.ngpt_alpha_scale))
+            self.mlp_alpha_param = nn.Parameter(torch.full((config.n_embd,), self.ngpt_alpha_scale))
+        elif self.use_parallel_mlp:
             variant = "parallel_mlp"
         elif self.use_edgellm_asic:
             variant = "edgellm_asic"
@@ -412,10 +433,12 @@ class Block(nn.Module):
         self.block_forward = partial(block_forward_variations[variant], self)
 
         ## Instantiate norms for Block Forward Variant
-        normalization_setup_variations[variant](self, config, norm_cls)
+        if variant != "ngpt":
+            normalization_setup_variations[variant](self, config, norm_cls)
 
         ## Instantiate (Optional) learned residual scalers for Block Forward Variant
-        resid_scaler_setup_variations[variant](self, config)
+        if variant != "ngpt":
+            resid_scaler_setup_variations[variant](self, config)
 
         ## Instantiate Block Forward Variant Submodules
         if attn is None:
@@ -437,7 +460,9 @@ class Block(nn.Module):
         self.attn_alpha_mode = getattr(config, "attn_residual_alpha_type", "fixed")
         self.mlp_alpha_mode = getattr(config, "mlp_residual_alpha_type", "fixed")
 
-        if self.attn_alpha_mode == "rezero":
+        if variant == "ngpt":
+            pass
+        elif self.attn_alpha_mode == "rezero":
             self.attn_alpha = 0.0
             self.attn_alpha_param = nn.Parameter(torch.tensor(0.0))
         elif self.attn_alpha_mode == "learned":
@@ -445,7 +470,9 @@ class Block(nn.Module):
         elif self.attn_alpha_mode == "dot":
             self.attn_alpha_vec = nn.Parameter(torch.zeros(config.n_embd))
             self.attn_alpha_param = nn.Parameter(torch.tensor(self.attn_alpha))
-        if self.mlp_alpha_mode == "rezero":
+        if variant == "ngpt":
+            pass
+        elif self.mlp_alpha_mode == "rezero":
             self.mlp_alpha = 0.0
             self.mlp_alpha_param = nn.Parameter(torch.tensor(0.0))
         elif self.mlp_alpha_mode == "learned":
