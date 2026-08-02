@@ -8,6 +8,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 
 
 class PerTokenMetrics:
@@ -18,12 +19,15 @@ class PerTokenMetrics:
         "val_loss", "val_eval_count", "training_seen_count",
     )
 
-    def __init__(self, output_dir, vocab_sizes):
+    def __init__(self, output_dir, vocab_sizes, initial_seen=None):
         self.output_dir = output_dir
         self.vocab_sizes = dict(vocab_sizes)
         self.seen = {
             name: np.zeros(size, dtype=np.int64) for name, size in self.vocab_sizes.items()
         }
+        self._local_seen = {}
+        if initial_seen:
+            self.load_state_dict(initial_seen)
         self.pending = {}
         os.makedirs(output_dir, exist_ok=True)
         self.detail_path = os.path.join(output_dir, "per_token_metrics.csv")
@@ -31,9 +35,60 @@ class PerTokenMetrics:
         self.plot_path = os.path.join(output_dir, "per_token_metrics.html")
 
     def count_training_batch(self, dataset, targets):
-        values = targets.detach().reshape(-1).to("cpu", dtype=torch.long)
-        counts = torch.bincount(values, minlength=self.vocab_sizes[dataset]).numpy()
-        self.seen[dataset] += counts[: self.vocab_sizes[dataset]]
+        """Accumulate on-device; defer the small count-vector transfer until evaluation."""
+        vocab_size = self.vocab_sizes[dataset]
+        values = targets.detach().reshape(-1).to(dtype=torch.long)
+        values = values[(values >= 0) & (values < vocab_size)]
+        counts = torch.bincount(values, minlength=vocab_size)[:vocab_size]
+        pending = self._local_seen.get(dataset)
+        if pending is None or pending.device != counts.device:
+            if pending is not None:
+                self.seen[dataset] += pending.cpu().numpy()
+            pending = torch.zeros(vocab_size, dtype=torch.int64, device=counts.device)
+            self._local_seen[dataset] = pending
+        pending.add_(counts)
+
+    def synchronize_training_counts(self, distributed=False):
+        """Flush rank-local deltas into cumulative CPU counts once per evaluation."""
+        if distributed:
+            if not dist.is_available() or not dist.is_initialized():
+                raise RuntimeError("distributed count synchronization requires an initialized process group")
+            backend = dist.get_backend()
+            default_device = (
+                torch.device("cuda", torch.cuda.current_device())
+                if backend == "nccl" else torch.device("cpu")
+            )
+            for dataset, vocab_size in self.vocab_sizes.items():
+                if dataset not in self._local_seen:
+                    self._local_seen[dataset] = torch.zeros(
+                        vocab_size, dtype=torch.int64, device=default_device
+                    )
+
+        for dataset in self.vocab_sizes:
+            pending = self._local_seen.get(dataset)
+            if pending is None:
+                continue
+            if distributed:
+                dist.all_reduce(pending, op=dist.ReduceOp.SUM)
+            self.seen[dataset] += pending.cpu().numpy()
+            pending.zero_()
+
+    def state_dict(self):
+        state = {dataset: counts.copy() for dataset, counts in self.seen.items()}
+        # Normal checkpoints follow a synchronized evaluation. This also makes an
+        # emergency single-rank checkpoint retain its currently buffered delta.
+        for dataset, pending in self._local_seen.items():
+            state[dataset] += pending.cpu().numpy()
+        return state
+
+    def load_state_dict(self, state):
+        for dataset, values in state.items():
+            if dataset not in self.seen:
+                continue
+            values = np.asarray(values, dtype=np.int64)
+            if values.shape != self.seen[dataset].shape:
+                raise ValueError(f"per-token count shape mismatch for {dataset}")
+            self.seen[dataset][...] = values
 
     def begin_evaluation(self):
         self.pending = {}
@@ -41,10 +96,18 @@ class PerTokenMetrics:
     def add_evaluation_batch(self, dataset, split, logits, targets):
         """Aggregate ordinary next-token cross entropy, independent of training loss variants."""
         vocab_size = self.vocab_sizes[dataset]
-        losses = F.cross_entropy(
-            logits.detach().float().reshape(-1, logits.size(-1)),
-            targets.detach().reshape(-1), reduction="none",
-        ).cpu()
+        flat_logits = logits.detach().reshape(-1, logits.size(-1))
+        flat_targets = targets.detach().reshape(-1)
+        # Bound the temporary float32 allocation instead of copying all B*T*V logits.
+        rows_per_chunk = max(1, 8_000_000 // flat_logits.size(-1))
+        losses = torch.cat([
+            F.cross_entropy(
+                flat_logits[start:start + rows_per_chunk].float(),
+                flat_targets[start:start + rows_per_chunk],
+                reduction="none",
+            ).cpu()
+            for start in range(0, flat_logits.size(0), rows_per_chunk)
+        ])
         ids = targets.detach().reshape(-1).to("cpu", dtype=torch.long)
         key = (dataset, split)
         if key not in self.pending:
@@ -74,6 +137,7 @@ class PerTokenMetrics:
         }
 
     def export(self, iteration):
+        self.synchronize_training_counts(distributed=False)
         rows, summaries = [], []
         for dataset, vocab_size in self.vocab_sizes.items():
             split_data = {}
@@ -101,8 +165,13 @@ class PerTokenMetrics:
                 ("training_seen_count", self.seen[dataset]),
             ):
                 summary = self._summary(values)
+                populated = (
+                    np.count_nonzero(values)
+                    if metric == "training_seen_count"
+                    else np.isfinite(values).sum()
+                )
                 summary.update(iteration=iteration, dataset=dataset, metric=metric,
-                               populated_tokens=int(np.isfinite(values).sum()), vocab_size=vocab_size)
+                               populated_tokens=int(populated), vocab_size=vocab_size)
                 summaries.append(summary)
         self._append_csv(self.detail_path, rows, self.DETAIL_FIELDS)
         summary_fields = ("iteration", "dataset", "metric", "populated_tokens", "vocab_size",
