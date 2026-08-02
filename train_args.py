@@ -14,6 +14,7 @@ def clean_dataset_path(dataset_name):
     """Removes leading './data/' or 'data/' from dataset paths."""
     return re.sub(r'^(?:\./)?data/', '', dataset_name)
 
+
 def parse_args():
 
     parser = argparse.ArgumentParser()
