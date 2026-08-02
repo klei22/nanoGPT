@@ -360,6 +360,7 @@ def parse_args():
             "dact",
             "cappedhyperspherenorm",
             "identity",
+            "ste_norm",
         ],
         help="Optional post-mapping normalization applied to numerical embedding channels.",
     )
@@ -830,6 +831,7 @@ def parse_args():
             "dact",
             "identity",
             "cappedhyperspherenorm",
+            "ste_norm",
             ]
 
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=norm_variations)
@@ -939,6 +941,22 @@ def parse_args():
             "tanh",
             "identity",
         ]
+
+    ## Straight-through norm
+    model_group.add_argument(
+        "--ste_norm_forward_variant",
+        type=str,
+        default="rmsnorm",
+        choices=[variant for variant in norm_variations if variant != "ste_norm"],
+        help="Norm used in the forward pass when a norm_variant is ste_norm.",
+    )
+    model_group.add_argument(
+        "--ste_norm_backward_activation",
+        type=str,
+        default="identity",
+        choices=activation_variations,
+        help="Activation whose gradient ste_norm uses in the backward pass (default: identity).",
+    )
 
     ## DynamicActivations
     model_group.add_argument("--dact_activation", type=str, default="tanh", choices=activation_variations)

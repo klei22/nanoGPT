@@ -407,6 +407,11 @@ class GPTConfig:
     norm_variant_mlp_output: str | None = None
     norm_variant_output: str = "rmsnorm"
 
+    # STE norm uses the selected norm in the forward pass and substitutes the
+    # selected activation's gradient in the backward pass.
+    ste_norm_forward_variant: str = "rmsnorm"
+    ste_norm_backward_activation: str = "identity"
+
     norm_variant_wte: str | None = None
     norm_wte_radius: float | None = None
     norm_wte_scale: float | None = None
