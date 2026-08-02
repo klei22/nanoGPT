@@ -70,6 +70,7 @@ from utils.model_stats import (
     compute_activation_stats,
     print_model_stats_table,
 )
+from utils.per_token_metrics import PerTokenMetrics
 
 from sample import (
     sample_with_existing_model,
@@ -520,6 +521,17 @@ class Trainer:
             self.args.csv_name = wandb_run_name
             wandb.init(project=self.args.wandb_project, name=self.args.wandb_run_name, config=self.args)
         self.load_tokenizer()
+        self.per_token_metrics = None
+        if self.args.log_per_token_metrics:
+            if self.args.training_mode == 'multicontext':
+                sizes = dict(zip(self.args.multicontext_datasets, self.vocab_sizes))
+            elif self.args.dataset_list:
+                sizes = dict(zip(self.args.dataset_list, self.vocab_sizes))
+            else:
+                sizes = {self.args.dataset: int(self.model_args['vocab_size'])}
+            report_dir = (self.args.per_token_metrics_dir
+                          or os.path.join(self.args.out_dir, 'per_token_metrics'))
+            self.per_token_metrics = PerTokenMetrics(report_dir, sizes)
 
 
     def _initialize_teacher_if_needed(self):
@@ -1098,6 +1110,8 @@ class Trainer:
     @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
+        if self.per_token_metrics is not None:
+            self.per_token_metrics.begin_evaluation()
         compute_rankme = self.args.log_rankme or self.args.log_areq
 
         self.model.eval()
@@ -1126,6 +1140,8 @@ class Trainer:
                                 dataset_idx=idx if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
+                        if self.per_token_metrics is not None:
+                            self.per_token_metrics.add_evaluation_batch(dataset, split, logits, Y)
                         handle.remove()
                         dataset_losses[split][k] = loss.item()
                         if split == 'val':
@@ -1272,6 +1288,11 @@ class Trainer:
                             iter_num=self.iter_num,
                             loss_fn=self.loss_fn,
                         )
+                    if self.per_token_metrics is not None:
+                        for i, dataset in enumerate(self.args.multicontext_datasets):
+                            self.per_token_metrics.add_evaluation_batch(
+                                dataset, split, logits[i], y_dict[dataset]
+                            )
                     if handle is not None:
                         handle.remove()
                     for i in range(len(self.args.multicontext_datasets)):
@@ -1393,6 +1414,10 @@ class Trainer:
                             dataset_idx=0 if self.args.multidataset_wte else None,
                             loss_fn=self.loss_fn,
                         )
+                    if self.per_token_metrics is not None:
+                        self.per_token_metrics.add_evaluation_batch(
+                            self.args.dataset, split, logits, Y
+                        )
                     handle.remove()
                     losses[k] = loss.item()
                     if split == 'val':
@@ -1513,6 +1538,8 @@ class Trainer:
                             self.iter_num,
                             )
 
+        if self.per_token_metrics is not None:
+            self.per_token_metrics.export(self.iter_num)
         self.model.train()
         return out
 
@@ -2502,6 +2529,11 @@ class Trainer:
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
+                            if self.per_token_metrics is not None:
+                                for dataset in self.args.multicontext_datasets:
+                                    self.per_token_metrics.count_training_batch(
+                                        dataset, self.Y_dict[dataset]
+                                    )
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
                             logits, loss = self.model(
@@ -2511,6 +2543,10 @@ class Trainer:
                                 dataset_idx=idx_ds if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
+                            if self.per_token_metrics is not None:
+                                self.per_token_metrics.count_training_batch(
+                                    current_dataset, self.Y
+                                )
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                         with torch.no_grad():
