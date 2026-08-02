@@ -1314,6 +1314,134 @@ class InfiniteHeadAttention(nn.Module):
 
         return y
 
+
+def orbital_rotate(A: torch.Tensor, B_axis: torch.Tensor, P: torch.Tensor, theta: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Rotate A around B_axis in the plane selected by P.
+
+    A, B_axis, P are (..., d_rot); theta is (..., 1).  The operation preserves
+    ||A|| and the angle between A and B_axis, falling back to A when the orbit
+    plane is numerically degenerate.
+    """
+    original_dtype = A.dtype
+    A32 = A.float()
+    B32 = B_axis.float()
+    P32 = P.float()
+    theta32 = theta.float()
+
+    radius = A32.norm(dim=-1, keepdim=True)
+    a = A32 / radius.clamp_min(eps)
+    b = F.normalize(B32, dim=-1, eps=eps)
+
+    cos_alpha = (a * b).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
+    a_tangent = a - cos_alpha * b
+    sin_alpha = a_tangent.norm(dim=-1, keepdim=True)
+    u = a_tangent / sin_alpha.clamp_min(eps)
+
+    p_tangent = P32 - (P32 * b).sum(dim=-1, keepdim=True) * b - (P32 * u).sum(dim=-1, keepdim=True) * u
+    p_tangent_norm = p_tangent.norm(dim=-1, keepdim=True)
+    v = p_tangent / p_tangent_norm.clamp_min(eps)
+
+    rotated_u = torch.cos(theta32) * u + torch.sin(theta32) * v
+    rotated_a = cos_alpha * b + sin_alpha * rotated_u
+    rotated_A = radius * rotated_a
+
+    valid = (radius > eps) & (sin_alpha > eps) & (p_tangent_norm > eps)
+    return torch.where(valid, rotated_A, A32).to(original_dtype)
+
+
+class OrbitalAttention(InfiniteHeadAttention):
+    """Three-head data-dependent geometric attention.
+
+    Each orbital triplet computes independent A/B/P attention outputs in a common
+    rotation space. A is rotated around the semantic axis B, with P selecting the
+    tangent direction and signed angle, then projected like an Infinite Attention
+    head.
+    """
+
+    def __init__(self, config, fire_pos_enc=None):
+        super().__init__(config, fire_pos_enc=fire_pos_enc)
+        self.theta_max = math.radians(getattr(config, "orbital_theta_max_deg", 45.0))
+        self.displacement_only = getattr(config, "orbital_displacement_only", False)
+        self.signed_gate = getattr(config, "orbital_signed_gate", False)
+
+        # Replace Infinite Attention's single Q/K/V stream with three ordinary
+        # attention streams: A (content), B (axis), and P (plane/angle).
+        self.c_attn_q = nn.ModuleList([
+            self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
+            for _ in range(3)
+        ])
+        self.c_attn_k = nn.ModuleList([
+            self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
+            for _ in range(3)
+        ])
+        self.c_attn_v = nn.ModuleList([
+            self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
+            for _ in range(3)
+        ])
+        self.angle = nn.Linear(self.n_v_head_dim, 1)
+        self.gate = nn.Linear(self.n_v_head_dim, 1)
+        nn.init.zeros_(self.angle.weight)
+        nn.init.zeros_(self.angle.bias)
+        nn.init.zeros_(self.gate.weight)
+        nn.init.zeros_(self.gate.bias)
+
+    def _project_stream(self, x, stream_idx, B, T):
+        q = self.c_attn_q[stream_idx](x).view(B, T, self.n_head, self.n_qk_head_dim).transpose(1, 2)
+        k = self.c_attn_k[stream_idx](x).view(B, T, self.n_kv_group, self.n_qk_head_dim).transpose(1, 2)
+        v = self.c_attn_v[stream_idx](x).view(B, T, self.n_kv_group, self.n_v_head_dim).transpose(1, 2)
+        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
+            q = self.rotary_emb_q(q)
+            k = self.rotary_emb_k(k)
+        if self.use_qk_norm:
+            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        if self.use_v_norm:
+            v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
+        return q, k, v
+
+    def _attend_stream(self, q, k, v, x, T):
+        k_attn = self._expand_kv(k)
+        v_attn = self._expand_kv(v)
+        if not self.disable_flash_attention and self.softmax_variant_attn == "softmax":
+            if self.use_qk_norm_scale:
+                q = q * (self.qk_norm_factor * math.sqrt(k_attn.size(-1)))
+            return F.scaled_dot_product_attention(q, k_attn, v_attn, dropout_p=self.dropout if self.training else 0, is_causal=True)
+        att = q @ k_attn.transpose(-2, -1)
+        att = att * self.qk_norm_factor if self.use_qk_norm_scale else att / math.sqrt(k_attn.size(-1))
+        att = att.masked_fill(self.bias[:, :, :T, :T].to(x.device) == 0, float("-inf"))
+        att = self.softmax_layer_attn(att) if self.softmax_variant_attn != "softmax" else F.softmax(att, dim=-1)
+        return self.attn_dropout(att) @ v_attn
+
+    def forward(self, x, iter_num):
+        B, T, C = x.size()
+        streams = []
+        for idx in range(3):
+            q, k, v = self._project_stream(x, idx, B, T)
+            streams.append(self._attend_stream(q, k, v, x, T))
+        A, B_axis, P = streams
+        theta = self.theta_max * torch.tanh(self.angle(P))
+        gate_logits = self.gate(P)
+        gate = torch.tanh(gate_logits) if self.signed_gate else torch.sigmoid(gate_logits)
+        y = orbital_rotate(A, B_axis, P, theta)
+        if self.displacement_only:
+            y = y - A
+        y = gate * y
+
+        if self.post_act_l2_norm:
+            y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        if self.cproj_scale is not None and self.cproj_scale != 1.0:
+            y = y / self.cproj_scale
+
+        if self.use_concat_heads:
+            y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
+            y = self.c_proj(y)
+        elif self.n_cproj == 1:
+            y = self.c_proj(y.sum(dim=1))
+        else:
+            y_sum = y.sum(dim=1)
+            y = torch.stack([proj(y_sum) for proj in self.c_proj_list], dim=0).sum(dim=0)
+        return self.resid_dropout(y)
+
 ##############################################################################
 #  Multi-head Latent Attention (MLA) – DeepSeek-V2 implementation
 #  - low-rank joint compression of K & V (latent_kv_dim)
@@ -1541,6 +1669,7 @@ attention_dictionary = {
     # "ssm": MambaBlock,
     "identity": AttnIdentity,
     "infinite": InfiniteHeadAttention,
+    "orbital": OrbitalAttention,
     "mla": MultiHeadLatentAttention,
     "co4": Co4Attention,
 }

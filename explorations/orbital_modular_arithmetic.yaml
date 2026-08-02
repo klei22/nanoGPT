@@ -1,0 +1,63 @@
+# Compare Orbital Attention against conventional causal attention on the
+# modular_arithmetic grokking dataset. Prepare data first with:
+#   python data/modular_arithmetic/prepare.py --modulus 97 --train_fraction 0.3
+---
+
+named_static_groups:
+  - named_group: "causal_attention"
+    attention_variant: ["causal"]
+
+  - named_group: "orbital_attention"
+    attention_variant: ["orbital"]
+    use_concat_heads: [true]
+    orbital_theta_max_deg: [45.0]
+    orbital_displacement_only: [true]
+    orbital_signed_gate: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "rmsnorm"
+    norm_variant_attn: ["rmsnorm"]
+    norm_variant_output: ["rmsnorm"]
+
+common_group:
+  dataset: ["modular_arithmetic"]
+  out_dir: ["out/orbital_modular_arithmetic"]
+  tensorboard_run_name: ["orbital_modular_arithmetic"]
+  eval_interval: [100]
+  log_interval: [10]
+  max_iters: [5000]
+  batch_size: [64]
+  block_size: [32]
+  n_layer: [2]
+  n_head: [4]
+  n_embd: [128]
+  n_qk_head_dim: [32]
+  n_v_head_dim: [32]
+  dropout: [0.0]
+  weight_decay: [1.0]
+  learning_rate: [0.001]
+  decay_lr: [false]
+  compile: [true]
+  never_save_checkpoint: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  - named_group_static:
+      - "causal_attention"
+      - "rotary"
+      - "qk_norm"
+      - "rmsnorm"
+
+  - named_group_static:
+      - "orbital_attention"
+      - "rotary"
+      - "qk_norm"
+      - "rmsnorm"
