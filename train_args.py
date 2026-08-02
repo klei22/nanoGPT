@@ -890,6 +890,7 @@ def parse_args():
             "prelu",
             "relu",
             "relu_power",
+            "relu2line",
             "relu6",
             "rrelu",
             "disco",
@@ -1313,6 +1314,7 @@ def parse_args():
         "polymax",
         "relumax",
         "relu2max",
+        "relu2linemax",
         "sigmoidmax",
         "vpolymax",
         "exppolymax",
@@ -1362,6 +1364,10 @@ def parse_args():
 
     ### ReLU2Max Options
     model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
+
+    ### ReLU2Line Options
+    model_group.add_argument("--relu2line_transition_point", type=float, default=None)
+    model_group.add_argument("--relu2line_divisor", type=float, default=256.0)
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
