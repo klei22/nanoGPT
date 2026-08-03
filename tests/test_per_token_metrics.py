@@ -44,8 +44,10 @@ def test_per_token_metrics_exports_counts_losses_summaries_and_plot(tmp_path):
     assert "ordered highest to lowest sampled training loss" in html
     assert "trainingLossPlot" in html
     assert "token_text_escaped" in html
-    assert "Selected-token loss vs iteration" in html
+    assert "Selected-token loss and cumulative appearances vs iteration" in html
     assert "Selected-token loss vs cumulative appearances" in html
+    assert "appearanceByIterationTraces" in html
+    assert "cumulative training appearances" in html
     assert "multiple" in html
     assert "Y-axis scale:" in html
     assert "left logarithmic" in html

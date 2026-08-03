@@ -325,8 +325,10 @@ kept out of TensorBoard and contains:
   independently selectable loss and occurrence traces on separate axes. A
   multi-select token picker also drives two historical graphs: sampled
   train/validation loss versus evaluation iteration and versus cumulative
-  training appearances. Every graph has independent logarithmic-scale toggles
-  for each available y-axis, so either, both, or neither axis can use log scale.
+  training appearances. The iteration graph also plots each selected token's
+  cumulative appearances on a right-hand y-axis. Every graph has independent
+  logarithmic-scale toggles for each available y-axis, so either, both, or
+  neither axis can use log scale.
 
 Per-token loss is always ordinary next-token cross-entropy, making reports
 comparable even when a custom aggregate training loss is selected. Only tokens
