@@ -114,6 +114,21 @@
         <div id="attentionSweepOutput" class="output muted">Run the sweep after choosing a model, norm, and input embedding.</div>
         <figure id="attentionSweepFigure" class="hidden"><figcaption id="attentionSweepCaption">All attention heads</figcaption><canvas id="attentionSweepHistogram"></canvas></figure>
       </section>
+      <section class="attention-sweep-panel">
+        <div class="subpanel-heading">
+          <div><p class="eyebrow">All norms × all heads</p><h3>Compare embeddings A and B across block input and output norms</h3></div>
+          <button id="runAllNormSweep" type="button">Run all-norm sweep</button>
+        </div>
+        <div class="attention-sweep-controls">
+          <label class="checkbox-row" for="allNormIncludeFinal"><input id="allNormIncludeFinal" type="checkbox" /> Include the final norm in each graph</label>
+          <label for="allNormOrder">Entry ordering<select id="allNormOrder"><option value="numeric">Natural numeric (layer 9 before 10)</option><option value="alphabetical">Alphabetical</option></select></label>
+        </div>
+        <div id="allNormSweepOutput" class="output muted">Compare A/B dot products using every recognized input and output norm.</div>
+        <div class="all-norm-graphs">
+          <figure id="inputNormSweepFigure" class="hidden"><figcaption>Input norms · A/B paired bars</figcaption><canvas id="inputNormSweepHistogram"></canvas></figure>
+          <figure id="outputNormSweepFigure" class="hidden"><figcaption>Output norms · A/B paired bars</figcaption><canvas id="outputNormSweepHistogram"></canvas></figure>
+        </div>
+      </section>
     </section>
 
     <section class="panel">

@@ -877,6 +877,7 @@ code {
 .attention-sweep-panel figure { margin: 16px 0 0; padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: #020617; }
 .attention-sweep-panel figcaption { color: var(--accent); font-weight: 700; margin-bottom: 8px; }
 .attention-sweep-panel canvas { display: block; width: 100%; height: 300px; }
+.all-norm-graphs { display: grid; gap: 18px; margin-top: 16px; }
 .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
 .metric-grid article { padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: rgba(2, 6, 23, 0.7); }
 .metric-grid .pair-angle-metric { grid-column: 1 / -1; }

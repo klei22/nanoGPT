@@ -83,6 +83,7 @@ async function searchLayernormTokens() {
 
 let lastLayernormAnalysis = null;
 let lastAttentionSweep = null;
+let lastAllNormSweep = null;
 
 function drawChannelChart(canvas, series, colors, channelIds, sharedBound = null, seriesNames = []) {
   const ratio = window.devicePixelRatio || 1, width = canvas.clientWidth, height = canvas.clientHeight;
@@ -171,6 +172,45 @@ async function runAttentionSweep() {
   lastAttentionSweep = data;
   setOutput('attentionSweepOutput', `<strong>${data.rows.length} heads evaluated.</strong> Each value uses the complete selected norm output, including per-channel gain, before WqWkᵀ.`);
   drawAttentionSweep(data);
+}
+
+function naturalCompare(left, right) {
+  return String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function drawPairedNormSweep(canvas, sourceRows, title) {
+  const alphabetical = byId('allNormOrder').value === 'alphabetical';
+  const rows = [...sourceRows].sort((left, right) => alphabetical
+    ? String(left.norm).localeCompare(String(right.norm)) || left.head - right.head
+    : left.layer - right.layer || naturalCompare(left.norm, right.norm) || left.head - right.head);
+  const ratio = window.devicePixelRatio || 1, width = canvas.clientWidth, height = canvas.clientHeight;
+  canvas.width = width * ratio; canvas.height = height * ratio;
+  const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height);
+  const left = 78, right = 12, top = 12, bottom = 42, plotWidth = Math.max(1, width - left - right), plotHeight = Math.max(1, height - top - bottom);
+  const bound = Math.max(...rows.flatMap((row) => [Math.abs(row.dot_a), Math.abs(row.dot_b)]), 1e-12), center = top + plotHeight / 2;
+  context.font = '11px ui-monospace, monospace'; context.textAlign = 'right'; context.textBaseline = 'middle';
+  [-1, -0.5, 0, 0.5, 1].forEach((fraction) => { const y = center - fraction * plotHeight / 2; context.strokeStyle = fraction === 0 ? '#64748b' : '#243244'; context.beginPath(); context.moveTo(left, y); context.lineTo(width - right, y); context.stroke(); context.fillStyle = '#cbd5e1'; context.fillText((fraction * bound).toPrecision(3), left - 7, y); });
+  const slot = plotWidth / rows.length;
+  rows.forEach((row, index) => { [[row.dot_a, '#38bdf8'], [row.dot_b, '#f472b6']].forEach(([value, color], embeddingIndex) => { const x = left + (index + 0.28 + embeddingIndex * 0.44) * slot, y = center - value / bound * plotHeight / 2; context.strokeStyle = color; context.lineWidth = Math.max(1, slot * 0.34); context.beginPath(); context.moveTo(x, center); context.lineTo(x, y); context.stroke(); }); });
+  context.textAlign = 'center'; context.fillStyle = '#94a3b8'; context.fillText(alphabetical ? 'alphabetical norm/head order →' : 'natural numeric layer/norm/head order →', left + plotWidth / 2, height - 12);
+  canvas.onmousemove = (event) => { const index = Math.max(0, Math.min(rows.length - 1, Math.floor((event.offsetX - left) / plotWidth * rows.length))), row = rows[index]; canvas.title = `${row.norm}${row.is_final_norm ? ' (final)' : ''} · layer ${row.layer} · Q ${row.head}/KV ${row.kv_head} · A ${row.dot_a.toPrecision(8)} · B ${row.dot_b.toPrecision(8)}`; };
+  canvas.parentElement.querySelector('figcaption').textContent = `${title} · ${rows.length} layer/head entries · A (blue) / B (pink)`;
+  canvas.parentElement.classList.remove('hidden');
+}
+
+function drawAllNormSweep(data) {
+  const pairs = [[byId('inputNormSweepHistogram'), data.input_norms, 'Input norms'], [byId('outputNormSweepHistogram'), data.output_norms, 'Output norms']];
+  pairs.forEach(([canvas, rows, title]) => { canvas.parentElement.classList.toggle('hidden', !rows.length); if (rows.length) drawPairedNormSweep(canvas, rows, title); });
+}
+
+async function runAllNormSweep() {
+  const params = new URLSearchParams({ token_a: byId('lnTokenAId').value, token_b: byId('lnTokenBId').value, include_final: byId('allNormIncludeFinal').checked });
+  setOutput('allNormSweepOutput', 'Sweeping all recognized input/output norms and attention heads…', true);
+  const response = await fetch(`/api/layernorm/all-norm-attention-sweep?${params.toString()}`), data = await response.json();
+  if (!response.ok) { setOutput('allNormSweepOutput', escapeHtml(formatErrorDetail(data.detail)), true); return; }
+  lastAllNormSweep = data;
+  setOutput('allNormSweepOutput', `<strong>${data.input_norms.length} input-norm and ${data.output_norms.length} output-norm head entries.</strong> Blue is embedding A; pink is embedding B.`);
+  drawAllNormSweep(data);
 }
 
 function escapeHtml(value) {
@@ -2903,6 +2943,8 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('attentionLayerSelect').addEventListener('change', syncAttentionControls);
   byId('runAttentionSweep').addEventListener('click', runAttentionSweep);
   byId('attentionSweepSort').addEventListener('change', () => { if (lastAttentionSweep) drawAttentionSweep(lastAttentionSweep); });
+  byId('runAllNormSweep').addEventListener('click', runAllNormSweep);
+  byId('allNormOrder').addEventListener('change', () => { if (lastAllNormSweep) drawAllNormSweep(lastAllNormSweep); });
   for (const letter of ['A', 'B']) byId(`lnToken${letter}`).addEventListener('change', (event) => { byId(`lnToken${letter}Id`).value = event.target.value; });
   setupPicker('tokenA', 'tokenA');
   setupPicker('tokenB', 'tokenB');

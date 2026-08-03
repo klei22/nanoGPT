@@ -354,3 +354,11 @@ def test_layernorm_lab_has_four_graphs_metrics_and_scale_modes() -> None:
     assert 'id="attentionSweepHistogram"' in html
     assert "/api/layernorm/attention-sweep" in js
     assert "drawAttentionSweep" in js
+    assert 'id="runAllNormSweep"' in html
+    assert 'id="allNormIncludeFinal"' in html
+    assert 'id="allNormOrder"' in html
+    assert 'id="inputNormSweepHistogram"' in html
+    assert 'id="outputNormSweepHistogram"' in html
+    assert "/api/layernorm/all-norm-attention-sweep" in js
+    assert "numeric: true" in js
+    assert "dot_a" in js and "dot_b" in js

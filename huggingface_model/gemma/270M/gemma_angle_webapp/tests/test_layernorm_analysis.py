@@ -3,7 +3,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from app.model_service import TokenInfo, attention_dot_sweep, layernorm_analysis, regex_search_tokens
+from app.model_service import (
+    TokenInfo,
+    attention_all_norm_sweep,
+    attention_dot_sweep,
+    layernorm_analysis,
+    regex_search_tokens,
+)
 
 
 def _assets(*, unit_offset=False, kind="rmsnorm"):
@@ -97,3 +103,27 @@ def test_attention_dot_sweep_covers_every_query_head_without_hidden_operator():
     assert result["rows"][0]["dot_product"] == pytest.approx(
         layernorm_analysis(assets, "model.norm.weight", [0, 1])["embeddings"][0]["after_magnitude"] ** 2
     )
+
+
+def test_all_norm_sweep_pairs_embeddings_and_uses_natural_layer_order():
+    assets = _assets()
+    assets.layernorms.update({
+        "model.layers.10.input_layernorm.weight": torch.ones(3),
+        "model.layers.10.post_attention_layernorm.weight": torch.ones(3),
+        "model.layers.2.input_layernorm.weight": torch.ones(3),
+        "model.layers.2.post_attention_layernorm.weight": torch.ones(3),
+    })
+    assets.attention_projections = {}
+    for layer in [10, 2]:
+        prefix = f"model.layers.{layer}.self_attn"
+        assets.attention_projections[f"{prefix}.q_proj.weight"] = torch.eye(3)
+        assets.attention_projections[f"{prefix}.k_proj.weight"] = torch.eye(3)
+    assets.num_attention_heads = assets.num_key_value_heads = 1
+    assets.head_dim = 3
+    assets.norm_biases = {}
+
+    result = attention_all_norm_sweep(assets, [0, 1], include_final=True)
+
+    assert [row["layer"] for row in result["input_norms"][:2]] == [2, 2]
+    assert any(row["is_final_norm"] for row in result["input_norms"])
+    assert all("dot_a" in row and "dot_b" in row for row in result["output_norms"])

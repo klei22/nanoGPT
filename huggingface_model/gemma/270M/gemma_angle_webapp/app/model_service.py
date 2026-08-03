@@ -513,22 +513,31 @@ def attention_head_catalog(assets: ModelAssets) -> list[dict[str, Any]]:
     return layers
 
 
+def _natural_name_key(name: str) -> tuple[Any, ...]:
+    """Sort checkpoint names naturally so layer 9 precedes layer 10."""
+    return tuple(int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", name))
+
+
+def _apply_saved_norm(assets: ModelAssets, layernorm_name: str, vector: torch.Tensor) -> torch.Tensor:
+    gain = assets.layernorms[layernorm_name].to(vector.device)
+    effective_gain = gain + 1.0 if assets.norm_unit_offset else gain
+    if assets.norm_kind == "layernorm":
+        normalized = (vector - vector.mean()) * torch.rsqrt(vector.var(unbiased=False) + assets.norm_epsilon)
+    else:
+        normalized = vector * torch.rsqrt(vector.square().mean() + assets.norm_epsilon)
+    output = normalized * effective_gain
+    bias_name = layernorm_name.removesuffix(".weight") + ".bias"
+    if assets.norm_biases and bias_name in assets.norm_biases:
+        output = output + assets.norm_biases[bias_name].to(output.device)
+    return output
+
+
 def attention_dot_sweep(assets: ModelAssets, layernorm_name: str, token_id: int) -> dict[str, Any]:
     """Evaluate dot(x_norm, x_norm WqWkT) for every compatible layer/head."""
     if layernorm_name not in assets.layernorms:
         raise ValueError(f"Unknown layernorm {layernorm_name!r}.")
     info = assets.token(token_id)
-    before = assets.weight[token_id]
-    gain = assets.layernorms[layernorm_name].to(before.device)
-    effective_gain = gain + 1.0 if assets.norm_unit_offset else gain
-    if assets.norm_kind == "layernorm":
-        normalized = (before - before.mean()) * torch.rsqrt(before.var(unbiased=False) + assets.norm_epsilon)
-    else:
-        normalized = before * torch.rsqrt(before.square().mean() + assets.norm_epsilon)
-    norm_output = normalized * effective_gain
-    bias_name = layernorm_name.removesuffix(".weight") + ".bias"
-    if assets.norm_biases and bias_name in assets.norm_biases:
-        norm_output = norm_output + assets.norm_biases[bias_name].to(norm_output.device)
+    norm_output = _apply_saved_norm(assets, layernorm_name, assets.weight[token_id])
 
     projections = assets.attention_projections or {}
     rows = []
@@ -559,6 +568,65 @@ def attention_dot_sweep(assets: ModelAssets, layernorm_name: str, token_id: int)
         "layernorm_name": layernorm_name,
         "pipeline": "input_embedding -> selected_norm_with_gain -> WqWkT",
         "rows": rows,
+    }
+
+
+def attention_all_norm_sweep(
+    assets: ModelAssets, token_ids: list[int], *, include_final: bool = False
+) -> dict[str, Any]:
+    """Compare A/B dot products for every block input/output norm and attention head."""
+    if len(token_ids) != 2:
+        raise ValueError("Exactly two token IDs are required.")
+    for token_id in token_ids:
+        assets.token(token_id)
+    attention_by_layer_number = {}
+    for record in attention_head_catalog(assets):
+        match = re.search(r"(?:^|\.)layers\.(\d+)(?:\.|$)", record["layer"])
+        if match:
+            attention_by_layer_number[int(match.group(1))] = record["layer"]
+    if not attention_by_layer_number:
+        raise ValueError("No numbered attention layers with separate Q/K projections are available.")
+
+    names = sorted(assets.layernorms, key=_natural_name_key)
+    input_names = [name for name in names if any(marker in name.casefold() for marker in ("input_layernorm", "pre_attention", "attention_norm"))]
+    output_names = [name for name in names if any(marker in name.casefold() for marker in ("post_attention", "post_feedforward", "pre_feedforward", "output_layernorm"))]
+    final_names = [name for name in names if any(marker in name.casefold() for marker in ("model.norm.weight", "final_layernorm", "ln_f.weight"))]
+    projections = assets.attention_projections or {}
+
+    def evaluate(norm_names: list[str]) -> list[dict[str, Any]]:
+        rows = []
+        candidates: list[tuple[str, int, str]] = []
+        for norm_name in norm_names:
+            match = re.search(r"(?:^|\.)layers\.(\d+)(?:\.|$)", norm_name)
+            if match and int(match.group(1)) in attention_by_layer_number:
+                layer_number = int(match.group(1))
+                candidates.append((norm_name, layer_number, attention_by_layer_number[layer_number]))
+        if include_final:
+            for norm_name in final_names:
+                candidates.extend((norm_name, number, layer) for number, layer in attention_by_layer_number.items())
+        for norm_name, layer_number, attention_layer in sorted(candidates, key=lambda item: (item[1], _natural_name_key(item[0]))):
+            q_weight = projections[f"{attention_layer}.q_proj.weight"].to(assets.weight.device)
+            k_weight = projections[f"{attention_layer}.k_proj.weight"].to(assets.weight.device)
+            head_dim = assets.head_dim or (q_weight.shape[0] // assets.num_attention_heads)
+            kv_heads = assets.num_key_value_heads or assets.num_attention_heads
+            norm_outputs = [_apply_saved_norm(assets, norm_name, assets.weight[token_id]) for token_id in token_ids]
+            for head in range(assets.num_attention_heads):
+                kv_head = head * kv_heads // assets.num_attention_heads
+                q_head = q_weight[head * head_dim:(head + 1) * head_dim]
+                k_head = k_weight[kv_head * head_dim:(kv_head + 1) * head_dim]
+                dots = []
+                for vector in norm_outputs:
+                    transformed = (vector @ q_head.T) @ k_head
+                    dots.append(float(torch.dot(vector, transformed).item()))
+                rows.append({"norm": norm_name, "layer": layer_number, "attention_layer": attention_layer, "head": head, "kv_head": kv_head, "dot_a": dots[0], "dot_b": dots[1], "is_final_norm": norm_name in final_names})
+        return rows
+
+    input_rows, output_rows = evaluate(input_names), evaluate(output_names)
+    if not input_rows and not output_rows:
+        raise ValueError("No recognizable block input/output normalization tensors were found.")
+    return {
+        "token_a": token_ids[0], "token_b": token_ids[1], "include_final": include_final,
+        "input_norms": input_rows, "output_norms": output_rows,
     }
 
 
