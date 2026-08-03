@@ -1512,6 +1512,11 @@ def parse_args():
     logging_group.add_argument('--csv_log', default=True, action=argparse.BooleanOptionalAction)
     logging_group.add_argument('--csv_dir', default='csv_logs', type=str)
     logging_group.add_argument('--csv_name', default='output', type=str, help="Output csv basename. Note, the .csv will be automatically appended.")
+    logging_group.add_argument('--log_per_token_metrics', default=False,
+                               action=argparse.BooleanOptionalAction,
+                               help='Write per-token train/validation loss, training occurrence counts, summaries, and an interactive Plotly HTML file at each evaluation (never sent to TensorBoard).')
+    logging_group.add_argument('--per_token_metrics_dir', default=None, type=str,
+                               help='Per-token report directory (default: <out_dir>/per_token_metrics).')
     logging_group.add_argument('--zeus_log', default=False, action=argparse.BooleanOptionalAction, help='Enable Zeus GPU energy logging during training')
     logging_group.add_argument('--zeus_log_file', type=str, default=None, help='Optional Zeus monitor log file path')
     logging_group.add_argument('--zeus_approx_instant_energy', default=True, action=argparse.BooleanOptionalAction, help='Use Zeus instant-power fallback for short measurement windows')
