@@ -321,7 +321,9 @@ kept out of TensorBoard and contains:
   Plotly scatter plots. The first is ordered from highest to lowest validation
   loss, while the second is ordered from lowest to highest training occurrence.
   Both show escaped token text next to the token ID and provide independently
-  selectable loss and occurrence traces on separate axes.
+  selectable loss and occurrence traces on separate axes. A multi-select token
+  picker also drives two historical graphs: sampled train/validation loss
+  versus evaluation iteration and versus cumulative training appearances.
 
 Per-token loss is always ordinary next-token cross-entropy, making reports
 comparable even when a custom aggregate training loss is selected. Only tokens

@@ -17,11 +17,16 @@ def test_per_token_metrics_exports_counts_losses_summaries_and_plot(tmp_path):
     tracker.add_evaluation_batch("tiny", "train", logits, targets)
     tracker.add_evaluation_batch("tiny", "val", logits, targets)
     tracker.export(10)
+    tracker.begin_evaluation()
+    tracker.add_evaluation_batch("tiny", "train", logits, targets)
+    tracker.add_evaluation_batch("tiny", "val", logits, targets)
+    tracker.export(20)
 
     with open(tracker.detail_path, newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
-    assert [int(row["training_seen_count"]) for row in rows] == [1, 2, 1]
-    assert [row["token_text_escaped"] for row in rows] == ["\\n", "a", "\\t"]
+    assert len(rows) == 6
+    assert [int(row["training_seen_count"]) for row in rows[:3]] == [1, 2, 1]
+    assert [row["token_text_escaped"] for row in rows[:3]] == ["\\n", "a", "\\t"]
     assert math.isclose(float(rows[0]["val_loss"]), 0.0949229, rel_tol=1e-5)
     assert int(rows[1]["val_eval_count"]) == 2
 
@@ -37,3 +42,6 @@ def test_per_token_metrics_exports_counts_losses_summaries_and_plot(tmp_path):
     assert "Summary statistics" in html
     assert "ordered lowest to highest training occurrence" in html
     assert "token_text_escaped" in html
+    assert "Selected-token loss vs iteration" in html
+    assert "Selected-token loss vs cumulative appearances" in html
+    assert "multiple" in html
