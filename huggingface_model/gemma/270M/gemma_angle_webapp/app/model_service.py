@@ -506,7 +506,9 @@ def _load_attention_projections_from_safetensors(model_name: str, *, allow_downl
 def attention_head_catalog(assets: ModelAssets) -> list[dict[str, Any]]:
     projections = assets.attention_projections or {}
     layers = []
-    for q_name in sorted(name for name in projections if name.endswith(".q_proj.weight")):
+    for q_name in sorted(
+        (name for name in projections if name.endswith(".q_proj.weight")), key=_natural_name_key
+    ):
         prefix = q_name.removesuffix(".q_proj.weight")
         if f"{prefix}.k_proj.weight" in projections:
             layers.append({"layer": prefix, "heads": assets.num_attention_heads})
@@ -532,19 +534,23 @@ def _apply_saved_norm(assets: ModelAssets, layernorm_name: str, vector: torch.Te
     return output
 
 
-def attention_dot_sweep(assets: ModelAssets, layernorm_name: str, token_id: int) -> dict[str, Any]:
-    """Evaluate dot(x_norm, x_norm WqWkT) for every compatible layer/head."""
+def attention_dot_sweep(
+    assets: ModelAssets, layernorm_name: str, token_id: int, token_b_id: int | None = None
+) -> dict[str, Any]:
+    """Evaluate dot(x_norm, x_norm WqWkT) for A and optionally B across all heads."""
     if layernorm_name not in assets.layernorms:
         raise ValueError(f"Unknown layernorm {layernorm_name!r}.")
     info = assets.token(token_id)
-    norm_output = _apply_saved_norm(assets, layernorm_name, assets.weight[token_id])
+    token_ids = [token_id] if token_b_id is None else [token_id, token_b_id]
+    infos = [assets.token(item) for item in token_ids]
+    norm_outputs = [_apply_saved_norm(assets, layernorm_name, assets.weight[item]) for item in token_ids]
 
     projections = assets.attention_projections or {}
     rows = []
     for layer_record in attention_head_catalog(assets):
         layer = layer_record["layer"]
-        q_weight = projections[f"{layer}.q_proj.weight"].to(norm_output.device)
-        k_weight = projections[f"{layer}.k_proj.weight"].to(norm_output.device)
+        q_weight = projections[f"{layer}.q_proj.weight"].to(norm_outputs[0].device)
+        k_weight = projections[f"{layer}.k_proj.weight"].to(norm_outputs[0].device)
         head_dim = assets.head_dim or (q_weight.shape[0] // assets.num_attention_heads)
         kv_heads = assets.num_key_value_heads or assets.num_attention_heads
         for head in range(assets.num_attention_heads):
@@ -552,19 +558,29 @@ def attention_dot_sweep(assets: ModelAssets, layernorm_name: str, token_id: int)
             q_head = q_weight[head * head_dim:(head + 1) * head_dim]
             k_head = k_weight[kv_head * head_dim:(kv_head + 1) * head_dim]
             # Associate left-to-right so no hidden_dim² operator is materialized.
-            transformed = (norm_output @ q_head.T) @ k_head
-            rows.append({
+            dots = []
+            for norm_output in norm_outputs:
+                transformed = (norm_output @ q_head.T) @ k_head
+                dots.append(float(torch.dot(norm_output, transformed).item()))
+            record = {
                 "layer": layer,
                 "head": head,
                 "kv_head": kv_head,
-                "dot_product": float(torch.dot(norm_output, transformed).item()),
-            })
+                "dot_product": dots[0],
+                "dot_a": dots[0],
+            }
+            if len(dots) == 2:
+                record["dot_b"] = dots[1]
+            rows.append(record)
     if not rows:
         raise ValueError("No compatible separate Q/K attention projections are available.")
     return {
         "token_id": token_id,
         "token_raw": info.raw,
         "token_display": info.display,
+        "token_b_id": token_b_id,
+        "token_b_raw": infos[1].raw if len(infos) == 2 else None,
+        "token_b_display": infos[1].display if len(infos) == 2 else None,
         "layernorm_name": layernorm_name,
         "pipeline": "input_embedding -> selected_norm_with_gain -> WqWkT",
         "rows": rows,
@@ -590,7 +606,13 @@ def attention_all_norm_sweep(
     names = sorted(assets.layernorms, key=_natural_name_key)
     input_names = [name for name in names if any(marker in name.casefold() for marker in ("input_layernorm", "pre_attention", "attention_norm"))]
     output_names = [name for name in names if any(marker in name.casefold() for marker in ("post_attention", "post_feedforward", "pre_feedforward", "output_layernorm"))]
-    final_names = [name for name in names if any(marker in name.casefold() for marker in ("model.norm.weight", "final_layernorm", "ln_f.weight"))]
+    # The optional final norm means only the top-level normalization immediately
+    # before the LM head, never a similarly named norm inside a transformer block.
+    final_names = [
+        name for name in names
+        if not re.search(r"(?:^|\.)layers\.\d+(?:\.|$)", name)
+        and any(marker in name.casefold() for marker in ("model.norm.weight", "final_layernorm", "ln_f.weight"))
+    ]
     projections = assets.attention_projections or {}
 
     def evaluate(norm_names: list[str]) -> list[dict[str, Any]]:

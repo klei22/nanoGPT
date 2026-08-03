@@ -212,9 +212,19 @@ def analyze_layernorm(
 
 
 @app.get("/api/layernorm/attention-sweep")
-def layernorm_attention_sweep(layernorm: str, token_id: int = Query(..., ge=0)):
+def layernorm_attention_sweep(
+    layernorm: str,
+    token_id: int | None = Query(None, ge=0, description="Backward-compatible single-token input."),
+    token_a: int | None = Query(None, ge=0),
+    token_b: int | None = Query(None, ge=0),
+):
     try:
-        return attention_dot_sweep(_load_assets_or_500(), layernorm, token_id)
+        first = token_a if token_a is not None else token_id
+        if first is None:
+            raise ValueError("token_a (or legacy token_id) is required.")
+        if token_a is not None and token_b is None:
+            raise ValueError("token_b is required when token_a is supplied.")
+        return attention_dot_sweep(_load_assets_or_500(), layernorm, first, token_b)
     except IndexError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

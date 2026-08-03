@@ -104,15 +104,14 @@
       <p class="chart-legend"><span class="gain-key">■</span> gain &nbsp; <span class="before-key">■</span> before &nbsp; <span class="after-key">■</span> after. Every plot shows a labeled y-axis; hover for exact channel/value details.</p>
       <section class="attention-sweep-panel">
         <div class="subpanel-heading">
-          <div><p class="eyebrow">All-head sweep</p><h3>dot(xnorm, xnorm WqWkᵀ) across every layer and head</h3></div>
+          <div><p class="eyebrow">All-head sweep</p><h3>Compare A/B dot(xnorm, xnorm WqWkᵀ) across every layer and head</h3></div>
           <button id="runAttentionSweep" type="button">Run sweep</button>
         </div>
         <div class="attention-sweep-controls">
-          <label for="attentionSweepToken">Input embedding<select id="attentionSweepToken"><option value="a">Embedding A</option><option value="b">Embedding B</option></select></label>
-          <label class="checkbox-row" for="attentionSweepSort"><input id="attentionSweepSort" type="checkbox" /> Sort dot products high → low</label>
+          <label for="attentionSweepOrder">Entry ordering<select id="attentionSweepOrder"><option value="numeric">Natural numeric (layer 9 before 10)</option><option value="dot_a">Embedding A dot · high → low</option><option value="dot_b">Embedding B dot · high → low</option><option value="alphabetical">Alphabetical</option></select></label>
         </div>
         <div id="attentionSweepOutput" class="output muted">Run the sweep after choosing a model, norm, and input embedding.</div>
-        <figure id="attentionSweepFigure" class="hidden"><figcaption id="attentionSweepCaption">All attention heads</figcaption><canvas id="attentionSweepHistogram"></canvas></figure>
+        <figure id="attentionSweepFigure" class="hidden"><figcaption id="attentionSweepCaption">All attention heads · A/B paired bars</figcaption><canvas id="attentionSweepHistogram"></canvas></figure>
       </section>
       <section class="attention-sweep-panel">
         <div class="subpanel-heading">
@@ -120,7 +119,7 @@
           <button id="runAllNormSweep" type="button">Run all-norm sweep</button>
         </div>
         <div class="attention-sweep-controls">
-          <label class="checkbox-row" for="allNormIncludeFinal"><input id="allNormIncludeFinal" type="checkbox" /> Include the final norm in each graph</label>
+          <label class="checkbox-row" for="allNormIncludeFinal"><input id="allNormIncludeFinal" type="checkbox" /> Include the final pre-LM-head norm in each graph</label>
           <label for="allNormOrder">Entry ordering<select id="allNormOrder"><option value="numeric">Natural numeric (layer 9 before 10)</option><option value="alphabetical">Alphabetical</option></select></label>
         </div>
         <div id="allNormSweepOutput" class="output muted">Compare A/B dot products using every recognized input and output norm.</div>

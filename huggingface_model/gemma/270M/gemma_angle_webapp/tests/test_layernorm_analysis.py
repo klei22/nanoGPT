@@ -103,6 +103,10 @@ def test_attention_dot_sweep_covers_every_query_head_without_hidden_operator():
     assert result["rows"][0]["dot_product"] == pytest.approx(
         layernorm_analysis(assets, "model.norm.weight", [0, 1])["embeddings"][0]["after_magnitude"] ** 2
     )
+    paired = attention_dot_sweep(assets, "model.norm.weight", 0, 1)
+    assert paired["token_b_id"] == 1
+    assert paired["rows"][0]["dot_a"] == result["rows"][0]["dot_product"]
+    assert "dot_b" in paired["rows"][0]
 
 
 def test_all_norm_sweep_pairs_embeddings_and_uses_natural_layer_order():
@@ -112,6 +116,7 @@ def test_all_norm_sweep_pairs_embeddings_and_uses_natural_layer_order():
         "model.layers.10.post_attention_layernorm.weight": torch.ones(3),
         "model.layers.2.input_layernorm.weight": torch.ones(3),
         "model.layers.2.post_attention_layernorm.weight": torch.ones(3),
+        "model.layers.2.final_layernorm.weight": torch.ones(3),
     })
     assets.attention_projections = {}
     for layer in [10, 2]:
@@ -126,4 +131,5 @@ def test_all_norm_sweep_pairs_embeddings_and_uses_natural_layer_order():
 
     assert [row["layer"] for row in result["input_norms"][:2]] == [2, 2]
     assert any(row["is_final_norm"] for row in result["input_norms"])
+    assert not any("layers.2.final_layernorm" in row["norm"] for row in result["input_norms"])
     assert all("dot_a" in row and "dot_b" in row for row in result["output_norms"])

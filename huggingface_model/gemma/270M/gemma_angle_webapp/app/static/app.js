@@ -142,35 +142,37 @@ async function runLayernormAnalysis() {
 }
 
 function drawAttentionSweep(data) {
-  const sorted = byId('attentionSweepSort').checked;
+  const ordering = byId('attentionSweepOrder').value;
   const rows = [...data.rows];
-  if (sorted) rows.sort((left, right) => right.dot_product - left.dot_product);
+  if (ordering === 'dot_a') rows.sort((left, right) => right.dot_a - left.dot_a);
+  else if (ordering === 'dot_b') rows.sort((left, right) => right.dot_b - left.dot_b);
+  else if (ordering === 'alphabetical') rows.sort((left, right) => String(left.layer).localeCompare(String(right.layer)) || left.head - right.head);
+  else rows.sort((left, right) => naturalCompare(left.layer, right.layer) || left.head - right.head);
   const canvas = byId('attentionSweepHistogram');
   const ratio = window.devicePixelRatio || 1, width = canvas.clientWidth, height = canvas.clientHeight;
   canvas.width = width * ratio; canvas.height = height * ratio;
   const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height);
   const left = 78, right = 12, top = 12, bottom = 42, plotWidth = Math.max(1, width - left - right), plotHeight = Math.max(1, height - top - bottom);
-  const bound = Math.max(...rows.map((row) => Math.abs(row.dot_product)), 1e-12), center = top + plotHeight / 2;
+  const bound = Math.max(...rows.flatMap((row) => [Math.abs(row.dot_a), Math.abs(row.dot_b)]), 1e-12), center = top + plotHeight / 2;
   context.font = '11px ui-monospace, monospace'; context.textAlign = 'right'; context.textBaseline = 'middle';
   [-1, -0.5, 0, 0.5, 1].forEach((fraction) => { const y = center - fraction * plotHeight / 2; context.strokeStyle = fraction === 0 ? '#64748b' : '#243244'; context.beginPath(); context.moveTo(left, y); context.lineTo(width - right, y); context.stroke(); context.fillStyle = '#cbd5e1'; context.fillText((fraction * bound).toPrecision(3), left - 7, y); });
   context.strokeStyle = '#94a3b8'; context.beginPath(); context.moveTo(left, top); context.lineTo(left, top + plotHeight); context.stroke();
-  context.strokeStyle = '#34d399'; context.lineWidth = Math.max(1, plotWidth / rows.length);
-  context.beginPath(); rows.forEach((row, index) => { const x = left + (index + 0.5) * plotWidth / rows.length, y = center - row.dot_product / bound * plotHeight / 2; context.moveTo(x, center); context.lineTo(x, y); }); context.stroke();
-  context.textAlign = 'center'; context.fillStyle = '#94a3b8'; context.fillText(sorted ? 'head rank by descending dot product →' : 'layer/head checkpoint order →', left + plotWidth / 2, height - 12);
-  canvas.onmousemove = (event) => { const index = Math.max(0, Math.min(rows.length - 1, Math.floor((event.offsetX - left) / plotWidth * rows.length))), row = rows[index]; canvas.title = `${row.layer} · Q head ${row.head} / KV head ${row.kv_head} · dot ${row.dot_product.toPrecision(8)}${sorted ? ` · rank ${index + 1}` : ''}`; };
-  byId('attentionSweepCaption').textContent = `${rows.length} heads · token ${data.token_id} | ${data.token_display || data.token_raw}${sorted ? ' · high → low' : ' · model order'}`;
+  const slot = plotWidth / rows.length;
+  rows.forEach((row, index) => { [[row.dot_a, '#38bdf8'], [row.dot_b, '#f472b6']].forEach(([value, color], embeddingIndex) => { const x = left + (index + 0.28 + embeddingIndex * 0.44) * slot, y = center - value / bound * plotHeight / 2; context.strokeStyle = color; context.lineWidth = Math.max(1, slot * 0.34); context.beginPath(); context.moveTo(x, center); context.lineTo(x, y); context.stroke(); }); });
+  const orderLabel = { numeric: 'natural numeric layer/head order →', dot_a: 'A dot-product rank high → low', dot_b: 'B dot-product rank high → low', alphabetical: 'alphabetical layer/head order →' }[ordering];
+  context.textAlign = 'center'; context.fillStyle = '#94a3b8'; context.fillText(orderLabel, left + plotWidth / 2, height - 12);
+  canvas.onmousemove = (event) => { const index = Math.max(0, Math.min(rows.length - 1, Math.floor((event.offsetX - left) / plotWidth * rows.length))), row = rows[index]; canvas.title = `${row.layer} · Q head ${row.head} / KV head ${row.kv_head} · A ${row.dot_a.toPrecision(8)} · B ${row.dot_b.toPrecision(8)} · position ${index + 1}`; };
+  byId('attentionSweepCaption').textContent = `${rows.length} heads · A ${data.token_id} | ${data.token_display || data.token_raw} · B ${data.token_b_id} | ${data.token_b_display || data.token_b_raw} · paired bars`;
   byId('attentionSweepFigure').classList.remove('hidden');
 }
 
 async function runAttentionSweep() {
-  const key = byId('attentionSweepToken').value;
-  const tokenId = byId(key === 'a' ? 'lnTokenAId' : 'lnTokenBId').value;
-  const params = new URLSearchParams({ layernorm: byId('layernormSelect').value, token_id: tokenId });
+  const params = new URLSearchParams({ layernorm: byId('layernormSelect').value, token_a: byId('lnTokenAId').value, token_b: byId('lnTokenBId').value });
   setOutput('attentionSweepOutput', 'Sweeping every compatible layer and head…', true);
   const response = await fetch(`/api/layernorm/attention-sweep?${params.toString()}`), data = await response.json();
   if (!response.ok) { setOutput('attentionSweepOutput', escapeHtml(formatErrorDetail(data.detail)), true); return; }
   lastAttentionSweep = data;
-  setOutput('attentionSweepOutput', `<strong>${data.rows.length} heads evaluated.</strong> Each value uses the complete selected norm output, including per-channel gain, before WqWkᵀ.`);
+  setOutput('attentionSweepOutput', `<strong>${data.rows.length} heads evaluated for A and B.</strong> Blue is embedding A; pink is embedding B. Each value uses the complete selected norm output before WqWkᵀ.`);
   drawAttentionSweep(data);
 }
 
@@ -2942,7 +2944,7 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('applyAttentionOperator').addEventListener('change', syncAttentionControls);
   byId('attentionLayerSelect').addEventListener('change', syncAttentionControls);
   byId('runAttentionSweep').addEventListener('click', runAttentionSweep);
-  byId('attentionSweepSort').addEventListener('change', () => { if (lastAttentionSweep) drawAttentionSweep(lastAttentionSweep); });
+  byId('attentionSweepOrder').addEventListener('change', () => { if (lastAttentionSweep) drawAttentionSweep(lastAttentionSweep); });
   byId('runAllNormSweep').addEventListener('click', runAllNormSweep);
   byId('allNormOrder').addEventListener('change', () => { if (lastAllNormSweep) drawAllNormSweep(lastAllNormSweep); });
   for (const letter of ['A', 'B']) byId(`lnToken${letter}`).addEventListener('change', (event) => { byId(`lnToken${letter}Id`).value = event.target.value; });
