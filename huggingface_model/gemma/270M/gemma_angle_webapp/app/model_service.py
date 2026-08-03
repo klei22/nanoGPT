@@ -617,6 +617,10 @@ def layernorm_analysis(
         skew = (combined - combined.T) * 0.5
         transformed_rows = []
         for row, (_, after) in zip(rows, full_vectors, strict=True):
+            # `after` is the complete norm output: centering/RMS scaling,
+            # per-channel gain (including Gemma's unit offset), and optional
+            # bias. The attention operator is deliberately applied after all
+            # of those steps rather than to the raw embedding.
             transformed = after @ qk_operator
             transformed_magnitude, transformed_pr = vector_metrics(transformed)
             transformed_rows.append({
@@ -626,11 +630,13 @@ def layernorm_analysis(
                 "participation_ratio": transformed_pr,
                 "angle_from_before_deg": vector_angle(full_vectors[len(transformed_rows)][0], transformed),
                 "angle_from_norm_deg": vector_angle(after, transformed),
+                "dot_product_with_norm": float(torch.dot(after, transformed).item()),
             })
         result["attention"] = {
             "layer": attention_layer,
             "head": attention_head,
             "kv_head": kv_head,
+            "pipeline": "input_embedding -> selected_norm_with_gain -> WqWkT",
             "matrix_stats": {
                 "symmetry_residual": float((torch.linalg.matrix_norm(combined - combined.T) / matrix_norm).item()),
                 "symmetric_fraction": float((torch.linalg.matrix_norm(symmetric) / matrix_norm).item()),

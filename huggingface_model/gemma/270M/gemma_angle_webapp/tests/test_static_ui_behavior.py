@@ -347,3 +347,5 @@ def test_layernorm_lab_has_four_graphs_metrics_and_scale_modes() -> None:
     assert 'id="embeddingAttentionBHistogram"' in html
     assert "matrix_stats" in js
     assert "rotation_residual" in js
+    assert "dot_product_with_norm" in js
+    assert "complete norm" in js

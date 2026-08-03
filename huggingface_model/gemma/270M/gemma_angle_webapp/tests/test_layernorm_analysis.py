@@ -73,3 +73,8 @@ def test_attention_head_operator_returns_matrix_and_vector_diagnostics():
     assert result["attention"]["matrix_stats"]["skew_fraction"] == pytest.approx(0.0)
     assert result["attention"]["matrix_stats"]["rotation_residual"] >= 0
     assert result["attention"]["embeddings"][0]["magnitude"] > 0
+    expected_after = torch.tensor(result["embeddings"][0]["after"])
+    assert result["attention"]["embeddings"][0]["dot_product_with_norm"] == pytest.approx(
+        torch.dot(expected_after, expected_after).item()
+    )
+    assert result["attention"]["pipeline"] == "input_embedding -> selected_norm_with_gain -> WqWkT"
