@@ -30,6 +30,45 @@ class PerTokenMetrics:
         self.detail_path = os.path.join(output_dir, "per_token_metrics.csv")
         self.summary_path = os.path.join(output_dir, "per_token_summary.csv")
         self.plot_path = os.path.join(output_dir, "per_token_metrics.html")
+        self._ensure_detail_schema()
+
+    def _ensure_detail_schema(self):
+        """Upgrade detail CSVs written before escaped token text was added."""
+        if not os.path.exists(self.detail_path) or os.path.getsize(self.detail_path) == 0:
+            return
+        with open(self.detail_path, newline="", encoding="utf-8") as handle:
+            raw_rows = list(csv.reader(handle))
+        if not raw_rows or tuple(raw_rows[0]) == self.DETAIL_FIELDS:
+            return
+
+        legacy_fields = tuple(field for field in self.DETAIL_FIELDS
+                              if field != "token_text_escaped")
+        if tuple(raw_rows[0]) != legacy_fields:
+            raise ValueError(
+                f"Unsupported per-token metrics CSV schema in {self.detail_path}: "
+                f"{raw_rows[0]}"
+            )
+
+        migrated = []
+        for values in raw_rows[1:]:
+            # A prior interrupted run may already have appended canonical rows
+            # beneath the legacy header. Recover both row shapes.
+            fields = self.DETAIL_FIELDS if len(values) >= len(self.DETAIL_FIELDS) else legacy_fields
+            row = dict(zip(fields, values))
+            dataset = row.get("dataset", "")
+            token_id = int(row["token_id"])
+            row["token_text_escaped"] = (
+                row.get("token_text_escaped")
+                or self.token_texts.get(dataset, {}).get(token_id, "")
+            )
+            migrated.append(row)
+
+        temporary_path = self.detail_path + ".tmp"
+        with open(temporary_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.DETAIL_FIELDS)
+            writer.writeheader()
+            writer.writerows(migrated)
+        os.replace(temporary_path, self.detail_path)
 
     def count_training_batch(self, dataset, targets):
         values = targets.detach().reshape(-1).to("cpu", dtype=torch.long)
@@ -131,7 +170,7 @@ class PerTokenMetrics:
                     "iteration": int(row["iteration"]),
                     "dataset": row["dataset"],
                     "token_id": int(row["token_id"]),
-                    "token_text_escaped": row["token_text_escaped"],
+                    "token_text_escaped": row.get("token_text_escaped", ""),
                     "train_loss": float(row["train_loss"]),
                     "train_eval_count": int(row["train_eval_count"]),
                     "val_loss": float(row["val_loss"]),

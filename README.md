@@ -331,7 +331,9 @@ kept out of TensorBoard and contains:
 Per-token loss is always ordinary next-token cross-entropy, making reports
 comparable even when a custom aggregate training loss is selected. Only tokens
 sampled during evaluation have a loss value; the accompanying sample-count
-columns make sparse or unrepresentative validation estimates visible.
+columns make sparse or unrepresentative validation estimates visible. Existing
+detail CSVs from versions before escaped token text was added are migrated
+automatically and retained when training resumes.
 
 ## TODO Section:
 

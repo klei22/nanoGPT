@@ -51,3 +51,24 @@ def test_per_token_metrics_exports_counts_losses_summaries_and_plot(tmp_path):
     assert "left logarithmic" in html
     assert "right logarithmic" in html
     assert "yaxis2.type" in html
+
+
+def test_per_token_metrics_migrates_legacy_detail_csv(tmp_path):
+    detail_path = tmp_path / "per_token_metrics.csv"
+    detail_path.write_text(
+        "iteration,dataset,token_id,train_loss,train_eval_count,val_loss,val_eval_count,training_seen_count\n"
+        "10,tiny,0,1.5,2,2.5,3,4\n"
+        "20,tiny,0,\\n,1.25,2,2.25,3,8\n",
+        encoding="utf-8",
+    )
+
+    tracker = PerTokenMetrics(tmp_path, {"tiny": 1}, {"tiny": {0: "\\n"}})
+
+    with detail_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["token_text_escaped"] == "\\n"
+    assert rows[0]["train_loss"] == "1.5"
+    assert rows[0]["training_seen_count"] == "4"
+    assert rows[1]["token_text_escaped"] == "\\n"
+    assert rows[1]["train_loss"] == "1.25"
+    assert rows[1]["training_seen_count"] == "8"
