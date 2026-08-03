@@ -80,6 +80,72 @@ base/feature combinations). Retokenize training data and fine-tune before using
 the smaller head; simply deleting rows changes sequence boundaries and cannot
 reproduce the original BPE model.
 
+### Other factorization candidates
+
+The same idea extends beyond space and case. The safest candidates are
+**lossless surface transformations**: the base plus its features must reconstruct
+the original token exactly, without guessing language or meaning.
+
+Recommended candidates, roughly in implementation order:
+
+1. **Layout prefixes.** Factor leading newline, tab, carriage-return/newline,
+   and repeated indentation from a token when the unprefixed token exists. This
+   generalizes `SPACE`; useful features include `NEWLINE`, `TAB`, and a small
+   indentation count. Byte-level BPE tokenizers may serialize these characters
+   with visible byte-alphabet symbols, so the tokenizer decoder—not a hard-coded
+   glyph—is the reliable way to identify them.
+2. **Punctuation affixes.** Factor common leading opening punctuation and
+   trailing closing punctuation, quotes, comma, period, colon, semicolon,
+   question mark, or exclamation mark when the stripped counterpart exists.
+   Prefix and suffix features should be separate, composable, and preserve the
+   exact punctuation character and repetition count; for example,
+   `“Hello!” = OPEN_DOUBLE_QUOTE + CAPITALIZE + hello + EXCLAMATION +
+   CLOSE_DOUBLE_QUOTE`.
+3. **General case patterns.** Extend `CAPITALIZE` and `ALL_CAPS` to
+   `TITLE_CASE`, `camelCase`, and `PascalCase`. An arbitrary per-character case
+   mask is lossless but can cost as much as it saves, so a small catalog of
+   frequent patterns is preferable. Unicode case mappings that change codepoint
+   count require an explicit exception table.
+4. **Canonical Unicode composition.** Tokens that differ only by canonically
+   equivalent NFC/NFD spelling can share a base plus a composition/combining-mark
+   feature. This must use canonical equivalence; broad accent stripping is not
+   lossless and can merge distinct words.
+5. **Width and presentation variants.** Full-width versus ASCII forms,
+   compatibility ligatures, and selected presentation forms can be factored
+   with an explicit reversible mapping. Applying NFKC blindly is unsafe because
+   compatibility normalization can erase distinctions.
+6. **Numeric formatting.** Factor a sign, currency symbol, percent suffix,
+   decimal/thousands separators, leading zeros, or a small exponent marker from
+   a digit token. This is promising for code and tabular data, but locale must be
+   retained (`1,234` and `1.234` are not universally the same representation).
+7. **Productive affixes.** Plural `-s`, possessive forms, `-ed`, `-ing`, and
+   prefixes such as `un-` or `re-` can reduce more rows. These are morphological
+   rather than purely orthographic: spelling changes (`city`/`cities`), lexical
+   exceptions, and language dependence make them a later, separately evaluated
+   experiment rather than a default rule.
+
+Layout and punctuation are the best next measurements because they are common,
+reversible, language-light, and compose naturally with the existing three
+features. Unicode canonical composition is also exact but likely yields fewer
+rows. Morphology may save more vocabulary but introduces substantially more
+modeling risk.
+
+For every proposed feature, report both its independent match count and its
+incremental count after earlier features, as the current analyzer does. Also
+measure corpus-weighted token frequency and encoded sequence length: removing
+many rare rows is less valuable than the raw vocabulary count suggests, and
+decomposing one atomic token into several time steps can make inference slower.
+The intended compact design keeps `(base_id, feature_mask)` at one sequence
+position. If features are emitted as extra tokens instead, the head is smaller
+but the context and generation length increase.
+
+Finally, an additive auxiliary feature head is an approximation to the original
+joint distribution. A higher-fidelity design predicts a base first and then
+features conditionally, or scores only the valid base/feature combinations.
+Evaluation should therefore include held-out negative log-likelihood,
+tokenization round trips, tokens per byte, and generation throughput—not only
+the number of removable rows.
+
 This repository contains the **Open Source CJK Analysis Tool**, a Python script (`open_source_cjk_analysis.py`) that provides detailed analysis of tokenizers with respect to Chinese (C), Japanese (J), and Korean (K) characters. The tool can analyze token coverage, symbol representation, and overlaps among these languages in tokenizer vocabularies.
 
 ## Features
