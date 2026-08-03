@@ -1,1 +1,1 @@
-"""Layer-normalization inspection and inference-time channel surgery tools."""
+"""Layer-normalization inference-time channel surgery tools."""

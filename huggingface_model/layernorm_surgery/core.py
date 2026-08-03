@@ -33,6 +33,17 @@ def set_effective_gain(module, gain: torch.Tensor) -> None:
 	module.weight.copy_(stored)
 
 
+def discover_norms(model) -> dict[str, torch.nn.Module]:
+	"""Find LayerNorm/RMSNorm-like modules with a one-dimensional gain."""
+	return {
+		name: module
+		for name, module in model.named_modules()
+		if getattr(module, "weight", None) is not None
+		and module.weight.ndim == 1
+		and ("norm" in name.casefold() or "norm" in type(module).__name__.casefold())
+	}
+
+
 def threshold_gain(gain: torch.Tensor, threshold: float) -> torch.Tensor:
 	"""Zero gains whose magnitude is strictly below ``threshold``."""
 	if threshold < 0:
@@ -77,9 +88,3 @@ def merge_gain_into_head(
 		shaved_parameters=shaved, shaved_fraction=shaved / int(head.numel()),
 		permutation=permutation, merged_nonzero=merged,
 	)
-
-
-def apply_norm_for_display(module, vector: torch.Tensor) -> torch.Tensor:
-	"""Apply a norm to one embedding without tracking gradients."""
-	with torch.no_grad():
-		return module(vector.to(device=module.weight.device, dtype=module.weight.dtype)).float().cpu()

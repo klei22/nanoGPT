@@ -10,8 +10,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from .core import effective_gain, merge_gain_into_head, set_effective_gain, threshold_gain
-from .webapp import discover_norms
+from .core import discover_norms, effective_gain, merge_gain_into_head, set_effective_gain, threshold_gain
 
 
 def float_range(start: float, stop: float, step: float) -> list[float]:
@@ -104,6 +103,8 @@ def main() -> None:
 			# A non-final target cannot remove LM-head columns; fold its unpruned
 			# final gain only so quantization remains available without overstating savings.
 			final_threshold = threshold if final_name in target_names else 0.0
+			# Quantization happens inside this operation, after thresholding and
+			# selecting only the LM-head columns whose folded gain remains non-zero.
 			stats = merge_gain_into_head(original_head, final_gain, final_threshold, precision)
 			# Dense equivalent used for standard kernels/evaluators. A deployment kernel can
 			# consume merged_nonzero + permutation and skip the zero columns entirely.

@@ -1,5 +1,3 @@
 torch
 transformers
-fastapi
-uvicorn
 lm-eval
