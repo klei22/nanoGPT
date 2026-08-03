@@ -19,12 +19,14 @@ from .model_service import (
     linear_transform_neighbors,
     list_local_models,
     load_active_model,
+    layernorm_analysis,
     minimum_angular_distances,
     nearest_neighbors,
     pairwise_angle_bin_tokens,
     pairwise_angle_distribution,
     recursive_angle_group,
     search_tokens,
+    regex_search_tokens,
 )
 from .schemas import (
     AngleResponse,
@@ -168,6 +170,34 @@ def token_by_id(token_id: int) -> TokenRecord:
     /api/tokens/search from being parsed as token IDs.
     """
     return _token_record(token_id)
+
+
+@app.get("/api/layernorms")
+def layernorm_list():
+    assets = _load_assets_or_500()
+    names = list(assets.layernorms)
+    final = next((name for name in reversed(names) if any(part in name for part in ("model.norm", "final_layernorm", "ln_f"))), names[-1] if names else None)
+    return {"layernorms": names, "default": final, "norm_kind": assets.norm_kind, "epsilon": assets.norm_epsilon}
+
+
+@app.get("/api/layernorm/tokens/search", response_model=TokenSearchResponse)
+def layernorm_token_search(q: str = Query(""), limit: int = Query(200, ge=1, le=2000)):
+    assets = _load_assets_or_500()
+    try:
+        matches = regex_search_tokens(assets, q, limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TokenSearchResponse(query=q, results=[TokenRecord(token_id=x.token_id, raw=x.raw, display=x.display) for x in matches])
+
+
+@app.get("/api/layernorm/analysis")
+def analyze_layernorm(layernorm: str, token_a: int = Query(..., ge=0), token_b: int = Query(..., ge=0)):
+    try:
+        return layernorm_analysis(_load_assets_or_500(), layernorm, [token_a, token_b])
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/angle", response_model=AngleResponse)

@@ -57,6 +57,46 @@ function byId(id) {
   return document.getElementById(id);
 }
 
+async function loadLayernormCatalog() {
+  const select = byId('layernormSelect');
+  try {
+    const response = await fetch('/api/layernorms');
+    if (!response.ok) throw new Error('No model loaded');
+    const data = await response.json();
+    select.innerHTML = data.layernorms.map((name) => `<option value="${escapeHtml(name)}"${name === data.default ? ' selected' : ''}>${escapeHtml(name)}</option>`).join('');
+    setOutput('layernormOutput', data.layernorms.length ? `${data.layernorms.length} normalization layers found · ${escapeHtml(data.norm_kind)} · ε=${data.epsilon}` : 'No saved normalization tensors were found.', !data.layernorms.length);
+  } catch (_) { select.innerHTML = '<option value="">Load a model first</option>'; }
+}
+
+async function searchLayernormTokens() {
+  const query = byId('lnSearch').value;
+  const response = await fetch(`/api/layernorm/tokens/search?q=${encodeURIComponent(query)}&limit=500`);
+  const data = await response.json();
+  if (!response.ok) { byId('lnSearchMessage').textContent = formatErrorDetail(data.detail); return; }
+  const options = data.results.map((token) => `<option value="${token.token_id}">${token.token_id} | ${escapeHtml(token.display || token.raw)}</option>`).join('');
+  byId('lnTokenA').innerHTML = options; byId('lnTokenB').innerHTML = options;
+  byId('lnSearchMessage').textContent = `${data.results.length} regex matches (first 500).`;
+}
+
+function drawChannelChart(canvas, series, colors, channelIds) {
+  const ratio = window.devicePixelRatio || 1, width = canvas.clientWidth, height = canvas.clientHeight;
+  canvas.width = width * ratio; canvas.height = height * ratio;
+  const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height);
+  const values = series.flat(); const bound = Math.max(...values.map(Math.abs), 1e-9); const center = height / 2;
+  context.strokeStyle = '#475569'; context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
+  series.forEach((items, seriesIndex) => { context.strokeStyle = colors[seriesIndex]; context.lineWidth = Math.max(1, width / items.length); context.beginPath(); items.forEach((value, index) => { const x = index * width / items.length; const y = center - value / bound * (center - 12); context.moveTo(x, center); context.lineTo(x, y); }); context.stroke(); });
+  canvas.onmousemove = (event) => { const index = Math.min(channelIds.length - 1, Math.floor(event.offsetX / width * channelIds.length)); canvas.title = `rank ${index + 1} · channel ${channelIds[index]} · ${series.map((items, i) => `${i ? 'after' : 'before/gain'} ${items[index].toPrecision(6)}`).join(' · ')}`; };
+}
+
+async function runLayernormAnalysis() {
+  const layer = byId('layernormSelect').value, a = byId('lnTokenAId').value, b = byId('lnTokenBId').value;
+  const response = await fetch(`/api/layernorm/analysis?layernorm=${encodeURIComponent(layer)}&token_a=${a}&token_b=${b}`); const data = await response.json();
+  if (!response.ok) { setOutput('layernormOutput', escapeHtml(formatErrorDetail(data.detail)), true); return; }
+  setOutput('layernormOutput', `<strong>${escapeHtml(data.layernorm_name)}</strong> · ${data.norm_kind} · ${data.gains.length} channels · shared gain-sorted permutation`);
+  drawChannelChart(byId('gainHistogram'), [data.gains], ['#fbbf24'], data.channel_indices);
+  data.embeddings.forEach((item, index) => { const letter = index ? 'B' : 'A'; byId(`embedding${letter}Caption`).textContent = `${item.token_id} | ${item.display || item.raw} · before / after`; drawChannelChart(byId(`embedding${letter}Histogram`), [item.before, item.after], ['#38bdf8', '#f472b6'], data.channel_indices); });
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -462,6 +502,7 @@ async function loadRequestedModel() {
     resetAllSelectionsAfterModelChange();
     message.textContent = `Loaded ${status.model_name}.`;
     loadAvailableModels();
+    loadLayernormCatalog();
     setOutput('angleOutput', 'Choose two tokens, then compute their angle.', true);
     setOutput('neighborhoodOutput', 'Choose an anchor token, then compute its closest tokens.', true);
   } catch (error) {
@@ -2769,6 +2810,11 @@ window.addEventListener('DOMContentLoaded', () => {
   setupExportButtons();
   loadStatus();
   loadAvailableModels();
+  loadLayernormCatalog();
+  byId('lnSearchButton').addEventListener('click', searchLayernormTokens);
+  byId('lnSearch').addEventListener('keydown', (event) => { if (event.key === 'Enter') searchLayernormTokens(); });
+  byId('runLayernorm').addEventListener('click', runLayernormAnalysis);
+  for (const letter of ['A', 'B']) byId(`lnToken${letter}`).addEventListener('change', (event) => { byId(`lnToken${letter}Id`).value = event.target.value; });
   setupPicker('tokenA', 'tokenA');
   setupPicker('tokenB', 'tokenB');
   setupPicker('anchor', 'anchor');

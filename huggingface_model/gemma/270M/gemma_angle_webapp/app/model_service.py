@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -58,6 +59,11 @@ class ModelAssets:
     token_infos: list[TokenInfo]
     weight: torch.Tensor
     magnitudes: torch.Tensor
+    layernorms: dict[str, torch.Tensor]
+    norm_biases: dict[str, torch.Tensor] | None = None
+    norm_epsilon: float = 1e-6
+    norm_kind: str = "rmsnorm"
+    norm_unit_offset: bool = False
 
     @property
     def vocab_size(self) -> int:
@@ -409,6 +415,102 @@ def _safe_open_tensor(path: Path, tensor_name: str) -> torch.Tensor:
     return tensor.detach().to(dtype=torch.float32, device="cpu")
 
 
+def _layernorm_tensor_names(names: list[str] | tuple[str, ...]) -> list[str]:
+    """Find saved, per-channel normalization gains without architecture imports."""
+    return sorted(
+        name for name in names
+        if name.endswith(".weight")
+        and any(marker in name.casefold() for marker in ("layernorm", "layer_norm", "rmsnorm", "rms_norm", ".norm.", ".ln_"))
+    )
+
+
+def _load_layernorms_from_safetensors(model_name: str, *, allow_download: bool) -> dict[str, torch.Tensor]:
+    """Load only 1-D normalization weights, including from sharded checkpoints."""
+    locations: dict[str, str] = {}
+    index_path = _try_download_or_find_repo_file(model_name, "model.safetensors.index.json", allow_download=allow_download)
+    if index_path is not None:
+        weight_map = _read_json(index_path).get("weight_map", {})
+        norm_weights = _layernorm_tensor_names(list(weight_map))
+        wanted = set(norm_weights) | {name.removesuffix(".weight") + ".bias" for name in norm_weights}
+        locations = {name: shard for name, shard in weight_map.items() if name in wanted}
+    else:
+        for filename in _list_repo_safetensors_files(model_name, allow_download=allow_download):
+            path = _try_download_or_find_repo_file(model_name, filename, allow_download=allow_download)
+            if path is None:
+                continue
+            from safetensors import safe_open
+            with safe_open(str(path), framework="pt", device="cpu") as handle:
+                keys = list(handle.keys())
+                norm_weights = _layernorm_tensor_names(keys)
+                wanted = set(norm_weights) | {name.removesuffix(".weight") + ".bias" for name in norm_weights}
+                for name in keys:
+                    if name not in wanted:
+                        continue
+                    locations[name] = filename
+
+    result: dict[str, torch.Tensor] = {}
+    from safetensors import safe_open
+    by_file: dict[str, list[str]] = {}
+    for name, filename in locations.items():
+        by_file.setdefault(filename, []).append(name)
+    for filename, names in by_file.items():
+        path = _download_or_find_repo_file(model_name, filename, allow_download=allow_download)
+        with safe_open(str(path), framework="pt", device="cpu") as handle:
+            for name in names:
+                value = handle.get_tensor(name)
+                if value.ndim == 1:
+                    result[name] = value.detach().to(dtype=torch.float32, device="cpu")
+    return result
+
+
+def layernorm_analysis(assets: ModelAssets, layernorm_name: str, token_ids: list[int]) -> dict[str, Any]:
+    """Apply one saved norm to two embedding rows and return one shared channel order."""
+    if layernorm_name not in assets.layernorms:
+        raise ValueError(f"Unknown layernorm {layernorm_name!r}.")
+    if len(token_ids) != 2:
+        raise ValueError("Exactly two token IDs are required.")
+    gain = assets.layernorms[layernorm_name].to(assets.weight.device)
+    if gain.numel() != assets.hidden_dim:
+        raise ValueError("Selected layernorm width does not match the embedding width.")
+    effective_gain = gain + 1.0 if assets.norm_unit_offset else gain
+    order = torch.argsort(effective_gain, descending=True)
+    rows = []
+    for token_id in token_ids:
+        info = assets.token(token_id)
+        before = assets.weight[token_id]
+        if assets.norm_kind == "layernorm":
+            normalized = (before - before.mean()) * torch.rsqrt(before.var(unbiased=False) + assets.norm_epsilon)
+        else:
+            normalized = before * torch.rsqrt(before.square().mean() + assets.norm_epsilon)
+        after = normalized * effective_gain
+        bias_name = layernorm_name.removesuffix(".weight") + ".bias"
+        norm_biases = getattr(assets, "norm_biases", None)
+        if norm_biases and bias_name in norm_biases:
+            after = after + norm_biases[bias_name].to(after.device)
+        rows.append({
+            "token_id": token_id, "raw": info.raw, "display": info.display,
+            "before": before[order].detach().cpu().tolist(),
+            "after": after[order].detach().cpu().tolist(),
+        })
+    return {
+        "layernorm_name": layernorm_name,
+        "norm_kind": assets.norm_kind,
+        "epsilon": assets.norm_epsilon,
+        "unit_offset": assets.norm_unit_offset,
+        "channel_indices": order.detach().cpu().tolist(),
+        "gains": effective_gain[order].detach().cpu().tolist(),
+        "embeddings": rows,
+    }
+
+
+def regex_search_tokens(assets: ModelAssets, pattern: str, limit: int = 200) -> list[TokenInfo]:
+    try:
+        expression = re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"Invalid regular expression: {exc}") from exc
+    return [info for info in assets.token_infos if expression.search(info.raw) or expression.search(info.display)][:limit]
+
+
 def _load_weight_from_safetensors_index(
     model_name: str,
     *,
@@ -702,6 +804,19 @@ def get_assets(
             magnitudes = vector_magnitudes(weight)
 
         token_infos = _build_token_infos(tokenizer, vocab_size=int(weight.shape[0]))
+        try:
+            norm_parameters = _load_layernorms_from_safetensors(target_model, allow_download=allow_download)
+            layernorms = {name: value for name, value in norm_parameters.items() if name.endswith(".weight")}
+            norm_biases = {name: value for name, value in norm_parameters.items() if name.endswith(".bias")}
+        except Exception:
+            layernorms, norm_biases = {}, {}
+        try:
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(target_model, **_tokenizer_from_pretrained_kwargs(allow_download=allow_download))
+            epsilon = float(getattr(config, "rms_norm_eps", getattr(config, "layer_norm_eps", 1e-6)))
+            model_type = str(getattr(config, "model_type", "")).casefold()
+        except Exception:
+            epsilon, model_type = 1e-6, ""
 
         # Keep only the tokenizer plus the tensors needed by the app.
         del weight_cpu
@@ -715,6 +830,11 @@ def get_assets(
             token_infos=token_infos,
             weight=weight,
             magnitudes=magnitudes,
+            layernorms=layernorms,
+            norm_biases=norm_biases,
+            norm_epsilon=epsilon,
+            norm_kind="layernorm" if "gpt2" in model_type else "rmsnorm",
+            norm_unit_offset="gemma" in model_type,
         )
         return _ASSETS
 

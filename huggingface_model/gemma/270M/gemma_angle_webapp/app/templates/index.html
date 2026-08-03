@@ -55,6 +55,30 @@
       </section>
     </header>
 
+    <section class="panel layernorm-lab" id="layernormLab">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Per-channel microscope</p><h2>LayerNorm × embedding lab</h2></div>
+        <button id="runLayernorm" type="button" class="primary">Plot analysis</button>
+      </div>
+      <p class="lede">Choose any saved normalization layer and two vocabulary embeddings. Gains are sorted high→low once; every embedding chart uses that identical channel permutation.</p>
+      <div class="layernorm-controls">
+        <div><label for="layernormSelect">Normalization layer</label><select id="layernormSelect"><option>Load a model first</option></select></div>
+        <div><label for="lnSearch">Regex token search</label><div class="search-row"><input id="lnSearch" placeholder="^(cat|dog)$" /><button id="lnSearchButton" type="button">Search</button></div></div>
+      </div>
+      <p id="lnSearchMessage" class="selection">Search by regular expression, or enter token IDs directly below.</p>
+      <div class="picker-grid">
+        <article class="picker"><h3>Embedding A</h3><label for="lnTokenA">Regex matches</label><select id="lnTokenA" size="7"></select><label for="lnTokenAId">Token ID</label><input id="lnTokenAId" type="number" min="0" value="0" /></article>
+        <article class="picker"><h3>Embedding B</h3><label for="lnTokenB">Regex matches</label><select id="lnTokenB" size="7"></select><label for="lnTokenBId">Token ID</label><input id="lnTokenBId" type="number" min="0" value="1" /></article>
+      </div>
+      <div id="layernormOutput" class="output muted">Load a model to discover its LayerNorm and RMSNorm tensors.</div>
+      <div class="histogram-grid">
+        <figure><figcaption>Sorted per-channel gain</figcaption><canvas id="gainHistogram"></canvas></figure>
+        <figure><figcaption id="embeddingACaption">Embedding A · before / after</figcaption><canvas id="embeddingAHistogram"></canvas></figure>
+        <figure><figcaption id="embeddingBCaption">Embedding B · before / after</figcaption><canvas id="embeddingBHistogram"></canvas></figure>
+      </div>
+      <p class="chart-legend"><span class="gain-key">■</span> gain &nbsp; <span class="before-key">■</span> before &nbsp; <span class="after-key">■</span> after. Hover a chart for exact channel/value details.</p>
+    </section>
+
     <section class="panel">
       <div class="panel-heading">
         <div>
