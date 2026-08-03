@@ -339,3 +339,11 @@ def test_layernorm_lab_has_four_graphs_metrics_and_scale_modes() -> None:
     assert "before_participation_ratio" in js
     assert "relative_angle_delta_deg" in js
     assert "fillText((fraction * bound).toPrecision(3)" in js
+    for sort_mode in ["gain", "before_a", "before_b", "after_a", "after_b"]:
+        assert f'<option value="{sort_mode}">' in html
+    assert 'id="applyAttentionOperator"' in html
+    assert 'id="attentionLayerSelect"' in html
+    assert 'id="embeddingAttentionAHistogram"' in html
+    assert 'id="embeddingAttentionBHistogram"' in html
+    assert "matrix_stats" in js
+    assert "rotation_residual" in js

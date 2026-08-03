@@ -65,6 +65,9 @@ async function loadLayernormCatalog() {
     const data = await response.json();
     select.innerHTML = data.layernorms.map((name) => `<option value="${escapeHtml(name)}"${name === data.default ? ' selected' : ''}>${escapeHtml(name)}</option>`).join('');
     setOutput('layernormOutput', data.layernorms.length ? `${data.layernorms.length} normalization layers found · ${escapeHtml(data.norm_kind)} · ε=${data.epsilon}` : 'No saved normalization tensors were found.', !data.layernorms.length);
+    const attentionSelect = byId('attentionLayerSelect');
+    attentionSelect.innerHTML = data.attention_layers.length ? data.attention_layers.map((item) => `<option value="${escapeHtml(item.layer)}" data-heads="${item.heads}">${escapeHtml(item.layer)} · ${item.heads} heads</option>`).join('') : '<option value="">No compatible Q/K projections</option>';
+    byId('applyAttentionOperator').disabled = !data.attention_layers.length;
   } catch (_) { select.innerHTML = '<option value="">Load a model first</option>'; }
 }
 
@@ -100,21 +103,37 @@ function drawChannelChart(canvas, series, colors, channelIds, sharedBound = null
 }
 
 function renderLayernormAnalysis(data) {
-  const bounds = data.embeddings.map((item) => Math.max(...item.before.map(Math.abs), ...item.after.map(Math.abs), 1e-9));
-  const beforeBound = Math.max(...data.embeddings.map((item) => Math.max(...item.before.map(Math.abs))));
-  const afterBound = Math.max(...data.embeddings.map((item) => Math.max(...item.after.map(Math.abs))));
+  const sortMode = byId('layernormSortMode').value;
+  const sortValues = sortMode === 'gain' ? data.gains : ({ before_a: data.embeddings[0].before, before_b: data.embeddings[1].before, after_a: data.embeddings[0].after, after_b: data.embeddings[1].after })[sortMode];
+  const permutation = sortValues.map((_, index) => index).sort((left, right) => sortValues[right] - sortValues[left]);
+  const reorder = (values) => permutation.map((index) => values[index]);
+  const channels = reorder(data.channel_indices), gains = reorder(data.gains);
+  const embeddings = data.embeddings.map((item) => ({ ...item, before: reorder(item.before), after: reorder(item.after) }));
+  const bounds = embeddings.map((item) => Math.max(...item.before.map(Math.abs), ...item.after.map(Math.abs), 1e-9));
+  const beforeBound = Math.max(...embeddings.map((item) => Math.max(...item.before.map(Math.abs))));
+  const afterBound = Math.max(...embeddings.map((item) => Math.max(...item.after.map(Math.abs))));
   const allBound = Math.max(...bounds); const shareAll = byId('layernormScaleMode').value === 'all';
   setOutput('layernormOutput', `<strong>${escapeHtml(data.layernorm_name)}</strong> · ${data.norm_kind} · ${data.gains.length} channels · shared gain-sorted permutation`);
   const metricHtml = data.embeddings.map((item, index) => `<article><strong>Embedding ${index ? 'B' : 'A'} · ${item.token_id} | ${escapeHtml(item.display || item.raw)}</strong><dl><div><dt>Participation ratio</dt><dd>${item.before_participation_ratio.toFixed(2)} → ${item.after_participation_ratio.toFixed(2)}</dd></div><div><dt>Magnitude</dt><dd>${item.before_magnitude.toPrecision(6)} → ${item.after_magnitude.toPrecision(6)}</dd></div><div><dt>Rotation from norm</dt><dd>${item.norm_rotation_deg.toFixed(4)}°</dd></div></dl></article>`).join('');
   byId('layernormMetrics').innerHTML = `${metricHtml}<article class="pair-angle-metric"><strong>Relative A↔B angle</strong><dl><div><dt>Before → after</dt><dd>${data.before_pair_angle_deg.toFixed(4)}° → ${data.after_pair_angle_deg.toFixed(4)}°</dd></div><div><dt>Angle delta</dt><dd>${data.relative_angle_delta_deg >= 0 ? '+' : ''}${data.relative_angle_delta_deg.toFixed(4)}°</dd></div></dl></article>`;
   byId('layernormMetrics').classList.remove('hidden');
-  drawChannelChart(byId('gainHistogram'), [data.gains], ['#fbbf24'], data.channel_indices, null, ['gain']);
-  data.embeddings.forEach((item, index) => { const letter = index ? 'B' : 'A', label = `${item.token_id} | ${item.display || item.raw}`; byId(`embeddingBefore${letter}Caption`).textContent = `Embedding ${letter} · ${label} · before norm`; byId(`embeddingAfter${letter}Caption`).textContent = `Embedding ${letter} · ${label} · after norm`; drawChannelChart(byId(`embeddingBefore${letter}Histogram`), [item.before], ['#38bdf8'], data.channel_indices, shareAll ? allBound : beforeBound, ['before']); drawChannelChart(byId(`embeddingAfter${letter}Histogram`), [item.after], ['#f472b6'], data.channel_indices, shareAll ? allBound : afterBound, ['after']); });
+  drawChannelChart(byId('gainHistogram'), [gains], ['#fbbf24'], channels, null, ['gain']);
+  embeddings.forEach((item, index) => { const letter = index ? 'B' : 'A', label = `${item.token_id} | ${item.display || item.raw}`; byId(`embeddingBefore${letter}Caption`).textContent = `Embedding ${letter} · ${label} · before norm`; byId(`embeddingAfter${letter}Caption`).textContent = `Embedding ${letter} · ${label} · after norm`; drawChannelChart(byId(`embeddingBefore${letter}Histogram`), [item.before], ['#38bdf8'], channels, shareAll ? allBound : beforeBound, ['before']); drawChannelChart(byId(`embeddingAfter${letter}Histogram`), [item.after], ['#f472b6'], channels, shareAll ? allBound : afterBound, ['after']); });
+  for (const letter of ['A', 'B']) byId(`embeddingAttention${letter}Figure`).classList.toggle('hidden', !data.attention);
+  if (data.attention) {
+    const attentionRows = data.attention.embeddings.map((item) => ({ ...item, values: reorder(item.values) }));
+    const attentionBound = Math.max(...attentionRows.map((item) => Math.max(...item.values.map(Math.abs), 1e-9)));
+    attentionRows.forEach((item, index) => { const letter = index ? 'B' : 'A'; byId(`embeddingAttention${letter}Caption`).textContent = `Embedding ${letter} · after norm + WqWkᵀ · ${data.attention.layer} head ${data.attention.head}`; drawChannelChart(byId(`embeddingAttention${letter}Histogram`), [item.values], ['#a78bfa'], channels, attentionBound, ['after WqWkᵀ']); });
+    const stats = data.attention.matrix_stats;
+    byId('layernormMetrics').insertAdjacentHTML('beforeend', `<article class="pair-angle-metric"><strong>Combined gain × WqWkᵀ matrix · ${escapeHtml(data.attention.layer)} · Q head ${data.attention.head} / KV head ${data.attention.kv_head}</strong><dl><div><dt>Symmetry residual ↓</dt><dd>${stats.symmetry_residual.toPrecision(5)}</dd></div><div><dt>Symmetric / skew fractions</dt><dd>${stats.symmetric_fraction.toPrecision(5)} / ${stats.skew_fraction.toPrecision(5)}</dd></div><div><dt>Distance to +I / −I ↓</dt><dd>${stats.identity_distance.toPrecision(5)} / ${stats.negative_identity_distance.toPrecision(5)}</dd></div><div><dt>Rotation residual ↓</dt><dd>${stats.rotation_residual.toPrecision(5)}</dd></div><div><dt>Frobenius norm</dt><dd>${stats.frobenius_norm.toPrecision(6)}</dd></div></dl></article>${attentionRows.map((item, index) => `<article><strong>Embedding ${index ? 'B' : 'A'} after combined operation</strong><dl><div><dt>Magnitude</dt><dd>${item.magnitude.toPrecision(6)}</dd></div><div><dt>Participation ratio</dt><dd>${item.participation_ratio.toFixed(2)}</dd></div><div><dt>Angle from original / norm</dt><dd>${item.angle_from_before_deg.toFixed(4)}° / ${item.angle_from_norm_deg.toFixed(4)}°</dd></div></dl></article>`).join('')}`);
+  }
 }
 
 async function runLayernormAnalysis() {
   const layer = byId('layernormSelect').value, a = byId('lnTokenAId').value, b = byId('lnTokenBId').value;
-  const response = await fetch(`/api/layernorm/analysis?layernorm=${encodeURIComponent(layer)}&token_a=${a}&token_b=${b}`); const data = await response.json();
+  const attentionEnabled = byId('applyAttentionOperator').checked;
+  const attentionParams = attentionEnabled ? `&attention_layer=${encodeURIComponent(byId('attentionLayerSelect').value)}&attention_head=${byId('attentionHeadInput').value}` : '';
+  const response = await fetch(`/api/layernorm/analysis?layernorm=${encodeURIComponent(layer)}&token_a=${a}&token_b=${b}${attentionParams}`); const data = await response.json();
   if (!response.ok) { setOutput('layernormOutput', escapeHtml(formatErrorDetail(data.detail)), true); return; }
   lastLayernormAnalysis = data;
   renderLayernormAnalysis(data);
@@ -2838,6 +2857,16 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('lnSearch').addEventListener('keydown', (event) => { if (event.key === 'Enter') searchLayernormTokens(); });
   byId('runLayernorm').addEventListener('click', runLayernormAnalysis);
   byId('layernormScaleMode').addEventListener('change', () => { if (lastLayernormAnalysis) renderLayernormAnalysis(lastLayernormAnalysis); });
+  byId('layernormSortMode').addEventListener('change', () => { if (lastLayernormAnalysis) renderLayernormAnalysis(lastLayernormAnalysis); });
+  const syncAttentionControls = () => {
+    const enabled = byId('applyAttentionOperator').checked;
+    const layerOption = byId('attentionLayerSelect').selectedOptions[0];
+    byId('attentionLayerSelect').disabled = !enabled;
+    byId('attentionHeadInput').disabled = !enabled;
+    byId('attentionHeadInput').max = String(Math.max(0, Number(layerOption?.dataset.heads || 1) - 1));
+  };
+  byId('applyAttentionOperator').addEventListener('change', syncAttentionControls);
+  byId('attentionLayerSelect').addEventListener('change', syncAttentionControls);
   for (const letter of ['A', 'B']) byId(`lnToken${letter}`).addEventListener('change', (event) => { byId(`lnToken${letter}Id`).value = event.target.value; });
   setupPicker('tokenA', 'tokenA');
   setupPicker('tokenB', 'tokenB');

@@ -52,3 +52,24 @@ def test_regex_search_matches_raw_or_display_and_rejects_bad_patterns():
     assert [token.token_id for token in regex_search_tokens(assets, "^(▁cat| dog)$")] == [0, 1]
     with pytest.raises(ValueError, match="Invalid regular expression"):
         regex_search_tokens(assets, "[")
+
+
+def test_attention_head_operator_returns_matrix_and_vector_diagnostics():
+    assets = _assets()
+    assets.attention_projections = {
+        "model.layers.0.self_attn.q_proj.weight": torch.eye(3),
+        "model.layers.0.self_attn.k_proj.weight": torch.eye(3),
+    }
+    assets.num_attention_heads = 1
+    assets.num_key_value_heads = 1
+    assets.head_dim = 3
+
+    result = layernorm_analysis(
+        assets, "model.norm.weight", [0, 1], "model.layers.0.self_attn", 0
+    )
+
+    assert result["attention"]["head"] == 0
+    assert len(result["attention"]["embeddings"]) == 2
+    assert result["attention"]["matrix_stats"]["skew_fraction"] == pytest.approx(0.0)
+    assert result["attention"]["matrix_stats"]["rotation_residual"] >= 0
+    assert result["attention"]["embeddings"][0]["magnitude"] > 0

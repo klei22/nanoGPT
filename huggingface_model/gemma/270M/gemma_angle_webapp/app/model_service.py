@@ -64,6 +64,10 @@ class ModelAssets:
     norm_epsilon: float = 1e-6
     norm_kind: str = "rmsnorm"
     norm_unit_offset: bool = False
+    attention_projections: dict[str, torch.Tensor] | None = None
+    num_attention_heads: int = 0
+    num_key_value_heads: int = 0
+    head_dim: int = 0
 
     @property
     def vocab_size(self) -> int:
@@ -463,7 +467,59 @@ def _load_layernorms_from_safetensors(model_name: str, *, allow_download: bool) 
     return result
 
 
-def layernorm_analysis(assets: ModelAssets, layernorm_name: str, token_ids: list[int]) -> dict[str, Any]:
+def _attention_projection_names(names: list[str] | tuple[str, ...]) -> list[str]:
+    return sorted(name for name in names if name.endswith((".q_proj.weight", ".k_proj.weight")))
+
+
+def _load_attention_projections_from_safetensors(model_name: str, *, allow_download: bool) -> dict[str, torch.Tensor]:
+    """Load separate Q/K projection matrices used by Gemma-style attention blocks."""
+    locations: dict[str, str] = {}
+    index_path = _try_download_or_find_repo_file(model_name, "model.safetensors.index.json", allow_download=allow_download)
+    if index_path is not None:
+        weight_map = _read_json(index_path).get("weight_map", {})
+        wanted = set(_attention_projection_names(list(weight_map)))
+        locations = {name: shard for name, shard in weight_map.items() if name in wanted}
+    else:
+        for filename in _list_repo_safetensors_files(model_name, allow_download=allow_download):
+            path = _try_download_or_find_repo_file(model_name, filename, allow_download=allow_download)
+            if path is None:
+                continue
+            from safetensors import safe_open
+            with safe_open(str(path), framework="pt", device="cpu") as handle:
+                for name in _attention_projection_names(list(handle.keys())):
+                    locations[name] = filename
+    result: dict[str, torch.Tensor] = {}
+    from safetensors import safe_open
+    by_file: dict[str, list[str]] = {}
+    for name, filename in locations.items():
+        by_file.setdefault(filename, []).append(name)
+    for filename, names in by_file.items():
+        path = _download_or_find_repo_file(model_name, filename, allow_download=allow_download)
+        with safe_open(str(path), framework="pt", device="cpu") as handle:
+            for name in names:
+                value = handle.get_tensor(name)
+                if value.ndim == 2:
+                    result[name] = value.detach().to(dtype=torch.float32, device="cpu")
+    return result
+
+
+def attention_head_catalog(assets: ModelAssets) -> list[dict[str, Any]]:
+    projections = assets.attention_projections or {}
+    layers = []
+    for q_name in sorted(name for name in projections if name.endswith(".q_proj.weight")):
+        prefix = q_name.removesuffix(".q_proj.weight")
+        if f"{prefix}.k_proj.weight" in projections:
+            layers.append({"layer": prefix, "heads": assets.num_attention_heads})
+    return layers
+
+
+def layernorm_analysis(
+    assets: ModelAssets,
+    layernorm_name: str,
+    token_ids: list[int],
+    attention_layer: str | None = None,
+    attention_head: int | None = None,
+) -> dict[str, Any]:
     """Apply one saved norm to two embedding rows and return one shared channel order."""
     if layernorm_name not in assets.layernorms:
         raise ValueError(f"Unknown layernorm {layernorm_name!r}.")
@@ -522,7 +578,7 @@ def layernorm_analysis(assets: ModelAssets, layernorm_name: str, token_ids: list
         })
     before_pair_angle = vector_angle(full_vectors[0][0], full_vectors[1][0])
     after_pair_angle = vector_angle(full_vectors[0][1], full_vectors[1][1])
-    return {
+    result = {
         "layernorm_name": layernorm_name,
         "norm_kind": assets.norm_kind,
         "epsilon": assets.norm_epsilon,
@@ -534,6 +590,59 @@ def layernorm_analysis(assets: ModelAssets, layernorm_name: str, token_ids: list
         "after_pair_angle_deg": after_pair_angle,
         "relative_angle_delta_deg": after_pair_angle - before_pair_angle,
     }
+    if attention_layer is not None or attention_head is not None:
+        if not attention_layer or attention_head is None:
+            raise ValueError("Both attention_layer and attention_head are required.")
+        if attention_head < 0 or attention_head >= assets.num_attention_heads:
+            raise ValueError(f"attention_head must be in [0, {assets.num_attention_heads - 1}].")
+        projections = assets.attention_projections or {}
+        q_weight = projections.get(f"{attention_layer}.q_proj.weight")
+        k_weight = projections.get(f"{attention_layer}.k_proj.weight")
+        if q_weight is None or k_weight is None:
+            raise ValueError(f"Q/K projections are unavailable for {attention_layer!r}.")
+        head_dim = assets.head_dim or (q_weight.shape[0] // assets.num_attention_heads)
+        kv_heads = assets.num_key_value_heads or assets.num_attention_heads
+        kv_head = attention_head * kv_heads // assets.num_attention_heads
+        q_head = q_weight[attention_head * head_dim:(attention_head + 1) * head_dim].to(assets.weight.device)
+        k_head = k_weight[kv_head * head_dim:(kv_head + 1) * head_dim].to(assets.weight.device)
+        # Stored Linear weights are [head_dim, hidden]. In row-vector convention,
+        # q = x Wq^T and the hidden-space operator is Wq^T Wk, i.e. Wq Wk^T
+        # when Wq/Wk are written in the common [hidden, head_dim] convention.
+        qk_operator = q_head.T @ k_head
+        combined = torch.diag(effective_gain) @ qk_operator
+        identity = torch.eye(combined.shape[0], device=combined.device, dtype=combined.dtype)
+        matrix_norm = torch.linalg.matrix_norm(combined).clamp_min(1e-12)
+        identity_norm = torch.linalg.matrix_norm(identity)
+        symmetric = (combined + combined.T) * 0.5
+        skew = (combined - combined.T) * 0.5
+        transformed_rows = []
+        for row, (_, after) in zip(rows, full_vectors, strict=True):
+            transformed = after @ qk_operator
+            transformed_magnitude, transformed_pr = vector_metrics(transformed)
+            transformed_rows.append({
+                "token_id": row["token_id"],
+                "values": transformed[order].detach().cpu().tolist(),
+                "magnitude": transformed_magnitude,
+                "participation_ratio": transformed_pr,
+                "angle_from_before_deg": vector_angle(full_vectors[len(transformed_rows)][0], transformed),
+                "angle_from_norm_deg": vector_angle(after, transformed),
+            })
+        result["attention"] = {
+            "layer": attention_layer,
+            "head": attention_head,
+            "kv_head": kv_head,
+            "matrix_stats": {
+                "symmetry_residual": float((torch.linalg.matrix_norm(combined - combined.T) / matrix_norm).item()),
+                "symmetric_fraction": float((torch.linalg.matrix_norm(symmetric) / matrix_norm).item()),
+                "skew_fraction": float((torch.linalg.matrix_norm(skew) / matrix_norm).item()),
+                "identity_distance": float((torch.linalg.matrix_norm(combined - identity) / identity_norm).item()),
+                "negative_identity_distance": float((torch.linalg.matrix_norm(combined + identity) / identity_norm).item()),
+                "rotation_residual": float((torch.linalg.matrix_norm(combined.T @ combined - identity) / identity_norm).item()),
+                "frobenius_norm": float(matrix_norm.item()),
+            },
+            "embeddings": transformed_rows,
+        }
+    return result
 
 
 def regex_search_tokens(assets: ModelAssets, pattern: str, limit: int = 200) -> list[TokenInfo]:
@@ -844,12 +953,22 @@ def get_assets(
         except Exception:
             layernorms, norm_biases = {}, {}
         try:
+            attention_projections = _load_attention_projections_from_safetensors(
+                target_model, allow_download=allow_download
+            )
+        except Exception:
+            attention_projections = {}
+        try:
             from transformers import AutoConfig
             config = AutoConfig.from_pretrained(target_model, **_tokenizer_from_pretrained_kwargs(allow_download=allow_download))
             epsilon = float(getattr(config, "rms_norm_eps", getattr(config, "layer_norm_eps", 1e-6)))
             model_type = str(getattr(config, "model_type", "")).casefold()
+            num_attention_heads = int(getattr(config, "num_attention_heads", 0))
+            num_key_value_heads = int(getattr(config, "num_key_value_heads", num_attention_heads))
+            head_dim = int(getattr(config, "head_dim", 0))
         except Exception:
             epsilon, model_type = 1e-6, ""
+            num_attention_heads = num_key_value_heads = head_dim = 0
 
         # Keep only the tokenizer plus the tensors needed by the app.
         del weight_cpu
@@ -868,6 +987,10 @@ def get_assets(
             norm_epsilon=epsilon,
             norm_kind="layernorm" if "gpt2" in model_type else "rmsnorm",
             norm_unit_offset="gemma" in model_type,
+            attention_projections=attention_projections,
+            num_attention_heads=num_attention_heads,
+            num_key_value_heads=num_key_value_heads,
+            head_dim=head_dim,
         )
         return _ASSETS
 

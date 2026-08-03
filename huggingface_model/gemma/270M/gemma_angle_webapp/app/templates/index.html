@@ -78,12 +78,28 @@
           <option value="pairs">Share before A/B and after A/B scales separately</option>
         </select>
       </label>
+      <div class="layernorm-chart-options">
+        <label for="layernormSortMode">Sort channels by
+          <select id="layernormSortMode">
+            <option value="gain">Layer gain · high → low</option>
+            <option value="before_a">Embedding A before · high → low</option>
+            <option value="before_b">Embedding B before · high → low</option>
+            <option value="after_a">Embedding A after · high → low</option>
+            <option value="after_b">Embedding B after · high → low</option>
+          </select>
+        </label>
+        <label class="checkbox-row" for="applyAttentionOperator"><input id="applyAttentionOperator" type="checkbox" /> Apply an attention-head WqWkᵀ after the norm</label>
+        <label for="attentionLayerSelect">Attention layer<select id="attentionLayerSelect" disabled><option value="">No compatible Q/K projections</option></select></label>
+        <label for="attentionHeadInput">Query head<input id="attentionHeadInput" type="number" min="0" value="0" disabled /></label>
+      </div>
       <div class="histogram-grid">
         <figure><figcaption>Sorted per-channel gain</figcaption><canvas id="gainHistogram"></canvas></figure>
         <figure><figcaption id="embeddingBeforeACaption">Embedding A · before norm</figcaption><canvas id="embeddingBeforeAHistogram"></canvas></figure>
         <figure><figcaption id="embeddingBeforeBCaption">Embedding B · before norm</figcaption><canvas id="embeddingBeforeBHistogram"></canvas></figure>
         <figure><figcaption id="embeddingAfterACaption">Embedding A · after norm</figcaption><canvas id="embeddingAfterAHistogram"></canvas></figure>
         <figure><figcaption id="embeddingAfterBCaption">Embedding B · after norm</figcaption><canvas id="embeddingAfterBHistogram"></canvas></figure>
+        <figure id="embeddingAttentionAFigure" class="hidden"><figcaption id="embeddingAttentionACaption">Embedding A · after norm + WqWkᵀ</figcaption><canvas id="embeddingAttentionAHistogram"></canvas></figure>
+        <figure id="embeddingAttentionBFigure" class="hidden"><figcaption id="embeddingAttentionBCaption">Embedding B · after norm + WqWkᵀ</figcaption><canvas id="embeddingAttentionBHistogram"></canvas></figure>
       </div>
       <p class="chart-legend"><span class="gain-key">■</span> gain &nbsp; <span class="before-key">■</span> before &nbsp; <span class="after-key">■</span> after. Every plot shows a labeled y-axis; hover for exact channel/value details.</p>
     </section>

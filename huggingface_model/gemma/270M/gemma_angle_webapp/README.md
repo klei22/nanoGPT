@@ -23,6 +23,7 @@ A regular Python webapp refactor of the Streamlit token-angle explorer. The app 
 - Search dropdowns now auto-select a result after an explicit Search click, matching Streamlit selectbox behavior without searching on every keystroke.
 - Token search is explicit and literal: click Search or press Enter, and the backend returns every case-insensitive substring match. Byte-fallback tokens such as `<0xF9>` also expose plain aliases like `0xF9` and `F9` for literal search.
 - **LayerNorm × embedding lab.** Discover every saved LayerNorm/RMSNorm gain vector, default to the final norm, regex-search the vocabulary or enter IDs, and compare any two embedding rows before and after normalization. Gain and four separate before/after embedding histograms use one high-to-low gain permutation, visible y axes, and selectable shared scaling (all four together, or before/after pairs). The lab reports vector magnitude, energy participation ratio `(Σx²)² / Σx⁴`, each embedding's rotation, and the change in the A↔B angle. Gemma's unit-offset RMSNorm weights are interpreted as `1 + weight`.
+- **Attention-head continuation.** Re-sort every channel plot by gain, A/B before, or A/B after values. Optionally choose a model layer and query head, apply its hidden-space `WqWkᵀ` operator after the selected norm, and inspect two additional output plots. The combined gain × attention operator reports symmetry residual, symmetric/skew fractions, normalized distances to `+I` and `−I`, orthogonality/rotation residual, Frobenius norm, and per-embedding magnitude, participation ratio, and angular changes. Grouped-query attention maps each query head to its corresponding KV head.
 
 ## Project layout
 
@@ -192,7 +193,7 @@ Then restart the server and click **Load model** again. The weight-only path rea
 - `GET /api/tokens/{token_id}` — backward-compatible token lookup by ID
 - `GET /api/layernorms` — normalization tensor catalog, final-layer default, norm kind, and epsilon
 - `GET /api/layernorm/tokens/search?q=...` — case-insensitive regular-expression token search for the LayerNorm lab
-- `GET /api/layernorm/analysis?layernorm=...&token_a=0&token_b=1` — gain-sorted channels plus both embedding vectors before and after the selected norm
+- `GET /api/layernorm/analysis?layernorm=...&token_a=0&token_b=1[&attention_layer=...&attention_head=0]` — gain-sorted channels plus both embedding vectors before/after the selected norm, optionally followed by a chosen attention head's `WqWkᵀ` operator and its matrix/vector diagnostics
 - `GET /api/angle?token_a=0&token_b=1` — pairwise angle and vector magnitudes / L2 lengths
 - `GET /api/common-close-tokens?token_a=0&token_b=1&max_angle_deg=35` — tokens within the selected maximum angle of both pairwise tokens, with angle-to-each-token and vector length columns
 - `GET /api/neighborhood?anchor_id=0&limit=500` — nearest tokens by LM-head angle

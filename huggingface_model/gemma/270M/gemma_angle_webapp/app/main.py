@@ -12,6 +12,7 @@ from .model_service import (
     DEFAULT_DEVICE,
     DEFAULT_MODEL_NAME,
     angle_degrees,
+    attention_head_catalog,
     common_close_tokens,
     get_current_assets,
     get_model_status,
@@ -177,7 +178,7 @@ def layernorm_list():
     assets = _load_assets_or_500()
     names = list(assets.layernorms)
     final = next((name for name in reversed(names) if any(part in name for part in ("model.norm", "final_layernorm", "ln_f"))), names[-1] if names else None)
-    return {"layernorms": names, "default": final, "norm_kind": assets.norm_kind, "epsilon": assets.norm_epsilon}
+    return {"layernorms": names, "default": final, "norm_kind": assets.norm_kind, "epsilon": assets.norm_epsilon, "attention_layers": attention_head_catalog(assets)}
 
 
 @app.get("/api/layernorm/tokens/search", response_model=TokenSearchResponse)
@@ -191,9 +192,17 @@ def layernorm_token_search(q: str = Query(""), limit: int = Query(200, ge=1, le=
 
 
 @app.get("/api/layernorm/analysis")
-def analyze_layernorm(layernorm: str, token_a: int = Query(..., ge=0), token_b: int = Query(..., ge=0)):
+def analyze_layernorm(
+    layernorm: str,
+    token_a: int = Query(..., ge=0),
+    token_b: int = Query(..., ge=0),
+    attention_layer: str | None = Query(None),
+    attention_head: int | None = Query(None, ge=0),
+):
     try:
-        return layernorm_analysis(_load_assets_or_500(), layernorm, [token_a, token_b])
+        return layernorm_analysis(
+            _load_assets_or_500(), layernorm, [token_a, token_b], attention_layer, attention_head
+        )
     except IndexError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
