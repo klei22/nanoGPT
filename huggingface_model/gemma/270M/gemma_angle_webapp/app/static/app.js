@@ -122,58 +122,69 @@ function renderLayernormAnalysis(data) {
   drawChannelChart(byId('gainHistogram'), [gains], ['#fbbf24'], channels, null, ['gain']);
   embeddings.forEach((item, index) => { const letter = index ? 'B' : 'A', label = `${item.token_id} | ${item.display || item.raw}`; byId(`embeddingBefore${letter}Caption`).textContent = `Embedding ${letter} · ${label} · before norm`; byId(`embeddingAfter${letter}Caption`).textContent = `Embedding ${letter} · ${label} · after norm`; drawChannelChart(byId(`embeddingBefore${letter}Histogram`), [item.before], ['#38bdf8'], channels, shareAll ? allBound : beforeBound, ['before']); drawChannelChart(byId(`embeddingAfter${letter}Histogram`), [item.after], ['#f472b6'], channels, shareAll ? allBound : afterBound, ['after']); });
   for (const letter of ['A', 'B']) byId(`embeddingAttention${letter}Figure`).classList.toggle('hidden', !data.attention);
+  for (const letter of ['A', 'B']) byId(`embeddingAttentionOutput${letter}Figure`).classList.add('hidden');
   if (data.attention) {
+    const operatorLabel = data.attention.operator === 'ov' ? 'WoWvᵀ' : 'WqWkᵀ';
     const attentionRows = data.attention.embeddings.map((item) => ({ ...item, values: reorder(item.values) }));
     const attentionBound = Math.max(...attentionRows.map((item) => Math.max(...item.values.map(Math.abs), 1e-9)));
-    attentionRows.forEach((item, index) => { const letter = index ? 'B' : 'A'; byId(`embeddingAttention${letter}Caption`).textContent = `Embedding ${letter} · after norm + WqWkᵀ · ${data.attention.layer} head ${data.attention.head}`; drawChannelChart(byId(`embeddingAttention${letter}Histogram`), [item.values], ['#a78bfa'], channels, attentionBound, ['after WqWkᵀ']); });
+    attentionRows.forEach((item, index) => { const letter = index ? 'B' : 'A'; byId(`embeddingAttention${letter}Caption`).textContent = `Embedding ${letter} · after norm × ${operatorLabel} · ${data.attention.layer} head ${data.attention.head}`; drawChannelChart(byId(`embeddingAttention${letter}Histogram`), [item.values], ['#a78bfa'], channels, attentionBound, [`after ${operatorLabel}`]); });
+    const outputRows = attentionRows.filter((item) => item.attention_output_values);
+    if (outputRows.length === 2) {
+      const outputBound = Math.max(...outputRows.map((item) => Math.max(...item.attention_output_values.map(Math.abs), 1e-9)));
+      outputRows.forEach((item, index) => { const letter = index ? 'B' : 'A'; byId(`embeddingAttentionOutput${letter}Figure`).classList.remove('hidden'); drawChannelChart(byId(`embeddingAttentionOutput${letter}Histogram`), [reorder(item.attention_output_values)], ['#34d399'], channels, outputBound, ['attention output norm']); });
+    }
     const stats = data.attention.matrix_stats;
-    byId('layernormMetrics').insertAdjacentHTML('beforeend', `<article class="pair-angle-metric"><strong>Combined gain × WqWkᵀ matrix · ${escapeHtml(data.attention.layer)} · Q head ${data.attention.head} / KV head ${data.attention.kv_head}</strong><p class="selection">Pipeline: embedding → complete ${escapeHtml(data.norm_kind)} output (including per-channel gain${data.unit_offset ? ' with Gemma unit offset' : ''}) → WqWkᵀ</p><dl><div><dt>Symmetry residual ↓</dt><dd>${stats.symmetry_residual.toPrecision(5)}</dd></div><div><dt>Symmetric / skew fractions</dt><dd>${stats.symmetric_fraction.toPrecision(5)} / ${stats.skew_fraction.toPrecision(5)}</dd></div><div><dt>Distance to +I / −I ↓</dt><dd>${stats.identity_distance.toPrecision(5)} / ${stats.negative_identity_distance.toPrecision(5)}</dd></div><div><dt>Rotation residual ↓</dt><dd>${stats.rotation_residual.toPrecision(5)}</dd></div><div><dt>Frobenius norm</dt><dd>${stats.frobenius_norm.toPrecision(6)}</dd></div></dl></article>${attentionRows.map((item, index) => `<article><strong>Embedding ${index ? 'B' : 'A'} after complete norm → WqWkᵀ</strong><dl><div><dt>Magnitude</dt><dd>${item.magnitude.toPrecision(6)}</dd></div><div><dt>Participation ratio</dt><dd>${item.participation_ratio.toFixed(2)}</dd></div><div><dt>Angle from original / norm</dt><dd>${item.angle_from_before_deg.toFixed(4)}° / ${item.angle_from_norm_deg.toFixed(4)}°</dd></div><div><dt>Dot(norm output, WqWkᵀ output)</dt><dd>${item.dot_product_with_norm.toPrecision(7)}</dd></div></dl></article>`).join('')}`);
+    byId('layernormMetrics').insertAdjacentHTML('beforeend', `<article class="pair-angle-metric"><strong>Combined gain × ${operatorLabel} matrix · ${escapeHtml(data.attention.layer)} · Q head ${data.attention.head} / KV head ${data.attention.kv_head}</strong><p class="selection">Pipeline: embedding → complete ${escapeHtml(data.norm_kind)} output (including per-channel gain${data.unit_offset ? ' with Gemma unit offset' : ''}) → ${operatorLabel}${data.attention.operator === 'ov' ? ' → attention output norm' : ''}</p><dl><div><dt>Symmetry residual ↓</dt><dd>${stats.symmetry_residual.toPrecision(5)}</dd></div><div><dt>Symmetric / skew fractions</dt><dd>${stats.symmetric_fraction.toPrecision(5)} / ${stats.skew_fraction.toPrecision(5)}</dd></div><div><dt>Distance to +I / −I ↓</dt><dd>${stats.identity_distance.toPrecision(5)} / ${stats.negative_identity_distance.toPrecision(5)}</dd></div><div><dt>Rotation residual ↓</dt><dd>${stats.rotation_residual.toPrecision(5)}</dd></div><div><dt>Frobenius norm</dt><dd>${stats.frobenius_norm.toPrecision(6)}</dd></div></dl></article>${attentionRows.map((item, index) => `<article><strong>Embedding ${index ? 'B' : 'A'} after complete norm → ${operatorLabel}</strong><dl><div><dt>Magnitude</dt><dd>${item.magnitude.toPrecision(6)}</dd></div><div><dt>Participation ratio</dt><dd>${item.participation_ratio.toFixed(2)}</dd></div><div><dt>Angle from original / norm</dt><dd>${item.angle_from_before_deg.toFixed(4)}° / ${item.angle_from_norm_deg.toFixed(4)}°</dd></div><div><dt>Dot(norm output, ${operatorLabel} output)</dt><dd>${item.dot_product_with_norm.toPrecision(7)}</dd></div>${item.attention_output_norm ? `<div><dt>Output norm magnitude / PR</dt><dd>${item.attention_output_magnitude.toPrecision(6)} / ${item.attention_output_participation_ratio.toFixed(2)}</dd></div><div><dt>Output norm angle / dot from input norm</dt><dd>${item.attention_output_angle_from_norm_deg.toFixed(4)}° / ${item.attention_output_dot_with_norm.toPrecision(7)}</dd></div>` : ''}</dl></article>`).join('')}`);
   }
 }
 
 async function runLayernormAnalysis() {
   const layer = byId('layernormSelect').value, a = byId('lnTokenAId').value, b = byId('lnTokenBId').value;
   const attentionEnabled = byId('applyAttentionOperator').checked;
-  const attentionParams = attentionEnabled ? `&attention_layer=${encodeURIComponent(byId('attentionLayerSelect').value)}&attention_head=${byId('attentionHeadInput').value}` : '';
+  const attentionParams = attentionEnabled ? `&attention_layer=${encodeURIComponent(byId('attentionLayerSelect').value)}&attention_head=${byId('attentionHeadInput').value}&attention_operator=${byId('attentionOperatorType').value}` : '';
   const response = await fetch(`/api/layernorm/analysis?layernorm=${encodeURIComponent(layer)}&token_a=${a}&token_b=${b}${attentionParams}`); const data = await response.json();
   if (!response.ok) { setOutput('layernormOutput', escapeHtml(formatErrorDetail(data.detail)), true); return; }
   lastLayernormAnalysis = data;
   renderLayernormAnalysis(data);
 }
 
-function drawAttentionSweep(data) {
+function drawAttentionSweep(data, outputNorm = false) {
   const ordering = byId('attentionSweepOrder').value;
   const rows = [...data.rows];
-  if (ordering === 'dot_a') rows.sort((left, right) => right.dot_a - left.dot_a);
-  else if (ordering === 'dot_b') rows.sort((left, right) => right.dot_b - left.dot_b);
+  const fieldA = outputNorm ? 'output_norm_dot_a' : 'dot_a', fieldB = outputNorm ? 'output_norm_dot_b' : 'dot_b';
+  if (ordering === 'dot_a') rows.sort((left, right) => right[fieldA] - left[fieldA]);
+  else if (ordering === 'dot_b') rows.sort((left, right) => right[fieldB] - left[fieldB]);
   else if (ordering === 'alphabetical') rows.sort((left, right) => String(left.layer).localeCompare(String(right.layer)) || left.head - right.head);
   else rows.sort((left, right) => naturalCompare(left.layer, right.layer) || left.head - right.head);
-  const canvas = byId('attentionSweepHistogram');
+  const canvas = byId(outputNorm ? 'attentionOutputSweepHistogram' : 'attentionSweepHistogram');
   const ratio = window.devicePixelRatio || 1, width = canvas.clientWidth, height = canvas.clientHeight;
   canvas.width = width * ratio; canvas.height = height * ratio;
   const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height);
   const left = 78, right = 12, top = 12, bottom = 42, plotWidth = Math.max(1, width - left - right), plotHeight = Math.max(1, height - top - bottom);
-  const bound = Math.max(...rows.flatMap((row) => [Math.abs(row.dot_a), Math.abs(row.dot_b)]), 1e-12), center = top + plotHeight / 2;
+  const bound = Math.max(...rows.flatMap((row) => [Math.abs(row[fieldA]), Math.abs(row[fieldB])]), 1e-12), center = top + plotHeight / 2;
   context.font = '11px ui-monospace, monospace'; context.textAlign = 'right'; context.textBaseline = 'middle';
   [-1, -0.5, 0, 0.5, 1].forEach((fraction) => { const y = center - fraction * plotHeight / 2; context.strokeStyle = fraction === 0 ? '#64748b' : '#243244'; context.beginPath(); context.moveTo(left, y); context.lineTo(width - right, y); context.stroke(); context.fillStyle = '#cbd5e1'; context.fillText((fraction * bound).toPrecision(3), left - 7, y); });
   context.strokeStyle = '#94a3b8'; context.beginPath(); context.moveTo(left, top); context.lineTo(left, top + plotHeight); context.stroke();
   const slot = plotWidth / rows.length;
-  rows.forEach((row, index) => { [[row.dot_a, '#38bdf8'], [row.dot_b, '#f472b6']].forEach(([value, color], embeddingIndex) => { const x = left + (index + 0.28 + embeddingIndex * 0.44) * slot, y = center - value / bound * plotHeight / 2; context.strokeStyle = color; context.lineWidth = Math.max(1, slot * 0.34); context.beginPath(); context.moveTo(x, center); context.lineTo(x, y); context.stroke(); }); });
+  rows.forEach((row, index) => { [[row[fieldA], '#38bdf8'], [row[fieldB], '#f472b6']].forEach(([value, color], embeddingIndex) => { const x = left + (index + 0.28 + embeddingIndex * 0.44) * slot, y = center - value / bound * plotHeight / 2; context.strokeStyle = color; context.lineWidth = Math.max(1, slot * 0.34); context.beginPath(); context.moveTo(x, center); context.lineTo(x, y); context.stroke(); }); });
   const orderLabel = { numeric: 'natural numeric layer/head order →', dot_a: 'A dot-product rank high → low', dot_b: 'B dot-product rank high → low', alphabetical: 'alphabetical layer/head order →' }[ordering];
   context.textAlign = 'center'; context.fillStyle = '#94a3b8'; context.fillText(orderLabel, left + plotWidth / 2, height - 12);
-  canvas.onmousemove = (event) => { const index = Math.max(0, Math.min(rows.length - 1, Math.floor((event.offsetX - left) / plotWidth * rows.length))), row = rows[index]; canvas.title = `${row.layer} · Q head ${row.head} / KV head ${row.kv_head} · A ${row.dot_a.toPrecision(8)} · B ${row.dot_b.toPrecision(8)} · position ${index + 1}`; };
-  byId('attentionSweepCaption').textContent = `${rows.length} heads · A ${data.token_id} | ${data.token_display || data.token_raw} · B ${data.token_b_id} | ${data.token_b_display || data.token_b_raw} · paired bars`;
-  byId('attentionSweepFigure').classList.remove('hidden');
+  canvas.onmousemove = (event) => { const index = Math.max(0, Math.min(rows.length - 1, Math.floor((event.offsetX - left) / plotWidth * rows.length))), row = rows[index]; canvas.title = `${row.layer} · Q head ${row.head} / KV head ${row.kv_head} · A ${row[fieldA].toPrecision(8)} · B ${row[fieldB].toPrecision(8)} · position ${index + 1}${outputNorm ? ` · ${row.output_norm}` : ''}`; };
+  if (!outputNorm) byId('attentionSweepCaption').textContent = `${rows.length} heads · ${data.attention_operator === 'ov' ? 'WoWvᵀ' : 'WqWkᵀ'} · A ${data.token_id} | ${data.token_display || data.token_raw} · B ${data.token_b_id} | ${data.token_b_display || data.token_b_raw}`;
+  byId(outputNorm ? 'attentionOutputSweepFigure' : 'attentionSweepFigure').classList.remove('hidden');
 }
 
 async function runAttentionSweep() {
-  const params = new URLSearchParams({ layernorm: byId('layernormSelect').value, token_a: byId('lnTokenAId').value, token_b: byId('lnTokenBId').value });
+  const params = new URLSearchParams({ layernorm: byId('layernormSelect').value, token_a: byId('lnTokenAId').value, token_b: byId('lnTokenBId').value, attention_operator: byId('attentionSweepOperator').value });
   setOutput('attentionSweepOutput', 'Sweeping every compatible layer and head…', true);
   const response = await fetch(`/api/layernorm/attention-sweep?${params.toString()}`), data = await response.json();
   if (!response.ok) { setOutput('attentionSweepOutput', escapeHtml(formatErrorDetail(data.detail)), true); return; }
   lastAttentionSweep = data;
   setOutput('attentionSweepOutput', `<strong>${data.rows.length} heads evaluated for A and B.</strong> Blue is embedding A; pink is embedding B. Each value uses the complete selected norm output before WqWkᵀ.`);
   drawAttentionSweep(data);
+  const hasOutputNorm = data.rows.length && data.rows.every((row) => Number.isFinite(row.output_norm_dot_a) && Number.isFinite(row.output_norm_dot_b));
+  byId('attentionOutputSweepFigure').classList.toggle('hidden', !hasOutputNorm);
+  if (hasOutputNorm) drawAttentionSweep(data, true);
 }
 
 function naturalCompare(left, right) {
@@ -2939,12 +2950,13 @@ window.addEventListener('DOMContentLoaded', () => {
     const layerOption = byId('attentionLayerSelect').selectedOptions[0];
     byId('attentionLayerSelect').disabled = !enabled;
     byId('attentionHeadInput').disabled = !enabled;
+    byId('attentionOperatorType').disabled = !enabled;
     byId('attentionHeadInput').max = String(Math.max(0, Number(layerOption?.dataset.heads || 1) - 1));
   };
   byId('applyAttentionOperator').addEventListener('change', syncAttentionControls);
   byId('attentionLayerSelect').addEventListener('change', syncAttentionControls);
   byId('runAttentionSweep').addEventListener('click', runAttentionSweep);
-  byId('attentionSweepOrder').addEventListener('change', () => { if (lastAttentionSweep) drawAttentionSweep(lastAttentionSweep); });
+  byId('attentionSweepOrder').addEventListener('change', () => { if (lastAttentionSweep) { drawAttentionSweep(lastAttentionSweep); if (lastAttentionSweep.attention_operator === 'ov') drawAttentionSweep(lastAttentionSweep, true); } });
   byId('runAllNormSweep').addEventListener('click', runAllNormSweep);
   byId('allNormOrder').addEventListener('change', () => { if (lastAllNormSweep) drawAllNormSweep(lastAllNormSweep); });
   for (const letter of ['A', 'B']) byId(`lnToken${letter}`).addEventListener('change', (event) => { byId(`lnToken${letter}Id`).value = event.target.value; });

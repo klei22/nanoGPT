@@ -88,7 +88,8 @@
             <option value="after_b">Embedding B after · high → low</option>
           </select>
         </label>
-        <label class="checkbox-row" for="applyAttentionOperator"><input id="applyAttentionOperator" type="checkbox" /> Apply an attention-head WqWkᵀ after the norm</label>
+        <label class="checkbox-row" for="applyAttentionOperator"><input id="applyAttentionOperator" type="checkbox" /> Apply an attention-head operator after the norm</label>
+        <label for="attentionOperatorType">Head operator<select id="attentionOperatorType" disabled><option value="qk">WqWkᵀ</option><option value="ov">WoWvᵀ + attention output norm</option></select></label>
         <label for="attentionLayerSelect">Attention layer<select id="attentionLayerSelect" disabled><option value="">No compatible Q/K projections</option></select></label>
         <label for="attentionHeadInput">Query head<input id="attentionHeadInput" type="number" min="0" value="0" disabled /></label>
       </div>
@@ -100,18 +101,22 @@
         <figure><figcaption id="embeddingAfterBCaption">Embedding B · after norm</figcaption><canvas id="embeddingAfterBHistogram"></canvas></figure>
         <figure id="embeddingAttentionAFigure" class="hidden"><figcaption id="embeddingAttentionACaption">Embedding A · after norm + WqWkᵀ</figcaption><canvas id="embeddingAttentionAHistogram"></canvas></figure>
         <figure id="embeddingAttentionBFigure" class="hidden"><figcaption id="embeddingAttentionBCaption">Embedding B · after norm + WqWkᵀ</figcaption><canvas id="embeddingAttentionBHistogram"></canvas></figure>
+        <figure id="embeddingAttentionOutputAFigure" class="hidden"><figcaption>Embedding A · attention output norm</figcaption><canvas id="embeddingAttentionOutputAHistogram"></canvas></figure>
+        <figure id="embeddingAttentionOutputBFigure" class="hidden"><figcaption>Embedding B · attention output norm</figcaption><canvas id="embeddingAttentionOutputBHistogram"></canvas></figure>
       </div>
       <p class="chart-legend"><span class="gain-key">■</span> gain &nbsp; <span class="before-key">■</span> before &nbsp; <span class="after-key">■</span> after. Every plot shows a labeled y-axis; hover for exact channel/value details.</p>
       <section class="attention-sweep-panel">
         <div class="subpanel-heading">
-          <div><p class="eyebrow">All-head sweep</p><h3>Compare A/B dot(xnorm, xnorm WqWkᵀ) across every layer and head</h3></div>
+          <div><p class="eyebrow">All-head sweep</p><h3>Compare A/B head-operator and output-norm dot products</h3></div>
           <button id="runAttentionSweep" type="button">Run sweep</button>
         </div>
         <div class="attention-sweep-controls">
+          <label for="attentionSweepOperator">Head operator<select id="attentionSweepOperator"><option value="qk">WqWkᵀ</option><option value="ov">WoWvᵀ + attention output norm</option></select></label>
           <label for="attentionSweepOrder">Entry ordering<select id="attentionSweepOrder"><option value="numeric">Natural numeric (layer 9 before 10)</option><option value="dot_a">Embedding A dot · high → low</option><option value="dot_b">Embedding B dot · high → low</option><option value="alphabetical">Alphabetical</option></select></label>
         </div>
         <div id="attentionSweepOutput" class="output muted">Run the sweep after choosing a model, norm, and input embedding.</div>
         <figure id="attentionSweepFigure" class="hidden"><figcaption id="attentionSweepCaption">All attention heads · A/B paired bars</figcaption><canvas id="attentionSweepHistogram"></canvas></figure>
+        <figure id="attentionOutputSweepFigure" class="hidden"><figcaption>Attention output norm · A/B paired bars</figcaption><canvas id="attentionOutputSweepHistogram"></canvas></figure>
       </section>
       <section class="attention-sweep-panel">
         <div class="subpanel-heading">

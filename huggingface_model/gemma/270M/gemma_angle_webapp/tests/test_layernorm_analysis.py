@@ -86,6 +86,28 @@ def test_attention_head_operator_returns_matrix_and_vector_diagnostics():
     assert result["attention"]["pipeline"] == "input_embedding -> selected_norm_with_gain -> WqWkT"
 
 
+def test_ov_operator_applies_output_norm_to_transformed_branch_for_individual_and_sweep():
+    assets = _assets()
+    prefix = "model.layers.0.self_attn"
+    assets.layernorms["model.layers.0.post_attention_layernorm.weight"] = torch.ones(3)
+    assets.attention_projections = {
+        f"{prefix}.q_proj.weight": torch.eye(3),
+        f"{prefix}.k_proj.weight": torch.eye(3),
+        f"{prefix}.v_proj.weight": torch.eye(3),
+        f"{prefix}.o_proj.weight": torch.eye(3),
+    }
+    assets.num_attention_heads = assets.num_key_value_heads = 1
+    assets.head_dim = 3
+    assets.norm_biases = {}
+
+    analysis = layernorm_analysis(assets, "model.norm.weight", [0, 1], prefix, 0, "ov")
+    assert analysis["attention"]["operator"] == "ov"
+    assert "attention_output_values" in analysis["attention"]["embeddings"][0]
+    sweep = attention_dot_sweep(assets, "model.norm.weight", 0, 1, "ov")
+    assert sweep["rows"][0]["output_norm"] == "model.layers.0.post_attention_layernorm.weight"
+    assert "output_norm_dot_a" in sweep["rows"][0]
+
+
 def test_attention_dot_sweep_covers_every_query_head_without_hidden_operator():
     assets = _assets()
     assets.attention_projections = {

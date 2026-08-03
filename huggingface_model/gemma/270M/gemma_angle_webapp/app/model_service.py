@@ -468,7 +468,7 @@ def _load_layernorms_from_safetensors(model_name: str, *, allow_download: bool) 
 
 
 def _attention_projection_names(names: list[str] | tuple[str, ...]) -> list[str]:
-    return sorted(name for name in names if name.endswith((".q_proj.weight", ".k_proj.weight")))
+    return sorted(name for name in names if name.endswith((".q_proj.weight", ".k_proj.weight", ".v_proj.weight", ".o_proj.weight")))
 
 
 def _load_attention_projections_from_safetensors(model_name: str, *, allow_download: bool) -> dict[str, torch.Tensor]:
@@ -511,7 +511,11 @@ def attention_head_catalog(assets: ModelAssets) -> list[dict[str, Any]]:
     ):
         prefix = q_name.removesuffix(".q_proj.weight")
         if f"{prefix}.k_proj.weight" in projections:
-            layers.append({"layer": prefix, "heads": assets.num_attention_heads})
+            layers.append({
+                "layer": prefix,
+                "heads": assets.num_attention_heads,
+                "has_ov": f"{prefix}.v_proj.weight" in projections and f"{prefix}.o_proj.weight" in projections,
+            })
     return layers
 
 
@@ -534,8 +538,48 @@ def _apply_saved_norm(assets: ModelAssets, layernorm_name: str, vector: torch.Te
     return output
 
 
+def _block_output_norms(assets: ModelAssets, attention_layer: str) -> list[str]:
+    match = re.search(r"(?:^|\.)layers\.(\d+)(?:\.|$)", attention_layer)
+    if not match:
+        return []
+    layer_number = int(match.group(1))
+    names = [
+        name for name in assets.layernorms
+        if re.search(rf"(?:^|\.)layers\.{layer_number}(?:\.|$)", name)
+        and any(marker in name.casefold() for marker in ("post_attention", "output_layernorm"))
+    ]
+    return sorted(names, key=_natural_name_key)
+
+
+def _head_operator_parts(
+    assets: ModelAssets, attention_layer: str, head: int, operator: str, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    projections = assets.attention_projections or {}
+    head_dim = assets.head_dim
+    kv_heads = assets.num_key_value_heads or assets.num_attention_heads
+    kv_head = head * kv_heads // assets.num_attention_heads
+    if operator == "qk":
+        left = projections[f"{attention_layer}.q_proj.weight"].to(device)
+        right = projections[f"{attention_layer}.k_proj.weight"].to(device)
+        head_dim = head_dim or (left.shape[0] // assets.num_attention_heads)
+        return left[head * head_dim:(head + 1) * head_dim].T, right[kv_head * head_dim:(kv_head + 1) * head_dim], kv_head
+    if operator == "ov":
+        value = projections.get(f"{attention_layer}.v_proj.weight")
+        output = projections.get(f"{attention_layer}.o_proj.weight")
+        if value is None or output is None:
+            raise ValueError(f"V/O projections are unavailable for {attention_layer!r}.")
+        value, output = value.to(device), output.to(device)
+        head_dim = head_dim or (value.shape[0] // kv_heads)
+        return output[:, head * head_dim:(head + 1) * head_dim], value[kv_head * head_dim:(kv_head + 1) * head_dim], kv_head
+    raise ValueError("attention_operator must be 'qk' or 'ov'.")
+
+
 def attention_dot_sweep(
-    assets: ModelAssets, layernorm_name: str, token_id: int, token_b_id: int | None = None
+    assets: ModelAssets,
+    layernorm_name: str,
+    token_id: int,
+    token_b_id: int | None = None,
+    attention_operator: str = "qk",
 ) -> dict[str, Any]:
     """Evaluate dot(x_norm, x_norm WqWkT) for A and optionally B across all heads."""
     if layernorm_name not in assets.layernorms:
@@ -545,32 +589,41 @@ def attention_dot_sweep(
     infos = [assets.token(item) for item in token_ids]
     norm_outputs = [_apply_saved_norm(assets, layernorm_name, assets.weight[item]) for item in token_ids]
 
-    projections = assets.attention_projections or {}
     rows = []
     for layer_record in attention_head_catalog(assets):
         layer = layer_record["layer"]
-        q_weight = projections[f"{layer}.q_proj.weight"].to(norm_outputs[0].device)
-        k_weight = projections[f"{layer}.k_proj.weight"].to(norm_outputs[0].device)
-        head_dim = assets.head_dim or (q_weight.shape[0] // assets.num_attention_heads)
-        kv_heads = assets.num_key_value_heads or assets.num_attention_heads
+        if attention_operator == "ov" and not layer_record["has_ov"]:
+            continue
+        output_norm_names = _block_output_norms(assets, layer) if attention_operator == "ov" else []
         for head in range(assets.num_attention_heads):
-            kv_head = head * kv_heads // assets.num_attention_heads
-            q_head = q_weight[head * head_dim:(head + 1) * head_dim]
-            k_head = k_weight[kv_head * head_dim:(kv_head + 1) * head_dim]
+            left, right, kv_head = _head_operator_parts(
+                assets, layer, head, attention_operator, norm_outputs[0].device
+            )
             # Associate left-to-right so no hidden_dim² operator is materialized.
             dots = []
+            output_norm_dots = []
             for norm_output in norm_outputs:
-                transformed = (norm_output @ q_head.T) @ k_head
+                transformed = (norm_output @ left) @ right
                 dots.append(float(torch.dot(norm_output, transformed).item()))
+                if output_norm_names:
+                    attention_output = _apply_saved_norm(
+                        assets, output_norm_names[0], transformed
+                    )
+                    output_norm_dots.append(float(torch.dot(norm_output, attention_output).item()))
             record = {
                 "layer": layer,
                 "head": head,
                 "kv_head": kv_head,
                 "dot_product": dots[0],
                 "dot_a": dots[0],
+                "output_norm": output_norm_names[0] if output_norm_names else None,
             }
             if len(dots) == 2:
                 record["dot_b"] = dots[1]
+            if output_norm_dots:
+                record["output_norm_dot_a"] = output_norm_dots[0]
+                if len(output_norm_dots) == 2:
+                    record["output_norm_dot_b"] = output_norm_dots[1]
             rows.append(record)
     if not rows:
         raise ValueError("No compatible separate Q/K attention projections are available.")
@@ -582,7 +635,8 @@ def attention_dot_sweep(
         "token_b_raw": infos[1].raw if len(infos) == 2 else None,
         "token_b_display": infos[1].display if len(infos) == 2 else None,
         "layernorm_name": layernorm_name,
-        "pipeline": "input_embedding -> selected_norm_with_gain -> WqWkT",
+        "pipeline": f"input_embedding -> selected_norm_with_gain -> {'WqWkT' if attention_operator == 'qk' else 'WoWvT'}",
+        "attention_operator": attention_operator,
         "rows": rows,
     }
 
@@ -658,6 +712,7 @@ def layernorm_analysis(
     token_ids: list[int],
     attention_layer: str | None = None,
     attention_head: int | None = None,
+    attention_operator: str = "qk",
 ) -> dict[str, Any]:
     """Apply one saved norm to two embedding rows and return one shared channel order."""
     if layernorm_name not in assets.layernorms:
@@ -734,21 +789,12 @@ def layernorm_analysis(
             raise ValueError("Both attention_layer and attention_head are required.")
         if attention_head < 0 or attention_head >= assets.num_attention_heads:
             raise ValueError(f"attention_head must be in [0, {assets.num_attention_heads - 1}].")
-        projections = assets.attention_projections or {}
-        q_weight = projections.get(f"{attention_layer}.q_proj.weight")
-        k_weight = projections.get(f"{attention_layer}.k_proj.weight")
-        if q_weight is None or k_weight is None:
-            raise ValueError(f"Q/K projections are unavailable for {attention_layer!r}.")
-        head_dim = assets.head_dim or (q_weight.shape[0] // assets.num_attention_heads)
-        kv_heads = assets.num_key_value_heads or assets.num_attention_heads
-        kv_head = attention_head * kv_heads // assets.num_attention_heads
-        q_head = q_weight[attention_head * head_dim:(attention_head + 1) * head_dim].to(assets.weight.device)
-        k_head = k_weight[kv_head * head_dim:(kv_head + 1) * head_dim].to(assets.weight.device)
-        # Stored Linear weights are [head_dim, hidden]. In row-vector convention,
-        # q = x Wq^T and the hidden-space operator is Wq^T Wk, i.e. Wq Wk^T
-        # when Wq/Wk are written in the common [hidden, head_dim] convention.
-        qk_operator = q_head.T @ k_head
-        combined = torch.diag(effective_gain) @ qk_operator
+        left, right, kv_head = _head_operator_parts(
+            assets, attention_layer, attention_head, attention_operator, assets.weight.device
+        )
+        head_operator = left @ right
+        combined = torch.diag(effective_gain) @ head_operator
+        output_norm_names = _block_output_norms(assets, attention_layer) if attention_operator == "ov" else []
         identity = torch.eye(combined.shape[0], device=combined.device, dtype=combined.dtype)
         matrix_norm = torch.linalg.matrix_norm(combined).clamp_min(1e-12)
         identity_norm = torch.linalg.matrix_norm(identity)
@@ -760,9 +806,9 @@ def layernorm_analysis(
             # per-channel gain (including Gemma's unit offset), and optional
             # bias. The attention operator is deliberately applied after all
             # of those steps rather than to the raw embedding.
-            transformed = after @ qk_operator
+            transformed = after @ head_operator
             transformed_magnitude, transformed_pr = vector_metrics(transformed)
-            transformed_rows.append({
+            transformed_record = {
                 "token_id": row["token_id"],
                 "values": transformed[order].detach().cpu().tolist(),
                 "magnitude": transformed_magnitude,
@@ -770,12 +816,27 @@ def layernorm_analysis(
                 "angle_from_before_deg": vector_angle(full_vectors[len(transformed_rows)][0], transformed),
                 "angle_from_norm_deg": vector_angle(after, transformed),
                 "dot_product_with_norm": float(torch.dot(after, transformed).item()),
-            })
+            }
+            if output_norm_names:
+                attention_output = _apply_saved_norm(
+                    assets, output_norm_names[0], transformed
+                )
+                output_magnitude, output_pr = vector_metrics(attention_output)
+                transformed_record.update({
+                    "attention_output_norm": output_norm_names[0],
+                    "attention_output_values": attention_output[order].detach().cpu().tolist(),
+                    "attention_output_magnitude": output_magnitude,
+                    "attention_output_participation_ratio": output_pr,
+                    "attention_output_angle_from_norm_deg": vector_angle(after, attention_output),
+                    "attention_output_dot_with_norm": float(torch.dot(after, attention_output).item()),
+                })
+            transformed_rows.append(transformed_record)
         result["attention"] = {
             "layer": attention_layer,
             "head": attention_head,
             "kv_head": kv_head,
-            "pipeline": "input_embedding -> selected_norm_with_gain -> WqWkT",
+            "operator": attention_operator,
+            "pipeline": f"input_embedding -> selected_norm_with_gain -> {'WqWkT' if attention_operator == 'qk' else 'WoWvT -> attention_output_norm'}",
             "matrix_stats": {
                 "symmetry_residual": float((torch.linalg.matrix_norm(combined - combined.T) / matrix_norm).item()),
                 "symmetric_fraction": float((torch.linalg.matrix_norm(symmetric) / matrix_norm).item()),

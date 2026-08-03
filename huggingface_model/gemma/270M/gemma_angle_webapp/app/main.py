@@ -200,10 +200,11 @@ def analyze_layernorm(
     token_b: int = Query(..., ge=0),
     attention_layer: str | None = Query(None),
     attention_head: int | None = Query(None, ge=0),
+    attention_operator: str = Query("qk", pattern="^(qk|ov)$"),
 ):
     try:
         return layernorm_analysis(
-            _load_assets_or_500(), layernorm, [token_a, token_b], attention_layer, attention_head
+            _load_assets_or_500(), layernorm, [token_a, token_b], attention_layer, attention_head, attention_operator
         )
     except IndexError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -217,6 +218,7 @@ def layernorm_attention_sweep(
     token_id: int | None = Query(None, ge=0, description="Backward-compatible single-token input."),
     token_a: int | None = Query(None, ge=0),
     token_b: int | None = Query(None, ge=0),
+    attention_operator: str = Query("qk", pattern="^(qk|ov)$"),
 ):
     try:
         first = token_a if token_a is not None else token_id
@@ -224,7 +226,9 @@ def layernorm_attention_sweep(
             raise ValueError("token_a (or legacy token_id) is required.")
         if token_a is not None and token_b is None:
             raise ValueError("token_b is required when token_a is supplied.")
-        return attention_dot_sweep(_load_assets_or_500(), layernorm, first, token_b)
+        return attention_dot_sweep(
+            _load_assets_or_500(), layernorm, first, token_b, attention_operator
+        )
     except IndexError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
