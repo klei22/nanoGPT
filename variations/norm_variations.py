@@ -239,11 +239,11 @@ class StraightThroughNorm(nn.Module):
         ](config)
 
     def forward(self, x):
-        forward_value = self.forward_norm(x)
+        forward_value = self.forward_norm(x.detach())
         backward_value = self.backward_activation(x)
-        # This has the norm's value, but only the activation branch contributes
-        # gradients. With the default identity activation, d(output)/d(x) = 1.
-        return backward_value + (forward_value - backward_value).detach()
+        # Forward uses the norm's value, but gradients to x follow the activation.
+        # Gradients to the norm parameters are preserved via forward_norm(x.detach()).
+        return forward_value + (backward_value - backward_value.detach())
 
 
 norm_dictionary = {
