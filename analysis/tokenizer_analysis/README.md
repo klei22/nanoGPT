@@ -1,5 +1,51 @@
 # Open Source CJK Analysis Tool
 
+## Gemma 3 270M semantic factorization
+
+`semantic_factorization.py` estimates how many embedding/LM-head rows can be
+replaced by a base row plus an orthographic feature. It applies these rules:
+
+1. Replace `▁token` with `SPACE + token` when `token` exists. Gemma's tokenizer
+   normalizer uses `▁` (U+2581) for a space; the vocabulary does not store a
+   literal leading ASCII space.
+2. Replace a token beginning with an uppercase Unicode character with
+   `CAPITALIZE + lower-first(token)` when that counterpart exists. A leading
+   `▁` is ignored while identifying the first character.
+3. Replace a token whose cased characters are all uppercase with
+   `ALL_CAPS + lower(token)` when that counterpart exists.
+
+The rule sets overlap, so savings use their **union**, not their sum. On the
+`google/gemma-3-270m` `tokenizer.json` vocabulary (262,144 BPE tokens):
+
+| Rule | Matches | Newly removed in rule order |
+|---|---:|---:|
+| Leading space | 40,893 | 40,893 |
+| Initial capital | 27,786 | 18,530 |
+| All caps | 8,859 | 5,612 |
+| **Unique total** | **65,035** | **65,035** |
+
+That reduces the estimated vocabulary/head from **262,144 to 197,109 rows**, a
+**24.81%** reduction. The estimate does not count three new feature vectors; if
+they occupy ordinary vocabulary rows, the physical total is 197,112. It also
+does not claim an immediately usable tokenizer: BPE merges referring to removed
+tokens must be rewritten, encoding must emit base-plus-feature structure, and
+the model must be trained or fine-tuned with compositional input/output heads.
+
+After accepting the Gemma license on Hugging Face, download `tokenizer.json` and
+run the reproducible analysis:
+
+```bash
+python analysis/tokenizer_analysis/semantic_factorization.py /path/to/tokenizer.json
+```
+
+A practical implementation can represent a factored token as
+`(base_id, feature_mask)`. For input embeddings, add learned feature vectors to
+the base embedding. For the output head, score the base rows once and predict
+the three feature bits with small auxiliary heads (or score only valid
+base/feature combinations). Retokenize training data and fine-tune before using
+the smaller head; simply deleting rows changes sequence boundaries and cannot
+reproduce the original BPE model.
+
 This repository contains the **Open Source CJK Analysis Tool**, a Python script (`open_source_cjk_analysis.py`) that provides detailed analysis of tokenizers with respect to Chinese (C), Japanese (J), and Korean (K) characters. The tool can analyze token coverage, symbol representation, and overlaps among these languages in tokenizer vocabularies.
 
 ## Features
