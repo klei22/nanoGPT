@@ -320,3 +320,22 @@ def test_linear_transform_ui_exists() -> None:
     assert "setupPicker('transformTarget', 'transformTarget')" in js
     assert "setupPicker('transformInput', 'transformInput')" in js
     assert "linear-transform-scroll" in css
+
+
+def test_layernorm_lab_has_four_graphs_metrics_and_scale_modes() -> None:
+    html = (PROJECT_ROOT / "app" / "templates" / "index.html").read_text()
+    js = (PROJECT_ROOT / "app" / "static" / "app.js").read_text()
+
+    for graph_id in [
+        "embeddingBeforeAHistogram",
+        "embeddingBeforeBHistogram",
+        "embeddingAfterAHistogram",
+        "embeddingAfterBHistogram",
+    ]:
+        assert f'id="{graph_id}"' in html
+    assert '<option value="all">' in html
+    assert '<option value="pairs">' in html
+    assert 'id="layernormMetrics"' in html
+    assert "before_participation_ratio" in js
+    assert "relative_angle_delta_deg" in js
+    assert "fillText((fraction * bound).toPrecision(3)" in js

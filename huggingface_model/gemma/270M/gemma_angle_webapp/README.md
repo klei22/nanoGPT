@@ -22,7 +22,7 @@ A regular Python webapp refactor of the Streamlit token-angle explorer. The app 
 - Token search route ordering is guarded so `/api/tokens/search` is not mistaken for a token ID route.
 - Search dropdowns now auto-select a result after an explicit Search click, matching Streamlit selectbox behavior without searching on every keystroke.
 - Token search is explicit and literal: click Search or press Enter, and the backend returns every case-insensitive substring match. Byte-fallback tokens such as `<0xF9>` also expose plain aliases like `0xF9` and `F9` for literal search.
-- **LayerNorm × embedding lab.** Discover every saved LayerNorm/RMSNorm gain vector, default to the final norm, regex-search the vocabulary or enter IDs, and compare any two embedding rows before and after normalization. The gain channels are sorted high-to-low once and the same permutation is used for all three interactive histograms. Gemma's unit-offset RMSNorm weights are interpreted as `1 + weight`.
+- **LayerNorm × embedding lab.** Discover every saved LayerNorm/RMSNorm gain vector, default to the final norm, regex-search the vocabulary or enter IDs, and compare any two embedding rows before and after normalization. Gain and four separate before/after embedding histograms use one high-to-low gain permutation, visible y axes, and selectable shared scaling (all four together, or before/after pairs). The lab reports vector magnitude, energy participation ratio `(Σx²)² / Σx⁴`, each embedding's rotation, and the change in the A↔B angle. Gemma's unit-offset RMSNorm weights are interpreted as `1 + weight`.
 
 ## Project layout
 

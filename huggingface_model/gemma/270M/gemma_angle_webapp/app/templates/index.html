@@ -71,12 +71,21 @@
         <article class="picker"><h3>Embedding B</h3><label for="lnTokenB">Regex matches</label><select id="lnTokenB" size="7"></select><label for="lnTokenBId">Token ID</label><input id="lnTokenBId" type="number" min="0" value="1" /></article>
       </div>
       <div id="layernormOutput" class="output muted">Load a model to discover its LayerNorm and RMSNorm tensors.</div>
+      <div id="layernormMetrics" class="metric-grid hidden" aria-live="polite"></div>
+      <label class="scale-option" for="layernormScaleMode">Embedding y-axis scale
+        <select id="layernormScaleMode">
+          <option value="all">Use one shared scale for all four embedding graphs</option>
+          <option value="pairs">Share before A/B and after A/B scales separately</option>
+        </select>
+      </label>
       <div class="histogram-grid">
         <figure><figcaption>Sorted per-channel gain</figcaption><canvas id="gainHistogram"></canvas></figure>
-        <figure><figcaption id="embeddingACaption">Embedding A · before / after</figcaption><canvas id="embeddingAHistogram"></canvas></figure>
-        <figure><figcaption id="embeddingBCaption">Embedding B · before / after</figcaption><canvas id="embeddingBHistogram"></canvas></figure>
+        <figure><figcaption id="embeddingBeforeACaption">Embedding A · before norm</figcaption><canvas id="embeddingBeforeAHistogram"></canvas></figure>
+        <figure><figcaption id="embeddingBeforeBCaption">Embedding B · before norm</figcaption><canvas id="embeddingBeforeBHistogram"></canvas></figure>
+        <figure><figcaption id="embeddingAfterACaption">Embedding A · after norm</figcaption><canvas id="embeddingAfterAHistogram"></canvas></figure>
+        <figure><figcaption id="embeddingAfterBCaption">Embedding B · after norm</figcaption><canvas id="embeddingAfterBHistogram"></canvas></figure>
       </div>
-      <p class="chart-legend"><span class="gain-key">■</span> gain &nbsp; <span class="before-key">■</span> before &nbsp; <span class="after-key">■</span> after. Hover a chart for exact channel/value details.</p>
+      <p class="chart-legend"><span class="gain-key">■</span> gain &nbsp; <span class="before-key">■</span> before &nbsp; <span class="after-key">■</span> after. Every plot shows a labeled y-axis; hover for exact channel/value details.</p>
     </section>
 
     <section class="panel">

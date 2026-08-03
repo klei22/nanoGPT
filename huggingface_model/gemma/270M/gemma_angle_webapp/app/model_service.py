@@ -475,6 +475,26 @@ def layernorm_analysis(assets: ModelAssets, layernorm_name: str, token_ids: list
     effective_gain = gain + 1.0 if assets.norm_unit_offset else gain
     order = torch.argsort(effective_gain, descending=True)
     rows = []
+    full_vectors: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    def vector_metrics(vector: torch.Tensor) -> tuple[float, float]:
+        energy = vector.square()
+        energy_sum = energy.sum()
+        fourth_moment = energy.square().sum()
+        participation_ratio = torch.where(
+            fourth_moment > 0,
+            energy_sum.square() / fourth_moment,
+            torch.zeros_like(fourth_moment),
+        )
+        return float(torch.linalg.vector_norm(vector).item()), float(participation_ratio.item())
+
+    def vector_angle(left: torch.Tensor, right: torch.Tensor) -> float:
+        denominator = torch.linalg.vector_norm(left) * torch.linalg.vector_norm(right)
+        if denominator <= 0:
+            return 0.0
+        cosine = torch.clamp(torch.dot(left, right) / denominator, -1.0, 1.0)
+        return float(torch.rad2deg(torch.acos(cosine)).item())
+
     for token_id in token_ids:
         info = assets.token(token_id)
         before = assets.weight[token_id]
@@ -487,11 +507,21 @@ def layernorm_analysis(assets: ModelAssets, layernorm_name: str, token_ids: list
         norm_biases = getattr(assets, "norm_biases", None)
         if norm_biases and bias_name in norm_biases:
             after = after + norm_biases[bias_name].to(after.device)
+        before_magnitude, before_pr = vector_metrics(before)
+        after_magnitude, after_pr = vector_metrics(after)
+        full_vectors.append((before, after))
         rows.append({
             "token_id": token_id, "raw": info.raw, "display": info.display,
             "before": before[order].detach().cpu().tolist(),
             "after": after[order].detach().cpu().tolist(),
+            "before_magnitude": before_magnitude,
+            "after_magnitude": after_magnitude,
+            "before_participation_ratio": before_pr,
+            "after_participation_ratio": after_pr,
+            "norm_rotation_deg": vector_angle(before, after),
         })
+    before_pair_angle = vector_angle(full_vectors[0][0], full_vectors[1][0])
+    after_pair_angle = vector_angle(full_vectors[0][1], full_vectors[1][1])
     return {
         "layernorm_name": layernorm_name,
         "norm_kind": assets.norm_kind,
@@ -500,6 +530,9 @@ def layernorm_analysis(assets: ModelAssets, layernorm_name: str, token_ids: list
         "channel_indices": order.detach().cpu().tolist(),
         "gains": effective_gain[order].detach().cpu().tolist(),
         "embeddings": rows,
+        "before_pair_angle_deg": before_pair_angle,
+        "after_pair_angle_deg": after_pair_angle,
+        "relative_angle_delta_deg": after_pair_angle - before_pair_angle,
     }
 
 

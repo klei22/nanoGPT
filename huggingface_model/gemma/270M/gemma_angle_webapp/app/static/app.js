@@ -78,23 +78,46 @@ async function searchLayernormTokens() {
   byId('lnSearchMessage').textContent = `${data.results.length} regex matches (first 500).`;
 }
 
-function drawChannelChart(canvas, series, colors, channelIds) {
+let lastLayernormAnalysis = null;
+
+function drawChannelChart(canvas, series, colors, channelIds, sharedBound = null, seriesNames = []) {
   const ratio = window.devicePixelRatio || 1, width = canvas.clientWidth, height = canvas.clientHeight;
   canvas.width = width * ratio; canvas.height = height * ratio;
   const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height);
-  const values = series.flat(); const bound = Math.max(...values.map(Math.abs), 1e-9); const center = height / 2;
-  context.strokeStyle = '#475569'; context.beginPath(); context.moveTo(0, center); context.lineTo(width, center); context.stroke();
-  series.forEach((items, seriesIndex) => { context.strokeStyle = colors[seriesIndex]; context.lineWidth = Math.max(1, width / items.length); context.beginPath(); items.forEach((value, index) => { const x = index * width / items.length; const y = center - value / bound * (center - 12); context.moveTo(x, center); context.lineTo(x, y); }); context.stroke(); });
-  canvas.onmousemove = (event) => { const index = Math.min(channelIds.length - 1, Math.floor(event.offsetX / width * channelIds.length)); canvas.title = `rank ${index + 1} · channel ${channelIds[index]} · ${series.map((items, i) => `${i ? 'after' : 'before/gain'} ${items[index].toPrecision(6)}`).join(' · ')}`; };
+  const left = 68, right = 12, top = 12, bottom = 26, plotWidth = Math.max(1, width - left - right), plotHeight = Math.max(1, height - top - bottom);
+  const values = series.flat(); const bound = sharedBound || Math.max(...values.map(Math.abs), 1e-9); const center = top + plotHeight / 2;
+  context.font = '11px ui-monospace, monospace'; context.textAlign = 'right'; context.textBaseline = 'middle';
+  [-1, -0.5, 0, 0.5, 1].forEach((fraction) => {
+    const y = center - fraction * plotHeight / 2;
+    context.strokeStyle = fraction === 0 ? '#64748b' : '#243244'; context.lineWidth = 1;
+    context.beginPath(); context.moveTo(left, y); context.lineTo(width - right, y); context.stroke();
+    context.fillStyle = '#cbd5e1'; context.fillText((fraction * bound).toPrecision(3), left - 7, y);
+  });
+  context.strokeStyle = '#94a3b8'; context.beginPath(); context.moveTo(left, top); context.lineTo(left, top + plotHeight); context.stroke();
+  context.textAlign = 'center'; context.fillStyle = '#94a3b8'; context.fillText('gain-sorted channel rank →', left + plotWidth / 2, height - 8);
+  series.forEach((items, seriesIndex) => { context.strokeStyle = colors[seriesIndex]; context.lineWidth = Math.max(1, plotWidth / items.length); context.beginPath(); items.forEach((value, index) => { const x = left + (index + 0.5) * plotWidth / items.length; const y = center - value / bound * plotHeight / 2; context.moveTo(x, center); context.lineTo(x, y); }); context.stroke(); });
+  canvas.onmousemove = (event) => { const index = Math.max(0, Math.min(channelIds.length - 1, Math.floor((event.offsetX - left) / plotWidth * channelIds.length))); canvas.title = `rank ${index + 1} · channel ${channelIds[index]} · ${series.map((items, i) => `${seriesNames[i] || `series ${i + 1}`} ${items[index].toPrecision(6)}`).join(' · ')}`; };
+}
+
+function renderLayernormAnalysis(data) {
+  const bounds = data.embeddings.map((item) => Math.max(...item.before.map(Math.abs), ...item.after.map(Math.abs), 1e-9));
+  const beforeBound = Math.max(...data.embeddings.map((item) => Math.max(...item.before.map(Math.abs))));
+  const afterBound = Math.max(...data.embeddings.map((item) => Math.max(...item.after.map(Math.abs))));
+  const allBound = Math.max(...bounds); const shareAll = byId('layernormScaleMode').value === 'all';
+  setOutput('layernormOutput', `<strong>${escapeHtml(data.layernorm_name)}</strong> · ${data.norm_kind} · ${data.gains.length} channels · shared gain-sorted permutation`);
+  const metricHtml = data.embeddings.map((item, index) => `<article><strong>Embedding ${index ? 'B' : 'A'} · ${item.token_id} | ${escapeHtml(item.display || item.raw)}</strong><dl><div><dt>Participation ratio</dt><dd>${item.before_participation_ratio.toFixed(2)} → ${item.after_participation_ratio.toFixed(2)}</dd></div><div><dt>Magnitude</dt><dd>${item.before_magnitude.toPrecision(6)} → ${item.after_magnitude.toPrecision(6)}</dd></div><div><dt>Rotation from norm</dt><dd>${item.norm_rotation_deg.toFixed(4)}°</dd></div></dl></article>`).join('');
+  byId('layernormMetrics').innerHTML = `${metricHtml}<article class="pair-angle-metric"><strong>Relative A↔B angle</strong><dl><div><dt>Before → after</dt><dd>${data.before_pair_angle_deg.toFixed(4)}° → ${data.after_pair_angle_deg.toFixed(4)}°</dd></div><div><dt>Angle delta</dt><dd>${data.relative_angle_delta_deg >= 0 ? '+' : ''}${data.relative_angle_delta_deg.toFixed(4)}°</dd></div></dl></article>`;
+  byId('layernormMetrics').classList.remove('hidden');
+  drawChannelChart(byId('gainHistogram'), [data.gains], ['#fbbf24'], data.channel_indices, null, ['gain']);
+  data.embeddings.forEach((item, index) => { const letter = index ? 'B' : 'A', label = `${item.token_id} | ${item.display || item.raw}`; byId(`embeddingBefore${letter}Caption`).textContent = `Embedding ${letter} · ${label} · before norm`; byId(`embeddingAfter${letter}Caption`).textContent = `Embedding ${letter} · ${label} · after norm`; drawChannelChart(byId(`embeddingBefore${letter}Histogram`), [item.before], ['#38bdf8'], data.channel_indices, shareAll ? allBound : beforeBound, ['before']); drawChannelChart(byId(`embeddingAfter${letter}Histogram`), [item.after], ['#f472b6'], data.channel_indices, shareAll ? allBound : afterBound, ['after']); });
 }
 
 async function runLayernormAnalysis() {
   const layer = byId('layernormSelect').value, a = byId('lnTokenAId').value, b = byId('lnTokenBId').value;
   const response = await fetch(`/api/layernorm/analysis?layernorm=${encodeURIComponent(layer)}&token_a=${a}&token_b=${b}`); const data = await response.json();
   if (!response.ok) { setOutput('layernormOutput', escapeHtml(formatErrorDetail(data.detail)), true); return; }
-  setOutput('layernormOutput', `<strong>${escapeHtml(data.layernorm_name)}</strong> · ${data.norm_kind} · ${data.gains.length} channels · shared gain-sorted permutation`);
-  drawChannelChart(byId('gainHistogram'), [data.gains], ['#fbbf24'], data.channel_indices);
-  data.embeddings.forEach((item, index) => { const letter = index ? 'B' : 'A'; byId(`embedding${letter}Caption`).textContent = `${item.token_id} | ${item.display || item.raw} · before / after`; drawChannelChart(byId(`embedding${letter}Histogram`), [item.before, item.after], ['#38bdf8', '#f472b6'], data.channel_indices); });
+  lastLayernormAnalysis = data;
+  renderLayernormAnalysis(data);
 }
 
 function escapeHtml(value) {
@@ -2814,6 +2837,7 @@ window.addEventListener('DOMContentLoaded', () => {
   byId('lnSearchButton').addEventListener('click', searchLayernormTokens);
   byId('lnSearch').addEventListener('keydown', (event) => { if (event.key === 'Enter') searchLayernormTokens(); });
   byId('runLayernorm').addEventListener('click', runLayernormAnalysis);
+  byId('layernormScaleMode').addEventListener('change', () => { if (lastLayernormAnalysis) renderLayernormAnalysis(lastLayernormAnalysis); });
   for (const letter of ['A', 'B']) byId(`lnToken${letter}`).addEventListener('change', (event) => { byId(`lnToken${letter}Id`).value = event.target.value; });
   setupPicker('tokenA', 'tokenA');
   setupPicker('tokenB', 'tokenB');

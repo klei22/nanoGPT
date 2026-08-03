@@ -32,6 +32,13 @@ def test_layernorm_analysis_uses_one_gain_sorted_channel_permutation():
     assert result["embeddings"][0]["before"] == [2.0, 3.0, 1.0]
     rms = ((1.0 + 4.0 + 9.0) / 3.0) ** 0.5
     assert result["embeddings"][0]["after"] == pytest.approx([4.0 / rms, 3.0 / rms, 0.5 / rms])
+    assert result["embeddings"][0]["before_magnitude"] == pytest.approx(14.0**0.5)
+    assert result["embeddings"][0]["before_participation_ratio"] == pytest.approx(14.0**2 / 98.0)
+    assert result["embeddings"][0]["after_participation_ratio"] > 0
+    assert result["embeddings"][0]["norm_rotation_deg"] >= 0
+    assert result["relative_angle_delta_deg"] == pytest.approx(
+        result["after_pair_angle_deg"] - result["before_pair_angle_deg"]
+    )
 
 
 def test_gemma_unit_offset_is_reported_and_applied():
