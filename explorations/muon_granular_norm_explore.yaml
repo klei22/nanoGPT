@@ -50,11 +50,12 @@ named_static_groups:
     muon_exclude_substrings: [["embed", "wte", "wpe", "lm_head"]]
 
 common_group:
-  dataset: ["minipile"]
-  eval_interval: [2500]
-  max_iters: [10000]
+  dataset: ["shakespeare_char"]
+  eval_interval: [100]
+  eval_iters: [50]
+  max_iters: [500]
   never_save_checkpoint: [true]
-  compile: [true]
+  compile: [false]
   log_rankme: [true]
   log_areq: [true]
 
@@ -71,13 +72,39 @@ parameter_groups:
 
     # Retain both attention activations from muon_norm_explore.yaml. For each
     # activation, the four lists below form the complete 2^4 norm matrix.
-    softmax_variant_attn: ["relu2max", "softmax"]
-    norm_variant_attn_input: ["rmsnorm", "hyperspherenorm"]
-    norm_variant_attn_output: ["rmsnorm", "hyperspherenorm"]
-    norm_variant_mlp_input: ["rmsnorm", "hyperspherenorm"]
-    norm_variant_mlp_output: ["rmsnorm", "hyperspherenorm"]
+    softmax_variant_attn: ["softmax"]
+    norm_variant_wte: [null, "rmsnorm", "hyperspherenorm"]
+    norm_variant_attn_input: ["rmsnorm", "hyperspherenorm", "cappedhyperspherenorm", "identity"]
+    norm_variant_attn_output: ["rmsnorm", "hyperspherenorm", "cappedhyperspherenorm", "identity"]
+    norm_variant_mlp_input: ["rmsnorm", "hyperspherenorm", "cappedhyperspherenorm", "identity"]
+    norm_variant_mlp_output: ["rmsnorm", "hyperspherenorm", "cappedhyperspherenorm", "identity"]
 
     # Match the HyperSphereNorm settings used by muon_norm_explore.yaml.
     hsnorm_scale: [1.0]
     hsnorm_gain: [false]
     hsnorm_radius_learning: [false]
+
+  - named_group_static:
+      - "qk_norm"
+      - "rotary"
+      - "squared_relu"
+      - "infinite"
+      - "mqa"
+      - "hd_100_three_heads"
+      - "muon_default"
+
+    # Retain both attention activations from muon_norm_explore.yaml. For each
+    # activation, the four lists below form the complete 2^4 norm matrix.
+    softmax_variant_attn: ["relu2max"]
+    use_peri_ln: [true]
+    norm_variant_wte: [null, "rmsnorm", "hyperspherenorm"]
+    norm_variant_attn_input: ["rmsnorm", "hyperspherenorm", "cappedhyperspherenorm", "identity"]
+    norm_variant_attn_output: ["cappedhyperspherenorm", "identity"]
+    norm_variant_mlp_input: ["rmsnorm", "hyperspherenorm", "cappedhyperspherenorm", "identity"]
+    norm_variant_mlp_output: ["cappedhyperspherenorm", "identity"]
+
+    # Match the HyperSphereNorm settings used by muon_norm_explore.yaml.
+    hsnorm_scale: [1.0]
+    hsnorm_gain: [false]
+    hsnorm_radius_learning: [false]
+
