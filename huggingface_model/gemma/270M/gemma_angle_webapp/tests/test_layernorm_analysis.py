@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from app.model_service import TokenInfo, layernorm_analysis, regex_search_tokens
+from app.model_service import TokenInfo, attention_dot_sweep, layernorm_analysis, regex_search_tokens
 
 
 def _assets(*, unit_offset=False, kind="rmsnorm"):
@@ -78,3 +78,22 @@ def test_attention_head_operator_returns_matrix_and_vector_diagnostics():
         torch.dot(expected_after, expected_after).item()
     )
     assert result["attention"]["pipeline"] == "input_embedding -> selected_norm_with_gain -> WqWkT"
+
+
+def test_attention_dot_sweep_covers_every_query_head_without_hidden_operator():
+    assets = _assets()
+    assets.attention_projections = {
+        "model.layers.0.self_attn.q_proj.weight": torch.eye(3),
+        "model.layers.0.self_attn.k_proj.weight": torch.eye(3),
+    }
+    assets.num_attention_heads = assets.num_key_value_heads = 1
+    assets.head_dim = 3
+    assets.norm_biases = {}
+
+    result = attention_dot_sweep(assets, "model.norm.weight", 0)
+
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["head"] == 0
+    assert result["rows"][0]["dot_product"] == pytest.approx(
+        layernorm_analysis(assets, "model.norm.weight", [0, 1])["embeddings"][0]["after_magnitude"] ** 2
+    )

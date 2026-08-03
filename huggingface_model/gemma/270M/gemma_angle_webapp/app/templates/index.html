@@ -102,6 +102,18 @@
         <figure id="embeddingAttentionBFigure" class="hidden"><figcaption id="embeddingAttentionBCaption">Embedding B · after norm + WqWkᵀ</figcaption><canvas id="embeddingAttentionBHistogram"></canvas></figure>
       </div>
       <p class="chart-legend"><span class="gain-key">■</span> gain &nbsp; <span class="before-key">■</span> before &nbsp; <span class="after-key">■</span> after. Every plot shows a labeled y-axis; hover for exact channel/value details.</p>
+      <section class="attention-sweep-panel">
+        <div class="subpanel-heading">
+          <div><p class="eyebrow">All-head sweep</p><h3>dot(xnorm, xnorm WqWkᵀ) across every layer and head</h3></div>
+          <button id="runAttentionSweep" type="button">Run sweep</button>
+        </div>
+        <div class="attention-sweep-controls">
+          <label for="attentionSweepToken">Input embedding<select id="attentionSweepToken"><option value="a">Embedding A</option><option value="b">Embedding B</option></select></label>
+          <label class="checkbox-row" for="attentionSweepSort"><input id="attentionSweepSort" type="checkbox" /> Sort dot products high → low</label>
+        </div>
+        <div id="attentionSweepOutput" class="output muted">Run the sweep after choosing a model, norm, and input embedding.</div>
+        <figure id="attentionSweepFigure" class="hidden"><figcaption id="attentionSweepCaption">All attention heads</figcaption><canvas id="attentionSweepHistogram"></canvas></figure>
+      </section>
     </section>
 
     <section class="panel">

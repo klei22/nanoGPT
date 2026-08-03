@@ -13,6 +13,7 @@ from .model_service import (
     DEFAULT_MODEL_NAME,
     angle_degrees,
     attention_head_catalog,
+    attention_dot_sweep,
     common_close_tokens,
     get_current_assets,
     get_model_status,
@@ -203,6 +204,16 @@ def analyze_layernorm(
         return layernorm_analysis(
             _load_assets_or_500(), layernorm, [token_a, token_b], attention_layer, attention_head
         )
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/layernorm/attention-sweep")
+def layernorm_attention_sweep(layernorm: str, token_id: int = Query(..., ge=0)):
+    try:
+        return attention_dot_sweep(_load_assets_or_500(), layernorm, token_id)
     except IndexError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

@@ -513,6 +513,55 @@ def attention_head_catalog(assets: ModelAssets) -> list[dict[str, Any]]:
     return layers
 
 
+def attention_dot_sweep(assets: ModelAssets, layernorm_name: str, token_id: int) -> dict[str, Any]:
+    """Evaluate dot(x_norm, x_norm WqWkT) for every compatible layer/head."""
+    if layernorm_name not in assets.layernorms:
+        raise ValueError(f"Unknown layernorm {layernorm_name!r}.")
+    info = assets.token(token_id)
+    before = assets.weight[token_id]
+    gain = assets.layernorms[layernorm_name].to(before.device)
+    effective_gain = gain + 1.0 if assets.norm_unit_offset else gain
+    if assets.norm_kind == "layernorm":
+        normalized = (before - before.mean()) * torch.rsqrt(before.var(unbiased=False) + assets.norm_epsilon)
+    else:
+        normalized = before * torch.rsqrt(before.square().mean() + assets.norm_epsilon)
+    norm_output = normalized * effective_gain
+    bias_name = layernorm_name.removesuffix(".weight") + ".bias"
+    if assets.norm_biases and bias_name in assets.norm_biases:
+        norm_output = norm_output + assets.norm_biases[bias_name].to(norm_output.device)
+
+    projections = assets.attention_projections or {}
+    rows = []
+    for layer_record in attention_head_catalog(assets):
+        layer = layer_record["layer"]
+        q_weight = projections[f"{layer}.q_proj.weight"].to(norm_output.device)
+        k_weight = projections[f"{layer}.k_proj.weight"].to(norm_output.device)
+        head_dim = assets.head_dim or (q_weight.shape[0] // assets.num_attention_heads)
+        kv_heads = assets.num_key_value_heads or assets.num_attention_heads
+        for head in range(assets.num_attention_heads):
+            kv_head = head * kv_heads // assets.num_attention_heads
+            q_head = q_weight[head * head_dim:(head + 1) * head_dim]
+            k_head = k_weight[kv_head * head_dim:(kv_head + 1) * head_dim]
+            # Associate left-to-right so no hidden_dim² operator is materialized.
+            transformed = (norm_output @ q_head.T) @ k_head
+            rows.append({
+                "layer": layer,
+                "head": head,
+                "kv_head": kv_head,
+                "dot_product": float(torch.dot(norm_output, transformed).item()),
+            })
+    if not rows:
+        raise ValueError("No compatible separate Q/K attention projections are available.")
+    return {
+        "token_id": token_id,
+        "token_raw": info.raw,
+        "token_display": info.display,
+        "layernorm_name": layernorm_name,
+        "pipeline": "input_embedding -> selected_norm_with_gain -> WqWkT",
+        "rows": rows,
+    }
+
+
 def layernorm_analysis(
     assets: ModelAssets,
     layernorm_name: str,
