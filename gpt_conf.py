@@ -301,6 +301,7 @@ class GPTConfig:
 
     ## ReLUMax options
     relu2max_divisor: float = 256.0
+    use_fused_relu2max: bool = True # fuse ReLU2Max attention on supported CUDA builds
 
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0
