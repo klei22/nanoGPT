@@ -304,6 +304,28 @@ files from one export directory. The page sorts snapshots by the iteration in
 their filenames and provides previous/next/play controls plus a slider to step
 from the first validation export to the last.
 
+### Per-token loss and vocabulary coverage
+
+Pass `--log_per_token_metrics` to produce a report after every validation in
+`<out_dir>/per_token_metrics` (or set `--per_token_metrics_dir`). The report is
+kept out of TensorBoard and contains:
+
+* `per_token_metrics.csv`: one row per vocabulary token and evaluation, with
+  sampled train/validation cross-entropy, evaluation sample counts, and the
+  cumulative number of times that target token was used by training;
+* `per_token_summary.csv`: mean, median, standard deviation, skew, excess
+  kurtosis, percentiles, range, coefficient of variation, and vocabulary
+  coverage for each metric; and
+* `per_token_metrics.html`: an interactive Plotly scatter plot ordered from
+  highest to lowest validation loss. The training occurrence trace uses the
+  right-hand axis and starts hidden; select it in the legend to compare token
+  exposure without overwhelming the loss scale.
+
+Per-token loss is always ordinary next-token cross-entropy, making reports
+comparable even when a custom aggregate training loss is selected. Only tokens
+sampled during evaluation have a loss value; the accompanying sample-count
+columns make sparse or unrepresentative validation estimates visible.
+
 ## TODO Section:
 
 TODO: Add links and descriptions to other Readme's and Demos.

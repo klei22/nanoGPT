@@ -70,6 +70,7 @@ from utils.model_stats import (
     compute_activation_stats,
     print_model_stats_table,
 )
+from utils.per_token_metrics import PerTokenMetrics
 
 from sample import (
     sample_with_existing_model,
@@ -313,6 +314,7 @@ class Trainer:
         self.model_args = {action.dest: getattr(self.args, action.dest) for action in self.model_group._group_actions}
         self.model_args['vocab_size'] = None
         self.model_args['eval_interval'] = self.args.eval_interval
+        self.vocab_size_by_dataset = self._initialize_vocab_sizes()
 
         # Training settings
         self.training_args = {action.dest: getattr(self.args, action.dest) for action in self.training_group._group_actions}
@@ -322,7 +324,7 @@ class Trainer:
             print(self.model_args['lsv_dataset_num'])
 
         if self.args.init_from == 'scratch':
-            self.model_args['vocab_size'] = self.get_vocab_size_from_meta()
+            self.model_args['vocab_size'] = self.vocab_size_by_dataset[self.args.dataset]
 
             # Save full configuration used for training
             config_json = {**self.model_args, **self.training_args}
@@ -373,6 +375,7 @@ class Trainer:
                 ckpt_path = os.path.join(self.args.out_dir, self.args.init_from_ckpt)
                 checkpoint = torch.load(ckpt_path, map_location=self.device)
                 self.iter_num = checkpoint['iter_num']
+                self._per_token_metrics_state = checkpoint.get('per_token_metrics_seen')
             else:
                 ckpt_path = os.path.join(self.args.prev_run_ckpt, self.args.init_from_ckpt)
                 checkpoint = torch.load(ckpt_path, map_location=self.device)
@@ -520,6 +523,15 @@ class Trainer:
             self.args.csv_name = wandb_run_name
             wandb.init(project=self.args.wandb_project, name=self.args.wandb_run_name, config=self.args)
         self.load_tokenizer()
+        self.per_token_metrics = None
+        if self.args.log_per_token_metrics:
+            report_dir = (self.args.per_token_metrics_dir
+                          or os.path.join(self.args.out_dir, 'per_token_metrics'))
+            self.per_token_metrics = PerTokenMetrics(
+                report_dir,
+                self.vocab_size_by_dataset,
+                initial_seen=getattr(self, '_per_token_metrics_state', None),
+            )
 
 
     def _initialize_teacher_if_needed(self):
@@ -768,6 +780,36 @@ class Trainer:
                     sys.exit(f"Error: 'vocab_size' key not found in {meta_path}")
         else:
             sys.exit(f"Error: File not found - {meta_path}")
+
+    def _initialize_vocab_sizes(self):
+        """Read authoritative dataset vocabularies before any data is loaded."""
+        if self.args.training_mode == 'multicontext':
+            datasets = self.args.multicontext_datasets
+            if not datasets:
+                sys.exit("Error: When training_mode is 'multicontext', please provide --multicontext_datasets.")
+        elif self.args.training_mode == 'multidataset':
+            datasets = self.args.dataset_list
+            if not datasets:
+                sys.exit("Error: When training_mode is 'multidataset', please provide --dataset_list.")
+        else:
+            datasets = [self.args.dataset]
+
+        sizes = {}
+        for dataset in datasets:
+            meta_path = os.path.join('data', dataset, 'meta.pkl')
+            if not os.path.exists(meta_path):
+                sys.exit(f"Error: Meta file not found at {meta_path}")
+            with open(meta_path, 'rb') as handle:
+                vocab_size = pickle.load(handle).get('vocab_size')
+            if vocab_size is None:
+                sys.exit(f"Error: 'vocab_size' key not found in {meta_path}")
+            sizes[dataset] = int(vocab_size)
+
+        if self.args.training_mode == 'multicontext':
+            self.vocab_sizes = dict(sizes)
+        elif self.args.training_mode == 'multidataset':
+            self.vocab_sizes = [sizes[dataset] for dataset in datasets]
+        return sizes
 
     def copy_file_to_directory(self, src_file, dest_dir):
         try:
@@ -1098,6 +1140,8 @@ class Trainer:
     @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
+        if self.per_token_metrics is not None:
+            self.per_token_metrics.begin_evaluation()
         compute_rankme = self.args.log_rankme or self.args.log_areq
 
         self.model.eval()
@@ -1126,6 +1170,8 @@ class Trainer:
                                 dataset_idx=idx if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
+                        if self.per_token_metrics is not None:
+                            self.per_token_metrics.add_evaluation_batch(dataset, split, logits, Y)
                         handle.remove()
                         dataset_losses[split][k] = loss.item()
                         if split == 'val':
@@ -1272,6 +1318,11 @@ class Trainer:
                             iter_num=self.iter_num,
                             loss_fn=self.loss_fn,
                         )
+                    if self.per_token_metrics is not None:
+                        for i, dataset in enumerate(self.args.multicontext_datasets):
+                            self.per_token_metrics.add_evaluation_batch(
+                                dataset, split, logits[i], y_dict[dataset]
+                            )
                     if handle is not None:
                         handle.remove()
                     for i in range(len(self.args.multicontext_datasets)):
@@ -1393,6 +1444,10 @@ class Trainer:
                             dataset_idx=0 if self.args.multidataset_wte else None,
                             loss_fn=self.loss_fn,
                         )
+                    if self.per_token_metrics is not None:
+                        self.per_token_metrics.add_evaluation_batch(
+                            self.args.dataset, split, logits, Y
+                        )
                     handle.remove()
                     losses[k] = loss.item()
                     if split == 'val':
@@ -1513,6 +1568,8 @@ class Trainer:
                             self.iter_num,
                             )
 
+        if self.per_token_metrics is not None:
+            self.per_token_metrics.export(self.iter_num)
         self.model.train()
         return out
 
@@ -2104,6 +2161,10 @@ class Trainer:
                 'best_iter': self.best_iter,
                 'best_tokens': self.best_tokens,
                 'config': vars(self.args),
+                'per_token_metrics_seen': (
+                    self.per_token_metrics.state_dict()
+                    if self.per_token_metrics is not None else None
+                ),
                 }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
@@ -2466,6 +2527,10 @@ class Trainer:
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.lr
 
+                if self.iter_num % self.args.eval_interval == 0:
+                    if self.per_token_metrics is not None:
+                        self.per_token_metrics.synchronize_training_counts(distributed=self.ddp)
+
                 if self.iter_num % self.args.eval_interval == 0 and self.master_process:
 
                     losses, num_steps_with_worse_loss = self.run_validation_step(
@@ -2502,6 +2567,11 @@ class Trainer:
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
+                            if self.per_token_metrics is not None:
+                                for dataset in self.args.multicontext_datasets:
+                                    self.per_token_metrics.count_training_batch(
+                                        dataset, self.Y_dict[dataset]
+                                    )
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
                             logits, loss = self.model(
@@ -2511,6 +2581,10 @@ class Trainer:
                                 dataset_idx=idx_ds if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
+                            if self.per_token_metrics is not None:
+                                self.per_token_metrics.count_training_batch(
+                                    current_dataset, self.Y
+                                )
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                         with torch.no_grad():
@@ -2661,8 +2735,10 @@ class Trainer:
                 if stop_reasons:
                     print(f"Stopping training due to: {', '.join(stop_reasons)}")
                     print(self.best_val_loss, self.best_iter, self.best_tokens)
+                    if self.per_token_metrics is not None:
+                        self.per_token_metrics.synchronize_training_counts(distributed=self.ddp)
                     if self.args.only_save_checkpoint_at_end:
-                        if not self.args.never_save_checkpoint:
+                        if self.master_process and not self.args.never_save_checkpoint:
                             self.save_checkpoint('ckpt.pt')
                             print(f"Saved checkpoint to {self.args.out_dir}")
 
