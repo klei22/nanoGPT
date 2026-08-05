@@ -68,4 +68,7 @@ The script writes per-file mel CSVs to
 values into `all_music.max.mel.csv`, prepares `data/mel_mc_int_music/`, trains
 into `out/mel_mc_int_music`, and then calls `data/mel_mc_int/demo_infer.sh`.
 Set `MEL_MC_SKIP_ENCODE=1` or `MEL_MC_SKIP_TRAIN=1` to reuse existing encoded
-CSVs or checkpoints while iterating.
+CSVs or checkpoints while iterating. The pipeline disables TensorBoard by default
+(`MEL_MC_TENSORBOARD=0`) so training does not import TensorFlow/TensorBoard in
+environments with incompatible NumPy/TensorFlow wheels; set
+`MEL_MC_TENSORBOARD=1` if your environment supports it.

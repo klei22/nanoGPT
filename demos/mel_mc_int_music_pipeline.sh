@@ -22,6 +22,7 @@ Environment overrides:
   MEL_MC_MAX_NEW_TOKENS   Inference frames to sample (default: 200)
   MEL_MC_SKIP_ENCODE      Reuse existing per-file CSVs in WORK_DIR/encoded (default: 0)
   MEL_MC_SKIP_TRAIN       Prepare data and run inference with existing OUT_DIR/ckpt.pt (default: 0)
+  MEL_MC_TENSORBOARD      Enable TensorBoard logging during training (default: 0)
 USAGE
 }
 
@@ -50,6 +51,7 @@ MAX_NEW_TOKENS="${MEL_MC_MAX_NEW_TOKENS:-200}"
 COMPILE_FLAG="${MEL_MC_COMPILE:-1}"
 SKIP_ENCODE="${MEL_MC_SKIP_ENCODE:-0}"
 SKIP_TRAIN="${MEL_MC_SKIP_TRAIN:-0}"
+TENSORBOARD_FLAG="${MEL_MC_TENSORBOARD:-0}"
 MEL_DIR="data/mel_spectrogram"
 TOOLS="data/mel_mc_int/mel_mc_int_tools.py"
 
@@ -124,6 +126,11 @@ if [[ "$COMPILE_FLAG" == "1" || "$COMPILE_FLAG" == "true" || "$COMPILE_FLAG" == 
 else
   TRAIN_COMPILE_ARG="--no-compile"
 fi
+if [[ "$TENSORBOARD_FLAG" == "1" || "$TENSORBOARD_FLAG" == "true" || "$TENSORBOARD_FLAG" == "True" ]]; then
+  TRAIN_TENSORBOARD_ARG="--tensorboard_log"
+else
+  TRAIN_TENSORBOARD_ARG="--no-tensorboard_log"
+fi
 
 if [[ "$SKIP_TRAIN" != "1" ]]; then
   python3 train.py \
@@ -145,6 +152,7 @@ if [[ "$SKIP_TRAIN" != "1" ]]; then
     --device "$DEVICE" \
     --dtype "$DTYPE" \
     "$TRAIN_COMPILE_ARG" \
+    "$TRAIN_TENSORBOARD_ARG" \
     --out_dir "$OUT_DIR"
 fi
 

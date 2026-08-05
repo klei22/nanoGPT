@@ -1,6 +1,7 @@
 # train.py
 from contextlib import nullcontext
 import csv
+import importlib
 import json
 import math
 import os
@@ -98,8 +99,6 @@ import torch.onnx
 import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
-
 from variations.model_variations import model_variation_dictionary
 
 from model import GPT, GPTConfig
@@ -108,6 +107,11 @@ from model import GPT, GPTConfig
 import tiktoken
 
 from train_args import parse_args
+
+
+def get_summary_writer_class():
+    return importlib.import_module("torch.utils.tensorboard").SummaryWriter
+
 
 class Trainer:
 
@@ -512,7 +516,7 @@ class Trainer:
             if self.args.csv_log:
                 self.args.csv_name = f"{sanitized_dataset}_{run_name}"
             log_subpath = os.path.join(self.args.tensorboard_log_dir, run_name)
-            self.writer = SummaryWriter(log_subpath)
+            self.writer = get_summary_writer_class()(log_subpath)
 
         # Wandb
         if self.args.wandb_log and self.master_process:
