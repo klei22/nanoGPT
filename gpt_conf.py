@@ -299,8 +299,9 @@ class GPTConfig:
     ## ReLUMax options
     relumax_divisor: float = 256.0
 
-    ## ReLUMax options
+    ## ReLU2Max options
     relu2max_divisor: float = 256.0
+    relu2max_use_kernel: bool = False
 
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0

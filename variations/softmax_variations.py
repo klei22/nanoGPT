@@ -564,17 +564,26 @@ class ReLU2Max(nn.Module):
         self.dim = dim
         self.relu2max_divisor = config.relu2max_divisor
         self.div_by_seq_len = config.div_by_seq_len
+        self.use_kernel = getattr(config, "relu2max_use_kernel", False)
+
+        if self.relu2max_divisor <= 0:
+            raise ValueError("relu2max_divisor must be positive")
+
+        if self.use_kernel:
+            # Keep torch.compile/Inductor optional for every other softmax variant.
+            from variations.relu2max_kernel import relu2max_kernel
+            self.relu2max_kernel = relu2max_kernel
 
     def forward(self, x):
 
-        result = torch.relu(x) ** 2 / self.relu2max_divisor
-
-        # divide by sequence length
-        if self.div_by_seq_len:
-            seq_len = x.shape[self.dim]
-            result = result / seq_len
-
-        return result
+        sequence_length = x.shape[self.dim] if self.div_by_seq_len else 1
+        if self.use_kernel:
+            return self.relu2max_kernel(
+                x, self.relu2max_divisor, sequence_length
+            )
+        return torch.relu(x).square() / (
+            self.relu2max_divisor * sequence_length
+        )
 
 
 class Softplus2Max(nn.Module):
