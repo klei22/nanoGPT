@@ -304,6 +304,41 @@ files from one export directory. The page sorts snapshots by the iteration in
 their filenames and provides previous/next/play controls plus a slider to step
 from the first validation export to the last.
 
+### Per-token loss and vocabulary coverage
+
+Pass `--log_per_token_metrics` to produce a report after every validation in
+`<out_dir>/per_token_metrics` (or set `--per_token_metrics_dir`). The report is
+kept out of TensorBoard and contains:
+
+* `per_token_metrics.csv`: one row per vocabulary token and evaluation, with
+  its escaped decoded text (for example, `\\n`), sampled train/validation
+  cross-entropy, evaluation sample counts, and the cumulative number of times
+  that target token was used by training;
+* `per_token_summary.csv`: mean, median, standard deviation, skew, excess
+  kurtosis, percentiles, range, coefficient of variation, and vocabulary
+  coverage for each metric; and
+* `per_token_metrics.html`: an interactive summary-statistics table and three
+  Plotly scatter plots. The loss plots order tokens from highest to lowest
+  validation loss and sampled training loss, respectively. The coverage plot
+  orders them from lowest to highest training occurrence and overlays both loss
+  series. All show escaped token text next to the token ID and provide
+  independently selectable loss and occurrence traces on separate axes. A
+  multi-select token picker also drives two historical graphs: sampled
+  train/validation loss versus evaluation iteration and versus cumulative
+  training appearances. The iteration graph also plots each selected token's
+  cumulative appearances on a right-hand y-axis. Every graph has independent
+  logarithmic-scale toggles for each available y-axis, so either, both, or
+  neither axis can use log scale. The viewer falls back to a second Plotly CDN
+  and displays an explicit diagnostic instead of silently showing blank graphs
+  if the plotting library or an individual graph fails to render.
+
+Per-token loss is always ordinary next-token cross-entropy, making reports
+comparable even when a custom aggregate training loss is selected. Only tokens
+sampled during evaluation have a loss value; the accompanying sample-count
+columns make sparse or unrepresentative validation estimates visible. Existing
+detail CSVs from versions before escaped token text was added are migrated
+automatically and retained when training resumes.
+
 ## TODO Section:
 
 TODO: Add links and descriptions to other Readme's and Demos.
