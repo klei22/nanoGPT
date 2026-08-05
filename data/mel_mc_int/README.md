@@ -52,3 +52,20 @@ reference mel metadata, reconstructs `generated.wav`, and writes a small
 `index.html` viewer. The viewer includes a browser-side file picker and cutoff
 field for auditioning/selecting the next source file before re-running the demo
 command.
+
+## Whole-folder music pipeline
+
+For a single command that encodes a directory of music files, concatenates the
+resulting mel-state CSV rows into one training CSV, prepares multicontext data,
+trains, and runs continuation inference, use:
+
+```bash
+bash demos/mel_mc_int_music_pipeline.sh path/to/music_dir path/to/prompt.wav 10.0
+```
+
+The script writes per-file mel CSVs to
+`data/mel_mc_int/music_pipeline_out/encoded/`, concatenates their `mel_*_q`
+values into `all_music.max.mel.csv`, prepares `data/mel_mc_int_music/`, trains
+into `out/mel_mc_int_music`, and then calls `data/mel_mc_int/demo_infer.sh`.
+Set `MEL_MC_SKIP_ENCODE=1` or `MEL_MC_SKIP_TRAIN=1` to reuse existing encoded
+CSVs or checkpoints while iterating.

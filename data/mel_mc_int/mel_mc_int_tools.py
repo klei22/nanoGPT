@@ -2,7 +2,7 @@
 """Utilities for mel-spectrogram integer multicontext datasets and demos."""
 from __future__ import annotations
 
-import argparse, csv, json, pickle, re, shutil, subprocess, sys, wave
+import argparse, csv, json, pickle, re, shutil, sys, wave
 from array import array
 from pathlib import Path
 from typing import Sequence
@@ -55,10 +55,102 @@ def read_mel_csv(path: Path):
     return header, cols, np.asarray(rows, dtype=np.int64), metadata
 
 
+
+def metadata_signature(metadata: dict | None) -> tuple:
+    if not metadata:
+        return ()
+    shape = metadata.get("shape", {})
+    waveform = metadata.get("waveform", {})
+    stft = metadata.get("stft", {})
+    mel = metadata.get("mel", {})
+    quantizer = metadata.get("quantizer", {})
+    return (
+        int(shape.get("bands", -1)),
+        int(waveform.get("sample_rate", -1)),
+        int(stft.get("n_fft", -1)),
+        int(stft.get("win_length", -1)),
+        int(stft.get("hop_length", -1)),
+        int(mel.get("n_mels", -1)),
+        float(mel.get("fmin", -1.0)),
+        float(mel.get("fmax", -1.0)),
+        int(quantizer.get("levels", -1)),
+        float(quantizer.get("db_min", 0.0)),
+        float(quantizer.get("db_max", 0.0)),
+        metadata.get("profile"),
+    )
+
+
+def metadata_for_states(reference: dict | None, states: np.ndarray) -> dict | None:
+    if not reference:
+        return None
+    metadata = dict(reference)
+    metadata["shape"] = dict(metadata["shape"])
+    metadata["shape"]["timesteps"] = int(states.shape[0])
+    metadata["waveform"] = dict(metadata["waveform"])
+    metadata["waveform"]["decoded_sample_count"] = int(
+        states.shape[0] * int(metadata["stft"]["hop_length"])
+    )
+    metadata["csv"] = dict(metadata.get("csv", {}))
+    metadata["csv"]["time_columns_included"] = False
+    metadata["integrity"] = dict(metadata["integrity"])
+    metadata["integrity"]["state_crc32"] = (
+        f"{canonical_state_crc(states, int(metadata['quantizer']['levels'])):08x}"
+    )
+    return metadata
+
+
+def write_mel_state_csv(path: Path, columns: Sequence[str], states: np.ndarray, metadata: dict | None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(columns)
+        if metadata:
+            f.write(CSV_METADATA_PREFIX + compact_json(metadata) + "\n")
+        writer.writerows(states.astype(int).tolist())
+
 def write_bin(path: Path, values: Sequence[int], typecode: str) -> None:
     with path.open('wb') as f:
         array(typecode, values).tofile(f)
 
+
+
+def cmd_concat_csv(args):
+    inputs = [Path(value).resolve() for value in args.input_csvs]
+    if not inputs:
+        raise ValueError("At least one input CSV is required.")
+    first_header, first_cols, first_states, first_metadata = read_mel_csv(inputs[0])
+    column_names = [name for _, name in first_cols]
+    signature = metadata_signature(first_metadata)
+    all_states = [first_states]
+    manifest_inputs = []
+    for path, states, metadata in [(inputs[0], first_states, first_metadata)]:
+        manifest_inputs.append({"path": str(path), "frames": int(states.shape[0])})
+    for input_csv in inputs[1:]:
+        _, cols, states, metadata = read_mel_csv(input_csv)
+        names = [name for _, name in cols]
+        if names != column_names:
+            raise ValueError(f"Mel columns in {input_csv} do not match {inputs[0]}.")
+        if signature and metadata_signature(metadata) != signature:
+            raise ValueError(f"Mel metadata settings in {input_csv} do not match {inputs[0]}.")
+        all_states.append(states)
+        manifest_inputs.append({"path": str(input_csv), "frames": int(states.shape[0])})
+    concatenated = np.concatenate(all_states, axis=0)
+    output_metadata = metadata_for_states(first_metadata, concatenated)
+    output_csv = Path(args.output_csv).resolve()
+    write_mel_state_csv(output_csv, column_names, concatenated, output_metadata)
+    if args.manifest_json:
+        with Path(args.manifest_json).open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "output_csv": str(output_csv),
+                    "total_frames": int(concatenated.shape[0]),
+                    "mel_columns": len(column_names),
+                    "inputs": manifest_inputs,
+                },
+                f,
+                indent=2,
+            )
+    print(output_csv)
 
 def cmd_prepare(args):
     input_csv = Path(args.input_csv).resolve()
@@ -109,7 +201,7 @@ def cmd_wrap_csv(args):
     input_csv = Path(args.input_csv); ref = read_csv_container(Path(args.reference_mel_csv))
     with input_csv.open(newline='', encoding='utf-8') as f:
         reader=csv.reader(f); header=next(reader); cols=mel_columns(header); states=np.asarray([[int(r[i]) for i,_ in cols] for r in reader if r], dtype=np.int64)
-    md = dict(ref.metadata); md['shape'] = dict(md['shape']); md['shape']['timesteps'] = int(states.shape[0]); md['waveform'] = dict(md['waveform']); md['waveform']['decoded_sample_count'] = int(states.shape[0] * int(md['stft']['hop_length'])); md['integrity'] = dict(md['integrity']); md['integrity']['state_crc32'] = f"{canonical_state_crc(states, int(md['quantizer']['levels'])):08x}"
+    md = metadata_for_states(ref.metadata, states)
     out=Path(args.output_csv); out.parent.mkdir(parents=True, exist_ok=True)
     with input_csv.open('r', encoding='utf-8') as src, out.open('w', encoding='utf-8') as dst:
         dst.write(src.readline()); dst.write(CSV_METADATA_PREFIX + compact_json(md) + '\n'); shutil.copyfileobj(src, dst)
@@ -130,6 +222,7 @@ def cmd_stitch(args):
 
 def main():
     p=argparse.ArgumentParser(); sub=p.add_subparsers(required=True)
+    a=sub.add_parser('concat-csv'); a.add_argument('input_csvs', nargs='+'); a.add_argument('--output_csv', required=True); a.add_argument('--manifest_json'); a.set_defaults(func=cmd_concat_csv)
     a=sub.add_parser('prepare'); a.add_argument('input_csv'); a.add_argument('--output_root',default='mel_mc_int'); a.add_argument('--train_ratio',type=float,default=.9); a.add_argument('--states_per_column',type=int); a.set_defaults(func=cmd_prepare)
     a=sub.add_parser('cut-prompt'); a.add_argument('mel_csv'); a.add_argument('--cutoff_s',type=float,required=True); a.add_argument('--output_dir',default='mel_mc_int_prompt'); a.add_argument('--timestep_ms',type=float,default=15); a.set_defaults(func=cmd_cut_prompt)
     a=sub.add_parser('wrap-csv'); a.add_argument('input_csv'); a.add_argument('--reference_mel_csv',required=True); a.add_argument('--output_csv',required=True); a.set_defaults(func=cmd_wrap_csv)
