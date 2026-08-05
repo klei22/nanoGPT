@@ -648,6 +648,15 @@ def parse_args():
     training_group.add_argument('--quantization_data_file', type=str, default=None, help="If set, export quantized weights/activations to a specified file (pkl).")
 
     # Model args
+    model_group.add_argument('--use_ngpt', default=False, action=argparse.BooleanOptionalAction,
+                             help='Enable the normalized Transformer architecture (arXiv:2410.01131)')
+    model_group.add_argument('--ngpt_eps', default=1e-6, type=float, help='Numerical epsilon for nGPT L2 normalization')
+    model_group.add_argument('--ngpt_alpha_init', default=0.05, type=float, help='Effective initial attention/MLP eigen learning rate')
+    model_group.add_argument('--ngpt_alpha_scale', default=None, type=float, help='Stored eigen-rate initialization; defaults to 1/sqrt(n_embd)')
+    model_group.add_argument('--ngpt_scale_init', default=1.0, type=float, help='Effective initial value for nGPT qk/MLP/logit scales')
+    model_group.add_argument('--ngpt_scale_scale', default=None, type=float, help='Stored scale initialization; defaults to 1/sqrt(n_embd)')
+    model_group.add_argument('--ngpt_normalize_qk', default=True, action=argparse.BooleanOptionalAction, help='Normalize queries and keys per head in nGPT')
+    model_group.add_argument('--ngpt_normalize_weights', default=True, action=argparse.BooleanOptionalAction, help='Retract nGPT matrix vectors to unit norm after optimizer steps')
     model_group.add_argument('--block_size', default=256, type=int)
     model_group.add_argument('--n_layer', default=6, type=int)
     model_group.add_argument('--n_head', default=6, type=int)

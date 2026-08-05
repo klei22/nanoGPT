@@ -6,6 +6,16 @@ import math
 
 @dataclass
 class GPTConfig:
+    # Normalized Transformer (nGPT, arXiv:2410.01131)
+    use_ngpt: bool = False
+    ngpt_eps: float = 1e-6
+    ngpt_alpha_init: float = 0.05
+    ngpt_alpha_scale: float | None = None
+    ngpt_scale_init: float = 1.0
+    ngpt_scale_scale: float | None = None
+    ngpt_normalize_qk: bool = True
+    ngpt_normalize_weights: bool = True
+
     attention_list: List[str] = field(default_factory=lambda: [])
     block_size: int = 1024
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
