@@ -1,0 +1,57 @@
+<!doctype html><meta charset='utf-8'><title>Isotropic Random-Distractor Report</title>
+<style>body{font:16px system-ui;margin:2rem;max-width:980px} svg{width:100%;height:auto;border:1px solid #ddd} code{background:#f4f4f5;padding:0.1rem 0.25rem} table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.35rem}</style>
+<h1>Isotropic Random-Distractor Model Exploration</h1>
+<p><b>Configuration:</b> <code>{&quot;seed&quot;: 19, &quot;trials&quot;: 500, &quot;M&quot;: 2048, &quot;s&quot;: 8.0, &quot;g&quot;: 2.5, &quot;dims&quot;: [32, 64, 128, 256, 512, 1024], &quot;margin_values&quot;: [-4, -2, 0, 2, 4], &quot;quantization_variances&quot;: [0.0, 0.001, 0.004, 0.016], &quot;architecture_gamma_values&quot;: [1, 2, 3], &quot;data_beta&quot;: 0.3333333333}</code></p>
+<h2>Prediction report</h2><p>The finite-vocabulary <code>1/d</code> prediction <b>holds</b> in this run, based on the largest absolute Monte Carlo-vs-theory error in <code>dimension_scaling.csv</code>. The mean-field curve should sit above the Monte Carlo estimate when Jensen's inequality is visible.</p>
+<h3>Dimension scaling: Monte Carlo vs formulas</h3><svg viewBox="0 0 760 320" role="img" aria-label="Dimension scaling: Monte Carlo vs formulas">
+<line x1="48" y1="272" x2="712" y2="272" stroke="#444"/><line x1="48" y1="48" x2="48" y2="272" stroke="#444"/>
+<text x="380.0" y="312" text-anchor="middle">d</text><text x="15" y="160.0" transform="rotate(-90 15 160.0)" text-anchor="middle">expected loss</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="48.0,49.8 69.4,165.6 112.3,222.7 197.9,251.3 369.3,264.9 712.0,271.8"/>
+<text x="592" y="48" fill="#2563eb">monte_carlo</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="2.5" points="48.0,54.6 69.4,166.8 112.3,222.9 197.9,251.0 369.3,265.0 712.0,272.0"/>
+<text x="592" y="66" fill="#dc2626">finite_theory</text>
+<polyline fill="none" stroke="#16a34a" stroke-width="2.5" points="48.0,48.0 69.4,165.1 112.3,222.5 197.9,250.9 369.3,265.0 712.0,272.0"/>
+<text x="592" y="84" fill="#16a34a">mean_field</text>
+</svg>
+<p><b>How to read it:</b> the blue line is simulated spherical distractors, red is the fixed-vocabulary expansion, and green is the large-vocabulary mean-field closure. Agreement between blue and red supports the theorem; a green line above blue is the Jensen upper-bound effect.</p>
+<h3>Approximation diagnostics</h3><svg viewBox="0 0 760 320" role="img" aria-label="Approximation diagnostics">
+<line x1="48" y1="272" x2="712" y2="272" stroke="#444"/><line x1="48" y1="48" x2="48" y2="272" stroke="#444"/>
+<text x="380.0" y="312" text-anchor="middle">d</text><text x="15" y="160.0" transform="rotate(-90 15 160.0)" text-anchor="middle">loss difference</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="48.0,48.0 69.4,213.2 112.3,254.5 197.9,248.4 369.3,259.7 712.0,257.8"/>
+<text x="592" y="48" fill="#2563eb">abs_error</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="2.5" points="48.0,184.3 69.4,242.2 112.3,256.7 197.9,243.6 369.3,269.1 712.0,272.0"/>
+<text x="592" y="66" fill="#dc2626">jensen_gap</text>
+</svg>
+<p><b>How to read it:</b> shrinking absolute error indicates the omitted terms decay with dimension. Positive Jensen gap means replacing the random partition sum by its mean overestimates expected loss.</p>
+<h3>Margin regimes</h3><svg viewBox="0 0 760 320" role="img" aria-label="Margin regimes">
+<line x1="48" y1="272" x2="712" y2="272" stroke="#444"/><line x1="48" y1="48" x2="48" y2="272" stroke="#444"/>
+<text x="380.0" y="312" text-anchor="middle">margin_m</text><text x="15" y="160.0" transform="rotate(-90 15 160.0)" text-anchor="middle">value</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="48.0,48.0 214.0,153.9 380.0,234.2 546.0,265.9 712.0,272.0"/>
+<text x="592" y="48" fill="#2563eb">baseline_softplus</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="2.5" points="48.0,218.0 214.0,223.7 380.0,245.0 546.0,266.3 712.0,272.0"/>
+<text x="592" y="66" fill="#dc2626">p0</text>
+<polyline fill="none" stroke="#16a34a" stroke-width="2.5" points="48.0,101.2 214.0,118.9 380.0,185.5 546.0,252.1 712.0,269.9"/>
+<text x="592" y="84" fill="#16a34a">variance_coefficient</text>
+</svg>
+<p><b>How to read it:</b> negative margins are hard contexts and have large <code>P0</code>, so the variance coefficient is large; positive margins are easy contexts and suppress distractor variance.</p>
+<h3>Added logit-noise / quantization prediction</h3><svg viewBox="0 0 760 320" role="img" aria-label="Added logit-noise / quantization prediction">
+<line x1="48" y1="272" x2="712" y2="272" stroke="#444"/><line x1="48" y1="48" x2="48" y2="272" stroke="#444"/>
+<text x="380.0" y="312" text-anchor="middle">sigma_q2</text><text x="15" y="160.0" transform="rotate(-90 15 160.0)" text-anchor="middle">delta loss</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="48.0,272.0 89.5,258.0 214.0,216.0 712.0,48.0"/>
+<text x="592" y="48" fill="#2563eb">predicted_delta_loss</text>
+</svg>
+<p><b>How to read it:</b> the model predicts smooth, approximately linear degradation with added independent zero-mean distractor noise. Abrupt cliffs would falsify the local independent-noise assumption.</p>
+<h3>Architecture and compute exponents</h3><svg viewBox="0 0 760 320" role="img" aria-label="Architecture and compute exponents">
+<line x1="48" y1="272" x2="712" y2="272" stroke="#444"/><line x1="48" y1="48" x2="48" y2="272" stroke="#444"/>
+<text x="380.0" y="312" text-anchor="middle">gamma</text><text x="15" y="160.0" transform="rotate(-90 15 160.0)" text-anchor="middle">exponent</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="2.5" points="48.0,48.0 380.0,182.4 712.0,227.2"/>
+<text x="592" y="48" fill="#2563eb">alpha_model</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="2.5" points="48.0,249.6 380.0,209.3 712.0,182.4"/>
+<text x="592" y="66" fill="#dc2626">N_star_compute_exponent</text>
+<polyline fill="none" stroke="#16a34a" stroke-width="2.5" points="48.0,115.2 380.0,155.5 712.0,182.4"/>
+<text x="592" y="84" fill="#16a34a">D_star_compute_exponent</text>
+<polyline fill="none" stroke="#9333ea" stroke-width="2.5" points="48.0,249.6 380.0,263.0 712.0,272.0"/>
+<text x="592" y="102" fill="#9333ea">loss_compute_exponent</text>
+</svg>
+<p><b>How to read it:</b> <code>gamma</code> converts width dimension to parameter count. The model exponent is conditional: <code>alpha=1/gamma</code>. Compute-optimal exponents additionally require an externally supplied data exponent.</p>
+<h2>Generated data files</h2><ul><li><code>dimension_scaling.csv</code></li><li><code>margin_regimes.csv</code></li><li><code>quantization_noise.csv</code></li><li><code>architecture_compute.csv</code></li></ul>
