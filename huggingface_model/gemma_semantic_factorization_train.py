@@ -132,6 +132,16 @@ def convert_original_ids(input_ids, id_map, device):
     return base_lookup[input_ids], feature_lookup[input_ids]
 
 
+def add_feature_embeddings(token_embeddings, feature_embeddings):
+    """Add auxiliary embeddings without promoting the model's activation dtype."""
+    return token_embeddings + feature_embeddings.to(dtype=token_embeddings.dtype)
+
+
+def apply_feature_head(head, hidden_states):
+    """Run an auxiliary head using the dtype of its parameters."""
+    return head(hidden_states.to(dtype=head.weight.dtype))
+
+
 def write_factorized_token_map(path, factorized_vocabulary: FactorizedVocabulary) -> None:
     import json
 
@@ -190,7 +200,8 @@ class FactorizedGemmaForCausalLM:
         label_features = feature_masks[:, 1:].clone()
         labels[attention_mask[:, 1:] == 0] = -100
         label_features[attention_mask[:, 1:] == 0] = -100
-        embeds = self.model.get_input_embeddings()(inputs) + self.feature_embedding(features)
+        token_embeddings = self.model.get_input_embeddings()(inputs)
+        embeds = add_feature_embeddings(token_embeddings, self.feature_embedding(features))
         outputs = self.model(inputs_embeds=embeds, attention_mask=attention_mask[:, :-1], output_hidden_states=True)
         hidden = outputs.hidden_states[-1]
         loss_fct = self.nn.CrossEntropyLoss(ignore_index=-100)
@@ -201,9 +212,9 @@ class FactorizedGemmaForCausalLM:
         space_targets[label_features == -100] = -100
         cap_targets[label_features == -100] = -100
         caps_targets[label_features == -100] = -100
-        space_loss = loss_fct(self.space_head(hidden).reshape(-1, 2), space_targets.reshape(-1))
-        cap_loss = loss_fct(self.capitalized_head(hidden).reshape(-1, 2), cap_targets.reshape(-1))
-        caps_loss = loss_fct(self.all_caps_head(hidden).reshape(-1, 2), caps_targets.reshape(-1))
+        space_loss = loss_fct(apply_feature_head(self.space_head, hidden).reshape(-1, 2), space_targets.reshape(-1))
+        cap_loss = loss_fct(apply_feature_head(self.capitalized_head, hidden).reshape(-1, 2), cap_targets.reshape(-1))
+        caps_loss = loss_fct(apply_feature_head(self.all_caps_head, hidden).reshape(-1, 2), caps_targets.reshape(-1))
         return base_loss + space_loss + cap_loss + caps_loss
 
 

@@ -2,9 +2,39 @@ from huggingface_model.gemma_semantic_factorization_train import (
     ALL_CAPS_FEATURE,
     CAPITALIZED_FEATURE,
     SPACE_FEATURE,
+    add_feature_embeddings,
+    apply_feature_head,
     build_factorized_vocabulary,
     canonicalize_token,
 )
+
+
+def test_auxiliary_features_follow_consumer_dtype():
+    class FakeTensor:
+        def __init__(self, dtype):
+            self.dtype = dtype
+
+        def to(self, *, dtype):
+            return FakeTensor(dtype)
+
+        def __add__(self, other):
+            assert other.dtype == self.dtype
+            return FakeTensor(self.dtype)
+
+    class FakeHead:
+        weight = FakeTensor("float32")
+
+        def __call__(self, hidden_states):
+            assert hidden_states.dtype == self.weight.dtype
+            return hidden_states
+
+    token_embeddings = FakeTensor("bfloat16")
+    feature_embeddings = FakeTensor("float32")
+    combined = add_feature_embeddings(token_embeddings, feature_embeddings)
+    logits = apply_feature_head(FakeHead(), combined)
+
+    assert combined.dtype == "bfloat16"
+    assert logits.dtype == "float32"
 
 
 def test_canonicalize_token_composes_space_and_case_features():
