@@ -1,5 +1,6 @@
 import json
 import subprocess
+import shutil
 import time
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -125,10 +126,20 @@ def load_configurations(path: str, fmt: str) -> list[dict]:
 
 RUN_NAME_VAR = "${RUN_NAME}"
 DISTILLATION_SOURCE_VAR = "${DISTILLATION_SOURCE}"
+PREV_OUT_DIR_VAR = "${PREV_OUT_DIR}"
+PREV_CKPT_VAR = "${PREV_CKPT}"
+STAGE_OUT_DIR_VAR = "${STAGE_OUT_DIR}"
+SEQUENCE_CONFIG_KEYS = {"training_sequence"}
 RESERVED_CONFIG_KEYS = {
     "distillation_source_path",
     "distillation_source_run_name",
     "run_name_override",
+    "training_sequence",
+    "script",
+    "train_script",
+    "stage_name",
+    "resume_from_previous",
+    "checkpoint_name",
 }
 DEFAULT_SENTINEL = "default"
 
@@ -155,21 +166,54 @@ def expand_range(val):
     return val
 
 
-def _substitute_config_vars(obj, run_name: str, distillation_source_path: str | None = None):
+def _substitute_config_vars(
+    obj,
+    run_name: str,
+    distillation_source_path: str | None = None,
+    previous_out_dir: str | None = None,
+    previous_ckpt: str | None = None,
+    stage_out_dir: str | None = None,
+):
     """Recursively substitute launcher-only placeholders inside ``obj``."""
+    replacements = {
+        RUN_NAME_VAR: run_name,
+        DISTILLATION_SOURCE_VAR: distillation_source_path,
+        PREV_OUT_DIR_VAR: previous_out_dir,
+        PREV_CKPT_VAR: previous_ckpt,
+        STAGE_OUT_DIR_VAR: stage_out_dir,
+    }
     if isinstance(obj, str):
-        substituted = obj.replace(RUN_NAME_VAR, run_name)
-        if DISTILLATION_SOURCE_VAR in substituted:
-            if distillation_source_path is None:
-                raise ValueError(
-                    f"{DISTILLATION_SOURCE_VAR} was used but distillation_source_path was not set."
-                )
-            substituted = substituted.replace(DISTILLATION_SOURCE_VAR, distillation_source_path)
+        substituted = obj
+        for token, value in replacements.items():
+            if token in substituted:
+                if value is None:
+                    raise ValueError(f"{token} was used but no value is available for this stage.")
+                substituted = substituted.replace(token, value)
         return substituted
     if isinstance(obj, list):
-        return [_substitute_config_vars(o, run_name, distillation_source_path) for o in obj]
+        return [
+            _substitute_config_vars(
+                o,
+                run_name,
+                distillation_source_path,
+                previous_out_dir,
+                previous_ckpt,
+                stage_out_dir,
+            )
+            for o in obj
+        ]
     if isinstance(obj, dict):
-        return {k: _substitute_config_vars(v, run_name, distillation_source_path) for k, v in obj.items()}
+        return {
+            k: _substitute_config_vars(
+                v,
+                run_name,
+                distillation_source_path,
+                previous_out_dir,
+                previous_ckpt,
+                stage_out_dir,
+            )
+            for k, v in obj.items()
+        }
     return obj
 
 
@@ -461,8 +505,12 @@ def generate_combinations(config: dict):
             if not (isinstance(v, dict) and 'conditions' in v)
                and k != 'parameter_groups'
         }
-        # Ensure each base value is iterable for cartesian product
-        base = {k: (v if isinstance(v, list) else [v]) for k, v in base.items()}
+        # Ensure each base value is iterable for cartesian product. Sequential
+        # stage lists are atomic configs, not a sweep axis.
+        base = {
+            k: ([v] if k in SEQUENCE_CONFIG_KEYS else (v if isinstance(v, list) else [v]))
+            for k, v in base.items()
+        }
 
         conditionals = {
             k: v for k, v in cfg.items()
@@ -720,11 +768,24 @@ def append_progress(log_file: Path, message: str) -> None:
         f.write(f"[{timestamp}] {message}\n")
 
 
+def _script_for_config(combo: dict) -> str:
+    script = combo.get("train_script", combo.get("script", "train.py"))
+    if script in {"train", "train.py"}:
+        return "train.py"
+    if script in {"train_recurrent", "train_recurrent.py", "recurrent"}:
+        return "train_recurrent.py"
+    if script in {"train_mezo", "train_mezo.py", "mezo"}:
+        return "train_mezo.py"
+    if not str(script).endswith(".py"):
+        raise ValueError(f"Unknown training script alias: {script}")
+    return str(script)
+
+
 def build_command(combo: dict) -> list[str]:
     """
-    Construct the command-line invocation for train.py.
+    Construct the command-line invocation for the selected training script.
     """
-    cmd = ['python3', 'train.py']
+    cmd = ['python3', _script_for_config(combo)]
     for k, v in combo.items():
         if k.startswith('_') or k in RESERVED_CONFIG_KEYS:
             continue
@@ -744,6 +805,122 @@ def build_command(combo: dict) -> list[str]:
         else:
             cmd += [f"--{k}", str(v)]
     return cmd
+
+
+def _stage_out_dir(parent_out_dir: str, index: int, stage: dict) -> str:
+    name = stage.get("stage_name", f"stage{index:02d}")
+    safe_name = str(name).replace(os.sep, "_")
+    return os.path.join(parent_out_dir, f"{index:02d}_{safe_name}")
+
+
+def _prepare_stage_config(
+    base_combo: dict,
+    stage: dict,
+    parent_out_dir: str,
+    run_name: str,
+    index: int,
+    previous_out_dir: str | None,
+    previous_ckpt: str | None,
+    distillation_source_path: str | None,
+) -> dict:
+    stage_out_dir = stage.get("out_dir", _stage_out_dir(parent_out_dir, index, stage))
+    merged = {
+        k: deepcopy(v)
+        for k, v in base_combo.items()
+        if k not in {"training_sequence", "out_dir", "tensorboard_run_name"}
+    }
+    merged.update(deepcopy(stage))
+    merged["out_dir"] = stage_out_dir
+    merged["tensorboard_run_name"] = f"{run_name}/{stage.get('stage_name', f'stage{index:02d}')}"
+
+    if merged.get("resume_from_previous"):
+        if previous_ckpt is None or previous_out_dir is None:
+            raise ValueError("resume_from_previous is set on the first stage or before a checkpoint exists")
+        script = _script_for_config(merged)
+        checkpoint_name = merged.get("checkpoint_name", "ckpt.pt")
+        if script in {"train.py", "train_mezo.py"}:
+            os.makedirs(stage_out_dir, exist_ok=True)
+            shutil.copy2(previous_ckpt, os.path.join(stage_out_dir, checkpoint_name))
+            merged.setdefault("init_from", "resume")
+            merged.setdefault("init_from_ckpt", checkpoint_name)
+        elif script == "train_recurrent.py":
+            merged.setdefault("resume_ckpt", previous_ckpt)
+        else:
+            merged.setdefault("prev_run_ckpt", previous_out_dir)
+            merged.setdefault("init_from", "prev_run")
+            merged.setdefault("init_from_ckpt", checkpoint_name)
+
+    return _substitute_config_vars(
+        merged,
+        run_name,
+        distillation_source_path=distillation_source_path,
+        previous_out_dir=previous_out_dir,
+        previous_ckpt=previous_ckpt,
+        stage_out_dir=stage_out_dir,
+    )
+
+
+def _print_parameters(combo: dict) -> None:
+    console = Console()
+    table = Table("Parameters", show_header=False)
+    for k, v in combo.items():
+        if k.startswith('_') or k in RESERVED_CONFIG_KEYS:
+            continue
+        table.add_row(k, str(v))
+    console.print(table)
+
+
+def _run_command(combo: dict, run_name: str) -> tuple[float, str]:
+    _print_parameters(combo)
+    cmd = build_command(combo)
+    print(f"Running: {' '.join(cmd)}")
+    run_started_at = time.perf_counter()
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError:
+        print(f"[red]Process exited with error for run:[/] {run_name}")
+    return time.perf_counter() - run_started_at, datetime.now(timezone.utc).isoformat()
+
+
+def _run_training_sequence(
+    combo: dict,
+    run_name: str,
+    distillation_source_path: str | None,
+) -> tuple[float, str, str]:
+    parent_out_dir = combo["out_dir"]
+    stages = combo.get("training_sequence")
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("training_sequence must be a non-empty list of stage mappings")
+
+    previous_out_dir = None
+    previous_ckpt = None
+    total_time = 0.0
+    completed_at = datetime.now(timezone.utc).isoformat()
+    final_out_dir = parent_out_dir
+    for index, stage in enumerate(stages, 1):
+        if not isinstance(stage, dict):
+            raise TypeError("Each training_sequence entry must be a mapping")
+        stage_combo = _prepare_stage_config(
+            combo,
+            stage,
+            parent_out_dir,
+            run_name,
+            index,
+            previous_out_dir,
+            previous_ckpt,
+            distillation_source_path,
+        )
+        elapsed, completed_at = _run_command(stage_combo, f"{run_name}:{stage_combo.get('stage_name', index)}")
+        total_time += elapsed
+        final_out_dir = stage_combo["out_dir"]
+        checkpoint_name = stage_combo.get("checkpoint_name", "ckpt.pt")
+        previous_out_dir = final_out_dir
+        previous_ckpt = os.path.join(final_out_dir, checkpoint_name)
+        if _script_for_config(stage_combo) == "train_recurrent.py" and not os.path.exists(previous_ckpt):
+            recurrent_ckpt = os.path.join(final_out_dir, "ckpt_lat.pt")
+            if os.path.exists(recurrent_ckpt):
+                previous_ckpt = recurrent_ckpt
+    return total_time, completed_at, final_out_dir
 
 
 def run_experiment(
@@ -797,36 +974,35 @@ def run_experiment(
         )
         combo["distillation_source_path"] = distillation_source_path
 
-    # Substitute launcher-only tokens in string parameters
-    combo = _substitute_config_vars(
-        combo,
-        run_name,
-        distillation_source_path=distillation_source_path,
-    )
+    # Substitute launcher-only tokens in string parameters that are available
+    # before stage-specific values exist. For sequential runs, defer stage-local
+    # placeholders such as ${PREV_CKPT} until each stage is prepared.
+    if combo.get("training_sequence"):
+        combo = {
+            k: (v if k == "training_sequence" else _substitute_config_vars(
+                v,
+                run_name,
+                distillation_source_path=distillation_source_path,
+            ))
+            for k, v in combo.items()
+        }
+        run_total_time_s, run_completed_at, metrics_out_dir = _run_training_sequence(
+            combo,
+            run_name,
+            distillation_source_path,
+        )
+    else:
+        combo = _substitute_config_vars(
+            combo,
+            run_name,
+            distillation_source_path=distillation_source_path,
+        )
+        run_total_time_s, run_completed_at = _run_command(combo, run_name)
+        metrics_out_dir = combo['out_dir']
 
-    # Show parameters
-    console = Console()
-    table = Table("Parameters", show_header=False)
-    for k, v in combo.items():
-        if k.startswith('_') or k in RESERVED_CONFIG_KEYS:
-            continue
-        table.add_row(k, str(v))
-    console.print(table)
-
-    # Build and run
-    cmd = build_command(combo)
-    print(f"Running: {' '.join(cmd)}")
-    run_started_at = time.perf_counter()
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError:
-        print(f"[red]Process exited with error for run:[/] {run_name}")
-    run_total_time_s = time.perf_counter() - run_started_at
-    run_completed_at = datetime.now(timezone.utc).isoformat()
-    
     # Read metrics (use existing or nan on failure)
     try:
-        metrics = read_metrics(str(combo['out_dir']))
+        metrics = read_metrics(str(metrics_out_dir))
     except Exception:
         metrics = {k: float("nan") for k in METRIC_KEYS}
 
