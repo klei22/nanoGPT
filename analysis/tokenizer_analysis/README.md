@@ -146,6 +146,29 @@ Evaluation should therefore include held-out negative log-likelihood,
 tokenization round trips, tokens per byte, and generation throughput—not only
 the number of removable rows.
 
+### Training benchmark
+
+The Hugging Face harness now defaults to 1,000 training steps over 10% of
+WikiText-2 and evaluates every 100 steps on 20 held-out batches. Install the
+runtime dependencies and run:
+
+```bash
+pip install torch transformers datasets pyyaml matplotlib
+python huggingface_model/gemma_semantic_factorization_train.py \
+  --output-dir gemma_factorization_run
+```
+
+For each validation point, `benchmark.yaml` is replaced atomically with the
+complete results collected so far. It includes validation loss, perplexity,
+parameter counts, train/evaluation throughput, and the mean loss/count for each
+observed original token. Factorized-arm token records additionally contain the
+base token ID, base spelling, and feature mask. `validation_loss.png` compares
+both arms over time, while files such as
+`factorized_token_loss_step_000100.png` show the 30 most frequent validation
+tokens at that checkpoint. Use `--steps`, `--validation-interval`,
+`--validation-batches`, `--split`, and `--validation-split` to scale the basic
+benchmark up or down.
+
 This repository contains the **Open Source CJK Analysis Tool**, a Python script (`open_source_cjk_analysis.py`) that provides detailed analysis of tokenizers with respect to Chinese (C), Japanese (J), and Korean (K) characters. The tool can analyze token coverage, symbol representation, and overlaps among these languages in tokenizer vocabularies.
 
 ## Features
