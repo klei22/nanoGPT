@@ -104,7 +104,9 @@ if (( ${#MEL_CSVS[@]} == 0 )); then
   exit 1
 fi
 
-python3 "$TOOLS" concat-csv "${MEL_CSVS[@]}" \
+CSV_INPUT_LIST="$WORK_DIR/encoded_csvs.txt"
+printf '%s\n' "${MEL_CSVS[@]}" > "$CSV_INPUT_LIST"
+python3 "$TOOLS" concat-csv --input_list "$CSV_INPUT_LIST" \
   --output_csv "$CONCAT_CSV" \
   --manifest_json "$CONCAT_MANIFEST"
 

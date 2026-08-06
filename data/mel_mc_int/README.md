@@ -72,3 +72,15 @@ CSVs or checkpoints while iterating. The pipeline disables TensorBoard by defaul
 (`MEL_MC_TENSORBOARD=0`) so training does not import TensorFlow/TensorBoard in
 environments with incompatible NumPy/TensorFlow wheels; set
 `MEL_MC_TENSORBOARD=1` if your environment supports it.
+
+Both concatenation and dataset preparation are streaming operations. They scan
+the CSV data in multiple passes for validation and metadata, but never hold the
+combined state matrix in memory. Consequently, peak memory is bounded by one
+CSV row during concatenation and by `--buffer_rows` per mel band during
+preparation (4096 rows by default, approximately 3 MiB for 384 bands of
+16-bit states). This is suitable for large music folders; the tradeoff is extra
+sequential disk reads. Make sure the output filesystem has room for the combined
+CSV plus the train/validation binaries. The folder pipeline also passes inputs
+through a newline-delimited list file instead of placing every filename on the
+command line, avoiding the operating system's command-argument size limit for
+very large collections.

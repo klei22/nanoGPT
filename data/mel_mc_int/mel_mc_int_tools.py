@@ -2,7 +2,7 @@
 """Utilities for mel-spectrogram integer multicontext datasets and demos."""
 from __future__ import annotations
 
-import argparse, csv, json, pickle, re, shutil, sys, wave
+import argparse, csv, json, pickle, re, shutil, sys, wave, zlib
 from array import array
 from pathlib import Path
 from typing import Sequence
@@ -53,6 +53,48 @@ def read_mel_csv(path: Path):
     if len(rows) < 2:
         raise ValueError("Need at least two mel rows")
     return header, cols, np.asarray(rows, dtype=np.int64), metadata
+
+
+def inspect_mel_csv(path: Path):
+    """Read only a mel CSV's header and metadata, never its state matrix."""
+    metadata = None
+    header = None
+    with path.open(newline="", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith(CSV_METADATA_PREFIX):
+                metadata = json.loads(stripped[len(CSV_METADATA_PREFIX):])
+                continue
+            if stripped.startswith("#"):
+                continue
+            if header is None:
+                header = next(csv.reader([line]))
+                continue
+            break
+    if header is None:
+        raise ValueError(f"CSV has no header: {path}")
+    return header, mel_columns(header), metadata
+
+
+def iter_mel_states(path: Path, column_indexes: Sequence[int]):
+    """Yield one validated state row at a time with bounded memory usage."""
+    with path.open(newline="", encoding="utf-8") as f:
+        header_seen = False
+        for row in csv.reader(f):
+            if not row:
+                continue
+            first = row[0].strip()
+            if first.startswith("#"):
+                continue
+            if not header_seen:
+                header_seen = True
+                continue
+            try:
+                yield [int(row[index]) for index in column_indexes]
+            except (IndexError, ValueError) as exc:
+                raise ValueError(f"Invalid mel state row in {path}: {row[:4]}") from exc
 
 
 
@@ -115,35 +157,63 @@ def write_bin(path: Path, values: Sequence[int], typecode: str) -> None:
 
 
 def cmd_concat_csv(args):
-    inputs = [Path(value).resolve() for value in args.input_csvs]
+    input_values = list(args.input_csvs)
+    if args.input_list:
+        input_values.extend(
+            line for line in Path(args.input_list).read_text(encoding="utf-8").splitlines() if line
+        )
+    inputs = [Path(value).resolve() for value in input_values]
     if not inputs:
         raise ValueError("At least one input CSV is required.")
-    first_header, first_cols, first_states, first_metadata = read_mel_csv(inputs[0])
+    _, first_cols, first_metadata = inspect_mel_csv(inputs[0])
     column_names = [name for _, name in first_cols]
     signature = metadata_signature(first_metadata)
-    all_states = [first_states]
     manifest_inputs = []
-    for path, states, metadata in [(inputs[0], first_states, first_metadata)]:
-        manifest_inputs.append({"path": str(path), "frames": int(states.shape[0])})
-    for input_csv in inputs[1:]:
-        _, cols, states, metadata = read_mel_csv(input_csv)
+    total_frames = 0
+    state_crc = 0
+    levels = int((first_metadata or {}).get("quantizer", {}).get("levels", 64))
+    crc_dtype = np.uint8 if levels <= 256 else np.dtype("<u2")
+    for input_csv in inputs:
+        _, cols, metadata = inspect_mel_csv(input_csv)
         names = [name for _, name in cols]
         if names != column_names:
             raise ValueError(f"Mel columns in {input_csv} do not match {inputs[0]}.")
         if signature and metadata_signature(metadata) != signature:
             raise ValueError(f"Mel metadata settings in {input_csv} do not match {inputs[0]}.")
-        all_states.append(states)
-        manifest_inputs.append({"path": str(input_csv), "frames": int(states.shape[0])})
-    concatenated = np.concatenate(all_states, axis=0)
-    output_metadata = metadata_for_states(first_metadata, concatenated)
+        frames = 0
+        indexes = [index for index, _ in cols]
+        for row in iter_mel_states(input_csv, indexes):
+            state_crc = zlib.crc32(np.asarray(row, dtype=crc_dtype).tobytes(), state_crc)
+            frames += 1
+        if frames < 2:
+            raise ValueError(f"Need at least two mel rows in {input_csv}")
+        total_frames += frames
+        manifest_inputs.append({"path": str(input_csv), "frames": frames})
+
+    output_metadata = None
+    if first_metadata:
+        output_metadata = dict(first_metadata)
+        output_metadata["shape"] = dict(output_metadata["shape"], timesteps=total_frames)
+        output_metadata["waveform"] = dict(output_metadata["waveform"])
+        output_metadata["waveform"]["decoded_sample_count"] = total_frames * int(output_metadata["stft"]["hop_length"])
+        output_metadata["csv"] = dict(output_metadata.get("csv", {}), time_columns_included=False)
+        output_metadata["integrity"] = dict(output_metadata["integrity"], state_crc32=f"{state_crc & 0xffffffff:08x}")
     output_csv = Path(args.output_csv).resolve()
-    write_mel_state_csv(output_csv, column_names, concatenated, output_metadata)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with output_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(column_names)
+        if output_metadata:
+            f.write(CSV_METADATA_PREFIX + compact_json(output_metadata) + "\n")
+        for input_csv in inputs:
+            _, cols, _ = inspect_mel_csv(input_csv)
+            writer.writerows(iter_mel_states(input_csv, [index for index, _ in cols]))
     if args.manifest_json:
         with Path(args.manifest_json).open("w", encoding="utf-8") as f:
             json.dump(
                 {
                     "output_csv": str(output_csv),
-                    "total_frames": int(concatenated.shape[0]),
+                    "total_frames": total_frames,
                     "mel_columns": len(column_names),
                     "inputs": manifest_inputs,
                 },
@@ -154,25 +224,51 @@ def cmd_concat_csv(args):
 
 def cmd_prepare(args):
     input_csv = Path(args.input_csv).resolve()
-    _, cols, states, metadata = read_mel_csv(input_csv)
+    if args.buffer_rows < 1:
+        raise ValueError("--buffer_rows must be at least 1")
+    _, cols, metadata = inspect_mel_csv(input_csv)
     levels = args.states_per_column or int((metadata or {}).get('quantizer', {}).get('levels', 64))
-    if states.min() < 0 or states.max() >= levels:
-        raise ValueError(f"Mel states [{states.min()}, {states.max()}] exceed [0,{levels-1}]")
+    indexes = [index for index, _ in cols]
+    rows = 0
+    minimum, maximum = levels, -1
+    for row in iter_mel_states(input_csv, indexes):
+        minimum = min(minimum, min(row)); maximum = max(maximum, max(row)); rows += 1
+    if rows < 2:
+        raise ValueError("Need at least two mel rows")
+    if minimum < 0 or maximum >= levels:
+        raise ValueError(f"Mel states [{minimum}, {maximum}] exceed [0,{levels-1}]")
     out = REPO_ROOT / 'data' / args.output_root
     out.mkdir(parents=True, exist_ok=True)
-    train_n = int(states.shape[0] * args.train_ratio)
+    train_n = int(rows * args.train_ratio)
     typecode, dtype_name = dtype_for_vocab(levels)
-    manifest = {"tokenizer":"mel_integer_range_multicontext_manifest","source_mel_csv":str(input_csv),"rows":int(states.shape[0]),"train_rows":train_n,"val_rows":int(states.shape[0]-train_n),"output_root":args.output_root,"multicontext_datasets":[],"columns":[],"roundtrip_metadata":metadata}
+    manifest = {"tokenizer":"mel_integer_range_multicontext_manifest","source_mel_csv":str(input_csv),"rows":rows,"train_rows":train_n,"val_rows":rows-train_n,"output_root":args.output_root,"multicontext_datasets":[],"columns":[],"roundtrip_metadata":metadata}
     for j, (_, name) in enumerate(cols):
         cdir = out / name
         cdir.mkdir(parents=True, exist_ok=True)
-        vals = states[:, j].astype(int).tolist()
-        write_bin(cdir/'train.bin', vals[:train_n], typecode)
-        write_bin(cdir/'val.bin', vals[train_n:], typecode)
-        meta = {"tokenizer":"csv_integer_range","vocab_size":levels,"source_csv":str(input_csv),"source_column":name,"context_name":name,"column_index":j,"has_header":True,"int_min":0,"int_max":levels-1,"value_encoding":"token_id = raw_integer_value","value_decoding":"raw_integer_value = token_id","dtype":dtype_name,"samples":int(states.shape[0]),"train_ratio":float(args.train_ratio),"mel_mc_int":True}
+        meta = {"tokenizer":"csv_integer_range","vocab_size":levels,"source_csv":str(input_csv),"source_column":name,"context_name":name,"column_index":j,"has_header":True,"int_min":0,"int_max":levels-1,"value_encoding":"token_id = raw_integer_value","value_decoding":"raw_integer_value = token_id","dtype":dtype_name,"samples":rows,"train_ratio":float(args.train_ratio),"mel_mc_int":True}
         with (cdir/'meta.pkl').open('wb') as f: pickle.dump(meta, f)
         manifest['multicontext_datasets'].append(f"{args.output_root}/{name}")
         manifest['columns'].append(meta)
+    # Keep only one bounded buffer per mel band. This is independent of the
+    # number and duration of source tracks (about 3 MiB at the defaults).
+    handles = [(out / name / 'train.bin').open('wb') for _, name in cols]
+    buffers = [array(typecode) for _ in cols]
+    try:
+        for row_number, row in enumerate(iter_mel_states(input_csv, indexes)):
+            if row_number == train_n:
+                for handle, buffer in zip(handles, buffers): buffer.tofile(handle); handle.close()
+                handles = [(out / name / 'val.bin').open('wb') for _, name in cols]
+                buffers = [array(typecode) for _ in cols]
+            for buffer, value in zip(buffers, row): buffer.append(value)
+            if len(buffers[0]) >= args.buffer_rows:
+                for handle, buffer in zip(handles, buffers): buffer.tofile(handle); del buffer[:]
+        for handle, buffer in zip(handles, buffers): buffer.tofile(handle)
+    finally:
+        for handle in handles:
+            if not handle.closed: handle.close()
+    if train_n == rows:
+        for _, name in cols:
+            (out / name / 'val.bin').touch()
     with (out/'manifest.json').open('w', encoding='utf-8') as f: json.dump(manifest, f, indent=2)
     print(out)
 
@@ -222,8 +318,8 @@ def cmd_stitch(args):
 
 def main():
     p=argparse.ArgumentParser(); sub=p.add_subparsers(required=True)
-    a=sub.add_parser('concat-csv'); a.add_argument('input_csvs', nargs='+'); a.add_argument('--output_csv', required=True); a.add_argument('--manifest_json'); a.set_defaults(func=cmd_concat_csv)
-    a=sub.add_parser('prepare'); a.add_argument('input_csv'); a.add_argument('--output_root',default='mel_mc_int'); a.add_argument('--train_ratio',type=float,default=.9); a.add_argument('--states_per_column',type=int); a.set_defaults(func=cmd_prepare)
+    a=sub.add_parser('concat-csv'); a.add_argument('input_csvs', nargs='*'); a.add_argument('--input_list', help='newline-delimited input paths (avoids shell argument limits)'); a.add_argument('--output_csv', required=True); a.add_argument('--manifest_json'); a.set_defaults(func=cmd_concat_csv)
+    a=sub.add_parser('prepare'); a.add_argument('input_csv'); a.add_argument('--output_root',default='mel_mc_int'); a.add_argument('--train_ratio',type=float,default=.9); a.add_argument('--states_per_column',type=int); a.add_argument('--buffer_rows', type=int, default=4096, help='rows buffered per mel band while writing (default: 4096)'); a.set_defaults(func=cmd_prepare)
     a=sub.add_parser('cut-prompt'); a.add_argument('mel_csv'); a.add_argument('--cutoff_s',type=float,required=True); a.add_argument('--output_dir',default='mel_mc_int_prompt'); a.add_argument('--timestep_ms',type=float,default=15); a.set_defaults(func=cmd_cut_prompt)
     a=sub.add_parser('wrap-csv'); a.add_argument('input_csv'); a.add_argument('--reference_mel_csv',required=True); a.add_argument('--output_csv',required=True); a.set_defaults(func=cmd_wrap_csv)
     a=sub.add_parser('stitch-wav'); a.add_argument('--prompt_wav',required=True); a.add_argument('--continuation_wav',required=True); a.add_argument('--output_wav',required=True); a.set_defaults(func=cmd_stitch)
