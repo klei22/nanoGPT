@@ -1,0 +1,33 @@
+# Compare the legacy shared QK norm scale with separate per-channel Q/K gains.
+---
+named_static_groups:
+  - named_group: "shared_scale"
+    use_qk_norm_scale_per_channel: [false]
+  - named_group: "per_channel_q_and_k_scale"
+    use_qk_norm_scale_per_channel: [true]
+
+parameter_groups:
+  - named_group_alternates:
+      - "shared_scale"
+      - "per_channel_q_and_k_scale"
+
+max_iters: [10000]
+eval_interval: [500]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+device: ["cuda"]
+dtype: ["float16"]
+dataset: ["minipile"]
+
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+compile: [true]
+never_save_checkpoint: [true]
+# Keep this architecture comparison independent of optional TensorBoard/
+# TensorFlow binary dependencies. Metrics are still printed by the trainer.
+tensorboard_log: [false]

@@ -39,6 +39,33 @@ def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
         )
 
     return group_sizes, head_to_group
+
+
+def _init_qk_norm_scale(module, config, qk_head_dim):
+    """Initialize either the legacy scalar scale or separate Q/K channel gains."""
+    module.use_qk_norm_scale_per_channel = getattr(
+        config, "use_qk_norm_scale_per_channel", False
+    )
+    if not module.use_qk_norm_scale:
+        return
+
+    sequence_length = config.block_size
+    initial_logit_scale = math.log2(sequence_length * sequence_length - sequence_length)
+    if module.use_qk_norm_scale_per_channel:
+        # Splitting sqrt(g0) evenly between Q and K preserves the legacy initial
+        # logit scale while allowing the two projections to learn independently.
+        initial_gain = math.sqrt(initial_logit_scale)
+        module.qk_norm_q_gain = nn.Parameter(torch.full((qk_head_dim,), initial_gain))
+        module.qk_norm_k_gain = nn.Parameter(torch.full((qk_head_dim,), initial_gain))
+    else:
+        module.qk_norm_factor = nn.Parameter(torch.tensor(initial_logit_scale))
+
+
+def _apply_qk_channel_gains(module, q, k):
+    if module.use_qk_norm_scale and module.use_qk_norm_scale_per_channel:
+        q = q * module.qk_norm_q_gain
+        k = k * module.qk_norm_k_gain
+    return q, k
 # Mamba related imports
 # if torch.cuda.is_available():
 #     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -195,11 +222,7 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
-        # qk norm factor
-        if self.use_qk_norm_scale:
-            L = config.block_size
-            g0 = math.log2(L*L - L)
-            self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
+        _init_qk_norm_scale(self, config, config.n_embd // self.n_head)
 
         self.flash = True
         if self.window_size is not None:
@@ -331,6 +354,7 @@ class CausalSelfAttention(nn.Module):
         if self.use_qk_norm:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
             k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_channel_gains(self, q, k)
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -344,8 +368,10 @@ class CausalSelfAttention(nn.Module):
             # Flash QK Norm
             if self.use_qk_norm_scale:
                 # pre-scale Q so that built-in √dₕ division becomes our g scaling
-                head_dim = math.sqrt(k_attn.size(-1))
-                qk_scaling_factor = self.qk_norm_factor * math.sqrt(head_dim)
+                sqrt_head_dim = math.sqrt(k_attn.size(-1))
+                qk_scaling_factor = sqrt_head_dim
+                if not self.use_qk_norm_scale_per_channel:
+                    qk_scaling_factor *= self.qk_norm_factor
                 q = q * qk_scaling_factor
 
             # Flash Lobo
@@ -377,6 +403,12 @@ class CausalSelfAttention(nn.Module):
             )
         elif self.use_flex_attn and self.window_size is not None:
             block_mask = self.get_block_mask(T, x.device)
+            if self.use_qk_norm_scale:
+                # flex_attention uses the same 1/√dₕ default as SDPA.
+                qk_scaling_factor = math.sqrt(k.size(-1))
+                if not self.use_qk_norm_scale_per_channel:
+                    qk_scaling_factor *= self.qk_norm_factor
+                q = q * qk_scaling_factor
             y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
         else:
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
@@ -395,7 +427,8 @@ class CausalSelfAttention(nn.Module):
             att = (q @ k_attn.transpose(-2, -1))
 
             if self.use_qk_norm_scale:
-                att = att * self.qk_norm_factor
+                if not self.use_qk_norm_scale_per_channel:
+                    att = att * self.qk_norm_factor
             else:
                 att = att / head_dim
 
@@ -597,11 +630,7 @@ class EdgeLLMASICAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
-        # qk norm factor
-        if self.use_qk_norm_scale:
-            L = config.block_size
-            g0 = math.log2(L*L - L)
-            self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
+        _init_qk_norm_scale(self, config, config.n_embd // self.n_head)
 
         print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
         # causal mask to ensure that attention is only applied to the left in the input sequence
@@ -666,6 +695,7 @@ class EdgeLLMASICAttention(nn.Module):
         if self.use_qk_norm:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
             k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_channel_gains(self, q, k)
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -686,7 +716,8 @@ class EdgeLLMASICAttention(nn.Module):
         att = (q @ k_attn.transpose(-2, -1))
 
         if self.use_qk_norm_scale:
-            att = att * self.qk_norm_factor
+            if not self.use_qk_norm_scale_per_channel:
+                att = att * self.qk_norm_factor
         else:
             att = att / head_dim
 
@@ -1136,11 +1167,7 @@ class InfiniteHeadAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=self.n_qk_head_dim)
                 self.rotary_emb_k = RotaryEmbedding(config, size=self.n_qk_head_dim)
 
-        # qk norm factor
-        if self.use_qk_norm_scale:
-            L = config.block_size
-            g0 = math.log2(L*L - L)
-            self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
+        _init_qk_norm_scale(self, config, self.n_qk_head_dim)
 
         # Softmax Variant Selection
         self.softmax_variant_attn = config.softmax_variant_attn
@@ -1196,6 +1223,7 @@ class InfiniteHeadAttention(nn.Module):
         if self.use_qk_norm:
             q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
             k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_channel_gains(self, q, k)
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -1211,7 +1239,9 @@ class InfiniteHeadAttention(nn.Module):
             if self.use_qk_norm_scale:
                 # pre-scale Q so that built-in √dₕ division becomes our g scaling
                 sqrt_head_dim = math.sqrt(k_attn.size(-1))
-                qk_scaling_factor = self.qk_norm_factor * sqrt_head_dim
+                qk_scaling_factor = sqrt_head_dim
+                if not self.use_qk_norm_scale_per_channel:
+                    qk_scaling_factor *= self.qk_norm_factor
                 q = q * qk_scaling_factor
 
             # Flash Lobo
@@ -1251,8 +1281,9 @@ class InfiniteHeadAttention(nn.Module):
             att = (q @ k_attn.transpose(-2, -1))
 
             if self.use_qk_norm_scale:
-                # utilize learned qk_norm_scaling factor
-                att = att * self.qk_norm_factor
+                if not self.use_qk_norm_scale_per_channel:
+                    # utilize learned qk_norm_scaling factor
+                    att = att * self.qk_norm_factor
             else:
                 sqrt_head_dim = math.sqrt(k_attn.size(-1))
                 # divide by sqrt of head dimension if not

@@ -49,5 +49,29 @@ class SweepDefaultAndNullTests(unittest.TestCase):
         self.assertEqual(list(run_experiments.generate_combinations(config)), [({}, set())])
 
 
+class QKNormScaleComparisonTests(unittest.TestCase):
+    def test_named_scale_variants_are_metadata_not_training_arguments(self):
+        config_path = (
+            Path(__file__).parents[1]
+            / "explorations"
+            / "qk_norm_scale_per_channel_comparison.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text())
+
+        combinations = [
+            combo for combo, _common_keys in run_experiments.generate_combinations(config)
+        ]
+
+        self.assertEqual(len(combinations), 2)
+        self.assertEqual(
+            {combo["use_qk_norm_scale_per_channel"] for combo in combinations},
+            {False, True},
+        )
+        for combo in combinations:
+            command = run_experiments.build_command(combo)
+            self.assertNotIn("--named_group", command)
+            self.assertFalse(any("named_group" in argument for argument in command))
+
+
 if __name__ == "__main__":
     unittest.main()

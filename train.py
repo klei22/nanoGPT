@@ -98,7 +98,6 @@ import torch.onnx
 import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
 
 from variations.model_variations import model_variation_dictionary
 
@@ -113,6 +112,7 @@ class Trainer:
 
     def __init__(self, args, model_group, training_group, logging_group):
         self.args = args
+        self.writer = None
         self.model_group = model_group
         self.training_group = training_group
         self.logging_group = logging_group
@@ -499,6 +499,11 @@ class Trainer:
 
         # Tensorboard
         if self.args.tensorboard_log:
+            # TensorBoard is optional. Import it only when logging is enabled so
+            # experiments that disable it do not load TensorFlow or its binary
+            # dependencies during process startup.
+            from torch.utils.tensorboard import SummaryWriter
+
             # 1) Give the run a safe default name when the user did not supply one
             if self.args.tensorboard_run_name is None:
                 self.args.tensorboard_run_name = f"{timestamp_prefix}"
