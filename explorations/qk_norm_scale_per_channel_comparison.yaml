@@ -23,3 +23,6 @@ use_abs_pos_embeddings: [false]
 
 compile: [true]
 never_save_checkpoint: [true]
+# Keep this architecture comparison independent of optional TensorBoard/
+# TensorFlow binary dependencies. Metrics are still printed by the trainer.
+tensorboard_log: [false]
