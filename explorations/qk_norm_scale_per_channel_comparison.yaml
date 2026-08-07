@@ -1,10 +1,15 @@
 # Compare the legacy shared QK norm scale with separate per-channel Q/K gains.
 ---
-parameter_groups:
+named_static_groups:
   - named_group: "shared_scale"
     use_qk_norm_scale_per_channel: [false]
   - named_group: "per_channel_q_and_k_scale"
     use_qk_norm_scale_per_channel: [true]
+
+parameter_groups:
+  - named_group_alternates:
+      - "shared_scale"
+      - "per_channel_q_and_k_scale"
 
 max_iters: [10000]
 eval_interval: [500]
