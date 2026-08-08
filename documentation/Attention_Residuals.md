@@ -12,10 +12,18 @@ For each Transformer block, the implementation:
 4. appends the raw MLP output.
 
 One final mixture is passed to `ln_f`. Each destination owns a learned
-pseudo-query. Queries are initialized to zero, so every mixture initially is an
-equal-weight average. Keys are parameter-free RMS-normalized source vectors,
+pseudo-query. With the default softmax, queries are initialized to zero, so
+every mixture initially is an equal-weight average. Keys are parameter-free RMS-normalized source vectors,
 values are the raw vectors, and softmax is only over depth. Consequently this
 feature does not replace causal token-to-token self-attention.
+
+The depth weighting defaults to `softmax`. Set
+`attention_residual_weighting: relu2max` (or pass
+`--attention_residual_weighting relu2max`) to use the repository's ReLU2Max
+implementation instead. Its scale follows `relu2max_divisor` and
+`div_by_seq_len`, just as it does for token-to-token attention. ReLU2Max routing
+queries use a small random initialization instead of zero initialization to
+avoid ReLU2's zero-gradient point.
 
 Full Attention Residuals store the embedding and all `2 * n_layer` sublayer
 outputs, and perform quadratic work in the number of sublayers. The current

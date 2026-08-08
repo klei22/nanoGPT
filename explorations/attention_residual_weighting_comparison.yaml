@@ -1,0 +1,20 @@
+---
+# Compare Softmax and ReLU2Max depth weighting for Full Attention Residuals.
+parameter_groups:
+  - attention_residual_weighting: ["softmax", "relu2max"]
+
+common_group:
+  attention_residual_variant: ["full"]
+  dataset: ["minipile"]
+  block_size: [256]
+  n_layer: [12]
+  n_head: [6]
+  n_embd: [384]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  max_iters: [10000]
+  lr_decay_iters: [10000]
+  warmup_iters: [1000]
+  eval_interval: [500]
+  never_save_checkpoint: [true]
+  compile: [true]

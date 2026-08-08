@@ -29,6 +29,10 @@ def parse_args():
     )
     model_group.add_argument('--attention_residual_eps', default=1e-6, type=float,
                              help='RMSNorm epsilon used for Full Attention Residual routing keys.')
+    model_group.add_argument(
+        '--attention_residual_weighting', default='softmax', choices=['softmax', 'relu2max'],
+        help='Depth-routing weighting used by Full Attention Residuals.',
+    )
 
     # MLP Bias Configuration
     model_group.add_argument('--mlp_up_bias', default=None, action=argparse.BooleanOptionalAction, help='Whether to use bias in MLP up projections. If None, uses global bias setting.')

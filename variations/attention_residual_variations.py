@@ -14,11 +14,18 @@ from torch.nn import functional as F
 class FullAttentionResidual(nn.Module):
     """Mix earlier sublayer outputs with zero-initialized pseudo-queries."""
 
-    def __init__(self, n_destinations: int, n_embd: int, eps: float = 1e-6):
+    def __init__(
+        self,
+        n_destinations: int,
+        n_embd: int,
+        eps: float = 1e-6,
+        weighting: nn.Module | None = None,
+    ):
         super().__init__()
         # Includes one destination for each attention/MLP and one for ln_f.
         self.queries = nn.Parameter(torch.zeros(n_destinations, n_embd))
         self.eps = eps
+        self.weighting = weighting
 
     def forward(self, sources: list[torch.Tensor], destination: int) -> torch.Tensor:
         if not sources:
@@ -26,5 +33,5 @@ class FullAttentionResidual(nn.Module):
         values = torch.stack(sources, dim=0)  # depth, batch, time, channels
         keys = F.rms_norm(values, (values.size(-1),), eps=self.eps)
         scores = torch.einsum("dbtc,c->dbt", keys, self.queries[destination])
-        weights = scores.softmax(dim=0)
+        weights = scores.softmax(dim=0) if self.weighting is None else self.weighting(scores)
         return torch.einsum("dbt,dbtc->btc", weights, values)
