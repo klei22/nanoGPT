@@ -8,7 +8,9 @@ new zero-initialized query vectors in ``AttentionResidualWrapper``.
 """
 
 import argparse
+import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,6 +69,16 @@ class AttentionResidualWrapper(nn.Module):
         for parameter in self.base_model.parameters():
             parameter.requires_grad = False
         self.queries.requires_grad = True
+
+    @property
+    def config(self):
+        """Expose the wrapped configuration to Hugging Face evaluators."""
+        return self.base_model.config
+
+    @property
+    def device(self):
+        """Expose the wrapped model device to Hugging Face evaluators."""
+        return self.queries.device
 
     def _install_hooks(self) -> None:
         for layer_index, layer in enumerate(self.layers):
@@ -145,6 +157,7 @@ def main() -> None:
     parser.add_argument("--eval_steps", type=int, default=100)
     parser.add_argument("--save_steps", type=int, default=100)
     parser.add_argument("--attention_residual_eps", type=float, default=1e-6)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -185,13 +198,14 @@ def main() -> None:
         logging_steps=args.logging_steps,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
-        save_strategy="steps",
-        save_steps=args.save_steps,
-        save_total_limit=3,
+        # Saving the wrapper state would duplicate the frozen base checkpoint.
+        # Persist only the residual tensor explicitly after training instead.
+        save_strategy="no",
         bf16=torch.cuda.is_available(),
         fp16=False,
         remove_unused_columns=False,
         report_to="none",
+        seed=args.seed,
     )
 
     trainer = Trainer(
@@ -202,10 +216,25 @@ def main() -> None:
         tokenizer=tokenizer,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
-    trainer.train()
-    trainer.save_model(args.output_dir)
+    started = time.time()
+    train_result = trainer.train()
+    evaluation = trainer.evaluate()
     model.save_trainable_parameters(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
+    metadata = {
+        "method": "attention_residual",
+        "base_model": args.model_name,
+        "seed": args.seed,
+        "trainable_parameters": trainable,
+        "total_parameters": total,
+        "wall_time_seconds": time.time() - started,
+        "train_metrics": train_result.metrics,
+        "eval_metrics": evaluation,
+        "arguments": vars(args),
+    }
+    with open(os.path.join(args.output_dir, "run_metadata.json"), "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+        handle.write("\n")
 
 
 if __name__ == "__main__":

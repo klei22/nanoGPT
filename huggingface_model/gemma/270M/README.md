@@ -56,6 +56,28 @@ column to train on, for example `--dataset_name codeparrot/codeparrot-clean
 --text_column content`.  Keep `attn_implementation="eager"` for hook-friendly
 Gemma execution.
 
+### Reproducible comparison with LoRA
+
+The `peft_study` directory provides an end-to-end, multi-seed study rather than
+an isolated training example. It trains attention residuals and a PEFT LoRA
+control on identical dataset splits and step budgets, evaluates both with the
+Hugging Face `lm-evaluation-harness`, and produces `REPORT.md` plus
+`comparison.csv`. Install the isolated study dependencies and run:
+
+```bash
+python -m pip install -r huggingface_model/gemma/270M/peft_study/requirements.txt
+SEEDS="42 43 44" STEPS=1000 \
+  bash huggingface_model/gemma/270M/peft_study/run_study.sh ./gemma-peft-study
+```
+
+The default benchmark suite is `arc_easy,hellaswag,piqa,winogrande`. Override
+it with `TASKS=...`; use only log-likelihood/multiple-choice lm-eval tasks for
+the hook-based attention-residual model. `run_metadata.json` records parameter
+counts, wall time, training metrics, evaluation metrics, arguments, and seed for
+each run, while `evaluation.json` retains the complete lm-eval output. This
+makes accuracy, trainable-parameter efficiency, and training-time comparisons
+auditable instead of relying on copied console output.
+
 ## JL-projected LM head evaluation
 
 `jl_head_eval.py` runs a two-stage LM head evaluation:
