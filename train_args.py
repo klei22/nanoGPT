@@ -161,6 +161,20 @@ def parse_args():
         default=2.0,
         help='Gamma parameter for focal-style losses.',
     )
+    training_group.add_argument('--focal_alpha', type=float, default=1.0,
+                                help='Scalar alpha multiplier for focal NLL.')
+    training_group.add_argument('--surprise_lambda', type=float, default=0.25,
+                                help='Hard-token weight for hybrid and capped-tail losses.')
+    training_group.add_argument('--surprise_scale', type=float, default=1.0,
+                                help='Scale c used by hybrid and capped-tail losses.')
+    training_group.add_argument('--loss_power_q', type=float, default=2.0,
+                                help='Power q used by power-surprise losses.')
+    training_group.add_argument('--loss_tail_cap', type=float, default=4.0,
+                                help='Maximum tail multiplier input for capped-tail loss.')
+    training_group.add_argument('--loss_aggregation', choices=['token', 'sequence', 'position', 'window'],
+                                default='token', help='Axis on which surprise losses are aggregated.')
+    training_group.add_argument('--loss_window_size', type=int, default=16,
+                                help='Non-overlapping window width for window loss aggregation.')
     training_group.add_argument(
         '--top1_focus_alpha',
         type=float,
