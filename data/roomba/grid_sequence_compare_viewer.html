@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Grid Sequence Comparison Viewer</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#111; color:#eee; }
+    body { margin:0; padding:20px; background:#111; }
+    h1 { margin-top:0; font-size:22px; }
+    .panel { background:#1b1b1b; border:1px solid #333; border-radius:10px; padding:14px; margin-bottom:16px; }
+    .controls { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; align-items:end; }
+    label { display:grid; gap:5px; font-size:13px; color:#ccc; }
+    input, select, button { box-sizing:border-box; width:100%; padding:8px; border-radius:7px; border:1px solid #444; background:#0f0f0f; color:#eee; font:inherit; }
+    button { cursor:pointer; background:#2a2a2a; }
+    button:hover { background:#373737; }
+    .playback { display:grid; grid-template-columns:100px 100px 100px 1fr; gap:10px; align-items:center; }
+    .compare { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
+    canvas { background:#000; border:1px solid #333; border-radius:8px; max-width:100%; image-rendering:pixelated; image-rendering:crisp-edges; }
+    .status { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; white-space:pre-wrap; color:#ccc; font-size:13px; line-height:1.45; margin-top:10px; }
+    .hint { color:#aaa; font-size:13px; margin-top:8px; }
+    .export-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; align-items:end; }
+    @media (max-width: 900px) { .compare, .playback { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <h1>Grid Sequence Comparison Viewer</h1>
+
+  <section class="panel">
+    <div class="controls">
+      <label>CSV file <input id="csvFile" type="file" accept=".csv,text/csv" /></label>
+      <label>Grid width <input id="gridWidth" type="number" min="1" step="1" value="8" /></label>
+      <label>Grid height <input id="gridHeight" type="number" min="1" step="1" value="8" /></label>
+      <label>Display scale <input id="pixelScale" type="number" min="1" step="1" value="48" /></label>
+      <label>Prompt row count <input id="promptRows" type="number" min="0" step="1" value="0" /></label>
+      <label>Sample start index, 0-based <input id="sampleStartFrame" type="number" min="0" step="1" placeholder="prompt rows" /></label>
+      <label>Binary p* display
+        <select id="binaryPixelMode">
+          <option value="auto" selected>auto stretch 0/1 to white</option>
+          <option value="raw">raw grayscale values</option>
+        </select>
+      </label>
+      <label>Playback/export FPS <input id="fps" type="number" min="1" step="1" value="5" /></label>
+    </div>
+    <div class="hint">
+      Load a CSV laid out as prompt rows, optional validation ground-truth rows, then sampled rows.
+      Pass <code>?csv=...&prompt_rows=N&sample_start_frame=M</code> to preload a demo output. If there is no validation ground truth, set <code>sample_start_frame</code> equal to <code>prompt_rows</code> or leave it blank.
+    </div>
+  </section>
+
+  <section class="panel playback">
+    <button id="playPause">Play</button>
+    <button id="prevFrame">Previous</button>
+    <button id="nextFrame">Next</button>
+    <input id="frameSlider" type="range" min="0" max="0" value="0" />
+  </section>
+
+  <section class="compare">
+    <div class="panel">
+      <h2 style="margin-top:0;font-size:16px;">Ground truth / prompt</h2>
+      <canvas id="truthCanvas" width="384" height="384"></canvas>
+      <div id="truthStatus" class="status">Choose a CSV file to begin.</div>
+    </div>
+    <div class="panel">
+      <h2 style="margin-top:0;font-size:16px;">Sample / prompt</h2>
+      <canvas id="sampleCanvas" width="384" height="384"></canvas>
+      <div id="sampleStatus" class="status">Choose a CSV file to begin.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 style="margin-top:0;font-size:16px;">Export prompt + sampled inference video</h2>
+    <div class="export-grid">
+      <label>Export start frame <input id="exportStart" type="number" min="0" step="1" value="0" /></label>
+      <label>Export end frame, inclusive <input id="exportEnd" type="number" min="0" step="1" value="0" /></label>
+      <button id="exportVideo">Export WebM</button>
+    </div>
+    <div id="exportStatus" class="status">Exports the main prompt + sample inference timeline, not the validation ground-truth branch.</div>
+  </section>
+
+<script>
+(() => {
+  const els = {
+    csvFile: document.getElementById('csvFile'), gridWidth: document.getElementById('gridWidth'), gridHeight: document.getElementById('gridHeight'),
+    pixelScale: document.getElementById('pixelScale'), promptRows: document.getElementById('promptRows'), sampleStartFrame: document.getElementById('sampleStartFrame'),
+    binaryPixelMode: document.getElementById('binaryPixelMode'), fps: document.getElementById('fps'), playPause: document.getElementById('playPause'),
+    prevFrame: document.getElementById('prevFrame'), nextFrame: document.getElementById('nextFrame'), frameSlider: document.getElementById('frameSlider'),
+    truthCanvas: document.getElementById('truthCanvas'), sampleCanvas: document.getElementById('sampleCanvas'), truthStatus: document.getElementById('truthStatus'),
+    sampleStatus: document.getElementById('sampleStatus'), exportStart: document.getElementById('exportStart'), exportEnd: document.getElementById('exportEnd'),
+    exportVideo: document.getElementById('exportVideo'), exportStatus: document.getElementById('exportStatus'),
+  };
+  const truthCtx = els.truthCanvas.getContext('2d');
+  const sampleCtx = els.sampleCanvas.getContext('2d');
+  const exportCanvas = document.createElement('canvas');
+  const exportCtx = exportCanvas.getContext('2d');
+  const state = { headers: [], rows: [], pCols: [], currentFrame: 0, timer: null };
+
+  function parseCSV(text) {
+    const rows = []; let row = []; let cell = ''; let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i], next = text[i + 1];
+      if (inQuotes) {
+        if (ch === '"' && next === '"') { cell += '"'; i++; }
+        else if (ch === '"') inQuotes = false;
+        else cell += ch;
+      } else if (ch === '"') inQuotes = true;
+      else if (ch === ',') { row.push(cell); cell = ''; }
+      else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else if (ch !== '\r') cell += ch;
+    }
+    if (cell.length > 0 || row.length > 0) { row.push(cell); rows.push(row); }
+    return rows.filter(r => r.some(c => c.trim() !== ''));
+  }
+
+  function numberValue(row, col, fallback = 0) {
+    const value = Number(row?.[col]);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  function promptRows() {
+    const value = Math.floor(Number(els.promptRows.value));
+    return Number.isFinite(value) && value > 0 ? Math.min(value, state.rows.length) : 0;
+  }
+
+  function sampleStartFrame() {
+    const text = els.sampleStartFrame.value.trim();
+    const value = Math.floor(Number(text));
+    if (text !== '' && Number.isFinite(value) && value >= 0) return Math.min(value, state.rows.length);
+    return promptRows();
+  }
+
+  function splitInfo() {
+    const prompt = promptRows();
+    const sampleStart = sampleStartFrame();
+    const truthCount = Math.max(0, sampleStart - prompt);
+    const sampleCount = Math.max(0, state.rows.length - sampleStart);
+    return {
+      prompt, sampleStart, truthCount, sampleCount,
+      compareLength: prompt + Math.max(truthCount, sampleCount),
+      mainLength: prompt + sampleCount,
+    };
+  }
+
+  function clampByte(value) {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(255, Math.round(value)));
+  }
+
+  function drawFrame(ctx, canvas, row, label, color) {
+    const width = Math.max(1, Math.floor(Number(els.gridWidth.value) || 1));
+    const height = Math.max(1, Math.floor(Number(els.gridHeight.value) || 1));
+    const scale = Math.max(1, Math.floor(Number(els.pixelScale.value) || 1));
+    canvas.width = width * scale; canvas.height = height * scale;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (row) {
+      state.pCols.forEach((pCol, i) => {
+        const r = Math.floor(i / width); const c = i % width;
+        if (r >= height) return;
+        const rawGray = numberValue(row, pCol);
+        const gray = els.binaryPixelMode.value === 'auto' && rawGray > 0 && rawGray <= 1 ? 255 : clampByte(rawGray);
+        ctx.fillStyle = `rgb(${gray},${gray},${gray})`;
+        ctx.fillRect(c * scale, r * scale, scale, scale);
+      });
+    } else {
+      ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#777'; ctx.font = '16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+      ctx.fillText('no frame', 12, 30);
+    }
+
+    ctx.save();
+    ctx.lineWidth = Math.max(3, Math.round(Math.min(canvas.width, canvas.height) * 0.015));
+    ctx.strokeStyle = color; ctx.strokeRect(ctx.lineWidth / 2, ctx.lineWidth / 2, canvas.width - ctx.lineWidth, canvas.height - ctx.lineWidth);
+    ctx.font = `${Math.max(12, Math.round(canvas.width * 0.04))}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+    const pad = 6; const boxHeight = Math.max(20, Math.round(canvas.width * 0.07)); const textWidth = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(0, 0, textWidth + pad * 2, boxHeight);
+    ctx.fillStyle = color; ctx.textBaseline = 'top'; ctx.fillText(label, pad, Math.max(3, (boxHeight - parseInt(ctx.font, 10)) / 2));
+    ctx.restore();
+  }
+
+  function rowSummary(row) {
+    if (!row) return ['no row'];
+    const preferred = ['timestamp', 'episode', 'step', 'rule_id', 'pattern_id', 'alive_count', 'born_count', 'died_count'];
+    const fields = preferred.filter(col => Object.prototype.hasOwnProperty.call(row, col));
+    const fallback = state.headers.filter(col => !/^p\d+$/.test(col)).slice(0, 8);
+    return (fields.length ? fields : fallback).map(col => `${col}: ${row[col]}`);
+  }
+
+  function render() {
+    if (!state.rows.length) return;
+    const info = splitInfo();
+    state.currentFrame = Math.max(0, Math.min(state.currentFrame, Math.max(0, info.compareLength - 1)));
+    els.frameSlider.max = String(Math.max(0, info.compareLength - 1));
+    els.frameSlider.value = String(state.currentFrame);
+    els.exportEnd.max = String(Math.max(0, info.mainLength - 1));
+    if (Number(els.exportEnd.value) <= 0) els.exportEnd.value = String(Math.max(0, info.mainLength - 1));
+
+    let truthRow, sampleRow, truthLabel, sampleLabel;
+    if (state.currentFrame < info.prompt) {
+      truthRow = sampleRow = state.rows[state.currentFrame];
+      truthLabel = sampleLabel = 'prompt';
+    } else {
+      const offset = state.currentFrame - info.prompt;
+      truthRow = offset < info.truthCount ? state.rows[info.prompt + offset] : null;
+      sampleRow = offset < info.sampleCount ? state.rows[info.sampleStart + offset] : null;
+      truthLabel = info.truthCount ? 'validation ground truth' : 'no validation ground truth';
+      sampleLabel = 'sampled continuation';
+    }
+
+    drawFrame(truthCtx, els.truthCanvas, truthRow, truthLabel, state.currentFrame < info.prompt ? '#4dd0e1' : '#b0bec5');
+    drawFrame(sampleCtx, els.sampleCanvas, sampleRow, sampleLabel, state.currentFrame < info.prompt ? '#4dd0e1' : '#ff9f43');
+    els.truthStatus.textContent = [`compare frame: ${state.currentFrame + 1} / ${info.compareLength}`, `prompt rows: ${info.prompt}`, `ground-truth continuation rows: ${info.truthCount}`, ...rowSummary(truthRow)].join('\n');
+    els.sampleStatus.textContent = [`compare frame: ${state.currentFrame + 1} / ${info.compareLength}`, `sample start index: ${info.sampleStart}`, `sample rows: ${info.sampleCount}`, ...rowSummary(sampleRow)].join('\n');
+    els.exportStatus.textContent = `Main export timeline: ${info.prompt} prompt frame(s) + ${info.sampleCount} sampled frame(s) = ${info.mainLength} frame(s).`;
+  }
+
+  function mainTimelineRow(frameIndex) {
+    const info = splitInfo();
+    if (frameIndex < info.prompt) return { row: state.rows[frameIndex], label: 'prompt', color: '#4dd0e1' };
+    const sampleOffset = frameIndex - info.prompt;
+    return { row: state.rows[info.sampleStart + sampleOffset], label: 'sampled continuation', color: '#ff9f43' };
+  }
+
+  function loadCSV(text) {
+    const parsed = parseCSV(text);
+    if (parsed.length < 2) throw new Error('CSV needs a header row and at least one data row.');
+    state.headers = parsed[0].map(h => h.trim());
+    state.rows = parsed.slice(1).map(values => Object.fromEntries(state.headers.map((header, i) => [header, values[i] ?? ''])));
+    state.pCols = state.headers.filter(h => /^p\d+$/.test(h)).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+    if (!state.pCols.length) throw new Error('No p* columns found. Expected p0, p1, p2, ...');
+    const first = state.rows[0] || {}; const csvWidth = numberValue(first, 'width', NaN); const csvHeight = numberValue(first, 'height', NaN);
+    if (Number.isInteger(csvWidth) && csvWidth > 0 && Number.isInteger(csvHeight) && csvHeight > 0) { els.gridWidth.value = String(csvWidth); els.gridHeight.value = String(csvHeight); }
+    else { const root = Math.sqrt(state.pCols.length); els.gridWidth.value = Number.isInteger(root) ? String(root) : String(state.pCols.length); els.gridHeight.value = Number.isInteger(root) ? String(root) : '1'; }
+    state.currentFrame = 0; render();
+  }
+
+  function setFrame(frame) { state.currentFrame = frame; render(); }
+  function stopPlayback() { if (state.timer) clearInterval(state.timer); state.timer = null; els.playPause.textContent = 'Play'; }
+  function startPlayback() {
+    if (!state.rows.length) return; stopPlayback(); const fps = Math.max(1, Number(els.fps.value) || 5);
+    state.timer = setInterval(() => { const max = Math.max(0, splitInfo().compareLength - 1); if (state.currentFrame >= max) stopPlayback(); else setFrame(state.currentFrame + 1); }, 1000 / fps);
+    els.playPause.textContent = 'Pause';
+  }
+
+  async function exportVideo() {
+    if (!state.rows.length) return;
+    if (!exportCanvas.captureStream || typeof MediaRecorder === 'undefined') { els.exportStatus.textContent = 'Video export is not supported by this browser.'; return; }
+    stopPlayback();
+    const info = splitInfo();
+    const maxFrame = Math.max(0, info.mainLength - 1);
+    let start = Math.max(0, Math.min(maxFrame, Math.floor(Number(els.exportStart.value) || 0)));
+    let end = Math.max(start, Math.min(maxFrame, Math.floor(Number(els.exportEnd.value) || maxFrame)));
+    const fps = Math.max(1, Number(els.fps.value) || 5);
+    const width = Math.max(1, Math.floor(Number(els.gridWidth.value) || 1));
+    const height = Math.max(1, Math.floor(Number(els.gridHeight.value) || 1));
+    const scale = Math.max(1, Math.floor(Number(els.pixelScale.value) || 1));
+    exportCanvas.width = width * scale; exportCanvas.height = height * scale;
+    const stream = exportCanvas.captureStream(fps);
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm' });
+    recorder.ondataavailable = event => { if (event.data.size > 0) chunks.push(event.data); };
+    const done = new Promise(resolve => { recorder.onstop = resolve; });
+    recorder.start();
+    for (let frame = start; frame <= end; frame++) {
+      const item = mainTimelineRow(frame);
+      drawFrame(exportCtx, exportCanvas, item.row, item.label, item.color);
+      els.exportStatus.textContent = `Recording frame ${frame - start + 1} / ${end - start + 1}...`;
+      await new Promise(resolve => setTimeout(resolve, 1000 / fps));
+    }
+    recorder.stop(); await done; stream.getTracks().forEach(track => track.stop());
+    const blob = new Blob(chunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob); const a = document.createElement('a');
+    a.href = url; a.download = `grid_prompt_sample_${start}_${end}.webm`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    els.exportStatus.textContent = `Exported ${end - start + 1} frame(s) as WebM.`;
+  }
+
+  async function loadCSVFromURL(csvURL) {
+    try { els.truthStatus.textContent = `Loading CSV from ${csvURL} ...`; els.sampleStatus.textContent = `Loading CSV from ${csvURL} ...`; const response = await fetch(csvURL); if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`); loadCSV(await response.text()); }
+    catch (err) { stopPlayback(); state.rows = []; state.pCols = []; els.truthStatus.textContent = `Error loading ${csvURL}: ${err.message}`; els.sampleStatus.textContent = `Error loading ${csvURL}: ${err.message}`; }
+  }
+
+  els.csvFile.addEventListener('change', async event => { const file = event.target.files[0]; if (!file) return; try { loadCSV(await file.text()); } catch (err) { els.truthStatus.textContent = `Error: ${err.message}`; els.sampleStatus.textContent = `Error: ${err.message}`; } });
+  els.playPause.addEventListener('click', () => state.timer ? stopPlayback() : startPlayback());
+  els.prevFrame.addEventListener('click', () => { stopPlayback(); setFrame(state.currentFrame - 1); });
+  els.nextFrame.addEventListener('click', () => { stopPlayback(); setFrame(state.currentFrame + 1); });
+  els.frameSlider.addEventListener('input', () => { stopPlayback(); setFrame(Number(els.frameSlider.value)); });
+  [els.gridWidth, els.gridHeight, els.pixelScale, els.promptRows, els.sampleStartFrame, els.binaryPixelMode, els.exportStart, els.exportEnd].forEach(el => { el.addEventListener('input', render); el.addEventListener('change', render); });
+  els.fps.addEventListener('change', () => { if (state.timer) startPlayback(); });
+  els.exportVideo.addEventListener('click', exportVideo);
+
+  const params = new URLSearchParams(window.location.search);
+  const promptRowsParam = Number(params.get('prompt_rows'));
+  if (Number.isInteger(promptRowsParam) && promptRowsParam >= 0) els.promptRows.value = String(promptRowsParam);
+  const sampleStartFrameParam = Number(params.get('sample_start_frame'));
+  if (Number.isInteger(sampleStartFrameParam) && sampleStartFrameParam >= 0) els.sampleStartFrame.value = String(sampleStartFrameParam);
+  const fpsParam = Number(params.get('fps'));
+  if (Number.isInteger(fpsParam) && fpsParam > 0) els.fps.value = String(fpsParam);
+  const csvURL = params.get('csv');
+  if (csvURL) loadCSVFromURL(csvURL);
+})();
+</script>
+</body>
+</html>

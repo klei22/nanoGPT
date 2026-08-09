@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Roomba Pose + Grayscale Viewer</title>
+  <title>Roomba / Grid Sequence Viewer</title>
   <style>
     :root {
       color-scheme: dark;
@@ -126,7 +126,7 @@
   </style>
 </head>
 <body>
-  <h1>Roomba Top-Down Pose + Grayscale Viewer</h1>
+  <h1>Roomba / Grid Sequence Viewer</h1>
 
   <section class="panel">
     <div class="controls">
@@ -186,6 +186,24 @@
       </label>
 
       <label>
+        Binary p* display
+        <select id="binaryPixelMode">
+          <option value="auto" selected>auto stretch 0/1 to white</option>
+          <option value="raw">raw grayscale values</option>
+        </select>
+      </label>
+
+      <label>
+        Prompt row count
+        <input id="promptRows" type="number" min="0" step="1" placeholder="none" />
+      </label>
+
+      <label>
+        Sample start index, 0-based
+        <input id="sampleStartFrame" type="number" min="0" step="1" placeholder="none" />
+      </label>
+
+      <label>
         Playback FPS
         <input id="fps" type="number" min="1" step="1" value="5" />
       </label>
@@ -193,7 +211,7 @@
 
     <div class="hint">
       Default p* layout is normal image order: p0 at top-left, then p1 to the right, wrapping by width to the next row.
-      For your p0..p8 sample, use width 3 and height 3. Timestamp and distance deltas use forward modulo wrapping.
+      CSVs with width/height columns (for example Conway Life) auto-fill the grid size. Roomba CSVs also show top-down pose; generic p* CSVs show metadata. Use prompt/sample boundary fields or URL params to mark generated continuations.
     </div>
   </section>
 
@@ -206,7 +224,7 @@
 
   <section class="viewer">
     <div class="panel">
-      <h2 style="margin-top:0;font-size:16px;">top-down robot pose</h2>
+      <h2 id="leftPanelTitle" style="margin-top:0;font-size:16px;">top-down robot pose / metadata</h2>
       <canvas id="robotCanvas" width="620" height="420"></canvas>
       <div id="status" class="status"></div>
     </div>
@@ -227,6 +245,9 @@
     pixelScale: document.getElementById('pixelScale'),
     startCorner: document.getElementById('startCorner'),
     scanDirection: document.getElementById('scanDirection'),
+    binaryPixelMode: document.getElementById('binaryPixelMode'),
+    promptRows: document.getElementById('promptRows'),
+    sampleStartFrame: document.getElementById('sampleStartFrame'),
     distanceModulo: document.getElementById('distanceModulo'),
     timestampModulo: document.getElementById('timestampModulo'),
     poseScale: document.getElementById('poseScale'),
@@ -239,6 +260,7 @@
     robotCanvas: document.getElementById('robotCanvas'),
     status: document.getElementById('status'),
     pixelStatus: document.getElementById('pixelStatus'),
+    leftPanelTitle: document.getElementById('leftPanelTitle'),
   };
 
   const state = {
@@ -246,6 +268,9 @@
     rows: [],
     pCols: [],
     poses: [],
+    hasPose: false,
+    promptRows: null,
+    sampleStartFrame: null,
     currentFrame: 0,
     timer: null,
   };
@@ -322,14 +347,26 @@
       throw new Error('No p* columns found. Expected columns named p0, p1, p2, ...');
     }
 
-    // Helpful default: square grids such as p0..p8 become 3 x 3.
-    const root = Math.sqrt(state.pCols.length);
-    if (Number.isInteger(root)) {
-      els.gridWidth.value = String(root);
-      els.gridHeight.value = String(root);
+    state.hasPose = ['total_distance_mm', 'heading_deg'].every(col => state.headers.includes(col));
+    els.leftPanelTitle.textContent = state.hasPose ? 'top-down robot pose' : 'sequence metadata';
+
+    // Helpful defaults: explicit width/height metadata wins; otherwise square
+    // grids such as p0..p8 become 3 x 3.
+    const firstRow = state.rows[0] || {};
+    const csvWidth = numberValue(firstRow, 'width', NaN);
+    const csvHeight = numberValue(firstRow, 'height', NaN);
+    if (Number.isInteger(csvWidth) && csvWidth > 0 && Number.isInteger(csvHeight) && csvHeight > 0) {
+      els.gridWidth.value = String(csvWidth);
+      els.gridHeight.value = String(csvHeight);
     } else {
-      els.gridWidth.value = String(state.pCols.length);
-      els.gridHeight.value = '1';
+      const root = Math.sqrt(state.pCols.length);
+      if (Number.isInteger(root)) {
+        els.gridWidth.value = String(root);
+        els.gridHeight.value = String(root);
+      } else {
+        els.gridWidth.value = String(state.pCols.length);
+        els.gridHeight.value = '1';
+      }
     }
 
     state.currentFrame = 0;
@@ -343,6 +380,20 @@
   function numberValue(row, col, fallback = 0) {
     const value = Number(row[col]);
     return Number.isFinite(value) ? value : fallback;
+  }
+
+  function syncBoundaryControls() {
+    els.promptRows.value = Number.isInteger(state.promptRows) ? String(state.promptRows) : '';
+    els.sampleStartFrame.value = Number.isInteger(state.sampleStartFrame) ? String(state.sampleStartFrame) : '';
+  }
+
+  function updateBoundariesFromControls() {
+    const promptText = els.promptRows.value.trim();
+    const sampleText = els.sampleStartFrame.value.trim();
+    const promptRows = Math.floor(Number(promptText));
+    const sampleStartFrame = Math.floor(Number(sampleText));
+    state.promptRows = promptText !== '' && Number.isFinite(promptRows) && promptRows > 0 ? promptRows : null;
+    state.sampleStartFrame = sampleText !== '' && Number.isFinite(sampleStartFrame) && sampleStartFrame >= 0 ? sampleStartFrame : null;
   }
 
   function forwardModuloDelta(curr, prev, modulo) {
@@ -461,6 +512,36 @@
     return { row, col };
   }
 
+  function frameRegion(frameIndex = state.currentFrame) {
+    if (Number.isInteger(state.sampleStartFrame) && frameIndex >= state.sampleStartFrame) {
+      return { label: 'sampled continuation', color: '#ff9f43' };
+    }
+    if (Number.isInteger(state.promptRows) && frameIndex < state.promptRows) {
+      return { label: 'start tokens / prompt', color: '#4dd0e1' };
+    }
+    return { label: 'validation ground truth', color: '#b0bec5' };
+  }
+
+  function renderFrameRegionOverlay(ctx, canvas) {
+    const region = frameRegion();
+    ctx.save();
+    ctx.lineWidth = Math.max(3, Math.round(Math.min(canvas.width, canvas.height) * 0.015));
+    ctx.strokeStyle = region.color;
+    ctx.strokeRect(ctx.lineWidth / 2, ctx.lineWidth / 2, canvas.width - ctx.lineWidth, canvas.height - ctx.lineWidth);
+
+    const label = region.label;
+    ctx.font = `${Math.max(12, Math.round(canvas.width * 0.045))}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+    ctx.textBaseline = 'top';
+    const pad = 6;
+    const textWidth = ctx.measureText(label).width;
+    const boxHeight = Math.max(20, Math.round(canvas.width * 0.075));
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+    ctx.fillRect(0, 0, textWidth + pad * 2, boxHeight);
+    ctx.fillStyle = region.color;
+    ctx.fillText(label, pad, Math.max(3, (boxHeight - parseInt(ctx.font, 10)) / 2));
+    ctx.restore();
+  }
+
   function renderGrayscaleFrame(row) {
     const width = Math.max(1, Math.floor(Number(els.gridWidth.value) || 1));
     const height = Math.max(1, Math.floor(Number(els.gridHeight.value) || 1));
@@ -488,7 +569,10 @@
       const position = pixelIndexToRowCol(i, width, height, startCorner, direction);
       if (!position) return;
 
-      const gray = clampByte(numberValue(row, pCol));
+      const rawGray = numberValue(row, pCol);
+      const gray = els.binaryPixelMode.value === 'auto' && rawGray > 0 && rawGray <= 1
+        ? 255
+        : clampByte(rawGray);
       const base = (position.row * width + position.col) * 4;
       image.data[base + 0] = gray;
       image.data[base + 1] = gray;
@@ -500,15 +584,39 @@
     pixelCtx.clearRect(0, 0, els.pixelCanvas.width, els.pixelCanvas.height);
     pixelCtx.imageSmoothingEnabled = false;
     pixelCtx.drawImage(offscreen, 0, 0, els.pixelCanvas.width, els.pixelCanvas.height);
+    renderFrameRegionOverlay(pixelCtx, els.pixelCanvas);
+  }
+
+  function rowSummary(row) {
+    const preferred = [
+      'timestamp', 'episode', 'step', 'rule_id', 'pattern_id', 'alive_count',
+      'born_count', 'died_count', 'density_percent', 'mutation_per_mille',
+      'battery_percent', 'heading_deg', 'total_distance_mm', 'action',
+      'bump_left', 'bump_right', 'wheel_dropped',
+    ];
+    const fields = preferred.filter(col => Object.prototype.hasOwnProperty.call(row, col));
+    const fallback = state.headers.filter(col => !/^p\d+$/.test(col)).slice(0, 12);
+    return (fields.length ? fields : fallback).map(col => `${col}: ${row[col]}`);
   }
 
   function renderPixelStatus(row) {
     const pose = state.poses[state.currentFrame] || {};
+    if (!state.hasPose) {
+      els.pixelStatus.textContent = [
+        `frame: ${state.currentFrame + 1} / ${state.rows.length}`,
+        `region: ${frameRegion().label}`,
+        `p columns: ${state.pCols.length}`,
+        ...rowSummary(row),
+      ].join('\n');
+      return;
+    }
+
     const battery = numberValue(row, 'battery_percent', NaN);
     const batteryText = Number.isFinite(battery) ? `${(battery / 10).toFixed(1)}%` : 'n/a';
 
     els.pixelStatus.textContent = [
       `frame: ${state.currentFrame + 1} / ${state.rows.length}`,
+      `region: ${frameRegion().label}`,
       `battery: ${batteryText}`,
       `heading: ${numberValue(row, 'heading_deg').toFixed(0)}°`,
       `distance_mod_mm: ${numberValue(row, 'total_distance_mm').toFixed(0)}`,
@@ -534,6 +642,23 @@
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#050505';
     ctx.fillRect(0, 0, width, height);
+
+    if (!state.hasPose) {
+      ctx.save();
+      ctx.font = '15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = '#ddd';
+      const lines = [
+        'Generic p* sequence mode',
+        `frame ${state.currentFrame + 1} / ${state.rows.length}`,
+        `grid ${els.gridWidth.value} x ${els.gridHeight.value}`,
+        '',
+        ...rowSummary(row).slice(0, 18),
+      ];
+      lines.forEach((line, i) => ctx.fillText(line, 18, 18 + i * 22));
+      ctx.restore();
+      return;
+    }
 
     if (path.length === 0) return;
 
@@ -669,6 +794,18 @@
       warnings.push(`NOTE: width * height = ${gridWidth * gridHeight}, but there are only ${state.pCols.length} p* columns. Missing cells render black.`);
     }
 
+    if (!state.hasPose) {
+      els.status.textContent = [
+        `p columns: ${state.pCols[0] ?? 'none'}..${state.pCols[state.pCols.length - 1] ?? 'none'} (${state.pCols.length})`,
+        `frame: ${state.currentFrame + 1} / ${state.rows.length}`,
+        `grid: ${gridWidth} x ${gridHeight}`,
+        `region: ${frameRegion().label}`,
+        ...rowSummary(row),
+        ...warnings,
+      ].join('\n');
+      return;
+    }
+
     els.status.textContent = [
       `p columns: ${state.pCols[0] ?? 'none'}..${state.pCols[state.pCols.length - 1] ?? 'none'} (${state.pCols.length})`,
       `frame: ${state.currentFrame + 1} / ${state.rows.length}`,
@@ -725,6 +862,24 @@
     els.playPause.textContent = 'Pause';
   }
 
+  async function loadCSVFromURL(csvURL) {
+    try {
+      els.status.textContent = `Loading CSV from ${csvURL} ...`;
+      els.pixelStatus.textContent = `Loading CSV from ${csvURL} ...`;
+      const response = await fetch(csvURL);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      }
+      loadCSV(await response.text());
+    } catch (err) {
+      stopPlayback();
+      state.rows = [];
+      state.pCols = [];
+      els.status.textContent = `Error loading ${csvURL}: ${err.message}`;
+      els.pixelStatus.textContent = `Error loading ${csvURL}: ${err.message}`;
+    }
+  }
+
   els.csvFile.addEventListener('change', async event => {
     const file = event.target.files[0];
     if (!file) return;
@@ -760,12 +915,24 @@
     setFrame(Number(els.frameSlider.value));
   });
 
+  [els.promptRows, els.sampleStartFrame].forEach(el => {
+    el.addEventListener('input', () => {
+      updateBoundariesFromControls();
+      render();
+    });
+    el.addEventListener('change', () => {
+      updateBoundariesFromControls();
+      render();
+    });
+  });
+
   [
     els.gridWidth,
     els.gridHeight,
     els.pixelScale,
     els.startCorner,
     els.scanDirection,
+    els.binaryPixelMode,
     els.poseScale,
   ].forEach(el => {
     el.addEventListener('input', render);
@@ -786,6 +953,21 @@
   els.fps.addEventListener('change', () => {
     if (state.timer) startPlayback();
   });
+
+  const params = new URLSearchParams(window.location.search);
+  const promptRowsParam = Number(params.get('prompt_rows'));
+  if (Number.isInteger(promptRowsParam) && promptRowsParam > 0) {
+    state.promptRows = promptRowsParam;
+  }
+  const sampleStartFrameParam = Number(params.get('sample_start_frame'));
+  if (Number.isInteger(sampleStartFrameParam) && sampleStartFrameParam >= 0) {
+    state.sampleStartFrame = sampleStartFrameParam;
+  }
+  syncBoundaryControls();
+  const csvURL = params.get('csv');
+  if (csvURL) {
+    loadCSVFromURL(csvURL);
+  }
 
   render();
 })();
