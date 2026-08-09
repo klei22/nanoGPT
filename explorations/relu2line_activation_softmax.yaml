@@ -1,0 +1,160 @@
+# explorations/relu2line_activation_softmax.yaml
+#
+# Default-infinite-attention style sweep for the ReLU2Line activation and
+# ReLU2LineMax attention numerator. Baseline groups keep conventional GELU +
+# softmax and the existing ReLU^2 + ReLU2Max settings for comparison. ReLU2Line
+# groups sweep only positive transition points; the no-transition fast path is
+# represented by the squared_relu / relu2max baseline because it is numerically
+# equivalent to ReLU^2 without the linear tail.
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Embedding Norm
+  - named_group: "rmsnorm_wte"
+    norm_variant_wte: ["rmsnorm"]
+
+  # Infinite Attention
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  # MQA
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+  # Head Dimension
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+
+  - named_group: "hd_150"
+    n_qk_head_dim: [150]
+    n_v_head_dim: [150]
+
+  - named_group: "hd_200"
+    n_qk_head_dim: [200]
+    n_v_head_dim: [200]
+
+  # Conventional baselines
+  - named_group: "gelu_softmax"
+    activation_variant: ["gelu"]
+    softmax_variant_attn: ["softmax"]
+
+  - named_group: "relu2_relu2max"
+    activation_variant: ["squared_relu"]
+    softmax_variant_attn: ["relu2max"]
+    relu2max_divisor: [256.0]
+
+  # New variant placements
+  - named_group: "relu2line_activation_only"
+    activation_variant: ["relu2line"]
+    softmax_variant_attn: ["softmax"]
+
+  - named_group: "relu2line_softmax_only"
+    activation_variant: ["squared_relu"]
+    softmax_variant_attn: ["relu2linemax"]
+
+  - named_group: "relu2line_activation_and_softmax"
+    activation_variant: ["relu2line"]
+    softmax_variant_attn: ["relu2linemax"]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  tensorboard_run_name: ["relu2line_activation_softmax"]
+
+parameter_groups:
+  # Conventional GELU + softmax frontier under the default_inf organization.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite"
+      - "mqa"
+      - "gelu_softmax"
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 1
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+
+  # Existing ReLU^2 + ReLU2Max baseline, including the no-transition equivalent
+  # for the new ReLU2Line shape.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite"
+      - "mqa"
+      - "relu2_relu2max"
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 1
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+
+  # Isolate the MLP activation effect while attention remains conventional.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite"
+      - "mqa"
+      - "relu2line_activation_only"
+    relu2line_transition_point: [1.0, 2.0, 4.0, 8.0]
+    n_head: [2, 4, 8]
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+
+  # Isolate the attention numerator effect against the existing squared-ReLU MLP.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite"
+      - "mqa"
+      - "relu2line_softmax_only"
+    relu2line_transition_point: [1.0, 2.0, 4.0, 8.0]
+    relu2line_divisor: [64.0, 256.0, 1024.0]
+    n_head: [2, 4, 8]
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+
+  # Joint sweep for the paired activation + attention variant.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite"
+      - "mqa"
+      - "relu2line_activation_and_softmax"
+    relu2line_transition_point: [1.0, 2.0, 4.0, 8.0]
+    relu2line_divisor: [64.0, 256.0, 1024.0]
+    n_head: [2, 4, 8]
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
