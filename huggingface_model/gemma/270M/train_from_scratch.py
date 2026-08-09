@@ -7,10 +7,12 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("WANDB_MODE", "offline")
 
 import argparse
-from typing import Dict, List
+import csv
+from dataclasses import dataclass
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Union, cast
 
 import torch
-from datasets import Dataset, load_dataset, load_dataset_builder
+from datasets import Dataset, IterableDataset, load_dataset, load_dataset_builder
 from transformers import (
     AutoConfig,
     AutoTokenizer,
@@ -20,6 +22,15 @@ from transformers import (
     TrainerCallback,
     TrainingArguments,
 )
+
+
+@dataclass
+class BenchmarkSpec:
+    """Configuration for a multiple-choice evaluation benchmark."""
+
+    name: str
+    dataset: Union[Dataset, IterableDataset]
+    formatter: Callable[[Dict[str, object]], Dict[str, object]]
 
 
 class SampleOutputCallback(TrainerCallback):
@@ -63,6 +74,179 @@ def _group_texts(examples: Dict[str, List[List[int]]], block_size: int) -> Dict[
     }
     result["labels"] = result["input_ids"].copy()
     return result
+
+
+def _ensure_csv(path: str, headers: Iterable[str]) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    if not os.path.exists(path):
+        with open(path, "w", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=list(headers))
+            writer.writeheader()
+
+
+def _format_hellaswag(example: Dict[str, object]) -> Dict[str, object]:
+    ctx_a = str(example.get("ctx_a", "")).strip()
+    ctx_b = str(example.get("ctx_b", "")).strip()
+    context = ctx_a if ctx_b == "" else f"{ctx_a} {ctx_b}".strip()
+    endings = example.get("endings")
+    if not isinstance(endings, Sequence):
+        endings = []
+    return {
+        "context": context,
+        "choices": [str(choice) for choice in endings],
+        "label": int(example.get("label", 0)),
+    }
+
+
+def _format_piqa(example: Dict[str, object]) -> Dict[str, object]:
+    goal = str(example.get("goal", ""))
+    sol1 = str(example.get("sol1", ""))
+    sol2 = str(example.get("sol2", ""))
+    return {
+        "context": goal,
+        "choices": [sol1, sol2],
+        "label": int(example.get("label", 0)),
+    }
+
+
+def _score_choices(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    context: str,
+    choices: Sequence[str],
+    device: torch.device,
+) -> List[float]:
+    """Return log-likelihood scores for each choice conditioned on the context."""
+
+    context_ids = tokenizer(context, add_special_tokens=False).input_ids
+    scores: List[float] = []
+    for choice in choices:
+        choice_ids = tokenizer(choice, add_special_tokens=False).input_ids
+        if not choice_ids:
+            scores.append(float("-inf"))
+            continue
+        input_ids = torch.tensor([context_ids + choice_ids], device=device)
+        attention_mask = torch.ones_like(input_ids)
+        labels = torch.tensor([[(-100) for _ in context_ids] + choice_ids], device=device)
+        with torch.no_grad():
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+            )
+        loss = outputs.loss.item()
+        scores.append(-loss * len(choice_ids))
+    return scores
+
+
+def _evaluate_multiple_choice(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    benchmark: BenchmarkSpec,
+    device: torch.device,
+    max_samples: Optional[int] = None,
+) -> float:
+    """Compute accuracy for a multiple-choice benchmark dataset."""
+
+    model_was_training = model.training
+    model.eval()
+
+    if max_samples is not None and max_samples < 0:
+        max_samples = None
+
+    total = 0
+    correct = 0
+    iterable: Iterable[Dict[str, object]]
+    if isinstance(benchmark.dataset, IterableDataset):
+        iterable = benchmark.dataset.take(max_samples) if max_samples else benchmark.dataset
+    else:
+        iterable = benchmark.dataset
+
+    for example in iterable:
+        formatted = benchmark.formatter(example)
+        context = str(formatted["context"])
+        choices = [str(choice) for choice in cast(Sequence[str], formatted["choices"])]
+        label = int(formatted["label"])
+        scores = _score_choices(model, tokenizer, context, choices, device)
+        predicted = max(range(len(scores)), key=lambda idx: scores[idx])
+        correct += int(predicted == label)
+        total += 1
+        if max_samples is not None and total >= max_samples:
+            break
+
+    if model_was_training:
+        model.train()
+
+    return correct / total if total else 0.0
+
+
+class MetricsLoggerCallback(TrainerCallback):
+    """Collect and persist evaluation metrics to a CSV file."""
+
+    def __init__(
+        self,
+        tokenizer: AutoTokenizer,
+        csv_path: str,
+        benchmarks: List[BenchmarkSpec],
+        max_benchmark_samples: Optional[int],
+    ) -> None:
+        self.tokenizer = tokenizer
+        self.csv_path = csv_path
+        self.benchmarks = benchmarks
+        self.max_benchmark_samples = max_benchmark_samples
+        self.last_train_loss: Optional[float] = None
+        self.fieldnames = [
+            "step",
+            "train_loss",
+            "val_loss",
+        ] + [f"{bench.name}_accuracy" for bench in benchmarks]
+        _ensure_csv(self.csv_path, self.fieldnames)
+
+    def on_train_begin(self, args, state, control, **kwargs):  # type: ignore[override]
+        model = kwargs.get("model")
+        if model is not None:
+            self.model = model  # type: ignore[attr-defined]
+
+    def on_log(self, args, state, control, logs=None, **kwargs):  # type: ignore[override]
+        if logs and "loss" in logs:
+            self.last_train_loss = float(logs["loss"])
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):  # type: ignore[override]
+        if not state.is_world_process_zero:
+            return
+
+        metrics = metrics or {}
+        val_loss = float(metrics.get("eval_loss", float("nan")))
+        model: Optional[AutoModelForCausalLM] = kwargs.get("model")
+        if model is None:
+            model = getattr(self, "model", None)  # type: ignore[attr-defined]
+        if model is None:
+            return
+
+        device = next(model.parameters()).device
+        row: Dict[str, float] = {
+            "step": state.global_step,
+            "train_loss": self.last_train_loss if self.last_train_loss is not None else float("nan"),
+            "val_loss": val_loss,
+        }
+
+        for benchmark in self.benchmarks:
+            accuracy = _evaluate_multiple_choice(
+                model,
+                self.tokenizer,
+                benchmark,
+                device=device,
+                max_samples=self.max_benchmark_samples,
+            )
+            row[f"{benchmark.name}_accuracy"] = accuracy
+
+        full_row = {name: row.get(name, float("nan")) for name in self.fieldnames}
+        with open(self.csv_path, "a", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=self.fieldnames)
+            writer.writerow(full_row)
+
 
 
 def main(args: argparse.Namespace) -> None:
@@ -141,15 +325,20 @@ def main(args: argparse.Namespace) -> None:
     use_fp16 = args.precision == "fp16"
     use_bf16 = args.precision == "bf16"
 
+    evaluation_enabled = lm_eval is not None and args.eval_frequency > 0
+    evaluation_strategy = "steps" if evaluation_enabled else "no"
+    if not evaluation_enabled and args.eval_frequency > 0:
+        raise ValueError("Evaluation frequency > 0 requires a non-zero eval_fraction.")
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         max_steps=args.total_iterations,
         logging_strategy="steps",
-        eval_strategy="steps" if lm_eval is not None else "no",
+        evaluation_strategy=evaluation_strategy,
         save_strategy="steps",
-        logging_steps=args.sample_frequency,
-        eval_steps=args.sample_frequency if lm_eval is not None else None,
-        save_steps=args.sample_frequency,
+        logging_steps=args.log_frequency,
+        eval_steps=args.eval_frequency if evaluation_enabled else None,
+        save_steps=args.checkpoint_frequency,
         learning_rate=args.learning_rate,
         per_device_train_batch_size=args.train_batch_size,
         per_device_eval_batch_size=args.eval_batch_size,
@@ -161,7 +350,32 @@ def main(args: argparse.Namespace) -> None:
         push_to_hub=False,
     )
 
-    callbacks = [SampleOutputCallback(tokenizer=tokenizer, prompt=args.sample_prompt)]
+    print("Preparing benchmark datasets...")
+    benchmarks: List[BenchmarkSpec] = []
+    if args.disable_benchmarks:
+        print("Benchmark evaluations disabled via CLI flag.")
+    else:
+        hellaswag_split = f"validation[:{args.hellaswag_samples}]" if args.hellaswag_samples else "validation"
+        hellaswag = load_dataset("hellaswag", split=hellaswag_split)
+        benchmarks.append(BenchmarkSpec("hellaswag", hellaswag, _format_hellaswag))
+
+        if not args.disable_piqa:
+            piqa_split = f"validation[:{args.piqa_samples}]" if args.piqa_samples else "validation"
+            piqa = load_dataset("piqa", split=piqa_split)
+            benchmarks.append(BenchmarkSpec("piqa", piqa, _format_piqa))
+
+    metrics_csv = os.path.join(args.output_dir, "training_metrics.csv")
+    benchmark_sample_cap: Optional[int] = None if args.max_benchmark_samples < 0 else args.max_benchmark_samples
+
+    callbacks: List[TrainerCallback] = [
+        SampleOutputCallback(tokenizer=tokenizer, prompt=args.sample_prompt),
+        MetricsLoggerCallback(
+            tokenizer=tokenizer,
+            csv_path=metrics_csv,
+            benchmarks=benchmarks,
+            max_benchmark_samples=benchmark_sample_cap,
+        ),
+    ]
 
     trainer = Trainer(
         model=model,
@@ -175,6 +389,11 @@ def main(args: argparse.Namespace) -> None:
 
     print("Starting training from scratch...")
     trainer.train()
+
+    if evaluation_enabled:
+        final_metrics = trainer.evaluate()
+        print("Final evaluation metrics:", final_metrics)
+
     trainer.save_model()
     print("Training complete! Model saved to", args.output_dir)
 
@@ -215,10 +434,22 @@ if __name__ == "__main__":
         help="Total number of training steps to perform.",
     )
     parser.add_argument(
-        "--sample_frequency",
+        "--log_frequency",
+        type=int,
+        default=200,
+        help="Steps between logging outputs.",
+    )
+    parser.add_argument(
+        "--eval_frequency",
         type=int,
         default=1000,
-        help="Steps between logging, saving, and evaluation.",
+        help="Steps between evaluation runs.",
+    )
+    parser.add_argument(
+        "--checkpoint_frequency",
+        type=int,
+        default=1000,
+        help="Steps between checkpoint saves.",
     )
     parser.add_argument(
         "--learning_rate",
@@ -271,6 +502,36 @@ if __name__ == "__main__":
         type=str,
         default="The internet is a vast",
         help="Prompt used for periodic generation samples.",
+    )
+    parser.add_argument(
+        "--disable_benchmarks",
+        action="store_true",
+        help="Skip external benchmark evaluations during training.",
+    )
+    parser.add_argument(
+        "--disable_piqa",
+        action="store_true",
+        help="Disable PIQA benchmark evaluation while keeping other benchmarks enabled.",
+    )
+    parser.add_argument(
+        "--hellaswag_samples",
+        type=str,
+        default="",
+        help=(
+            "Optional dataset slicing string for the HellaSwag validation split (e.g. '5%')."
+        ),
+    )
+    parser.add_argument(
+        "--piqa_samples",
+        type=str,
+        default="",
+        help="Optional dataset slicing string for the PIQA validation split.",
+    )
+    parser.add_argument(
+        "--max_benchmark_samples",
+        type=int,
+        default=256,
+        help="Maximum number of benchmark samples to score per evaluation (use -1 for all).",
     )
     parser.add_argument(
         "--output_dir",
