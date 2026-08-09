@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Callable
 from functools import partial
+import copy
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
@@ -74,6 +75,55 @@ def make_alpha_fn(mode: str, init: float, param=None, vec=None):
 # Block Forward Variations
 # -----------------------
 
+
+
+def _run_single_attn(block, x: torch.Tensor, iter_num: int, attn_module=None) -> torch.Tensor:
+    """Run one attention step including optional norm/scaling and residual combine."""
+    x_attn_in = x
+
+    if block.use_pre_ln_attn:
+        x_attn_in = block.pre_ln_attn(x_attn_in)
+
+    active_attn = attn_module if attn_module is not None else block.attn
+    attn_out = active_attn(x_attn_in, iter_num)
+
+    if block.use_peri_ln_attn:
+        attn_out = block.peri_ln_attn(attn_out)
+
+    if block.attn_resid_scaler is not None:
+        attn_out = block.attn_resid_scaler(attn_out)
+
+    x = block._combine_resid("attn", x, attn_out)
+
+    if block.use_post_ln_attn:
+        x = block.post_ln_attn(x)
+
+    return x
+
+
+def _run_single_mlp(block, x: torch.Tensor, iter_num: int, mlp_module=None) -> torch.Tensor:
+    """Run one MLP step including optional norm/scaling and residual combine."""
+    x_mlp_in = x
+
+    if block.use_pre_ln_mlp:
+        x_mlp_in = block.pre_ln_mlp(x_mlp_in)
+
+    active_mlp = mlp_module if mlp_module is not None else block.mlp
+    mlp_out = active_mlp(x_mlp_in, iter_num)
+
+    if block.use_peri_ln_mlp:
+        mlp_out = block.peri_ln_mlp(mlp_out)
+
+    if block.mlp_resid_scaler is not None:
+        mlp_out = block.mlp_resid_scaler(mlp_out)
+
+    x = block._combine_resid("mlp", x, mlp_out)
+
+    if block.use_post_ln_mlp:
+        x = block.post_ln_mlp(x)
+
+    return x
+
 def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """Forward pass where attention and MLP run in parallel."""
 
@@ -113,58 +163,50 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 
 def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """Attention followed by MLP."""
-
-    # Make sure not to override skip connection
-    x_attn_in = x
-
-    # Attn Pre-LN
-    if block.use_pre_ln_attn:
-        x_attn_in = block.pre_ln_attn(x_attn_in)
-
-    # Attn Operation
-    attn_out = block.attn(x_attn_in, iter_num)
-
-    # Attn Peri-LN
-    if block.use_peri_ln_attn:
-        attn_out = block.peri_ln_attn(attn_out)
-
-    # Attn Output Scaling
-    if block.attn_resid_scaler is not None:
-        attn_out = block.attn_resid_scaler(attn_out)
-
-    # Attn Skip Connection
-    x = block._combine_resid("attn", x, attn_out)
-
-    # Attn Post-LN
-    if block.use_post_ln_attn:
-        x = block.post_ln_attn(x)
-
-    # Make sure not to override skip connection
-    x_mlp_in = x
-
-    # MLP Pre-LN
-    if block.use_pre_ln_mlp:
-        x_mlp_in = block.pre_ln_mlp(x_mlp_in)
-
-    # MLP Operation
-    mlp_out = block.mlp(x_mlp_in, iter_num)
-
-    # MLP Peri-LN
-    if block.use_peri_ln_mlp:
-        mlp_out = block.peri_ln_mlp(mlp_out)
-
-    # MLP Output Scaling
-    if block.mlp_resid_scaler is not None:
-        mlp_out = block.mlp_resid_scaler(mlp_out)
-
-    # MLP Skip Connection
-    x = block._combine_resid("mlp", x, mlp_out)
-
-    # MLP Post-LN
-    if block.use_post_ln_mlp:
-        x = block.post_ln_mlp(x)
-
+    x = _run_single_attn(block, x, iter_num)
+    x = _run_single_mlp(block, x, iter_num)
     return x
+
+
+
+
+def block_operation_sequence_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+    """Run a configurable operation sequence of attention/MLP steps within a single block."""
+    sequence_input = x
+    running = x
+
+    for op_kind, op_idx in block.block_operation_sequence_with_idx:
+        if op_kind == "attn":
+            attn_module = block.sequence_attn_modules[op_idx]
+            if block.block_sequence_use_intermediate_skips:
+                running = _run_single_attn(block, running, iter_num, attn_module=attn_module)
+            else:
+                attn_in = block.pre_ln_attn(running) if block.use_pre_ln_attn else running
+                attn_out = attn_module(attn_in, iter_num)
+                if block.use_peri_ln_attn:
+                    attn_out = block.peri_ln_attn(attn_out)
+                if block.attn_resid_scaler is not None:
+                    attn_out = block.attn_resid_scaler(attn_out)
+                running = block.post_ln_attn(attn_out) if block.use_post_ln_attn else attn_out
+        else:
+            mlp_module = block.sequence_mlp_modules[op_idx]
+            if block.block_sequence_use_intermediate_skips:
+                running = _run_single_mlp(block, running, iter_num, mlp_module=mlp_module)
+            else:
+                mlp_in = block.pre_ln_mlp(running) if block.use_pre_ln_mlp else running
+                mlp_out = mlp_module(mlp_in, iter_num)
+                if block.use_peri_ln_mlp:
+                    mlp_out = block.peri_ln_mlp(mlp_out)
+                if block.mlp_resid_scaler is not None:
+                    mlp_out = block.mlp_resid_scaler(mlp_out)
+                running = block.post_ln_mlp(mlp_out) if block.use_post_ln_mlp else mlp_out
+
+    if block.block_sequence_use_intermediate_skips:
+        return running
+
+    sequence_delta = running - sequence_input
+    sequence_residual_kind = block.block_operation_sequence[-1]
+    return block._combine_resid(sequence_residual_kind, sequence_input, sequence_delta)
 
 
 def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
@@ -256,6 +298,7 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 block_forward_variations = {
     "parallel_mlp": parallel_mlp_forward,
     "attn_then_mlp": attn_then_mlp_forward,
+    "block_operation_sequence": block_operation_sequence_forward,
     "edgellm_asic": edgellm_asic_forward,
 }
 
@@ -324,6 +367,7 @@ def _setup_norms_sequential(self, config, norm_cls) -> None:
 normalization_setup_variations = {
     "parallel_mlp": _setup_norms_parallel,
     "attn_then_mlp": _setup_norms_sequential,
+    "block_operation_sequence": _setup_norms_sequential,
     "edgellm_asic": _setup_norms_sequential,
 }
 
@@ -364,6 +408,7 @@ def _setup_resid_scalers_sequential(self, config) -> None:
 resid_scaler_setup_variations = {
     "parallel_mlp": _setup_resid_scalers_parallel,
     "attn_then_mlp": _setup_resid_scalers_sequential,
+    "block_operation_sequence": _setup_resid_scalers_sequential,
     "edgellm_asic": _setup_resid_scalers_sequential,
 }
 
@@ -387,12 +432,15 @@ class Block(nn.Module):
 
         # Forward variation choice
         self.use_parallel_mlp = getattr(config, "use_parallel_mlp", False)
+        self.use_block_operation_sequence = getattr(config, "use_block_operation_sequence", False)
         self.use_edgellm_asic = getattr(config, "use_edgellm_asic", False)
 
         self.use_flash_norm = getattr(config, "use_flash_norm", False)
 
         if self.use_parallel_mlp:
             variant = "parallel_mlp"
+        elif self.use_block_operation_sequence:
+            variant = "block_operation_sequence"
         elif self.use_edgellm_asic:
             variant = "edgellm_asic"
             # Special Quantization Setup
@@ -427,6 +475,33 @@ class Block(nn.Module):
             self.mlp = get_mlp_instance(config)
         else:
             self.mlp = mlp
+
+        self.block_operation_sequence = list(getattr(config, "block_operation_sequence", ["attn", "mlp"]))
+        self.block_sequence_use_intermediate_skips = getattr(config, "block_sequence_use_intermediate_skips", True)
+        self.block_sequence_share_modules = getattr(config, "block_sequence_share_modules", True)
+
+        if self.use_block_operation_sequence:
+            if not self.block_operation_sequence:
+                raise ValueError("block_operation_sequence must contain at least one operation")
+            invalid_ops = [op for op in self.block_operation_sequence if op not in ("attn", "mlp")]
+            if invalid_ops:
+                raise ValueError(f"Unsupported operation(s) in block_operation_sequence: {invalid_ops}")
+
+            self.sequence_attn_modules = nn.ModuleList()
+            self.sequence_mlp_modules = nn.ModuleList()
+            self.block_operation_sequence_with_idx = []
+
+            for op in self.block_operation_sequence:
+                if op == "attn":
+                    module = self.attn if self.block_sequence_share_modules else copy.deepcopy(self.attn)
+                    op_idx = len(self.sequence_attn_modules)
+                    self.sequence_attn_modules.append(module)
+                    self.block_operation_sequence_with_idx.append(("attn", op_idx))
+                else:
+                    module = self.mlp if self.block_sequence_share_modules else copy.deepcopy(self.mlp)
+                    op_idx = len(self.sequence_mlp_modules)
+                    self.sequence_mlp_modules.append(module)
+                    self.block_operation_sequence_with_idx.append(("mlp", op_idx))
 
         self.attn_resid_type = getattr(config, "attn_residual_combination", "add")
         self.mlp_resid_type = getattr(config, "mlp_residual_combination", "add")

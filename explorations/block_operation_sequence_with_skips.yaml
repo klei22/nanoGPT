@@ -1,0 +1,53 @@
+# Explore repeated attention/MLP operations with intermediate residual skips.
+---
+
+max_iters: [20000]
+
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["bfloat16"]
+compile: [true]
+
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+
+# baseline transformer defaults
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+
+# Keep MLP parameter count approximately matched to a single larger MLP
+# by splitting expansion across repeated mlp ops in the same block.
+# Example: baseline factor 4 ~= 2 + 2 for two mlps, or 2 + 1 + 1 for three mlps.
+
+common_static:
+  use_block_operation_sequence: [true]
+  block_sequence_use_intermediate_skips: [true]
+  block_sequence_share_modules: [false]
+  use_pre_ln: [true]
+  use_peri_ln: [false]
+  use_post_ln: [false]
+
+named_static_groups:
+  baseline_attn_mlp:
+    block_operation_sequence: [["attn", "mlp"]]
+    mlp_expansion_factor: [4]
+  attn2_mlp2:
+    block_operation_sequence: [["attn", "attn", "mlp", "mlp"]]
+    mlp_expansion_factor: [2]
+  attn1_mlp3:
+    block_operation_sequence: [["attn", "mlp", "mlp", "mlp"]]
+    mlp_expansion_factor: [1]
+    mlp_size: [512]
+  interleaved_attn2_mlp2:
+    block_operation_sequence: [["attn", "attn", "mlp", "mlp", "attn", "attn", "mlp", "mlp"]]
+    mlp_expansion_factor: [1]
+    mlp_size: [384]
+
+parameter_groups:
+  - group_name: compare_sequences_with_skips
+    params:
+      named_group: [baseline_attn_mlp, attn2_mlp2, attn1_mlp3, interleaved_attn2_mlp2]
