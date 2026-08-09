@@ -204,6 +204,7 @@ class GPTConfig:
     activation_transition_start_iter: int = 0
     activation_transition_end_iter: int = None
     relu_power: float = 2.0
+    relu2line_transition_point: float | None = None
 
     # MLP Options
     use_parallel_mlp: bool = False
@@ -299,8 +300,11 @@ class GPTConfig:
     ## ReLUMax options
     relumax_divisor: float = 256.0
 
-    ## ReLUMax options
+    ## ReLU2Max options
     relu2max_divisor: float = 256.0
+
+    ## ReLU2LineMax options
+    relu2line_divisor: float = 256.0
 
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0
