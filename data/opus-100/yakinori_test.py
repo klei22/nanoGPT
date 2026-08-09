@@ -1,3 +1,6 @@
+import pytest
+
+pytest.importorskip("yakinori")
 from yakinori import Yakinori
 yakinori = Yakinori()
 sentence = "幽遊白書は最高の漫画です"
