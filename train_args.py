@@ -952,6 +952,7 @@ def parse_args():
                           "ssm",
                           "identity",
                           "infinite",
+                          "orbital",
                           "mla",
                           "co4",
                           ]
@@ -1019,6 +1020,9 @@ def parse_args():
     model_group.add_argument('--attn_post_act_l2_norm', default=False, action=argparse.BooleanOptionalAction,
                              help="L2 normalize attention outputs before c_proj (Infinite Attention)")
     model_group.add_argument("--use_concat_heads",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="concat heads instead of adding in infinite attention")
+    model_group.add_argument("--orbital_theta_max_deg", default=45.0, type=float, help="Maximum signed rotation angle in degrees for Orbital Attention")
+    model_group.add_argument("--orbital_displacement_only", type=bool, default=False, action=argparse.BooleanOptionalAction, help="Use W_O(A'-A) instead of W_OA' for Orbital Attention")
+    model_group.add_argument("--orbital_signed_gate", type=bool, default=False, action=argparse.BooleanOptionalAction, help="Use tanh signed gate instead of sigmoid gate for Orbital Attention")
 
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
