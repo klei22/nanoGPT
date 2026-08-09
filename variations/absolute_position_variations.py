@@ -19,9 +19,9 @@ class LearnedAbsolutePositionEmbedding(nn.Module):
         else:
             self.embedding = nn.Embedding(config.block_size, config.n_embd)
 
-    def forward(self, seq_len, device, training=False):
+    def forward(self, seq_len, device, training=False, start_index=0):
         del training  # unused, kept for interface compatibility
-        pos = torch.arange(0, seq_len, dtype=torch.long, device=device)
+        pos = torch.arange(start_index, start_index + seq_len, dtype=torch.long, device=device)
         return self.embedding(pos)
 
     def update_block_size(self, new_block_size):
@@ -73,8 +73,8 @@ class CyclicAbsolutePositionEmbedding(nn.Module):
             nn.Embedding(cycle_len, config.n_embd) for cycle_len in self.cycle_lengths
         ])
 
-    def forward(self, seq_len, device, training=False):
-        pos = torch.arange(0, seq_len, dtype=torch.long, device=device)
+    def forward(self, seq_len, device, training=False, start_index=0):
+        pos = torch.arange(start_index, start_index + seq_len, dtype=torch.long, device=device)
         out = None
 
         for cycle_len, emb in zip(self.cycle_lengths, self.embeddings):

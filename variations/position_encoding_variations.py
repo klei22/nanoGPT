@@ -60,7 +60,7 @@ class RotaryEmbedding(nn.Module):
             assert rope_length <= self.dim, "New rotary length must less than or equal to embedding dim"
             self.rope_length = rope_length
 
-    def forward(self, x):
+    def forward(self, x, start_index=None):
         if self.first_pass:
             self.inv_freq = self._generate_inv_freq(x.device)
             self.first_pass = False
@@ -69,7 +69,8 @@ class RotaryEmbedding(nn.Module):
         device = x.device
 
         # Create position indices
-        pos_indices = torch.arange(self.start_index, self.start_index + seq_len, device=x.device).type_as(self.inv_freq)
+        offset = self.start_index if start_index is None else start_index
+        pos_indices = torch.arange(offset, offset + seq_len, device=x.device).type_as(self.inv_freq)
 
         # Compute the sinusoidal angles
         angles = torch.einsum('i,d->id', pos_indices, self.inv_freq)
@@ -137,7 +138,7 @@ class SymmetricalOverlapAngularPositions(nn.Module):
             assert rope_length <= self.dim, "New rotary length must less than or equal to embedding dim"
             self.rope_length = rope_length
 
-    def forward(self, x):
+    def forward(self, x, start_index=None):
         if self.first_pass:
             self.angles = self._generate_angles(self.num_angles, x.device)
             self.first_pass = False
@@ -148,7 +149,8 @@ class SymmetricalOverlapAngularPositions(nn.Module):
         self.angles = torch.roll(self.angles, shifts=1, dims=0)
 
         # Create index list, wrap around as necessary
-        angle_indices = torch.arange(seq_len, device=device) % self.num_angles
+        offset = 0 if start_index is None else start_index
+        angle_indices = torch.arange(offset, offset + seq_len, device=device) % self.num_angles
 
         # Assign angles
         selected_angles = self.angles[angle_indices]
