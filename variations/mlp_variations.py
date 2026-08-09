@@ -75,6 +75,25 @@ class OriginalMLP(nn.Module):
         else:
             mlp_expansion_size = config.mlp_expansion_factor * config.n_embd
 
+        self.use_approx_mlp_up_norm = config.use_approx_mlp_up_norm
+        self.use_approx_mlp_act_norm = config.use_approx_mlp_act_norm
+        self.use_approx_mlp_down_norm = config.use_approx_mlp_down_norm
+        self.approx_mlp_up_norm_factor = (
+            config.approx_mlp_up_norm_factor
+            if config.approx_mlp_up_norm_factor is not None
+            else config.n_embd / mlp_expansion_size
+        )
+        self.approx_mlp_act_norm_factor = (
+            config.approx_mlp_act_norm_factor
+            if config.approx_mlp_act_norm_factor is not None
+            else 3.74
+        )
+        self.approx_mlp_down_norm_factor = (
+            config.approx_mlp_down_norm_factor
+            if config.approx_mlp_down_norm_factor is not None
+            else mlp_expansion_size / config.n_embd
+        )
+
         # Determine bias settings - use specific up/down if set, otherwise use global bias
         use_up_bias = config.mlp_up_bias if config.mlp_up_bias is not None else config.bias
         use_down_bias = config.mlp_down_bias if config.mlp_down_bias is not None else config.bias
@@ -124,6 +143,9 @@ class OriginalMLP(nn.Module):
         else:
             x = self.c_fc(x)
 
+        if self.use_approx_mlp_up_norm:
+            x = x * self.approx_mlp_up_norm_factor
+
         if self.quantization_mlp_dict["quantize_mlp_act_activation_input"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_input_bits"]
             quant_method = self.quantization_mlp_dict["activations_quant_method"]
@@ -137,6 +159,9 @@ class OriginalMLP(nn.Module):
 
         if self.cproj_scale is not None and self.cproj_scale != 1.0:
             x = x / self.cproj_scale
+
+        if self.use_approx_mlp_act_norm:
+            x = x * self.approx_mlp_act_norm_factor
 
         if self.quantization_mlp_dict["quantize_mlp_act_activation_output"]:
             num_bits = self.quantization_mlp_dict["quantize_mlp_act_activation_output_bits"]
@@ -156,6 +181,9 @@ class OriginalMLP(nn.Module):
             batch_size, seq_len, _ = x.shape
             x = x.view(batch_size, seq_len, self.mlp_down_projs, -1)
             x = x.sum(dim=2)
+
+        if self.use_approx_mlp_down_norm:
+            x = x * self.approx_mlp_down_norm_factor
 
         x = self.dropout(x)
 
@@ -899,4 +927,3 @@ def get_mlp_instance(config):
     if mlp_class is None:
         raise ValueError(f"Unsupported MLP variant: {mlp_type}")
     return mlp_class(config)
-
