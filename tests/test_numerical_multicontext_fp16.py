@@ -118,6 +118,31 @@ class NumericalMulticontextFP16Test(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(losses[0], expected_loss.to(losses[0].dtype), atol=1e-6, rtol=0.0))
 
+    def test_numerical_embedding_attenuated_scaled_vector_uses_global_attenuation(self):
+        cfg = GPTConfig(
+            block_size=4,
+            vocab_size=16,
+            n_layer=0,
+            n_head=1,
+            n_embd=5,
+            numerical_embedding_variant="attenuated_scaled_vector",
+            numerical_scaled_vector_attenuation=0.25,
+        )
+        embedding = get_numerical_embedding(cfg)
+
+        with torch.no_grad():
+            embedding.vector.copy_(torch.tensor([[1.0, -2.0, 0.5, 4.0, -1.5]]))
+
+        x = torch.tensor(
+            [[[2.0], [-1.0]],
+             [[0.5], [3.0]]],
+            dtype=torch.float32,
+        )
+        out = embedding(x)
+
+        expected = x * (0.25 * embedding.vector)
+        self.assertTrue(torch.allclose(out, expected, atol=1e-6, rtol=0.0))
+
 
 if __name__ == "__main__":
     unittest.main()

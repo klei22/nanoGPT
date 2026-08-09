@@ -24,6 +24,7 @@ class GPTConfig:
     numerical_embedding_variant: str = "mlp"
     numerical_output_variant: str = "mlp"
     numerical_mapping_weight_tying: bool = True
+    numerical_scaled_vector_attenuation: float = 1.0
     numerical_multicontext_input_format: str = "scalar"
     numerical_loss_huber_delta: float = 1.0
     numerical_loss_use_cosine: bool = False
