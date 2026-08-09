@@ -144,6 +144,10 @@ class GPTConfig:
     # wte import/export
     import_wte_freeze: bool = False
     import_wte_npy: str = None
+    import_wte_lm_head_ckpt: str = None
+    import_wte_lm_head_freeze: bool = False
+    import_lm_head_weight_normalize: bool = False
+    import_lm_head_weight_scale: float = 1.0
     export_wte_npy: str = None
     export_wte_each_eval: bool = False
 

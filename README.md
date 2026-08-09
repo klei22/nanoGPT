@@ -106,6 +106,49 @@ at each new saved checkpoint.
 python3 train.py --max_sample_tokens 100 --compile
 ```
 
+### Seed WTE and LM Head from a Checkpoint
+
+To initialize only the token embedding table (`transformer.wte.weight`) and the
+full language-modeling head (`lm_head.weight`) from a prior nanoGPT checkpoint
+while training the rest of the model from the current configuration, pass the
+checkpoint path with `--import_wte_lm_head_ckpt`:
+
+```bash
+python3 train.py --import_wte_lm_head_ckpt out_prior/ckpt.pt
+```
+
+To keep those imported matrices fixed during training, add
+`--import_wte_lm_head_freeze`:
+
+```bash
+python3 train.py --import_wte_lm_head_ckpt out_prior/ckpt.pt --import_wte_lm_head_freeze
+```
+
+To ablate the decoder logit scale while keeping the imported embedding table unchanged,
+set `--import_lm_head_weight_scale`. When this multiplier is not `1.0` and
+WTE/LM-head weights would otherwise be tied, the LM head is cloned before scaling
+so only `lm_head.weight` is multiplied:
+
+```bash
+python3 train.py --import_wte_lm_head_ckpt out_prior/ckpt.pt --import_lm_head_weight_scale 0.8
+```
+
+To first L2-normalize each imported LM-head word vector and then apply the
+multiplier, add `--import_lm_head_weight_normalize`. This also clones a tied LM
+head so normalization and scaling do not modify the imported WTE:
+
+```bash
+python3 train.py --import_wte_lm_head_ckpt out_prior/ckpt.pt \
+  --import_lm_head_weight_normalize --import_lm_head_weight_scale 0.8
+```
+
+If the source checkpoint has separate WTE and LM-head matrices, disable weight
+tying in the new run so both matrices can be imported independently:
+
+```bash
+python3 train.py --no-wte_weight_tying --import_wte_lm_head_ckpt out_prior/ckpt.pt
+```
+
 ### Train Model with MeZO (Forward-Only Updates)
 
 This repo also includes a zeroth-order optimizer script, `train_mezo.py`, that
