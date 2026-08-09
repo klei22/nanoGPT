@@ -27,6 +27,25 @@ class FullAttentionResidual(nn.Module):
         self.eps = eps
         self.weighting = weighting
 
+    @torch.no_grad()
+    def initialize_queries(self, variant: str, scale: float) -> None:
+        """Initialize routing queries for non-softmax weighting functions."""
+        initializers = {
+            "zeros": lambda tensor: nn.init.zeros_(tensor),
+            "ones": lambda tensor: nn.init.ones_(tensor),
+            "constant": lambda tensor: nn.init.constant_(tensor, scale),
+            "normal": lambda tensor: nn.init.normal_(tensor, std=scale),
+            "uniform": lambda tensor: nn.init.uniform_(tensor, -scale, scale),
+            "positive_uniform": lambda tensor: nn.init.uniform_(tensor, 0.0, scale),
+            "xavier_normal": lambda tensor: nn.init.xavier_normal_(tensor, gain=scale),
+            "xavier_uniform": lambda tensor: nn.init.xavier_uniform_(tensor, gain=scale),
+        }
+        if variant not in initializers:
+            raise ValueError(f"unknown attention residual query initialization: {variant}")
+        initializers[variant](self.queries)
+        if variant == "ones":
+            self.queries.mul_(scale)
+
     def forward(self, sources: list[torch.Tensor], destination: int) -> torch.Tensor:
         if not sources:
             raise ValueError("attention residuals require at least one source")

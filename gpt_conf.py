@@ -111,6 +111,8 @@ class GPTConfig:
     attention_residual_variant: str = "standard"
     attention_residual_eps: float = 1e-6
     attention_residual_weighting: str = "softmax"
+    attention_residual_relu2max_query_init: str = "normal"
+    attention_residual_relu2max_query_init_scale: float = 0.02
 
     # Attention Variation Specific
 

@@ -25,6 +25,15 @@ implementation instead. Its scale follows `relu2max_divisor` and
 queries use a small random initialization instead of zero initialization to
 avoid ReLU2's zero-gradient point.
 
+ReLU2Max query initialization can be explored with
+`attention_residual_relu2max_query_init`. Supported styles are `zeros`, `ones`,
+`constant`, `normal`, `uniform`, `positive_uniform`, `xavier_normal`, and
+`xavier_uniform`. Set `attention_residual_relu2max_query_init_scale` to control
+the constant value, distribution width, or Xavier gain. In particular, the
+combination `ones` and a scale of `1.0` initializes every query component to
+one. `zeros` is provided as an ablation but will start ReLU2Max at its
+zero-gradient point.
+
 Full Attention Residuals store the embedding and all `2 * n_layer` sublayer
 outputs, and perform quadratic work in the number of sublayers. The current
 implementation supports sequential attention-then-MLP blocks without post-LN;

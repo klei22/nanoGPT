@@ -160,7 +160,10 @@ class GPT(nn.Module):
             # ReLU2Max has zero derivative at zero, so zero queries would leave
             # every route permanently inactive.
             if residual_weighting is not None:
-                nn.init.normal_(self.attention_residual.queries, std=0.02)
+                self.attention_residual.initialize_queries(
+                    config.attention_residual_relu2max_query_init,
+                    config.attention_residual_relu2max_query_init_scale,
+                )
         elif self.attention_residual_variant != "standard":
             raise ValueError(f"unknown attention_residual_variant: {self.attention_residual_variant}")
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)

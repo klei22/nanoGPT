@@ -1,7 +1,18 @@
 ---
 # Compare Softmax and ReLU2Max depth weighting for Full Attention Residuals.
 parameter_groups:
-  - attention_residual_weighting: ["softmax", "relu2max"]
+  - attention_residual_weighting: ["softmax"]
+  - attention_residual_weighting: ["relu2max"]
+    relu2max_divisor: [1.0]
+    attention_residual_relu2max_query_init:
+      - "ones"
+      - "constant"
+      - "normal"
+      - "uniform"
+      - "positive_uniform"
+      - "xavier_normal"
+      - "xavier_uniform"
+    attention_residual_relu2max_query_init_scale: [1.0, 0.1, 0.02]
 
 common_group:
   attention_residual_variant: ["full"]
