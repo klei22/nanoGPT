@@ -15,6 +15,27 @@ from variations.softmax_variations import softmax_dictionary
 from variations.triadic_modulation_variations import mod_fn_dict
 
 
+def _init_cproj_scale(config):
+    base_scale = float(getattr(config, "attn_cproj_scale", 1.0))
+    learn_scale = bool(getattr(config, "attn_cproj_scale_learning", False))
+    init_learning_scale = float(getattr(config, "attn_cproj_scale_init_learning_scale", 1.0))
+    if learn_scale:
+        if init_learning_scale == 0.0:
+            raise ValueError("attn_cproj_scale_init_learning_scale cannot be 0 when learning scale")
+        learned_init = base_scale / init_learning_scale
+        return nn.Parameter(torch.tensor([learned_init], dtype=torch.float32)), True, init_learning_scale
+    return base_scale, False, 1.0
+
+
+def _apply_cproj_scale(x: torch.Tensor, cproj_scale, cproj_scale_learning: bool, cproj_scale_factor: float):
+    effective_scale = cproj_scale_factor * cproj_scale if cproj_scale_learning else cproj_scale
+    if torch.is_tensor(effective_scale):
+        return x / effective_scale
+    if effective_scale is not None and effective_scale != 1.0:
+        return x / effective_scale
+    return x
+
+
 def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
     """Return per-group head counts and mapping from head index to kv group."""
     if n_kv_group <= 0:
@@ -111,7 +132,7 @@ class CausalSelfAttention(nn.Module):
 
         # Post-attention normalization/scaling (mirrors MLP behavior)
         self.post_act_l2_norm = getattr(config, "attn_post_act_l2_norm", False)
-        self.cproj_scale = getattr(config, "attn_cproj_scale", 1.0)
+        self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor = _init_cproj_scale(config)
 
         # Embedding
         self.n_embd = config.n_embd
@@ -449,6 +470,7 @@ class CausalSelfAttention(nn.Module):
             y = fake_quantize_act(self, "attn_act_pv_mult_output", y, num_bits, quant_method, iter_num)
 
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        y = _apply_cproj_scale(y, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
@@ -528,6 +550,8 @@ class EdgeLLMASICAttention(nn.Module):
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
         self.dropout = config.dropout
+
+        self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor = _init_cproj_scale(config)
 
         # Embedding
         self.n_embd = config.n_embd
@@ -764,6 +788,7 @@ class EdgeLLMASICAttention(nn.Module):
             y = fake_quantize_act(self, "attn_act_pv_mult_output", y, num_bits, quant_method, iter_num)
 
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        y = _apply_cproj_scale(y, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
@@ -1117,7 +1142,7 @@ class InfiniteHeadAttention(nn.Module):
 
         # Post-attention normalization/scaling (mirrors MLP behavior)
         self.post_act_l2_norm = getattr(config, "attn_post_act_l2_norm", False)
-        self.cproj_scale = getattr(config, "attn_cproj_scale", 1.0)
+        self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor = _init_cproj_scale(config)
 
         # Embedding
         self.n_embd = config.n_embd
@@ -1274,8 +1299,7 @@ class InfiniteHeadAttention(nn.Module):
         if self.post_act_l2_norm:
             y = y / y.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-        if self.cproj_scale is not None and self.cproj_scale != 1.0:
-            y = y / self.cproj_scale
+        y = _apply_cproj_scale(y, self.cproj_scale, self.cproj_scale_learning, self.cproj_scale_factor)
 
         # Concat Heads or Inf Concat Heads
         if self.use_concat_heads:
