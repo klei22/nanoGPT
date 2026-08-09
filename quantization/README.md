@@ -58,6 +58,16 @@ python3 quantization/visualize.py \
 - **stochastic_quant**: Introduces randomness into the quantization process for stochastic rounding.
 - **ternary_quant**: Symmetrically quantizes values to a 1.58 bit range of -1, 0, and 1
 
+## Gradient Fake Quantization
+
+Quantized linear layers can optionally simulate low-precision gradients during backpropagation:
+
+- `--grad_fake_quant`: Enable gradient fake quantization for quantized linear layers.
+- `--grad_fake_quant_exp_bits`: Number of exponent bits (`e`) kept in the simulated floating point format.
+- `--grad_fake_quant_mant_bits`: Number of mantissa bits (`m`) kept; the sign bit is always preserved.
+
+Providing exponent and mantissa bit widths automatically enables the feature.
+
 ---
 
 ## Linear Variants
