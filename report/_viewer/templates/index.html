@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+  <body>
+    <h1>Reports</h1>
+    <ul>
+      {% for d in dirs %}
+      <li><a href="{{ url_for('folder_view', folder=d) }}">{{ d }}</a></li>
+      {% endfor %}
+    </ul>
+  </body>
+</html>
