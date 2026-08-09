@@ -1,0 +1,97 @@
+# relu2max_capped_hypersphere_peri_ln.yaml
+# Sweep ReLU2Max attention with CappedHyperSphereNorm in peri-LN mode.
+---
+
+named_static_groups:
+  # QK Norm
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  # Norm Type: peri-LN mode
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  # Position Embeddings
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  # Attention Softmax
+  - named_group: "relu2max"
+    softmax_variant_attn: ["relu2max"]
+
+  # Infinite Attention
+  - named_group: "infinite"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+
+  # MQA
+  - named_group: "mqa"
+    n_kv_group: [1]
+
+  # Head Dimension
+  - named_group: "hd_100"
+    n_qk_head_dim: [100]
+    n_v_head_dim: [100]
+
+  - named_group: "hd_150"
+    n_qk_head_dim: [150]
+    n_v_head_dim: [150]
+
+  - named_group: "hd_200"
+    n_qk_head_dim: [200]
+    n_v_head_dim: [200]
+
+  # Capped hypersphere norms for the residual-stream-facing projections.
+  - named_group: "capped_hypersphere_pair"
+    norm_variant_attn: ["cappedhyperspherenorm"]
+    norm_variant_output: ["cappedhyperspherenorm"]
+
+  - named_group: "capped_hypersphere_wte"
+    norm_variant_wte: ["cappedhyperspherenorm"]
+
+  - named_group: "no_wte_norm"
+
+named_variation_groups:
+  - named_group: "head_dim_var"
+    named_group_alternates: ["hd_100", "hd_150", "hd_200"]
+
+  - named_group: "wte_norm_var"
+    named_group_alternates: ["no_wte_norm", "capped_hypersphere_wte"]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "relu2max"
+      - "infinite"
+      - "mqa"
+      - "capped_hypersphere_pair"
+    n_head:
+      range:
+        start: 1
+        end: 12
+        step: 1
+    relu2max_divisor: [128.0, 256.0, 512.0]
+    # HyperSphereNorm-family knobs kept in this exploration so capped-hypersphere
+    # runs are tagged with the intended radius/gain/learning settings.
+    hsnorm_scale: [1.0]
+    hsnorm_gain: [false]
+    hsnorm_radius: [null]
+    hsnorm_radius_learning: [false]
+    named_group_variations:
+      - "head_dim_var"
+      - "wte_norm_var"
