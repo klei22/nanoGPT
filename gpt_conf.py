@@ -229,8 +229,8 @@ class GPTConfig:
     shared_attn_seq: int = 1
 
     # Softmax Alternatives and Options
-    softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax" "ste_argmax_softmax"
-    softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax" "ste_argmax_softmax"
+    softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "polynomialmax" "strongermax" "consmax" "ste_argmax_softmax"
+    softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "polynomialmax" "strongermax" "consmax" "ste_argmax_softmax"
 
 
     ## General Options
@@ -299,8 +299,12 @@ class GPTConfig:
     ## ReLUMax options
     relumax_divisor: float = 256.0
 
-    ## ReLUMax options
+    ## ReLU2Max options
     relu2max_divisor: float = 256.0
+
+    ## PolynomialMax options
+    polynomialmax_power: float = 2.0
+    polynomialmax_divisor: float = 256.0
 
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0
