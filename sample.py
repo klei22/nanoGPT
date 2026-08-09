@@ -1248,6 +1248,7 @@ def _write_multicontext_csv_sample(
     token_state: Dict[str, torch.Tensor],
     prompt_lengths: Dict[str, int],
     include_prompt: bool,
+    token_lengths: Optional[Dict[str, int]] = None,
 ) -> Path:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1258,7 +1259,10 @@ def _write_multicontext_csv_sample(
     ]
     decoded_columns: List[List[str]] = []
     for name in dataset_names:
-        token_ids = token_state[name][0].detach().cpu().tolist()
+        valid_length = (
+            token_lengths[name] if token_lengths is not None else token_state[name].size(1)
+        )
+        token_ids = token_state[name][0, :valid_length].detach().cpu().tolist()
         if not include_prompt:
             token_ids = token_ids[prompt_lengths.get(name, 0):]
         decoded_columns.append(_decoded_csv_values(token_ids, decode_lookup[name]))
@@ -1802,13 +1806,26 @@ def main():
                     else:
                         model.set_lsv_mode(1)
 
-                token_state = {name: tensor.clone() for name, tensor in initial_tokens.items()}
+                token_state: Dict[str, torch.Tensor] = {}
+                current_lengths: Dict[str, int] = {}
+                for name, tensor in initial_tokens.items():
+                    initial_length = tensor.size(1)
+                    total_length = initial_length + args.max_new_tokens
+                    token_buffer = torch.empty(
+                        (tensor.size(0), total_length),
+                        dtype=tensor.dtype,
+                        device=tensor.device,
+                    )
+                    token_buffer[:, :initial_length] = tensor
+                    token_state[name] = token_buffer
+                    current_lengths[name] = initial_length
 
                 for _ in range(args.max_new_tokens):
                     idx_cond_dict = {}
                     for name in dataset_names:
-                        tokens = token_state[name]
-                        idx_cond_dict[name] = tokens if tokens.size(1) <= block_size else tokens[:, -block_size:]
+                        current_length = current_lengths[name]
+                        tokens = token_state[name][:, :current_length]
+                        idx_cond_dict[name] = tokens if current_length <= block_size else tokens[:, -block_size:]
 
                     logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
 
@@ -1849,12 +1866,16 @@ def main():
                             probs = F.softmax(cur_logits, dim=-1)
                             idx_next = torch.multinomial(probs, num_samples=1)
 
-                        token_state[name] = torch.cat((token_state[name], idx_next), dim=1)
+                        current_length = current_lengths[name]
+                        token_state[name][:, current_length:current_length + 1] = idx_next
+                        current_lengths[name] = current_length + 1
 
                 output_dict: Dict[str, str] = {}
                 for name in dataset_names:
                     decode_fn = decode_lookup[name]
-                    output_dict[name] = decode_fn(token_state[name][0].tolist())
+                    output_dict[name] = decode_fn(
+                        token_state[name][0, :current_lengths[name]].tolist()
+                    )
 
                 if args.numerical_multicontext_plotly:
                     if not model.config.numerical_multicontext:
@@ -1863,7 +1884,7 @@ def main():
                     sample_numeric_series: Dict[str, List[float]] = {}
                     for name in dataset_names:
                         decoded = decode_numerical_series(
-                            token_state[name][0].tolist(),
+                            token_state[name][0, :current_lengths[name]].tolist(),
                             dataset_meta[name],
                             model.config.numerical_multicontext_input_format,
                         )
@@ -1899,6 +1920,7 @@ def main():
                         token_state=token_state,
                         prompt_lengths=prompt_lengths,
                         include_prompt=args.multicontext_csv_output_include_prompt,
+                        token_lengths=current_lengths,
                     )
                     print(f"Saved multicontext CSV sample to: {written_csv}")
 
