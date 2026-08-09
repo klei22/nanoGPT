@@ -1,0 +1,34 @@
+# Explore repeated attention/MLP ops per block with intermediate skip connections.
+---
+max_iters: [20000]
+eval_interval: [500]
+dataset: ["minipile"]
+device: ["cuda"]
+dtype: ["float16"]
+compile: [true]
+
+# Keep model size modest for exploration runs.
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+
+# Standard transformer defaults.
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+use_pre_ln: [true]
+
+# New sequential block mode.
+use_sequential_ops: [true]
+sequence_intermediate_skip_connections: [true]
+sequence_final_skip_connection: [true]
+
+# Keep repeated-MLP variants close to baseline MLP parameter budget.
+match_sequential_mlp_param_budget: [true]
+
+# Two sequence patterns to compare:
+# 1) attn attn mlp mlp
+# 2) attn mlp mlp mlp attn mlp mlp mlp
+block_operation_sequence:
+  - ["attn", "attn", "mlp", "mlp"]
+  - ["attn", "mlp", "mlp", "mlp", "attn", "mlp", "mlp", "mlp"]
