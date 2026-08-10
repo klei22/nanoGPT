@@ -34,6 +34,11 @@ combination `ones` and a scale of `1.0` initializes every query component to
 one. `zeros` is provided as an ablation but will start ReLU2Max at its
 zero-gradient point.
 
+The comparison exploration disables TensorBoard logging so the architecture
+sweep does not require optional TensorBoard/TensorFlow binary dependencies.
+Remove `tensorboard_log: [false]` from the YAML if TensorBoard is desired and
+compatible with the local NumPy environment.
+
 Full Attention Residuals store the embedding and all `2 * n_layer` sublayer
 outputs, and perform quadratic work in the number of sublayers. The current
 implementation supports sequential attention-then-MLP blocks without post-LN;

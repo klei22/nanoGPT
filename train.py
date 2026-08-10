@@ -98,7 +98,6 @@ import torch.onnx
 import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
 
 from variations.model_variations import model_variation_dictionary
 
@@ -142,6 +141,7 @@ class Trainer:
         self.evaluations_remaining: int = 0 # will be updated after the current iter is loaded
         self.formatted_completion_eta: str = "waiting for calculation"
         self.iter_latency_avg: float = 0.0  # running mean ms / iteration
+        self.writer = None
 
         # track latest evaluation metrics for progress bar
         self.latest_top1_prob = float('nan')
@@ -499,6 +499,11 @@ class Trainer:
 
         # Tensorboard
         if self.args.tensorboard_log:
+            # TensorBoard is optional. Import it only when logging is enabled so
+            # --no-tensorboard_log can run without TensorFlow/TensorBoard binary
+            # compatibility affecting model training.
+            from torch.utils.tensorboard import SummaryWriter
+
             # 1) Give the run a safe default name when the user did not supply one
             if self.args.tensorboard_run_name is None:
                 self.args.tensorboard_run_name = f"{timestamp_prefix}"

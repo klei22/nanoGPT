@@ -29,3 +29,6 @@ common_group:
   eval_interval: [500]
   never_save_checkpoint: [true]
   compile: [true]
+  # Keep this architecture sweep independent of optional TensorBoard/TensorFlow
+  # binary dependencies. Remove this setting to enable TensorBoard explicitly.
+  tensorboard_log: [false]
