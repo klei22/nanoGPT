@@ -310,6 +310,47 @@ class TestTokenizers(unittest.TestCase):
         if os.path.exists(reuse_meta_path):
             os.remove(reuse_meta_path)
 
+    def test_char_bpe_reuse_can_take_vocab_prefix(self):
+        corpus = "abababababababababababababababab"
+        meta_path = "char_bpe_factored_source.pkl"
+        tokenizer = CharBPETokenizerWithByteFallback(
+            Namespace(vocab_size=264, track_token_counts=False, meta_output_path=meta_path),
+            corpus,
+            None,
+        )
+        tokenizer.tokenize(corpus)
+
+        smaller_meta_path = "char_bpe_factored_smaller.pkl"
+        smaller = CharBPETokenizerWithByteFallback(
+            Namespace(
+                vocab_size=260,
+                char_bpe_vocab_path=meta_path,
+                track_token_counts=False,
+                meta_output_path=smaller_meta_path,
+            ),
+            corpus,
+            None,
+        )
+        ids = smaller.tokenize(corpus)
+
+        self.assertEqual(smaller.vocab_size, 260)
+        self.assertEqual(smaller.detokenize(ids), corpus)
+        self.temp_paths.extend([meta_path, smaller_meta_path])
+
+    def test_factored_vocab_sizes_and_directory_names(self):
+        self.assertEqual(prepare._factored_vocab_sizes(9000, 1000), list(range(1000, 10000, 1000)))
+        self.assertEqual(prepare._factored_vocab_sizes(2500, 1000), [1000, 2000, 2500])
+        args = Namespace(
+            output_tokenization_subdir=True,
+            method="char_bpe",
+            output_subdir_suffix="factored",
+            vocab_size_increment=1000,
+            vocab_size=9000,
+            json_tokens_file=None,
+            hf_tokenizer_name=None,
+        )
+        self.assertEqual(prepare._output_dir_for_args(args), "char_bpe_factored_9000")
+
 
     def test_char_bpe_incomplete_coverage_uses_byte_fallback(self):
         corpus = "aaaaabbbbcccdde🙂🙃"

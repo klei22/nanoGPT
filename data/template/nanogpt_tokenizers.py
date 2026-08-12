@@ -524,8 +524,17 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
         self.incomplete_coverage_uses_bpe = getattr(args, "char_bpe_incomplete_coverage_uses_bpe", True)
         if self.reuse_meta_path:
             meta = self._load_char_bpe_meta(self.reuse_meta_path)
-            self.desired_vocab_size = meta["vocab_size"]
-            self.char_tokens = meta["char_tokens"]
+            source_vocab_size = meta["vocab_size"]
+            self.desired_vocab_size = getattr(args, "vocab_size", None) or source_vocab_size
+            if not 256 < self.desired_vocab_size <= source_vocab_size:
+                raise ValueError(
+                    "A reused char_bpe vocabulary size must be greater than 256 "
+                    f"and no larger than its source vocabulary ({source_vocab_size})."
+                )
+            # BPE learns tokens in merge order, so every prefix is a usable,
+            # factored vocabulary.  Taking a prefix lets prepare.py emit smaller
+            # variants without repeating the expensive merge training.
+            self.char_tokens = meta["char_tokens"][:self.desired_vocab_size - 256]
             self.sorted_char_tokens = meta.get(
                 "char_tokens_sorted",
                 sorted(self.char_tokens, key=lambda t: len(t), reverse=True),
@@ -750,12 +759,16 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
         self._write_vocab_jsons(meta)
 
     def _write_vocab_jsons(self, meta):
+        output_dir = os.path.dirname(getattr(self.args, "meta_output_path", ""))
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         vocab_json = []
         for idx in range(self.vocab_size):
             token = self.itos[idx]
             vocab_json.append(self._format_token_for_json(token))
 
-        with open("char_bpe_vocab.json", "w", encoding="utf-8") as f:
+        vocab_path = os.path.join(output_dir, "char_bpe_vocab.json")
+        with open(vocab_path, "w", encoding="utf-8") as f:
             json.dump(vocab_json, f, ensure_ascii=False, indent=2)
 
         if self.token_counts is not None:
@@ -768,7 +781,8 @@ class CharBPETokenizerWithByteFallback(Tokenizer):
                     "token": self._format_token_for_json(token),
                     "count": counts.get(idx, 0)
                 })
-            with open("char_bpe_token_counts.json", "w", encoding="utf-8") as f:
+            counts_path = os.path.join(output_dir, "char_bpe_token_counts.json")
+            with open(counts_path, "w", encoding="utf-8") as f:
                 json.dump(counts_json, f, ensure_ascii=False, indent=2)
 
     @staticmethod
