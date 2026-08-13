@@ -20,6 +20,11 @@ symbols, and 10 held-out letters. Its `EMBEDDING_DIMS`, `DIGIT_COUNTS`,
 values, so PCA widths such as `8 16 64` remain selectable. Sweep runs train for
 10,000 iterations by default; override `SWEEP_MAX_ITERS` as needed.
 
+Set `DROPOUT_PERCENT` in the single demo to regenerate the training split and
+resume training without the trailing `DROPOUT_COUNT` trained symbols at that
+percentage of the run. The symbols stay in the vocabulary and checkpointed
+model, which makes their post-dropout motion directly comparable.
+
 The data is generated locally and is released under the repository's license;
 there is no external source or additional dataset license.
 

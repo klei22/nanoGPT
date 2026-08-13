@@ -39,3 +39,9 @@ marks the currently selected checkpoint.
 The sweep rewrites `runs/manifest.json` atomically after every completed run.
 You can therefore keep the HTTP server open and refresh `sweep.html` while the
 remaining configurations continue training.
+
+The base sweep drops one trained symbol at each 10% increment from 10% through
+90%. `DROPOUT_COUNTS` accepts multiple counts to remove several trailing
+symbols simultaneously, and `DROPOUT_PERCENTAGES` selects transition points.
+At the transition, affected points and the new portion of each trajectory turn
+purple; the pre-transition trail retains its original trained-token color.

@@ -55,7 +55,7 @@ def finite_metric(value):
     return value if math.isfinite(value) else None
 
 
-def export(checkpoint_dir: Path, meta_path: Path, output: Path) -> None:
+def export(checkpoint_dir: Path, meta_path: Path, output: Path, dropout_iteration: int | None = None) -> None:
     with meta_path.open("rb") as handle:
         meta = pickle.load(handle)
     tokens = [meta["itos"][i] for i in range(meta["vocab_size"])]
@@ -108,8 +108,10 @@ def export(checkpoint_dir: Path, meta_path: Path, output: Path) -> None:
 
     payload = {
         "tokens": tokens,
-        "trained_tokens": meta.get("trained_tokens", list("0123456789")),
+        "trained_tokens": meta.get("initial_trained_tokens", meta.get("trained_tokens", list("0123456789"))),
         "unseen_tokens": meta.get("unseen_tokens", list("abcd")),
+        "dropped_tokens": meta.get("dropped_tokens", []),
+        "dropout_iteration": dropout_iteration,
         "fixed_norm": fixed_norm,
         "wte_weight_tying": wte_weight_tying,
         "projection": projection,
@@ -125,8 +127,9 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
     parser.add_argument("--meta", type=Path, default=Path("data/digits_3d/meta.pkl"))
     parser.add_argument("--output", type=Path, default=Path("report/threejs/digits-3d/token_trajectories.json"))
+    parser.add_argument("--dropout-iteration", type=int, default=None)
     args = parser.parse_args()
-    export(args.checkpoint_dir, args.meta, args.output)
+    export(args.checkpoint_dir, args.meta, args.output, args.dropout_iteration)
 
 
 if __name__ == "__main__":

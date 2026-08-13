@@ -16,6 +16,8 @@ NUM_DIGITS="${NUM_DIGITS:-10}"
 NUM_LETTERS="${NUM_LETTERS:-10}"
 EMBEDDING_DIM="${EMBEDDING_DIM:-3}"
 TRAJECTORY_FILE="${TRAJECTORY_FILE:-${VIEW_DIR}/token_trajectories.json}"
+DROPOUT_PERCENT="${DROPOUT_PERCENT:-}"
+DROPOUT_COUNT="${DROPOUT_COUNT:-1}"
 
 case "${WTE_FIXED_NORM}" in
   true|1|yes) WTE_NORM_ARGS=(--wte_fixed_norm) ;;
@@ -33,7 +35,7 @@ esac
 
 python3 "${DATA_DIR}/prepare.py" --num-digits "${NUM_DIGITS}" --num-letters "${NUM_LETTERS}"
 
-python3 train.py \
+TRAIN_ARGS=(
   --dataset digits_3d \
   --out_dir "${OUT_DIR}" \
   --device "${DEVICE}" \
@@ -46,7 +48,6 @@ python3 train.py \
   "${WTE_NORM_ARGS[@]}" \
   "${WTE_TYING_ARGS[@]}" \
   --dropout 0.0 \
-  --max_iters "${MAX_ITERS}" \
   --eval_interval "${SAVE_INTERVAL}" \
   --eval_iters 20 \
   --save_major_ckpt_interval "${SAVE_INTERVAL}" \
@@ -56,11 +57,27 @@ python3 train.py \
   --warmup_iters 20 \
   --decay_lr \
   --no-compile
+)
+
+if [ -n "${DROPOUT_PERCENT}" ]; then
+  if [ "${DROPOUT_PERCENT}" -le 0 ] || [ "${DROPOUT_PERCENT}" -ge 100 ]; then
+    echo "DROPOUT_PERCENT must be between 1 and 99" >&2; exit 2
+  fi
+  DROPOUT_ITERATION=$((MAX_ITERS * DROPOUT_PERCENT / 100))
+  python3 train.py "${TRAIN_ARGS[@]}" --max_iters "${DROPOUT_ITERATION}"
+  python3 "${DATA_DIR}/prepare.py" --num-digits "${NUM_DIGITS}" --num-letters "${NUM_LETTERS}" --dropout-count "${DROPOUT_COUNT}"
+  python3 train.py "${TRAIN_ARGS[@]}" --max_iters "${MAX_ITERS}" --init_from resume
+  DROPOUT_EXPORT_ARGS=(--dropout-iteration "${DROPOUT_ITERATION}")
+else
+  python3 train.py "${TRAIN_ARGS[@]}" --max_iters "${MAX_ITERS}"
+  DROPOUT_EXPORT_ARGS=()
+fi
 
 python3 analysis/export_3d_token_trajectories.py \
   --checkpoint-dir "${OUT_DIR}" \
   --meta "${DATA_DIR}/meta.pkl" \
-  --output "${TRAJECTORY_FILE}"
+  --output "${TRAJECTORY_FILE}" \
+  "${DROPOUT_EXPORT_ARGS[@]}"
 
 cat <<EOF
 Done. Serve the repository (fetch does not work from file://), then open:

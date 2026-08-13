@@ -6,6 +6,8 @@ DIGIT_COUNTS="${DIGIT_COUNTS:-10}"
 LETTER_COUNTS="${LETTER_COUNTS:-10}"
 EMBEDDING_DIMS="${EMBEDDING_DIMS:-3}"
 WTE_TYING_MODES="${WTE_TYING_MODES:-tied untied}"
+DROPOUT_PERCENTAGES="${DROPOUT_PERCENTAGES:-10 20 30 40 50 60 70 80 90}"
+DROPOUT_COUNTS="${DROPOUT_COUNTS:-1}"
 SWEEP_MAX_ITERS="${SWEEP_MAX_ITERS:-10000}"
 SWEEP_SAVE_INTERVAL="${SWEEP_SAVE_INTERVAL:-100}"
 RUNS_DIR="report/threejs/digits-3d/runs"
@@ -17,6 +19,8 @@ for embedding_dim in ${EMBEDDING_DIMS}; do
     for num_letters in ${LETTER_COUNTS}; do
       for mode in unconstrained sqrt_dim unit; do
         for tying_mode in ${WTE_TYING_MODES}; do
+          for dropout_percent in ${DROPOUT_PERCENTAGES}; do
+            for dropout_count in ${DROPOUT_COUNTS}; do
           case "${mode}" in
             unconstrained) fixed=false; radius="" ;;
             sqrt_dim) fixed=true; radius="" ;;
@@ -28,7 +32,7 @@ for embedding_dim in ${EMBEDDING_DIMS}; do
             *) echo "Unknown WTE tying mode: ${tying_mode}" >&2; exit 2 ;;
           esac
 
-          name="dim-${embedding_dim}_digits-${num_digits}_letters-${num_letters}_${mode}_${tying_mode}"
+          name="dim-${embedding_dim}_digits-${num_digits}_letters-${num_letters}_${mode}_${tying_mode}_drop-${dropout_count}-at-${dropout_percent}pct"
           echo "=== ${name} ==="
           NUM_DIGITS="${num_digits}" \
           NUM_LETTERS="${num_letters}" \
@@ -36,12 +40,16 @@ for embedding_dim in ${EMBEDDING_DIMS}; do
           WTE_FIXED_NORM="${fixed}" \
           WTE_FIXED_NORM_VALUE="${radius}" \
           WTE_WEIGHT_TYING="${weight_tying}" \
+          DROPOUT_PERCENT="${dropout_percent}" \
+          DROPOUT_COUNT="${dropout_count}" \
           MAX_ITERS="${SWEEP_MAX_ITERS}" \
           SAVE_INTERVAL="${SWEEP_SAVE_INTERVAL}" \
           OUT_DIR="out/digits_3d_sweep/${name}" \
           TRAJECTORY_FILE="${RUNS_DIR}/${name}.json" \
             bash demos/digits_3d_trajectory_demo.sh
           python3 analysis/update_3d_sweep_manifest.py --runs-dir "${RUNS_DIR}"
+            done
+          done
         done
       done
     done
@@ -53,7 +61,7 @@ Sweep complete. Serve the repository with:
   python3 -m http.server 8000
 
 Example result:
-  http://localhost:8000/report/threejs/digits-3d/index.html?data=runs/dim-3_digits-10_letters-10_sqrt_dim_tied.json
+  http://localhost:8000/report/threejs/digits-3d/index.html?data=runs/dim-3_digits-10_letters-10_sqrt_dim_tied_drop-1-at-50pct.json
 Sweep selector:
   http://localhost:8000/report/threejs/digits-3d/sweep.html
 EOF
