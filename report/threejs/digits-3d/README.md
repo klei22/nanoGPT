@@ -45,3 +45,23 @@ The base sweep drops one trained symbol at each 10% increment from 10% through
 symbols simultaneously, and `DROPOUT_PERCENTAGES` selects transition points.
 At the transition, affected points and the new portion of each trajectory turn
 purple; the pre-transition trail retains its original trained-token color.
+
+## Package for GitHub Pages
+
+After at least one sweep run completes, build a static-site directory with:
+
+```bash
+bash demos/package_digits_3d_github_pages.sh
+```
+
+The command rebuilds the manifest, copies only completed run JSON files, makes
+the sweep selector the site root, renames the trajectory page to `viewer.html`,
+and adds `.nojekyll`. Preview `dist/digits-3d-site` locally or publish that
+directory through a `gh-pages` branch or GitHub Pages Actions artifact. Three.js
+and OrbitControls remain version-pinned CDN modules, so the deployed viewer
+requires internet access in the browser.
+
+To initialize the package as a standalone commit and force-push it to the
+repository's `gh-pages` branch, run `PUBLISH=true` with the packaging script.
+Set `REMOTE_URL` to publish elsewhere. The default packaging command never
+pushes, and the generated site remains ignored by the main working tree.
