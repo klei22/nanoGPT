@@ -40,11 +40,14 @@ The sweep rewrites `runs/manifest.json` atomically after every completed run.
 You can therefore keep the HTTP server open and refresh `sweep.html` while the
 remaining configurations continue training.
 
-The base sweep drops one trained symbol at each 10% increment from 10% through
-90%. `DROPOUT_COUNTS` accepts multiple counts to remove several trailing
-symbols simultaneously, and `DROPOUT_PERCENTAGES` selects transition points.
-At the transition, affected points and the new portion of each trajectory turn
-purple; the pre-transition trail retains its original trained-token color.
+The base sweep runs 30,000 iterations. It covers sudden included-to-excluded
+and excluded-to-included transitions at 20%, 40%, 60%, and 80%, plus PWM-style
+duty cycles whose included fraction is 20%, 40%, 60%, or 80% of each period.
+`DROPOUT_COUNTS` accepts multiple counts to affect several trailing symbols at
+once; `TRANSITION_PERCENTAGES`, `DUTY_CYCLES`, and `DUTY_PERIOD_PERCENT`
+customize the schedules. Excluded points and trajectory segments are purple;
+included segments retain the trained-token orange, including every transition
+back to the dataset.
 
 ## Package for GitHub Pages
 

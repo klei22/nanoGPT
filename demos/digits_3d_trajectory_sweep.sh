@@ -6,48 +6,55 @@ DIGIT_COUNTS="${DIGIT_COUNTS:-10}"
 LETTER_COUNTS="${LETTER_COUNTS:-10}"
 EMBEDDING_DIMS="${EMBEDDING_DIMS:-3}"
 WTE_TYING_MODES="${WTE_TYING_MODES:-tied untied}"
-DROPOUT_PERCENTAGES="${DROPOUT_PERCENTAGES:-10 20 30 40 50 60 70 80 90}"
+TRANSITION_PERCENTAGES="${TRANSITION_PERCENTAGES:-20 40 60 80}"
+DUTY_CYCLES="${DUTY_CYCLES:-20 40 60 80}"
+DUTY_PERIOD_PERCENT="${DUTY_PERIOD_PERCENT:-10}"
 DROPOUT_COUNTS="${DROPOUT_COUNTS:-1}"
-SWEEP_MAX_ITERS="${SWEEP_MAX_ITERS:-10000}"
+SWEEP_MAX_ITERS="${SWEEP_MAX_ITERS:-30000}"
 SWEEP_SAVE_INTERVAL="${SWEEP_SAVE_INTERVAL:-100}"
 RUNS_DIR="report/threejs/digits-3d/runs"
 
 mkdir -p "${RUNS_DIR}"
+
+SCHEDULES=()
+for percent in ${TRANSITION_PERCENTAGES}; do
+  SCHEDULES+=("drop:${percent}" "add:${percent}")
+done
+for duty in ${DUTY_CYCLES}; do SCHEDULES+=("duty_cycle:${duty}"); done
 
 for embedding_dim in ${EMBEDDING_DIMS}; do
   for num_digits in ${DIGIT_COUNTS}; do
     for num_letters in ${LETTER_COUNTS}; do
       for mode in unconstrained sqrt_dim unit; do
         for tying_mode in ${WTE_TYING_MODES}; do
-          for dropout_percent in ${DROPOUT_PERCENTAGES}; do
-            for dropout_count in ${DROPOUT_COUNTS}; do
-          case "${mode}" in
-            unconstrained) fixed=false; radius="" ;;
-            sqrt_dim) fixed=true; radius="" ;;
-            unit) fixed=true; radius=1 ;;
-          esac
-          case "${tying_mode}" in
-            tied) weight_tying=true ;;
-            untied) weight_tying=false ;;
-            *) echo "Unknown WTE tying mode: ${tying_mode}" >&2; exit 2 ;;
-          esac
-
-          name="dim-${embedding_dim}_digits-${num_digits}_letters-${num_letters}_${mode}_${tying_mode}_drop-${dropout_count}-at-${dropout_percent}pct"
-          echo "=== ${name} ==="
-          NUM_DIGITS="${num_digits}" \
-          NUM_LETTERS="${num_letters}" \
-          EMBEDDING_DIM="${embedding_dim}" \
-          WTE_FIXED_NORM="${fixed}" \
-          WTE_FIXED_NORM_VALUE="${radius}" \
-          WTE_WEIGHT_TYING="${weight_tying}" \
-          DROPOUT_PERCENT="${dropout_percent}" \
-          DROPOUT_COUNT="${dropout_count}" \
-          MAX_ITERS="${SWEEP_MAX_ITERS}" \
-          SAVE_INTERVAL="${SWEEP_SAVE_INTERVAL}" \
-          OUT_DIR="out/digits_3d_sweep/${name}" \
-          TRAJECTORY_FILE="${RUNS_DIR}/${name}.json" \
-            bash demos/digits_3d_trajectory_demo.sh
-          python3 analysis/update_3d_sweep_manifest.py --runs-dir "${RUNS_DIR}"
+          for dropout_count in ${DROPOUT_COUNTS}; do
+            for schedule in "${SCHEDULES[@]}"; do
+              schedule_mode="${schedule%%:*}"; schedule_value="${schedule#*:}"
+              case "${mode}" in
+                unconstrained) fixed=false; radius="" ;;
+                sqrt_dim) fixed=true; radius="" ;;
+                unit) fixed=true; radius=1 ;;
+              esac
+              case "${tying_mode}" in
+                tied) weight_tying=true ;;
+                untied) weight_tying=false ;;
+                *) echo "Unknown WTE tying mode: ${tying_mode}" >&2; exit 2 ;;
+              esac
+              if [ "${schedule_mode}" = duty_cycle ]; then
+                schedule_name="duty-${schedule_value}pct"
+                schedule_args=(SCHEDULE_MODE=duty_cycle DUTY_CYCLE_PERCENT="${schedule_value}" DUTY_PERIOD_PERCENT="${DUTY_PERIOD_PERCENT}")
+              else
+                schedule_name="${schedule_mode}-at-${schedule_value}pct"
+                schedule_args=(SCHEDULE_MODE="${schedule_mode}" DROPOUT_PERCENT="${schedule_value}")
+              fi
+              name="dim-${embedding_dim}_digits-${num_digits}_letters-${num_letters}_${mode}_${tying_mode}_drop-${dropout_count}_${schedule_name}"
+              echo "=== ${name} ==="
+              env NUM_DIGITS="${num_digits}" NUM_LETTERS="${num_letters}" EMBEDDING_DIM="${embedding_dim}" \
+                WTE_FIXED_NORM="${fixed}" WTE_FIXED_NORM_VALUE="${radius}" WTE_WEIGHT_TYING="${weight_tying}" \
+                DROPOUT_COUNT="${dropout_count}" MAX_ITERS="${SWEEP_MAX_ITERS}" SAVE_INTERVAL="${SWEEP_SAVE_INTERVAL}" \
+                OUT_DIR="out/digits_3d_sweep/${name}" TRAJECTORY_FILE="${RUNS_DIR}/${name}.json" \
+                "${schedule_args[@]}" bash demos/digits_3d_trajectory_demo.sh
+              python3 analysis/update_3d_sweep_manifest.py --runs-dir "${RUNS_DIR}"
             done
           done
         done
@@ -61,7 +68,7 @@ Sweep complete. Serve the repository with:
   python3 -m http.server 8000
 
 Example result:
-  http://localhost:8000/report/threejs/digits-3d/index.html?data=runs/dim-3_digits-10_letters-10_sqrt_dim_tied_drop-1-at-50pct.json
+  http://localhost:8000/report/threejs/digits-3d/index.html?data=runs/dim-3_digits-10_letters-10_sqrt_dim_tied_drop-1_drop-at-40pct.json
 Sweep selector:
   http://localhost:8000/report/threejs/digits-3d/sweep.html
 EOF

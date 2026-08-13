@@ -17,6 +17,8 @@ def write_run(path, embedding_dim, trained, held_out, fixed_norm=None, weight_ty
         "dropped_tokens": list(range(dropped)),
         "dropout_iteration": 500,
         "frames": [{"iteration": 1000}],
+        "transition_mode": "drop",
+        "transition_iterations": [500],
     }), encoding="utf-8")
 
 
@@ -35,4 +37,6 @@ def test_manifest_is_updated_with_every_completed_run(tmp_path):
     assert second["runs"][0]["dropped_tokens"] == 1
     assert second["runs"][0]["dropout_iteration"] == 500
     assert second["runs"][0]["final_iteration"] == 1000
+    assert second["runs"][0]["transition_mode"] == "drop"
+    assert second["runs"][0]["transition_iterations"] == [500]
     assert not (tmp_path / ".manifest.json.tmp").exists()

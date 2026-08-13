@@ -25,6 +25,11 @@ resume training without the trailing `DROPOUT_COUNT` trained symbols at that
 percentage of the run. The symbols stay in the vocabulary and checkpointed
 model, which makes their post-dropout motion directly comparable.
 
+`SCHEDULE_MODE=add` runs the complementary experiment: affected symbols start
+absent and enter the dataset at `DROPOUT_PERCENT`. `SCHEDULE_MODE=duty_cycle`
+repeatedly includes and excludes them; `DUTY_CYCLE_PERCENT` controls their
+included fraction (20–80) within each `DUTY_PERIOD_PERCENT` period.
+
 The data is generated locally and is released under the repository's license;
 there is no external source or additional dataset license.
 

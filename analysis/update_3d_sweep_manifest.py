@@ -23,6 +23,9 @@ def build_manifest(runs_dir: Path) -> dict:
             "dropped_tokens": len(payload.get("dropped_tokens", [])),
             "dropout_iteration": payload.get("dropout_iteration"),
             "final_iteration": payload.get("frames", [{}])[-1].get("iteration"),
+            "transition_mode": payload.get("transition_mode"),
+            "transition_iterations": payload.get("transition_iterations", []),
+            "duty_cycle": payload.get("duty_cycle"),
         })
     return {"runs": entries}
 
