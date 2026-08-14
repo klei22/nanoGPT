@@ -726,8 +726,14 @@ def parse_args():
             "dual_path",
             "dual_path_swiglu",
             "identity",
-            ]
+    ]
 
+    model_group.add_argument(
+        '--attention_only',
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Remove the token-wise MLP/FFN sublayer from every transformer block.',
+    )
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--mlp_variant", type=str, default="mlp", choices=mlp_variants, help="MLP variation type")
     model_group.add_argument("--mlp_expansion_factor", type=int, default=4, help="If MLP like variant is used, set the expansion factor for the linear transformations, default is 4.")

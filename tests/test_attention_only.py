@@ -1,3 +1,6 @@
+import ast
+from pathlib import Path
+
 import torch
 
 from gpt_conf import GPTConfig
@@ -43,3 +46,22 @@ def test_attention_only_rejects_parallel_mlp():
         assert "use_parallel_mlp" in str(error)
     else:
         raise AssertionError("expected incompatible configuration to fail")
+
+
+def test_attention_only_is_available_from_training_cli():
+    tree = ast.parse((Path(__file__).parents[1] / "train_args.py").read_text())
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "--attention_only"
+    ]
+    assert len(calls) == 1
+
+    keywords = {keyword.arg: keyword.value for keyword in calls[0].keywords}
+    assert isinstance(keywords["default"], ast.Constant)
+    assert keywords["default"].value is False
+    assert isinstance(keywords["action"], ast.Attribute)
+    assert keywords["action"].attr == "BooleanOptionalAction"
