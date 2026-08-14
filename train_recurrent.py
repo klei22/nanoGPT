@@ -52,7 +52,8 @@ recur_parser.add_argument("--latent_mix_mode", choices=("direct", "slerp", "add_
                           help="How to turn a recurrent latent into the next input: reuse it directly, slerp toward the correct token embedding, or add then L2-normalize")
 recur_parser.add_argument("--latent_mix_alpha", type=float, default=0.5,
                           help="Blend amount for --latent_mix_mode=slerp; ignored by direct/add_norm unless --learn_latent_mix_alpha is set for checkpointing consistency")
-recur_parser.add_argument("--learn_latent_mix_alpha", action="store_true",
+recur_parser.add_argument("--learn_latent_mix_alpha", default=False,
+                          action=argparse.BooleanOptionalAction,
                           help="Learn the slerp blend amount as a sigmoid-constrained scalar")
 
 # -- split cmdline -----------------------------------------------------
