@@ -113,6 +113,8 @@ class GPTConfig:
     attention_residual_weighting: str = "softmax"
     attention_residual_relu2max_query_init: str = "normal"
     attention_residual_relu2max_query_init_scale: float = 0.02
+    attention_residual_use_qk_norm: bool = False
+    attention_residual_use_qk_norm_scale: bool = False
 
     # Attention Variation Specific
 

@@ -34,6 +34,13 @@ combination `ones` and a scale of `1.0` initializes every query component to
 one. `zeros` is provided as an ablation but will start ReLU2Max at its
 zero-gradient point.
 
+For ReLU2Max routing, `attention_residual_use_qk_norm` replaces the default
+RMS-normalized keys with the same L2-normalized query/key calculation used by
+token attention. `attention_residual_use_qk_norm_scale` additionally uses the
+same learned logit-scale scheme, initialized from the maximum routing depth.
+The comparison YAML includes plain routing, QK-normalized routing, and
+QK-normalized routing with the learned scale.
+
 The comparison exploration disables TensorBoard logging so the architecture
 sweep does not require optional TensorBoard/TensorFlow binary dependencies.
 Remove `tensorboard_log: [false]` from the YAML if TensorBoard is desired and

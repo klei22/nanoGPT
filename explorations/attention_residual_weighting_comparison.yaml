@@ -4,6 +4,11 @@ parameter_groups:
   - attention_residual_weighting: ["softmax"]
   - attention_residual_weighting: ["relu2max"]
     relu2max_divisor: [1.0]
+    attention_residual_use_qk_norm: [false, true]
+    attention_residual_use_qk_norm_scale:
+      conditions:
+        attention_residual_use_qk_norm: true
+      options: [false, true]
     attention_residual_relu2max_query_init:
       - "ones"
       - "constant"

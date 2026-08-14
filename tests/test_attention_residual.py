@@ -1,3 +1,5 @@
+import math
+
 import torch
 import pytest
 
@@ -36,6 +38,38 @@ def test_relu2max_can_weight_full_attention_residuals():
     result = mixer(sources, destination=0)
 
     torch.testing.assert_close(result, torch.tensor([[[2.0, 0.0]]]))
+
+
+def test_relu2max_can_use_attention_qk_norm_implementation():
+    config = GPTConfig(relu2max_divisor=1.0, div_by_seq_len=False)
+    mixer = FullAttentionResidual(
+        n_destinations=2,
+        n_embd=2,
+        weighting=ReLU2Max(config, dim=0),
+        use_qk_norm=True,
+    )
+    with torch.no_grad():
+        mixer.queries[0].copy_(torch.tensor([3.0, 4.0]))
+    sources = [
+        torch.tensor([[[6.0, 8.0]]]),
+        torch.tensor([[[-8.0, 6.0]]]),
+    ]
+
+    result = mixer(sources, destination=0)
+
+    # QK norm produces cosine logits, followed by the usual sqrt(d) scale.
+    torch.testing.assert_close(result, sources[0] / 2.0)
+
+
+def test_attention_residual_qk_norm_scale_matches_attention_initialization():
+    mixer = FullAttentionResidual(
+        n_destinations=3,
+        n_embd=4,
+        use_qk_norm=True,
+        use_qk_norm_scale=True,
+    )
+
+    torch.testing.assert_close(mixer.qk_norm_factor, torch.tensor(math.log2(6.0)))
 
 
 @pytest.mark.parametrize(
@@ -101,12 +135,16 @@ def test_full_attention_residual_model_uses_relu2max_weighting():
         attention_residual_weighting="relu2max",
         attention_residual_relu2max_query_init="ones",
         attention_residual_relu2max_query_init_scale=1.0,
+        attention_residual_use_qk_norm=True,
+        attention_residual_use_qk_norm_scale=True,
     )
 
     model = GPT(config)
 
     assert isinstance(model.attention_residual.weighting, ReLU2Max)
     assert model.attention_residual.weighting.dim == 0
+    assert model.attention_residual.use_qk_norm
+    assert model.attention_residual.use_qk_norm_scale
     torch.testing.assert_close(
         model.attention_residual.queries,
         torch.ones_like(model.attention_residual.queries),

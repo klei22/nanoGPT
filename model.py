@@ -156,6 +156,8 @@ class GPT(nn.Module):
                 config.n_embd,
                 config.attention_residual_eps,
                 weighting=residual_weighting,
+                use_qk_norm=config.attention_residual_use_qk_norm,
+                use_qk_norm_scale=config.attention_residual_use_qk_norm_scale,
             )
             # ReLU2Max has zero derivative at zero, so zero queries would leave
             # every route permanently inactive.

@@ -6,6 +6,8 @@ is token-local (the softmax dimension is depth), so sequence mixing remains the
 responsibility of the normal self-attention module.
 """
 
+import math
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -20,12 +22,20 @@ class FullAttentionResidual(nn.Module):
         n_embd: int,
         eps: float = 1e-6,
         weighting: nn.Module | None = None,
+        use_qk_norm: bool = False,
+        use_qk_norm_scale: bool = False,
     ):
         super().__init__()
         # Includes one destination for each attention/MLP and one for ln_f.
         self.queries = nn.Parameter(torch.zeros(n_destinations, n_embd))
         self.eps = eps
         self.weighting = weighting
+        self.use_qk_norm = use_qk_norm
+        self.use_qk_norm_scale = use_qk_norm_scale
+        if self.use_qk_norm_scale:
+            depth = max(n_destinations, 2)
+            initial_scale = math.log2(depth * depth - depth)
+            self.qk_norm_factor = nn.Parameter(torch.tensor(initial_scale))
 
     @torch.no_grad()
     def initialize_queries(self, variant: str, scale: float) -> None:
@@ -50,7 +60,17 @@ class FullAttentionResidual(nn.Module):
         if not sources:
             raise ValueError("attention residuals require at least one source")
         values = torch.stack(sources, dim=0)  # depth, batch, time, channels
-        keys = F.rms_norm(values, (values.size(-1),), eps=self.eps)
-        scores = torch.einsum("dbtc,c->dbt", keys, self.queries[destination])
+        query = self.queries[destination]
+        if self.use_qk_norm:
+            # Match the repository's token-attention QK norm implementation.
+            query = query / (query.norm(dim=-1, keepdim=True) + self.eps)
+            keys = values / (values.norm(dim=-1, keepdim=True) + self.eps)
+        else:
+            keys = F.rms_norm(values, (values.size(-1),), eps=self.eps)
+        scores = torch.einsum("dbtc,c->dbt", keys, query)
+        if self.use_qk_norm_scale:
+            scores = scores * self.qk_norm_factor
+        elif self.use_qk_norm:
+            scores = scores / math.sqrt(values.size(-1))
         weights = scores.softmax(dim=0) if self.weighting is None else self.weighting(scores)
         return torch.einsum("dbt,dbtc->btc", weights, values)

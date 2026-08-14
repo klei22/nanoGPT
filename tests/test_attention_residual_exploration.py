@@ -22,6 +22,11 @@ def test_relu2max_comparison_uses_unit_divisor_and_initialization_sweep():
 
     assert relu2max_group["attention_residual_weighting"] == ["relu2max"]
     assert relu2max_group["relu2max_divisor"] == [1.0]
+    assert relu2max_group["attention_residual_use_qk_norm"] == [False, True]
+    assert relu2max_group["attention_residual_use_qk_norm_scale"] == {
+        "conditions": {"attention_residual_use_qk_norm": True},
+        "options": [False, True],
+    }
     assert relu2max_group["attention_residual_relu2max_query_init_scale"] == [
         1.0,
         0.1,

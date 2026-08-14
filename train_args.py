@@ -46,6 +46,16 @@ def parse_args():
         '--attention_residual_relu2max_query_init_scale', default=0.02, type=float,
         help='Scale, constant, or gain (depending on style) for ReLU2Max query initialization.',
     )
+    model_group.add_argument(
+        '--attention_residual_use_qk_norm', default=False,
+        action=argparse.BooleanOptionalAction,
+        help='L2-normalize Full Attention Residual routing queries and keys.',
+    )
+    model_group.add_argument(
+        '--attention_residual_use_qk_norm_scale', default=False,
+        action=argparse.BooleanOptionalAction,
+        help='Apply the learned QK norm logit scale to Full Attention Residual routing.',
+    )
 
     # MLP Bias Configuration
     model_group.add_argument('--mlp_up_bias', default=None, action=argparse.BooleanOptionalAction, help='Whether to use bias in MLP up projections. If None, uses global bias setting.')
