@@ -56,6 +56,12 @@ to change the Adam comparison. Optimizer and effective weight decay are stored
 in each trajectory, displayed on the run card, and available as a selector
 filter.
 
+The sweep includes unconstrained (`free`), `sqrt_dim`, and radius `1` runs by
+default. Set `RADIUS_MODES`, for example `RADIUS_MODES="free sqrt_dim 0.5 1 2"`,
+to select any positive fixed radii. The sweep page builds its radius filter from
+the completed-run manifest and lists **Free (unconstrained)** plus every actual
+radius value present.
+
 ## Package for GitHub Pages
 
 After at least one sweep run completes, build a static-site directory with:

@@ -7,6 +7,7 @@ LETTER_COUNTS="${LETTER_COUNTS:-10}"
 EMBEDDING_DIMS="${EMBEDDING_DIMS:-3}"
 WTE_TYING_MODES="${WTE_TYING_MODES:-tied untied}"
 OPTIMIZER_MODES="${OPTIMIZER_MODES:-full_muon adam adagrad sgd rmsprop}"
+RADIUS_MODES="${RADIUS_MODES:-free sqrt_dim 1}"
 TRANSITION_PERCENTAGES="${TRANSITION_PERCENTAGES:-20 40 60 80}"
 DUTY_CYCLES="${DUTY_CYCLES:-20 40 60 80}"
 DUTY_PERIOD_PERCENT="${DUTY_PERIOD_PERCENT:-10}"
@@ -26,16 +27,21 @@ for duty in ${DUTY_CYCLES}; do SCHEDULES+=("duty_cycle:${duty}"); done
 for embedding_dim in ${EMBEDDING_DIMS}; do
   for num_digits in ${DIGIT_COUNTS}; do
     for num_letters in ${LETTER_COUNTS}; do
-      for mode in unconstrained sqrt_dim unit; do
+      for radius_mode in ${RADIUS_MODES}; do
         for tying_mode in ${WTE_TYING_MODES}; do
           for optimizer_mode in ${OPTIMIZER_MODES}; do
             for dropout_count in ${DROPOUT_COUNTS}; do
             for schedule in "${SCHEDULES[@]}"; do
               schedule_mode="${schedule%%:*}"; schedule_value="${schedule#*:}"
-              case "${mode}" in
-                unconstrained) fixed=false; radius="" ;;
-                sqrt_dim) fixed=true; radius="" ;;
-                unit) fixed=true; radius=1 ;;
+              case "${radius_mode}" in
+                free) fixed=false; radius=""; radius_name=free ;;
+                sqrt_dim) fixed=true; radius=""; radius_name=sqrt-dim ;;
+                *)
+                  if ! [[ "${radius_mode}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] || ! awk -v radius="${radius_mode}" 'BEGIN { exit !(radius > 0) }'; then
+                    echo "RADIUS_MODES values must be free, sqrt_dim, or positive numbers" >&2; exit 2
+                  fi
+                  fixed=true; radius="${radius_mode}"; radius_name="${radius_mode}"
+                  ;;
               esac
               case "${tying_mode}" in
                 tied) weight_tying=true ;;
@@ -49,7 +55,7 @@ for embedding_dim in ${EMBEDDING_DIMS}; do
                 schedule_name="${schedule_mode}-at-${schedule_value}pct"
                 schedule_args=(SCHEDULE_MODE="${schedule_mode}" DROPOUT_PERCENT="${schedule_value}")
               fi
-              name="dim-${embedding_dim}_digits-${num_digits}_letters-${num_letters}_${mode}_${tying_mode}_${optimizer_mode}_drop-${dropout_count}_${schedule_name}"
+              name="dim-${embedding_dim}_digits-${num_digits}_letters-${num_letters}_radius-${radius_name}_${tying_mode}_${optimizer_mode}_drop-${dropout_count}_${schedule_name}"
               echo "=== ${name} ==="
               env NUM_DIGITS="${num_digits}" NUM_LETTERS="${num_letters}" EMBEDDING_DIM="${embedding_dim}" \
                 WTE_FIXED_NORM="${fixed}" WTE_FIXED_NORM_VALUE="${radius}" WTE_WEIGHT_TYING="${weight_tying}" \
