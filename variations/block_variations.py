@@ -167,6 +167,22 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     return x
 
 
+def attention_only_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
+    """Pre-norm attention and its residual connection, with no FFN sublayer."""
+    x_attn_in = block.pre_ln_attn(x) if block.use_pre_ln_attn else x
+    attn_out = block.attn(x_attn_in, iter_num)
+
+    if block.use_peri_ln_attn:
+        attn_out = block.peri_ln_attn(attn_out)
+    if block.attn_resid_scaler is not None:
+        attn_out = block.attn_resid_scaler(attn_out)
+
+    x = block._combine_resid("attn", x, attn_out)
+    if block.use_post_ln_attn:
+        x = block.post_ln_attn(x)
+    return x
+
+
 def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     """EdgeLLM ASIC forward: Attention followed by MLP with skip connection accumulation between blocks."""
 
@@ -256,6 +272,7 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
 block_forward_variations = {
     "parallel_mlp": parallel_mlp_forward,
     "attn_then_mlp": attn_then_mlp_forward,
+    "attention_only": attention_only_forward,
     "edgellm_asic": edgellm_asic_forward,
 }
 
@@ -321,9 +338,20 @@ def _setup_norms_sequential(self, config, norm_cls) -> None:
         self.post_ln_mlp = norm_cls(config)
 
 
+def _setup_norms_attention_only(self, config, norm_cls) -> None:
+    """Build only normalization modules used by an attention-only block."""
+    if getattr(self, "use_pre_ln_attn", False):
+        self.pre_ln_attn = norm_cls(config)
+    if getattr(self, "use_peri_ln_attn", False):
+        self.peri_ln_attn = norm_cls(config)
+    if getattr(self, "use_post_ln_attn", False):
+        self.post_ln_attn = norm_cls(config)
+
+
 normalization_setup_variations = {
     "parallel_mlp": _setup_norms_parallel,
     "attn_then_mlp": _setup_norms_sequential,
+    "attention_only": _setup_norms_attention_only,
     "edgellm_asic": _setup_norms_sequential,
 }
 
@@ -361,9 +389,19 @@ def _setup_resid_scalers_sequential(self, config) -> None:
         self.mlp_resid_scaler = cls(config, prefix="mlp")
 
 
+def _setup_resid_scalers_attention_only(self, config) -> None:
+    """Build only the residual scaler used by the attention branch."""
+    self.attn_resid_scaler = None
+    self.mlp_resid_scaler = None
+    if getattr(config, "use_attn_resid_scaling", False):
+        cls = learned_confidence_dictionary[config.attn_confidence_variant]
+        self.attn_resid_scaler = cls(config, prefix="attn")
+
+
 resid_scaler_setup_variations = {
     "parallel_mlp": _setup_resid_scalers_parallel,
     "attn_then_mlp": _setup_resid_scalers_sequential,
+    "attention_only": _setup_resid_scalers_attention_only,
     "edgellm_asic": _setup_resid_scalers_sequential,
 }
 
@@ -373,6 +411,12 @@ class Block(nn.Module):
 
     def __init__(self, config, mlp=None, attn=None):
         super().__init__()
+
+        self.attention_only = getattr(config, "attention_only", False)
+        if self.attention_only and getattr(config, "use_parallel_mlp", False):
+            raise ValueError("attention_only is incompatible with use_parallel_mlp")
+        if self.attention_only and getattr(config, "use_edgellm_asic", False):
+            raise ValueError("attention_only is incompatible with use_edgellm_asic")
 
         # Choose norm class for attention/MLP blocks
         norm_cls = norm_dictionary[config.norm_variant_attn]
@@ -391,7 +435,9 @@ class Block(nn.Module):
 
         self.use_flash_norm = getattr(config, "use_flash_norm", False)
 
-        if self.use_parallel_mlp:
+        if self.attention_only:
+            variant = "attention_only"
+        elif self.use_parallel_mlp:
             variant = "parallel_mlp"
         elif self.use_edgellm_asic:
             variant = "edgellm_asic"
@@ -423,7 +469,9 @@ class Block(nn.Module):
         else:
             self.attn = attn
 
-        if mlp is None:
+        if self.attention_only:
+            self.mlp = None
+        elif mlp is None:
             self.mlp = get_mlp_instance(config)
         else:
             self.mlp = mlp

@@ -207,6 +207,8 @@ class GPTConfig:
 
     # MLP Options
     use_parallel_mlp: bool = False
+    # Remove the token-wise feed-forward sublayer from every transformer block.
+    attention_only: bool = False
     mlp_variant: str = "mlp"
     mlp_expansion_factor: int = 4
     mlp_size: int = None
