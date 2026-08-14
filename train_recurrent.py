@@ -14,6 +14,7 @@ import os
 import time
 import math
 import pickle
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -74,8 +75,12 @@ for k, v in vars(latent_args).items():
 # ----------------------------------------------------------------------
 # 2)  LOAD CHECKPOINT + MODEL
 # ----------------------------------------------------------------------
-device = "cuda" if torch.cuda.is_available() else "cpu"
-ckpt   = torch.load(args.resume_ckpt, map_location=device)
+device = args.device
+device_type = "cuda" if device.startswith("cuda") else "cpu"
+dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+ptdtype = dtype_map[args.dtype]
+ctx = nullcontext() if device_type == "cpu" else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+ckpt = torch.load(args.resume_ckpt, map_location=device)
 
 gpt_conf = GPTConfig(**ckpt["model_args"])
 model    = GPT(gpt_conf).to(device)
@@ -102,8 +107,14 @@ if missing:
 if unexpected:
     print(f"warning: {len(unexpected)} extra params ignored")
 
+if args.compile:
+    print("compiling the model (this may take a ~minute)...")
+    model = torch.compile(model)
+
+raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+
 # helpers exposed in patched model.py
-embed_tokens     = model.embed_tokens
+embed_tokens = raw_model.embed_tokens
 forward_embedded = lambda x: model.forward_embedded(x, return_hidden=True)
 
 latent_mix_logit = None
@@ -247,104 +258,128 @@ def train_block(x_tokens, y_tokens):
     return total_loss / nz_sum
 
 # ----------------------------------------------------------------------
-# 6)  EPOCH LOOPS
+# 6)  PARALLEL MINI-BATCHES, EVALUATION, AND SAMPLING
 # ----------------------------------------------------------------------
-def run_epoch(split):
-    data   = train_bin if split == "train" else val_bin
-    losses = []
-    ptr    = 0
-    while ptr + block_size + 1 < len(data):
-        seq = torch.from_numpy(np.array(
-                  data[ptr:ptr + block_size + 1], dtype=np.int64)
-              ).to(device)
-        x, y = seq[:-1].unsqueeze(0), seq[1:].unsqueeze(0)  # (1,T)
-
-        if split == "train":
-            model.train()
-            optimizer.zero_grad()
-            loss = train_block(x, y)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            optimizer.step()
-            global global_step
-            global_step += 1
-
-            if global_step % args.log_interval == 0:
-                print(f"iter {global_step:>7} | "
-                      f"loss {loss.item():.4f}")
-            # ─── validation & checkpoint ───────────────────────────────
-            if global_step % args.eval_interval == 0:
-                model.eval()
-                with torch.no_grad():
-                    val = run_epoch("val")          # one full pass
-
-                if tb:
-                    tb.add_scalar("loss/val", val, global_step)
-
-                if val < 5.00:
-                    print(val)
-                    best_val_loss = val
-                    torch.save(
-                        {"model": model.state_dict(),
-                         "model_args": ckpt["model_args"],
-                         "iter_num":   global_step,
-                         "best_val_loss": best_val_loss,
-                         "latent_mix_logit": None if latent_mix_logit is None else latent_mix_logit.detach().cpu()},
-                        best_ckpt_path)
-                    print(f"  ➜ new best @ step {global_step}; "
-                          f"checkpoint saved to {best_ckpt_path}")
+def get_batch(split):
+    """Draw a random mini-batch, matching train.py's default sampler."""
+    data = train_bin if split == "train" else val_bin
+    starts = torch.randint(len(data) - block_size - 1, (args.batch_size,))
+    x = torch.stack([
+        torch.from_numpy(np.asarray(data[i:i + block_size], dtype=np.int64))
+        for i in starts.tolist()
+    ])
+    y = torch.stack([
+        torch.from_numpy(np.asarray(data[i + 1:i + 1 + block_size], dtype=np.int64))
+        for i in starts.tolist()
+    ])
+    if device_type == "cuda":
+        return x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+    return x.to(device), y.to(device)
 
 
-        else:
+@torch.no_grad()
+def estimate_val_loss():
+    model.eval()
+    losses = torch.zeros(args.eval_iters)
+    for k in range(args.eval_iters):
+        x, y = get_batch("val")
+        with ctx:
+            losses[k] = train_block(x, y).detach().cpu()
+    model.train()
+    return losses.mean().item()
 
-            model.eval()
-            with torch.no_grad():
-                loss = train_block(x, y)
 
-        losses.append(loss.item())
-        ptr += block_size
-    return sum(losses) / len(losses)
+def checkpoint_payload():
+    return {
+        "model": raw_model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "model_args": ckpt["model_args"],
+        "iter_num": global_step,
+        "best_val_loss": best_val_loss,
+        "config": vars(args),
+        "latent_mix_logit": None if latent_mix_logit is None else latent_mix_logit.detach().cpu(),
+    }
+
+
+@torch.no_grad()
+def sample_and_print():
+    if not args.max_sample_tokens:
+        return
+    meta_path = os.path.join("data", args.dataset, "meta.pkl")
+    if not os.path.exists(meta_path):
+        print(f"warning: sampling skipped; {meta_path} was not found")
+        return
+    with open(meta_path, "rb") as f:
+        meta = pickle.load(f)
+    if "stoi" not in meta or "itos" not in meta:
+        print("warning: interval sampling currently requires a character-level meta.pkl")
+        return
+    encode = lambda text: [meta["stoi"][c] for c in text]
+    decode = lambda ids: "".join(meta["itos"][i] for i in ids)
+    start_ids = torch.tensor(encode(args.sample_start_tokens), dtype=torch.long, device=device)[None, ...]
+    top_k = max(args.top_k) if isinstance(args.top_k, list) else args.top_k
+    model.eval()
+    with ctx:
+        generated = raw_model.generate(start_ids, args.max_sample_tokens,
+                                       temperature=args.temperature, top_k=top_k)
+    text = decode(generated[0].tolist())
+    print(f"\n--- recurrent sample @ iter {global_step} ---\n{text}\n--- end sample ---\n")
+    if args.sample_file:
+        sample_path = args.sample_file
+        if not os.path.isabs(sample_path):
+            sample_path = os.path.join(args.out_dir, sample_path)
+        os.makedirs(os.path.dirname(sample_path) or ".", exist_ok=True)
+        with open(sample_path, "a", encoding="utf-8") as f:
+            f.write(f"\n--- iter {global_step} ---\n{text}\n")
+    model.train()
+
 
 # ----------------------------------------------------------------------
-# 7)  TRAINING DRIVER
+# 7)  ITERATION-BASED TRAINING DRIVER
 # ----------------------------------------------------------------------
 tb = SummaryWriter() if getattr(args, "tensorboard_log", False) else None
 os.makedirs(args.out_dir, exist_ok=True)
 best_ckpt_path = os.path.join(args.out_dir, "ckpt.pt")
 
-val_loss = 999.9
+model.train()
+optimizer.zero_grad(set_to_none=True)
 while global_step < args.max_iters:
     t0 = time.time()
-    train_loss = run_epoch("train")
+    accumulated_loss = 0.0
+    for _ in range(args.gradient_accumulation_steps):
+        x, y = get_batch("train")
+        with ctx:
+            loss = train_block(x, y) / args.gradient_accumulation_steps
+        loss.backward()
+        accumulated_loss += loss.detach().item()
 
-    # ── run validation/checkpoint every N iterations ────────────────
-    if global_step % args.eval_interval == 0:
-        val_loss = run_epoch("val")
+    if args.grad_clip:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    global_step += 1
 
+    if global_step % args.log_interval == 0:
+        dt = time.time() - t0
+        tokens = args.batch_size * block_size * args.gradient_accumulation_steps
+        print(f"iter {global_step:>7} | loss {accumulated_loss:.4f} | "
+              f"{dt * 1000:.1f} ms | {tokens / max(dt, 1e-9):.0f} tok/s")
+        if tb:
+            tb.add_scalar("loss/train", accumulated_loss, global_step)
+
+    if global_step % args.eval_interval == 0 or global_step == args.max_iters:
+        val_loss = estimate_val_loss()
+        improved = val_loss < best_val_loss
+        if improved:
+            best_val_loss = val_loss
+        print(f"eval iter {global_step}: val loss {val_loss:.4f}")
         if tb:
             tb.add_scalar("loss/val", val_loss, global_step)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(
-                {"model": model.state_dict(),
-                 "model_args": ckpt["model_args"],
-                 "iter_num":   global_step,
-                 "best_val_loss": best_val_loss,
-                 "latent_mix_logit": None if latent_mix_logit is None else latent_mix_logit.detach().cpu()},
-                best_ckpt_path)
-            print(f"  ➜ new best @ step {global_step}; "
-                  f"checkpoint saved to {best_ckpt_path}")
-
-    # (tensorboard train-loss stays per-epoch to avoid spam)
-
-    if tb:
-        tb.add_scalar("loss/train", train_loss, global_step)
-
-    print(f"iter {global_step:03d} | "
-          f"train {train_loss:.4f} | val {val_loss:.4f} | "
-          f"{(time.time()-t0):.1f}s")
-
+        if improved or args.always_save_checkpoint:
+            torch.save(checkpoint_payload(), best_ckpt_path)
+            print(f"checkpoint saved to {best_ckpt_path}")
+        if improved or args.sample_each_eval:
+            sample_and_print()
 
 if tb:
     tb.flush()

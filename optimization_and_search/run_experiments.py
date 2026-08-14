@@ -929,7 +929,11 @@ def run_experiment(
         expand_named_group_values=args.expand_named_groups_in_names,
     )
     if combo.get("run_name_override"):
-        run_name = f"{args.prefix}{combo['run_name_override']}"
+        try:
+            override = str(combo["run_name_override"]).format_map(combo)
+        except KeyError as exc:
+            raise ValueError(f"Unknown run_name_override placeholder: {exc.args[0]}") from exc
+        run_name = f"{args.prefix}{override}"
     log_file = LOG_DIR / f"{base}.yaml"
     if run_name in completed_runs(log_file):
         print(f"[yellow]Skipping already-run:[/] {run_name}")
