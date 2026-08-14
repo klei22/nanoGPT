@@ -1,0 +1,39 @@
+---
+# Compare Softmax and ReLU2Max depth weighting for Full Attention Residuals.
+parameter_groups:
+  - attention_residual_weighting: ["softmax"]
+  - attention_residual_weighting: ["relu2max"]
+    relu2max_divisor: [1.0]
+    attention_residual_use_qk_norm: [false, true]
+    attention_residual_use_qk_norm_scale:
+      conditions:
+        attention_residual_use_qk_norm: true
+      options: [false, true]
+    attention_residual_relu2max_query_init:
+      - "ones"
+      - "constant"
+      - "normal"
+      - "uniform"
+      - "positive_uniform"
+      - "xavier_normal"
+      - "xavier_uniform"
+    attention_residual_relu2max_query_init_scale: [1.0, 0.1, 0.02]
+
+common_group:
+  attention_residual_variant: ["full"]
+  dataset: ["minipile"]
+  block_size: [256]
+  n_layer: [12]
+  n_head: [6]
+  n_embd: [384]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  max_iters: [10000]
+  lr_decay_iters: [10000]
+  warmup_iters: [1000]
+  eval_interval: [500]
+  never_save_checkpoint: [true]
+  compile: [true]
+  # Keep this architecture sweep independent of optional TensorBoard/TensorFlow
+  # binary dependencies. Remove this setting to enable TensorBoard explicitly.
+  tensorboard_log: [false]

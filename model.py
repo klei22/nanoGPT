@@ -146,9 +146,26 @@ class GPT(nn.Module):
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.attention_residual_variant = config.attention_residual_variant
         if self.attention_residual_variant == "full":
+            residual_weighting = None
+            if config.attention_residual_weighting != "softmax":
+                residual_weighting = softmax_dictionary[config.attention_residual_weighting](
+                    config, dim=0
+                )
             self.attention_residual = FullAttentionResidual(
-                2 * config.n_layer + 1, config.n_embd, config.attention_residual_eps
+                2 * config.n_layer + 1,
+                config.n_embd,
+                config.attention_residual_eps,
+                weighting=residual_weighting,
+                use_qk_norm=config.attention_residual_use_qk_norm,
+                use_qk_norm_scale=config.attention_residual_use_qk_norm_scale,
             )
+            # ReLU2Max has zero derivative at zero, so zero queries would leave
+            # every route permanently inactive.
+            if residual_weighting is not None:
+                self.attention_residual.initialize_queries(
+                    config.attention_residual_relu2max_query_init,
+                    config.attention_residual_relu2max_query_init_scale,
+                )
         elif self.attention_residual_variant != "standard":
             raise ValueError(f"unknown attention_residual_variant: {self.attention_residual_variant}")
         self.transformer['ln_f'] = norm_dictionary[config.norm_variant_output](config)
