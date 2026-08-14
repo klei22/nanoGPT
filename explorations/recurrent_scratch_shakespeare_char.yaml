@@ -1,8 +1,8 @@
 # Train latent-recurrent language models directly from random initialization.
 #
-# This compact 3 x 3 sweep compares all latent feedback modes at batch sizes
-# 8, 16, and 32. Gradient accumulation gives every optimizer step two
-# micro-batches, while the short context keeps recurrent training practical.
+# The baseline sweep compares direct/add-norm feedback at three batch sizes.
+# The slerp sweep additionally explores interpolation amount and whether that
+# amount remains fixed or is learned from its configured initial value.
 ---
 named_static_groups:
   - named_group: "fast_char_model"
@@ -31,7 +31,6 @@ common_group:
 
   # Recurrent objective settings.
   latent_steps: [1]
-  latent_mix_alpha: [0.5]
   skip_steps: [0]
   weight_start: [1.0]
   weight_end: [1.0]
@@ -47,7 +46,18 @@ common_group:
   sample_file: ["samples.txt"]
 
 parameter_groups:
+  # Alpha does not affect these modes, so avoid redundant combinations.
   - run_name_override:
       - "recurrent_scratch_{latent_mix_mode}_bs{batch_size}"
     batch_size: [8, 16, 32]
-    latent_mix_mode: ["direct", "slerp", "add_norm"]
+    latent_mix_mode: ["direct", "add_norm"]
+
+  # For fixed slerp, alpha is the interpolation fraction toward the correct
+  # token embedding. For learned slerp, it is the sigmoid-constrained scalar's
+  # initial value. The run name includes both fields to prevent collisions.
+  - run_name_override:
+      - "recurrent_scratch_slerp_bs{batch_size}_a{latent_mix_alpha}_learn{learn_latent_mix_alpha}"
+    batch_size: [8, 16, 32]
+    latent_mix_mode: ["slerp"]
+    latent_mix_alpha: [0.25, 0.5, 0.75]
+    learn_latent_mix_alpha: [false, true]
