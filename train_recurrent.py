@@ -1,7 +1,7 @@
 # ======================================================================
 # train_recurrent.py  –  latent-chaining fine-tuning
 # ======================================================================
-#  * resumes from an existing checkpoint (no scratch / no GPT-2 import)
+#  * trains from scratch or resumes from an existing train.py checkpoint
 #  * feeds the HIDDEN state (after ln_f / scale_down) back as the next
 #    “token”, skipping de-embedding, for the first `--latent_steps`
 #  * keeps cross-entropy vs. ground-truth, with optional per-position
@@ -37,8 +37,8 @@ global_step = 0          # counts *training* iterations
 # 1-bis)  add the *extra* flags that are unique to latent-chaining
 # ----------------------------------------------------------------------
 recur_parser = argparse.ArgumentParser(add_help=False)
-recur_parser.add_argument("--resume_ckpt",   required=True,
-                          help="Path to .pt checkpoint produced by train.py")
+recur_parser.add_argument("--resume_ckpt", default=None,
+                          help="Optional checkpoint produced by train.py; omit with --init_from=scratch")
 recur_parser.add_argument("--latent_steps",  type=int, default=0,
                           help="Chain this many hidden states before teacher-forcing")
 recur_parser.add_argument("--skip_steps",    type=int, default=0,
@@ -62,7 +62,7 @@ latent_args, remaining = recur_parser.parse_known_args()
 # 1-b)  now run the gigantic parser **only on the leftovers**
 # ----------------------------------------------------------------------
 sys.argv = [sys.argv[0]] + remaining          # fake argv for train_args
-generic_args, *_ = parse_generic_args()
+generic_args, model_group, _, _ = parse_generic_args()
 
 # ----------------------------------------------------------------------
 # 1-c)  merge both Namespaces into one `args`
@@ -80,10 +80,24 @@ device_type = "cuda" if device.startswith("cuda") else "cpu"
 dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
 ptdtype = dtype_map[args.dtype]
 ctx = nullcontext() if device_type == "cpu" else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
-ckpt = torch.load(args.resume_ckpt, map_location=device)
+if args.resume_ckpt:
+    ckpt = torch.load(args.resume_ckpt, map_location=device)
+    model_args = ckpt["model_args"]
+else:
+    if args.init_from != "scratch":
+        raise ValueError("train_recurrent.py requires --resume_ckpt unless --init_from=scratch")
+    meta_path = os.path.join("data", args.dataset, "meta.pkl")
+    if not os.path.exists(meta_path):
+        raise FileNotFoundError(f"scratch training requires tokenizer metadata at {meta_path}")
+    with open(meta_path, "rb") as f:
+        meta = pickle.load(f)
+    model_args = {action.dest: getattr(args, action.dest) for action in model_group._group_actions}
+    model_args["vocab_size"] = meta["vocab_size"]
+    model_args["eval_interval"] = args.eval_interval
+    ckpt = {"model_args": model_args, "iter_num": 0, "best_val_loss": float("inf")}
 
-gpt_conf = GPTConfig(**ckpt["model_args"])
-model    = GPT(gpt_conf).to(device)
+gpt_conf = GPTConfig(**model_args)
+model = GPT(gpt_conf).to(device)
 
 def unwrap_state_dict(wrapped_sd):
     """
@@ -99,10 +113,10 @@ def unwrap_state_dict(wrapped_sd):
         clean[k] = v
     return clean
 
-state_dict = unwrap_state_dict(ckpt["model"])
+state_dict = unwrap_state_dict(ckpt.get("model", {}))
 missing, unexpected = model.load_state_dict(state_dict, strict=False)
 
-if missing:
+if missing and args.resume_ckpt:
     print(f"warning: {len(missing)} missing params (OK if all zero-grad)")
 if unexpected:
     print(f"warning: {len(unexpected)} extra params ignored")
@@ -151,7 +165,7 @@ best_val_loss = best_val_loss_raw.item() if hasattr(best_val_loss_raw, "item") e
 if args.reset_best_val_loss_on_resume:
     best_val_loss = float("inf")
 print("best_val_loss", best_val_loss)
-iter_num      = ckpt["iter_num"]          # not used, but preserved
+iter_num = ckpt["iter_num"]          # not used, but preserved
 
 block_size = gpt_conf.block_size
 
@@ -387,4 +401,3 @@ if tb:
 
 print("done.")
 # ======================================================================
-

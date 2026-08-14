@@ -1,0 +1,53 @@
+# Train latent-recurrent language models directly from random initialization.
+#
+# This compact 3 x 3 sweep compares all latent feedback modes at batch sizes
+# 8, 16, and 32. Gradient accumulation gives every optimizer step two
+# micro-batches, while the short context keeps recurrent training practical.
+---
+named_static_groups:
+  - named_group: "fast_char_model"
+    n_layer: [4]
+    n_head: [4]
+    n_embd: [128]
+    block_size: [64]
+    dropout: [0.0]
+    bias: [false]
+
+named_group_static: ["fast_char_model"]
+
+common_group:
+  train_script: ["recurrent"]
+  init_from: ["scratch"]
+  dataset: ["shakespeare_char"]
+  device: ["cuda:0"]
+  dtype: ["bfloat16"]
+  compile: [true]
+
+  # Throughput and optimization settings.
+  gradient_accumulation_steps: [2]
+  learning_rate: [0.001]
+  max_iters: [1000]
+  grad_clip: [1.0]
+
+  # Recurrent objective settings.
+  latent_steps: [1]
+  latent_mix_alpha: [0.5]
+  skip_steps: [0]
+  weight_start: [1.0]
+  weight_end: [1.0]
+
+  # Finite evaluation and qualitative samples keep the sweep comparable.
+  eval_interval: [100]
+  eval_iters: [20]
+  log_interval: [10]
+  always_save_checkpoint: [true]
+  max_sample_tokens: [200]
+  sample_each_eval: [true]
+  sample_start_tokens: ["\n"]
+  sample_file: ["samples.txt"]
+
+parameter_groups:
+  - run_name_override:
+      - "recurrent_scratch_{latent_mix_mode}_bs{batch_size}"
+    batch_size: [8, 16, 32]
+    latent_mix_mode: ["direct", "slerp", "add_norm"]
