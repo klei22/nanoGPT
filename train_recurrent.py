@@ -2,8 +2,8 @@
 # train_recurrent.py  –  latent-chaining fine-tuning
 # ======================================================================
 #  * trains from scratch or resumes from an existing train.py checkpoint
-#  * feeds the HIDDEN state (after ln_f / scale_down) back as the next
-#    “token”, skipping de-embedding, for the first `--latent_steps`
+#  * teacher-forces the first `--latent_steps` positions, then feeds each
+#    HIDDEN state (after ln_f / scale_down) back as the next “token”
 #  * keeps cross-entropy vs. ground-truth, with optional per-position
 #    linear weighting and an initial “skip” window
 # ----------------------------------------------------------------------
@@ -40,7 +40,7 @@ recur_parser = argparse.ArgumentParser(add_help=False)
 recur_parser.add_argument("--resume_ckpt", default=None,
                           help="Optional checkpoint produced by train.py; omit with --init_from=scratch")
 recur_parser.add_argument("--latent_steps",  type=int, default=0,
-                          help="Chain this many hidden states before teacher-forcing")
+                          help="Teacher-force this many initial positions before recurrent latent feedback")
 recur_parser.add_argument("--skip_steps",    type=int, default=0,
                           help="Mask loss for the first K positions in every block")
 recur_parser.add_argument("--weight_start",  type=float, default=1.0)
