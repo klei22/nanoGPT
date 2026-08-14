@@ -49,6 +49,13 @@ customize the schedules. Excluded points and trajectory segments are purple;
 included segments retain the trained-token orange, including every transition
 back to the dataset.
 
+Every base-sweep schedule also compares full Muon with zero weight decay, Adam
+with weight decay 0.1, Adagrad, SGD, and RMSprop. The latter three use zero
+weight decay. Set `OPTIMIZER_MODES` to choose a subset or `ADAM_WEIGHT_DECAY`
+to change the Adam comparison. Optimizer and effective weight decay are stored
+in each trajectory, displayed on the run card, and available as a selector
+filter.
+
 ## Package for GitHub Pages
 
 After at least one sweep run completes, build a static-site directory with:

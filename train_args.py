@@ -461,7 +461,7 @@ def parse_args():
     training_group.add_argument("--muon_nesterov", type=bool, default=True, action=argparse.BooleanOptionalAction,
                                 help="Use Nesterov momentum in Muon update.")
     training_group.add_argument("--muon_include_all_weights", type=bool, default=False, action=argparse.BooleanOptionalAction,
-                                help="If enabled, route all parameters to Muon (instead of the default hidden-layer-only routing).")
+                                help="Route all matrix-shaped parameters, including embeddings and heads, to Muon; vectors remain on auxiliary Adam.")
     training_group.add_argument("--muon_min_ndim", type=int, default=2,
                                 help="Minimum tensor ndim eligible for Muon routing (default preserves current behavior).")
     training_group.add_argument("--muon_exclude_substrings", type=str, nargs="*", default=["embed", "wte", "wpe", "lm_head"],

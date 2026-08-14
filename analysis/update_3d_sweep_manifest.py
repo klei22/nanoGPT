@@ -26,6 +26,7 @@ def build_manifest(runs_dir: Path) -> dict:
             "transition_mode": payload.get("transition_mode"),
             "transition_iterations": payload.get("transition_iterations", []),
             "duty_cycle": payload.get("duty_cycle"),
+            "optimizer": payload.get("optimizer", {}),
         })
     return {"runs": entries}
 

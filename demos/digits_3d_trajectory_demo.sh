@@ -18,6 +18,8 @@ EMBEDDING_DIM="${EMBEDDING_DIM:-3}"
 TRAJECTORY_FILE="${TRAJECTORY_FILE:-${VIEW_DIR}/token_trajectories.json}"
 DROPOUT_PERCENT="${DROPOUT_PERCENT:-}"
 DROPOUT_COUNT="${DROPOUT_COUNT:-1}"
+OPTIMIZER_MODE="${OPTIMIZER_MODE:-adam}"
+ADAM_WEIGHT_DECAY="${ADAM_WEIGHT_DECAY:-0.1}"
 
 case "${WTE_FIXED_NORM}" in
   true|1|yes) WTE_NORM_ARGS=(--wte_fixed_norm) ;;
@@ -32,12 +34,19 @@ case "${WTE_WEIGHT_TYING}" in
   false|0|no) WTE_TYING_ARGS=(--no-wte_weight_tying) ;;
   *) echo "WTE_WEIGHT_TYING must be true or false" >&2; exit 2 ;;
 esac
+case "${OPTIMIZER_MODE}" in
+  full_muon) OPTIMIZER_ARGS=(--optimizer muon --muon_include_all_weights --muon_min_ndim 2 --weight_decay 0) ;;
+  adam) OPTIMIZER_ARGS=(--optimizer adam --weight_decay "${ADAM_WEIGHT_DECAY}") ;;
+  adagrad|sgd|rmsprop) OPTIMIZER_ARGS=(--optimizer "${OPTIMIZER_MODE}" --weight_decay 0) ;;
+  *) echo "OPTIMIZER_MODE must be full_muon, adam, adagrad, sgd, or rmsprop" >&2; exit 2 ;;
+esac
 
 AFFECTED_TOKENS="$(python3 -c 'import runpy,sys; s=runpy.run_path("data/digits_3d/prepare.py")["TRAINED_SYMBOLS"][:int(sys.argv[1])]; n=int(sys.argv[2]); print(s[-n:] if n else "")' "${NUM_DIGITS}" "${DROPOUT_COUNT}")"
 
 TRAIN_ARGS=(--dataset digits_3d --out_dir "${OUT_DIR}" --device "${DEVICE}" --dtype "${DTYPE}"
   --block_size 10 --batch_size 64 --n_layer 1 --n_head 1 --n_embd "${EMBEDDING_DIM}"
   "${WTE_NORM_ARGS[@]}" "${WTE_TYING_ARGS[@]}" --dropout 0.0 --eval_interval "${SAVE_INTERVAL}"
+  "${OPTIMIZER_ARGS[@]}"
   --eval_iters 20 --save_major_ckpt_interval "${SAVE_INTERVAL}" --always_save_checkpoint
   --learning_rate 3e-3 --min_lr 3e-4 --warmup_iters 20 --decay_lr --no-compile)
 
@@ -96,4 +105,5 @@ Done. Serve the repository (fetch does not work from file://), then open:
 The ${NUM_DIGITS} digit-like symbols are trained; ${NUM_LETTERS} letters are vocabulary-only controls.
 Embedding dimension: ${EMBEDDING_DIM} (dimensions above 3 are globally PCA-projected for viewing).
 WTE/LM-head weight tying: ${WTE_WEIGHT_TYING}.
+Optimizer: ${OPTIMIZER_MODE}.
 EOF

@@ -6,6 +6,7 @@ DIGIT_COUNTS="${DIGIT_COUNTS:-10}"
 LETTER_COUNTS="${LETTER_COUNTS:-10}"
 EMBEDDING_DIMS="${EMBEDDING_DIMS:-3}"
 WTE_TYING_MODES="${WTE_TYING_MODES:-tied untied}"
+OPTIMIZER_MODES="${OPTIMIZER_MODES:-full_muon adam adagrad sgd rmsprop}"
 TRANSITION_PERCENTAGES="${TRANSITION_PERCENTAGES:-20 40 60 80}"
 DUTY_CYCLES="${DUTY_CYCLES:-20 40 60 80}"
 DUTY_PERIOD_PERCENT="${DUTY_PERIOD_PERCENT:-10}"
@@ -27,7 +28,8 @@ for embedding_dim in ${EMBEDDING_DIMS}; do
     for num_letters in ${LETTER_COUNTS}; do
       for mode in unconstrained sqrt_dim unit; do
         for tying_mode in ${WTE_TYING_MODES}; do
-          for dropout_count in ${DROPOUT_COUNTS}; do
+          for optimizer_mode in ${OPTIMIZER_MODES}; do
+            for dropout_count in ${DROPOUT_COUNTS}; do
             for schedule in "${SCHEDULES[@]}"; do
               schedule_mode="${schedule%%:*}"; schedule_value="${schedule#*:}"
               case "${mode}" in
@@ -47,10 +49,11 @@ for embedding_dim in ${EMBEDDING_DIMS}; do
                 schedule_name="${schedule_mode}-at-${schedule_value}pct"
                 schedule_args=(SCHEDULE_MODE="${schedule_mode}" DROPOUT_PERCENT="${schedule_value}")
               fi
-              name="dim-${embedding_dim}_digits-${num_digits}_letters-${num_letters}_${mode}_${tying_mode}_drop-${dropout_count}_${schedule_name}"
+              name="dim-${embedding_dim}_digits-${num_digits}_letters-${num_letters}_${mode}_${tying_mode}_${optimizer_mode}_drop-${dropout_count}_${schedule_name}"
               echo "=== ${name} ==="
               env NUM_DIGITS="${num_digits}" NUM_LETTERS="${num_letters}" EMBEDDING_DIM="${embedding_dim}" \
                 WTE_FIXED_NORM="${fixed}" WTE_FIXED_NORM_VALUE="${radius}" WTE_WEIGHT_TYING="${weight_tying}" \
+                OPTIMIZER_MODE="${optimizer_mode}" \
                 DROPOUT_COUNT="${dropout_count}" MAX_ITERS="${SWEEP_MAX_ITERS}" SAVE_INTERVAL="${SWEEP_SAVE_INTERVAL}" \
                 OUT_DIR="out/digits_3d_sweep/${name}" TRAJECTORY_FILE="${RUNS_DIR}/${name}.json" \
                 "${schedule_args[@]}" bash demos/digits_3d_trajectory_demo.sh
@@ -62,13 +65,14 @@ for embedding_dim in ${EMBEDDING_DIMS}; do
     done
   done
 done
+done
 
 cat <<EOF
 Sweep complete. Serve the repository with:
   python3 -m http.server 8000
 
 Example result:
-  http://localhost:8000/report/threejs/digits-3d/index.html?data=runs/dim-3_digits-10_letters-10_sqrt_dim_tied_drop-1_drop-at-40pct.json
+  http://localhost:8000/report/threejs/digits-3d/index.html?data=runs/dim-3_digits-10_letters-10_sqrt_dim_tied_adam_drop-1_drop-at-40pct.json
 Sweep selector:
   http://localhost:8000/report/threejs/digits-3d/sweep.html
 EOF

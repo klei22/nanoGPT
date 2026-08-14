@@ -79,9 +79,17 @@ def export(
     seen_iterations = set()
     fixed_norm = None
     wte_weight_tying = None
+    optimizer_metadata = None
     for path in candidates:
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         model_args = checkpoint.get("model_args", {})
+        if optimizer_metadata is None:
+            config = checkpoint.get("config", {})
+            optimizer_metadata = {
+                "name": config.get("optimizer"),
+                "weight_decay": config.get("weight_decay"),
+                "muon_include_all_weights": config.get("muon_include_all_weights", False),
+            }
         if wte_weight_tying is None:
             wte_weight_tying = model_args.get("wte_weight_tying", True)
         if fixed_norm is None and model_args.get("wte_fixed_norm", False):
@@ -126,6 +134,7 @@ def export(
         "duty_cycle": duty_cycle,
         "fixed_norm": fixed_norm,
         "wte_weight_tying": wte_weight_tying,
+        "optimizer": optimizer_metadata,
         "projection": projection,
         "frames": frames,
     }

@@ -30,6 +30,12 @@ absent and enter the dataset at `DROPOUT_PERCENT`. `SCHEDULE_MODE=duty_cycle`
 repeatedly includes and excludes them; `DUTY_CYCLE_PERCENT` controls their
 included fraction (20–80) within each `DUTY_PERIOD_PERCENT` period.
 
+`OPTIMIZER_MODE` selects `full_muon`, `adam`, `adagrad`, `sgd`, or `rmsprop`.
+Full Muon routes every matrix-shaped parameter (including WTE and LM head) to
+Muon with zero weight decay, while vector parameters use its auxiliary Adam.
+Adam uses `ADAM_WEIGHT_DECAY` (0.1 by default); the other comparison optimizers
+use zero weight decay.
+
 The data is generated locally and is released under the repository's license;
 there is no external source or additional dataset license.
 
