@@ -1,0 +1,24 @@
+{
+  "model": "HuggingFaceTB/SmolLM2-135M",
+  "device": "cpu",
+  "seed": 1337,
+  "train_examples": 8,
+  "test_examples": 2,
+  "epochs": 1,
+  "max_length": 128,
+  "max_new_tokens": 16,
+  "adapter_parameters": 17887,
+  "max_absolute_gate_after_training": 0.06429906189441681,
+  "query_l2_norm_after_training": 3.948793411254883,
+  "before": {
+    "correct": 0,
+    "total": 2,
+    "exact_match": 0.0
+  },
+  "after": {
+    "correct": 0,
+    "total": 2,
+    "exact_match": 0.0
+  },
+  "conclusion": "Pipeline smoke test only; sample is too small to estimate math quality."
+}
