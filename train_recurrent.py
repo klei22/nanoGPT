@@ -198,6 +198,15 @@ def current_latent_mix_alpha():
     return torch.tensor(args.latent_mix_alpha, device=device)
 
 
+def latent_mix_log_suffix():
+    """Show the effective fixed/learned slerp amount on every status line."""
+    if args.latent_mix_mode != "slerp":
+        return ""
+    alpha = current_latent_mix_alpha().detach().float().cpu().item()
+    source = "learned" if latent_mix_logit is not None else "fixed"
+    return f" | latent_mix_alpha {alpha:.6f} ({source})"
+
+
 def slerp_latent(latent, target, amount, eps=1e-8):
     """
     Spherical interpolation from `latent` toward the correct-token embedding.
@@ -338,7 +347,8 @@ def sample_and_print():
         generated = raw_model.generate(start_ids, args.max_sample_tokens,
                                        temperature=args.temperature, top_k=top_k)
     text = decode(generated[0].tolist())
-    print(f"\n--- recurrent sample @ iter {global_step} ---\n{text}\n--- end sample ---\n")
+    print(f"\n--- recurrent sample @ iter {global_step}{latent_mix_log_suffix()} ---\n"
+          f"{text}\n--- end sample ---\n")
     if args.sample_file:
         sample_path = args.sample_file
         if not os.path.isabs(sample_path):
@@ -378,7 +388,8 @@ while global_step < args.max_iters:
         dt = time.time() - t0
         tokens = args.batch_size * block_size * args.gradient_accumulation_steps
         print(f"iter {global_step:>7} | loss {accumulated_loss:.4f} | "
-              f"{dt * 1000:.1f} ms | {tokens / max(dt, 1e-9):.0f} tok/s")
+              f"{dt * 1000:.1f} ms | {tokens / max(dt, 1e-9):.0f} tok/s"
+              f"{latent_mix_log_suffix()}")
         if tb:
             tb.add_scalar("loss/train", accumulated_loss, global_step)
 
@@ -387,7 +398,7 @@ while global_step < args.max_iters:
         improved = val_loss < best_val_loss
         if improved:
             best_val_loss = val_loss
-        print(f"eval iter {global_step}: val loss {val_loss:.4f}")
+        print(f"eval iter {global_step}: val loss {val_loss:.4f}{latent_mix_log_suffix()}")
         if tb:
             tb.add_scalar("loss/val", val_loss, global_step)
         if improved or args.always_save_checkpoint:
