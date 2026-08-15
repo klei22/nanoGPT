@@ -207,6 +207,16 @@ def latent_mix_log_suffix():
     return f" | latent_mix_alpha {alpha:.6f} ({source})"
 
 
+def training_progress_log_suffix():
+    """Report processed target tokens and stochastic dataset-equivalent epochs."""
+    tokens_trained = (
+        global_step * args.batch_size * block_size * args.gradient_accumulation_steps
+    )
+    epochs = tokens_trained / max(len(train_bin), 1)
+    return (f" | tokens_trained {tokens_trained} | epochs {epochs:.6f}"
+            f"{latent_mix_log_suffix()}")
+
+
 def slerp_latent(latent, target, amount, eps=1e-8):
     """
     Spherical interpolation from `latent` toward the correct-token embedding.
@@ -347,7 +357,7 @@ def sample_and_print():
         generated = raw_model.generate(start_ids, args.max_sample_tokens,
                                        temperature=args.temperature, top_k=top_k)
     text = decode(generated[0].tolist())
-    print(f"\n--- recurrent sample @ iter {global_step}{latent_mix_log_suffix()} ---\n"
+    print(f"\n--- recurrent sample @ iter {global_step}{training_progress_log_suffix()} ---\n"
           f"{text}\n--- end sample ---\n")
     if args.sample_file:
         sample_path = args.sample_file
@@ -389,16 +399,18 @@ while global_step < args.max_iters:
         tokens = args.batch_size * block_size * args.gradient_accumulation_steps
         print(f"iter {global_step:>7} | loss {accumulated_loss:.4f} | "
               f"{dt * 1000:.1f} ms | {tokens / max(dt, 1e-9):.0f} tok/s"
-              f"{latent_mix_log_suffix()}")
+              f"{training_progress_log_suffix()}")
         if tb:
             tb.add_scalar("loss/train", accumulated_loss, global_step)
+            tb.add_scalar("training/tokens", global_step * tokens, global_step)
+            tb.add_scalar("training/epochs", global_step * tokens / max(len(train_bin), 1), global_step)
 
     if global_step % args.eval_interval == 0 or global_step == args.max_iters:
         val_loss = estimate_val_loss()
         improved = val_loss < best_val_loss
         if improved:
             best_val_loss = val_loss
-        print(f"eval iter {global_step}: val loss {val_loss:.4f}{latent_mix_log_suffix()}")
+        print(f"eval iter {global_step}: val loss {val_loss:.4f}{training_progress_log_suffix()}")
         if tb:
             tb.add_scalar("loss/val", val_loss, global_step)
         if improved or args.always_save_checkpoint:
