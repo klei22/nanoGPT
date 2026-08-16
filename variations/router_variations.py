@@ -24,7 +24,10 @@ def _router_output(logits, top_k):
     margin_k = min(top_k + 1, logits.shape[-1])
     margin_logits = logits.topk(margin_k, dim=-1).values
     margins = margin_logits[..., 0] - margin_logits[..., -1]
-    load = F.one_hot(indices, logits.shape[-1]).float().sum(tuple(range(indices.ndim - 1)))
+    # ``indices`` is [..., top_k]. After one-hot encoding it becomes
+    # [..., top_k, n_experts], so reduce every original indices dimension,
+    # including the top-k selection axis, and retain only n_experts.
+    load = F.one_hot(indices, logits.shape[-1]).float().sum(tuple(range(indices.ndim)))
     return RouterOutput(probabilities, indices, logits, selected_weights, margins, load)
 
 class TopKRouter(nn.Module):
