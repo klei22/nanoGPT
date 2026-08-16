@@ -1,0 +1,56 @@
+---
+# Tiny causal screen for the predictive-width implementation.  Each matched
+# (S, q, H_s) tuple is encoded as a named group, rather than separate lists, so
+# the sweep runner cannot accidentally create invalid Cartesian products.
+named_static_groups:
+  - named_group: "dense"
+    predictive_width_variant: ["standard"]
+    predictive_head_mode: ["standard"]
+
+  - named_group: "s4_direct"
+    predictive_width_variant: ["direct_streams"]
+    predictive_head_mode: ["direct"]
+    n_predictive_streams: [4]
+    predictive_stream_dim: [32]
+    predictive_stream_n_head: [2]
+
+  - named_group: "s4_collapsed"
+    predictive_width_variant: ["direct_streams"]
+    predictive_head_mode: ["collapsed"]
+    n_predictive_streams: [4]
+    predictive_stream_dim: [32]
+    predictive_stream_n_head: [2]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  n_layer: [2]
+  n_embd: [128]
+  n_head: [2]
+  n_kv_group: [2]
+  block_size: [128]
+  batch_size: [8]
+  gradient_accumulation_steps: [1]
+  max_iters: [200]
+  eval_interval: [100]
+  eval_iters: [10]
+  log_interval: [10]
+  learning_rate: [0.001]
+  device: ["cpu"]
+  dtype: ["float32"]
+  compile: [false]
+  data_seed: [91001]
+  eval_seed: [92001]
+  log_predictive_width: [true]
+  predictive_probe_interval: [100]
+  predictive_probe_batches: [2]
+  never_save_checkpoint: [true]
+
+parameter_groups:
+  # The model seed is paired across all three arms. Add more seed entries here,
+  # not to the stream dimensions above, when expanding the smoke experiment.
+  - named_group_static: ["dense"]
+    seed: [1337]
+  - named_group_static: ["s4_direct"]
+    seed: [1337]
+  - named_group_static: ["s4_collapsed"]
+    seed: [1337]

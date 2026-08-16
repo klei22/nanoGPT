@@ -3,6 +3,29 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from typing import NamedTuple
+
+
+class RouterOutput(NamedTuple):
+    """Tuple-compatible router result with diagnostics for scientific logging."""
+    probabilities: torch.Tensor
+    indices: torch.Tensor
+    logits: torch.Tensor
+    selected_weights: torch.Tensor
+    margins: torch.Tensor
+    load: torch.Tensor
+
+
+def _router_output(logits, top_k):
+    selected_logits, indices = logits.topk(top_k, dim=-1)
+    sparse_logits = torch.full_like(logits, float('-inf')).scatter(-1, indices, selected_logits)
+    probabilities = F.softmax(sparse_logits, dim=-1)
+    selected_weights = probabilities.gather(-1, indices)
+    margin_k = min(top_k + 1, logits.shape[-1])
+    margin_logits = logits.topk(margin_k, dim=-1).values
+    margins = margin_logits[..., 0] - margin_logits[..., -1]
+    load = F.one_hot(indices, logits.shape[-1]).float().sum(tuple(range(indices.ndim - 1)))
+    return RouterOutput(probabilities, indices, logits, selected_weights, margins, load)
 
 class TopKRouter(nn.Module):
     """ Conventional Softmax Top_k Gating network (router) NN for MoE layers """
@@ -15,13 +38,12 @@ class TopKRouter(nn.Module):
     def forward(self, x):
         logits = self.route_linear(x)
 
-        top_k_logits, indices = logits.topk(self.top_k, dim=-1)
-        zeros = torch.full_like(logits, float('-inf'))
+        result = _router_output(logits, self.top_k)
+        # Preserve the historical two-value API for existing MoE callers.
+        return result.probabilities, result.indices
 
-        sparse_logits = zeros.scatter(-1, indices, top_k_logits)
-        router_output= F.softmax(sparse_logits, dim=-1)
-
-        return router_output, indices
+    def route_with_diagnostics(self, x):
+        return _router_output(self.route_linear(x), self.top_k)
 
 
 class NoisyTopKRouter(nn.Module):
@@ -37,17 +59,14 @@ class NoisyTopKRouter(nn.Module):
         logits = self.route_linear(x)
 
         noise_logits = self.noise_linear(x)
-        noise = torch.randn_like(logits)*F.softplus(noise_logits)
+        routed_logits = logits + torch.randn_like(logits) * F.softplus(noise_logits)
+        result = _router_output(routed_logits, self.top_k)
+        return result.probabilities, result.indices
 
-        top_k_noisy_logits = noise_logits + noise
-        top_k_logits, indices = logits.topk(self.top_k, dim=1)
-
-        zeros = torch.full_like(top_k_noisy_logits, float('-inf'))
-        sparse_logits = zeros.scatter(-1, indices, top_k_logits)
-
-        router_output = F.softmax(sparse_logits, dim=-1)
-
-        return router_output, indices
+    def route_with_diagnostics(self, x):
+        logits = self.route_linear(x)
+        scale = F.softplus(self.noise_linear(x))
+        return _router_output(logits + torch.randn_like(logits) * scale, self.top_k)
 
 router_dictionary = {
     "softmax": TopKRouter,

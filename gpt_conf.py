@@ -6,6 +6,37 @@ import math
 
 @dataclass
 class GPTConfig:
+    # Predictive-width experiments.  The standard defaults intentionally add no
+    # modules and therefore preserve existing checkpoint topology.
+    predictive_width_variant: str = "standard"
+    predictive_head_mode: str = "standard"
+    n_predictive_streams: int = 1
+    predictive_stream_dim: int | None = None
+    predictive_stream_n_head: int | None = None
+    predictive_stream_parameter_sharing: bool = False
+    predictive_stream_mixer: str = "none"
+    predictive_stream_mixer_every: int = 0
+    predictive_stream_bus_dim: int = 0
+    late_tap_dim: int = 128
+    late_tap_variant: str = "nonlinear"
+    late_tap_activation: str = "squared_relu"
+    late_tap_init_scale: float = 0.01
+    private_moe_start_layer: int | None = None
+    private_moe_depth: int = 2
+    private_dim: int = 64
+    private_n_experts: int = 4
+    private_top_k: int = 1
+    private_router_scheme: str = "softmax"
+    private_router_sticky: bool = True
+    private_router_mode: str = "learned"
+    private_router_balance_coef: float = 0.0
+    private_router_z_coef: float = 0.0
+    private_router_collision_coef: float = 0.0
+    log_predictive_width: bool = False
+    predictive_probe_interval: int = 1000
+    predictive_probe_batches: int = 8
+    data_seed: int | None = None
+    eval_seed: int | None = None
     attention_list: List[str] = field(default_factory=lambda: [])
     block_size: int = 1024
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
@@ -597,3 +628,39 @@ class GPTConfig:
 
         with open(filename, 'w') as json_file:
             json.dump(conf_dict, json_file)
+
+    def validate_predictive_width(self):
+        """Fail early for invalid or silently recompressing experiment setups."""
+        variants = {"standard", "direct_streams", "late_tap", "private_moe"}
+        heads = {"standard", "direct", "collapsed", "bottleneck", "merged"}
+        if self.predictive_width_variant not in variants:
+            raise ValueError(f"unknown predictive_width_variant: {self.predictive_width_variant}")
+        if self.predictive_head_mode not in heads:
+            raise ValueError(f"unknown predictive_head_mode: {self.predictive_head_mode}")
+        if self.predictive_width_variant == "standard":
+            return
+        unsupported = {
+            "numerical_multicontext": self.numerical_multicontext,
+            "factored embeddings": self.n_embd_wte is not None,
+            "full attention residual": self.attention_residual_variant == "full",
+            "final-depth input mixer": self.use_ln_f_input_mixer,
+            "learned steering vectors": self.use_lsv,
+        }
+        active = [name for name, enabled in unsupported.items() if enabled]
+        if active:
+            raise ValueError("predictive-width mode does not support " + ", ".join(active))
+        if self.predictive_width_variant == "direct_streams":
+            q = self.predictive_stream_dim
+            h = self.predictive_stream_n_head
+            if q is None or h is None or q <= 0 or h <= 0 or q % h:
+                raise ValueError("predictive_stream_dim must divide cleanly across stream heads")
+            if self.predictive_head_mode == "collapsed" and self.n_predictive_streams <= 1:
+                raise ValueError("collapsed mode requires more than one stream")
+        if self.predictive_width_variant == "private_moe":
+            if self.use_moe:
+                raise ValueError("ordinary and persistent-private MoE cannot be enabled together")
+            if not 1 <= self.private_top_k <= self.private_n_experts:
+                raise ValueError("private_top_k must satisfy 1 <= k <= E")
+            start = self.private_moe_start_layer
+            if start is None or start + self.private_moe_depth != self.n_layer:
+                raise ValueError("private MoE tail must end at the final layer")
