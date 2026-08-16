@@ -237,6 +237,20 @@ def parse_args():
         help='Scaling factor applied to the distillation loss before combining with the student loss.',
     )
     training_group.add_argument(
+        '--ntp_loss_weight', type=float, default=1.0,
+        help='Scaling factor for next-token loss in the explicit training objective.',
+    )
+    training_group.add_argument(
+        '--distillation_objective', choices=['add', 'replace', 'log_only'], default='add',
+        help='Add KD to NTP, replace NTP with pure KD, or only log KD.',
+    )
+    training_group.add_argument(
+        '--checkpoint_metric',
+        choices=['ntp_val_loss', 'distillation_val_loss', 'objective_val_loss'],
+        default='ntp_val_loss',
+        help='Validation metric used to select the best checkpoint.',
+    )
+    training_group.add_argument(
         '--distillation_temperature',
         type=float,
         default=1.0,

@@ -226,12 +226,21 @@ class Trainer:
         self.loss_fn = build_loss_function(self.args)
         self.distillation_loss_fn = build_distillation_loss(self.args)
         self.distillation_weight = getattr(self.args, "distillation_weight", 1.0)
+        self.ntp_loss_weight = getattr(self.args, "ntp_loss_weight", 1.0)
+        self.distillation_objective = getattr(self.args, "distillation_objective", "add")
+        # Preserve the old passive flag while making the objective mode explicit.
+        if getattr(self.args, "passive_distillation_loss_log", False):
+            if self.distillation_objective != "add":
+                raise ValueError("--passive_distillation_loss_log conflicts with --distillation_objective")
+            self.distillation_objective = "log_only"
         self.teacher_model = None
         self.latest_distillation_loss = float('nan')
         self.latest_distillation_val_loss = float('nan')
         self.latest_ntp_val_loss = float('nan')
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
+        if self.distillation_objective in {"replace", "log_only"} and self.distillation_loss_fn is None:
+            raise ValueError(f"distillation objective '{self.distillation_objective}' requires a distillation loss")
 
         # Learning Rate Settings
         self.lr = self.args.learning_rate
@@ -2157,6 +2166,23 @@ class Trainer:
     def run_validation_step(self, running_mfu, current_epoch, current_dataset, num_steps_with_worse_loss, live=None):
         losses = self.estimate_loss()
 
+        ntp_val = losses.get('ntp_val_loss', losses['val'])
+        kd_val = losses.get('distillation_val_loss')
+        if self.distillation_objective == 'replace' and kd_val is not None:
+            objective_val = self.distillation_weight * kd_val
+        elif self.distillation_objective == 'add' and kd_val is not None:
+            objective_val = self.ntp_loss_weight * ntp_val + self.distillation_weight * kd_val
+        else:
+            objective_val = self.ntp_loss_weight * ntp_val
+        losses['objective_val_loss'] = objective_val
+        checkpoint_value = {
+            'ntp_val_loss': ntp_val,
+            'distillation_val_loss': kd_val,
+            'objective_val_loss': objective_val,
+        }[self.args.checkpoint_metric]
+        if checkpoint_value is None:
+            raise ValueError(f"checkpoint metric '{self.args.checkpoint_metric}' requires configured distillation")
+
         self.latest_top1_prob = losses.get('top1_prob', float('nan'))
         self.latest_top1_correct = losses.get('top1_correct', float('nan'))
         self.latest_target_rank = losses.get('target_rank', float('nan'))
@@ -2267,9 +2293,9 @@ class Trainer:
                 self.save_checkpoint(major_ckpt_name)
                 print(f"Saved major checkpoint to {self.args.out_dir}/{major_ckpt_name}")
 
-        if losses['val'] < self.best_val_loss or self.args.always_save_checkpoint:
-            if losses['val'] < self.best_val_loss:
-                self.best_val_loss = losses['val']
+        if checkpoint_value < self.best_val_loss or self.args.always_save_checkpoint:
+            if checkpoint_value < self.best_val_loss:
+                self.best_val_loss = checkpoint_value
                 self.best_iter = self.iter_num
                 self.best_tokens = self.tokens_trained
                 if self.zeus_enabled:
@@ -2539,9 +2565,13 @@ class Trainer:
                             self.Y,
                             iter_num=self.iter_num,
                         )
-                        distill_component = distill_component.to(loss.dtype)
-                        if not self.args.passive_distillation_loss_log:
-                            loss = loss + self.distillation_weight * distill_component
+                        if self.distillation_objective == 'replace':
+                            loss = self.distillation_weight * distill_component
+                        elif self.distillation_objective == 'add':
+                            loss = self.ntp_loss_weight * loss + self.distillation_weight * distill_component
+
+                    if distill_component is None or self.distillation_objective == 'log_only':
+                        loss = self.ntp_loss_weight * loss
 
                     self.latest_distillation_loss = (
                         float(distill_component.detach().float().item())

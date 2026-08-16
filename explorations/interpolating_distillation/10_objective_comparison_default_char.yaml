@@ -1,0 +1,49 @@
+# Compare conventional next-token/additive KD with the new pure objectives.
+# Set DISTILLATION_SOURCE to a tokenizer-compatible Shakespeare teacher ckpt.
+---
+named_static_groups:
+  - named_group: "conventional_ce"
+    ntp_loss_weight: [1.0]
+
+  - named_group: "conventional_additive_kd"
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["kl_divergence"]
+    distillation_objective: ["add"]
+    ntp_loss_weight: [1.0]
+    distillation_weight: [1.0]
+    checkpoint_metric: ["objective_val_loss"]
+
+  - named_group: "pure_forward_kl"
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["kl_divergence"]
+    distillation_objective: ["replace"]
+    distillation_weight: [1.0]
+    checkpoint_metric: ["distillation_val_loss"]
+
+  - named_group: "pure_centered_logits"
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["centered_logit_mse"]
+    distillation_objective: ["replace"]
+    distillation_weight: [1.0]
+    checkpoint_metric: ["distillation_val_loss"]
+
+common_group:
+  distillation_source_path: ["out/shakespeare_teacher/ckpt.pt"]
+  dataset: ["shakespeare_char"]
+  block_size: [256]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  dropout: [0.0]
+  weight_decay: [0.0]
+  distillation_temperature: [1.0]
+  log_ntp_val_loss_during_distillation: [true]
+  eval_interval: [250]
+  max_iters: [2000]
+
+parameter_groups:
+  - named_group_alternates:
+      - "conventional_ce"
+      - "conventional_additive_kd"
+      - "pure_forward_kl"
+      - "pure_centered_logits"

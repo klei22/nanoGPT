@@ -31,6 +31,10 @@ def _masked_mean(values: torch.Tensor, targets: Optional[torch.Tensor]) -> Optio
     return masked.mean()
 
 
+def _fp32_zero(tensor: torch.Tensor) -> torch.Tensor:
+    return torch.zeros((), device=tensor.device, dtype=torch.float32)
+
+
 def _forward_kl_tokenwise(
     student_scaled: torch.Tensor,
     teacher_scaled: torch.Tensor,
@@ -74,9 +78,9 @@ def kl_divergence_loss(
     token_kl = _forward_kl_tokenwise(student_scaled, teacher_scaled)
     mean = _masked_mean(token_kl, targets)
     if mean is None:
-        return student_logits.new_zeros(())
+        return _fp32_zero(student_logits)
     loss = mean * (temperature ** 2)
-    return loss.to(student_logits.dtype)
+    return loss
 
 
 def reverse_kl_loss(
@@ -95,9 +99,9 @@ def reverse_kl_loss(
     token_kl = _reverse_kl_tokenwise(student_scaled, teacher_scaled, eps)
     mean = _masked_mean(token_kl, targets)
     if mean is None:
-        return student_logits.new_zeros(())
+        return _fp32_zero(student_logits)
     loss = mean * (temperature ** 2)
-    return loss.to(student_logits.dtype)
+    return loss
 
 
 def symmetric_kl_loss(
@@ -118,9 +122,9 @@ def symmetric_kl_loss(
     combined = 0.5 * (forward + reverse)
     mean = _masked_mean(combined, targets)
     if mean is None:
-        return student_logits.new_zeros(())
+        return _fp32_zero(student_logits)
     loss = mean * (temperature ** 2)
-    return loss.to(student_logits.dtype)
+    return loss
 
 
 def jensen_shannon_loss(
@@ -151,9 +155,9 @@ def jensen_shannon_loss(
 
     mean = _masked_mean(token_js, targets)
     if mean is None:
-        return student_logits.new_zeros(())
+        return _fp32_zero(student_logits)
     loss = mean * (temperature ** 2)
-    return loss.to(student_logits.dtype)
+    return loss
 
 
 def logit_mse_loss(
@@ -172,8 +176,43 @@ def logit_mse_loss(
     token_mse = F.mse_loss(student_scaled, teacher_scaled, reduction="none").mean(dim=-1)
     mean = _masked_mean(token_mse, targets)
     if mean is None:
-        return student_logits.new_zeros(())
-    return mean.to(student_logits.dtype)
+        return _fp32_zero(student_logits)
+    return mean
+
+
+def centered_logit_mse_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    targets: Optional[torch.Tensor],
+    *,
+    iter_num: int | None = None,
+    temperature: float = 1.0,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Gauge-invariant ``1/(2V) * ||C(z_student-z_teacher)||^2``.
+
+    Centering is performed independently at every token.  The computation and
+    returned scalar intentionally remain FP32 under mixed precision.
+    """
+
+    del iter_num, eps
+    difference = (student_logits.float() - teacher_logits.float()) / temperature
+    difference = difference - difference.mean(dim=-1, keepdim=True)
+    token_loss = 0.5 * difference.square().mean(dim=-1)
+    mean = _masked_mean(token_loss, targets)
+    if mean is None:
+        return torch.zeros((), device=student_logits.device, dtype=torch.float32)
+    return mean
+
+
+def teacher_forward_kl_t1(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    targets: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """Stable, objective-independent teacher-forward KL evaluator at T=1."""
+
+    return kl_divergence_loss(student_logits, teacher_logits, targets, temperature=1.0)
 
 
 DISTILLATION_LOSS_VARIANTS: Dict[str, Callable[..., torch.Tensor]] = {
@@ -182,6 +221,7 @@ DISTILLATION_LOSS_VARIANTS: Dict[str, Callable[..., torch.Tensor]] = {
     "symmetric_kl": symmetric_kl_loss,
     "jensen_shannon": jensen_shannon_loss,
     "logit_mse": logit_mse_loss,
+    "centered_logit_mse": centered_logit_mse_loss,
 }
 
 
@@ -223,5 +263,6 @@ def build_distillation_loss(args) -> Optional[Callable[[torch.Tensor, torch.Tens
 __all__ = [
     "DISTILLATION_LOSS_VARIANTS",
     "build_distillation_loss",
+    "centered_logit_mse_loss",
+    "teacher_forward_kl_t1",
 ]
-
