@@ -6,12 +6,17 @@
 ---
 named_static_groups:
   - named_group: "fast_char_model"
-    n_layer: [4]
-    n_head: [4]
-    n_embd: [128]
-    block_size: [64]
+    n_layer: [5]
+    n_head: [3]
+    n_embd: [300]
     dropout: [0.0]
     bias: [false]
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+    optimizer: ["muon"]
+    weight_decay: [0.0]
 
 named_group_static: ["fast_char_model"]
 
@@ -24,13 +29,12 @@ common_group:
   compile: [true]
 
   # Throughput and optimization settings.
-  gradient_accumulation_steps: [2]
+  gradient_accumulation_steps: [1]
   learning_rate: [0.001]
-  max_iters: [1000]
+  max_iters: [2000]
   grad_clip: [1.0]
 
   # Recurrent objective settings.
-  latent_steps: [1]
   skip_steps: [0]
   weight_start: [1.0]
   weight_end: [1.0]
@@ -40,24 +44,29 @@ common_group:
   eval_iters: [20]
   log_interval: [10]
   always_save_checkpoint: [true]
-  max_sample_tokens: [200]
+  max_sample_tokens: [512]
   sample_each_eval: [true]
   sample_start_tokens: ["\n"]
   sample_file: ["samples.txt"]
 
+block_size: [128]
+
 parameter_groups:
-  # Alpha does not affect these modes, so avoid redundant combinations.
-  - run_name_override:
-      - "recurrent_scratch_{latent_mix_mode}_bs{batch_size}"
-    batch_size: [8, 16, 32]
-    latent_mix_mode: ["direct", "add_norm"]
 
   # For fixed slerp, alpha is the interpolation fraction toward the correct
   # token embedding. For learned slerp, it is the sigmoid-constrained scalar's
   # initial value. The run name includes both fields to prevent collisions.
   - run_name_override:
-      - "recurrent_scratch_slerp_bs{batch_size}_a{latent_mix_alpha}_learn{learn_latent_mix_alpha}"
-    batch_size: [8, 16, 32]
+      - "recurrent_scratch_slerp_bs{block_size}_{batch_size}_a{latent_mix_alpha}_learn{learn_latent_mix_alpha}_{latent_steps}"
+    batch_size: [16]
     latent_mix_mode: ["slerp"]
-    latent_mix_alpha: [0.25, 0.5, 0.75]
+    latent_mix_alpha: [0.9, 0.95]
     learn_latent_mix_alpha: [false, true]
+    latent_steps: [10, 100, 200]
+ 
+  # Alpha does not affect these modes, so avoid redundant combinations.
+  - run_name_override:
+      - "recurrent_scratch_{block_size}_{latent_mix_mode}_bs{batch_size}_{latent_steps}"
+    batch_size: [16]
+    latent_mix_mode: ["add_norm"]
+    latent_steps: [10, 100, 200]
