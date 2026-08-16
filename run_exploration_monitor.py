@@ -47,6 +47,7 @@ from typing import Dict, List, Optional
 
 import yaml
 import math
+from optimization_and_search.run_experiments import METRIC_KEYS, read_metrics
 from textual.app import App, ComposeResult
 from textual.containers import Container, VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Input, Label, Button, Static
@@ -64,6 +65,19 @@ def load_runs(log_file: Path) -> List[Dict]:
     with log_file.open() as f:
         for doc in yaml.safe_load_all(f):
             if doc:
+                # Older runner versions could persist an all-NaN row when the
+                # positional metrics parser failed. Rehydrate those values from
+                # the run artifact so completed experiments remain usable.
+                out_dir = doc.get("config", {}).get("out_dir")
+                best_value = doc.get("best_val_loss")
+                metrics_missing = best_value is None or (
+                    isinstance(best_value, float) and math.isnan(best_value)
+                )
+                if out_dir and metrics_missing:
+                    try:
+                        doc.update(read_metrics(out_dir))
+                    except (FileNotFoundError, ValueError, OSError):
+                        pass
                 docs.append(doc)
     return docs
 
@@ -251,6 +265,7 @@ class MonitorApp(App):
             "areq",
             "distillation_val_loss",
             "ntp_val_loss",
+            "teacher_forward_kl_t1",
             "zeus_total_energy_j",
             "zeus_total_time_s",
             "zeus_avg_power_w",
