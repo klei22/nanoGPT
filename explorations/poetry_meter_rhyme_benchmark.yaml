@@ -1,0 +1,40 @@
+# Compare a compact baseline with QK-normalized rotary attention on the
+# poetry_meter_rhyme supervised stream. Prepare the dataset first with:
+#   demos/poetry_meter_rhyme_benchmark.sh --accept-research-only --data-only
+# Or run the end-to-end demo directly for automatic checkpoint evaluation.
+#
+# Launch this exploration with:
+#   python3 optimization_and_search/run_experiments.py \
+#     --config explorations/poetry_meter_rhyme_benchmark.yaml \
+#     --config_format yaml --output_dir out/poetry_meter_rhyme_exploration \
+#     --prefix poetry_
+---
+
+common_group:
+  dataset: ["poetry_meter_rhyme"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  n_layer: [4]
+  n_head: [4]
+  n_embd: [256]
+  block_size: [256]
+  batch_size: [8]
+  gradient_accumulation_steps: [4]
+  max_iters: [2000]
+  eval_interval: [250]
+  eval_iters: [40]
+  save_major_ckpt_interval: [250]
+  always_save_checkpoint: [true]
+  compile: [false]
+
+parameter_groups:
+  - run_name_override: ["baseline"]
+    use_rotary_embeddings: [false]
+    use_abs_pos_embeddings: [true]
+    use_qk_norm: [false]
+
+  - run_name_override: ["rotary_qk_norm"]
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]

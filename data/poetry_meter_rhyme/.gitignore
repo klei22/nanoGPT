@@ -1,0 +1,8 @@
+_raw/
+generated/
+input.txt
+train.txt
+val.txt
+test.txt
+*.bin
+*.pkl

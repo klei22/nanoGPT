@@ -2,6 +2,21 @@
 
 This folder will hold repeatable demonstrations of features and results.
 
+## Poetry meter and rhyme benchmark
+
+`poetry_meter_rhyme_benchmark.sh` builds the gated poetry dataset, tokenizes its
+explicit train/validation splits, trains a compact model, and evaluates every
+periodic checkpoint against held-out meter and rhyme minimal pairs:
+
+```bash
+demos/poetry_meter_rhyme_benchmark.sh --accept-research-only
+```
+
+Use `--data-only` to prepare data for
+`explorations/poetry_meter_rhyme_benchmark.yaml`, or `--ckpt PATH --skip-data`
+to benchmark an existing checkpoint. Run the script with `--help` for CPU and
+output-directory options.
+
 ## Shifted GELU
 
 This shows that the GELU wants to shift:
