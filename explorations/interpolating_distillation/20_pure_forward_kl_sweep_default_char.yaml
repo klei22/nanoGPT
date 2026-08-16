@@ -1,0 +1,80 @@
+# Advance the best Stage-1 objective on a longer character-level run.
+# The first group builds a tokenizer-compatible teacher. The second group
+# sweeps pure forward-KL conditioning while conventional CE/additive KD remain
+# locked controls. DISTILLATION_SOURCE may override the generated checkpoint.
+---
+named_static_groups:
+  - named_group: "teacher_ce"
+    ntp_loss_weight: [1.0]
+    checkpoint_metric: ["ntp_val_loss"]
+
+  - named_group: "conventional_ce"
+    ntp_loss_weight: [1.0]
+    checkpoint_metric: ["ntp_val_loss"]
+
+  - named_group: "conventional_additive_kd"
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["kl_divergence"]
+    distillation_objective: ["add"]
+    ntp_loss_weight: [1.0]
+    distillation_weight: [1.0]
+    checkpoint_metric: ["objective_val_loss"]
+
+  - named_group: "pure_forward_kl"
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["kl_divergence"]
+    distillation_objective: ["replace"]
+    ntp_loss_weight: [0.0]
+    checkpoint_metric: ["distillation_val_loss"]
+
+  - named_group: "pure_centered_logits"
+    distillation_teacher_ckpt: ["${DISTILLATION_SOURCE}"]
+    distillation_loss: ["centered_logit_mse"]
+    distillation_objective: ["replace"]
+    ntp_loss_weight: [0.0]
+    checkpoint_metric: ["distillation_val_loss"]
+
+common_group:
+  distillation_source_path: ["out/20_pure_forward_kl_sweep_default_char-teacher_ce/ckpt.pt"]
+  dataset: ["shakespeare_char"]
+  block_size: [256]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  batch_size: [64]
+  dropout: [0.0]
+  weight_decay: [0.0]
+  distillation_temperature: [1.0]
+  log_ntp_val_loss_during_distillation: [true]
+  eval_interval: [250]
+  seed: [1337]
+  diagnostic_seed: [7331]
+  gradient_diagnostic_microbatches: [8]
+  gradient_diagnostic_microbatch_size: [1]
+
+parameter_groups:
+  - named_group_alternates:
+      - "teacher_ce"
+    max_iters: [3500]
+
+  # Locked controls at the same extended budget as the sweep.
+  - named_group_alternates:
+      - "conventional_ce"
+      - "conventional_additive_kd"
+    learning_rate: [0.001]
+    max_iters: [7000]
+
+  # Primary KL sweep. The loss weight is deliberately crossed with LR because
+  # it changes gradient scale even though it does not change the minimizer.
+  - named_group_alternates:
+      - "pure_forward_kl"
+    learning_rate: [0.0003, 0.001, 0.003]
+    distillation_weight: [0.3, 1.0]
+    max_iters: [7000]
+
+  # Conditioning control retained after hitting the prior run's budget edge.
+  - named_group_alternates:
+      - "pure_centered_logits"
+    learning_rate: [0.0003, 0.001, 0.003]
+    distillation_weight: [0.3, 1.0]
+    max_iters: [7000]

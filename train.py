@@ -70,6 +70,10 @@ from utils.model_stats import (
     compute_activation_stats,
     print_model_stats_table,
 )
+from utils.gradient_noise_diagnostics import (
+    component_gradient_diagnostics,
+    select_diagnostic_parameters,
+)
 
 from sample import (
     sample_with_existing_model,
@@ -1107,6 +1111,75 @@ class Trainer:
             common_kl = teacher_forward_kl_t1(logits, teacher_logits, Y)
         return distill_loss.detach().float(), common_kl.detach().float()
 
+    def _run_fixed_gradient_diagnostics(self):
+        """Measure equal-sized component gradients on reproducible val windows."""
+        count = self.args.gradient_diagnostic_microbatches
+        size = self.args.gradient_diagnostic_microbatch_size
+        if count == 0:
+            return {}
+        if count < 2 or size < 1:
+            raise ValueError("gradient diagnostics require at least two non-empty microbatches")
+        if self.args.training_mode != 'single':
+            raise ValueError("fixed gradient diagnostics currently require single-dataset training")
+
+        generator = torch.Generator(device='cpu')
+        generator.manual_seed(self.args.diagnostic_seed)
+        starts = torch.randint(
+            len(self.val_data) - self.args.block_size,
+            (count * size,),
+            generator=generator,
+        )
+        parameters = select_diagnostic_parameters(self.raw_model)
+        if not parameters:
+            raise ValueError("gradient diagnostic parameter subset is empty")
+
+        was_training = self.model.training
+        self.model.eval()
+
+        def component_losses():
+            for component in range(count):
+                component_starts = starts[component * size:(component + 1) * size]
+                X = torch.stack([
+                    torch.from_numpy(self.val_data[int(i):int(i) + self.args.block_size].astype(np.int64))
+                    for i in component_starts
+                ]).to(self.device)
+                Y = torch.stack([
+                    torch.from_numpy(self.val_data[int(i) + 1:int(i) + 1 + self.args.block_size].astype(np.int64))
+                    for i in component_starts
+                ]).to(self.device)
+                with self.ctx:
+                    logits, ntp_loss = self.model(
+                        X, Y, iter_num=self.iter_num, loss_fn=self.loss_fn,
+                        compute_loss=self.distillation_objective != 'replace',
+                    )
+                    kd_loss = None
+                    if self._distillation_metrics_enabled():
+                        with torch.no_grad():
+                            teacher_logits, _ = self.teacher_model(
+                                X, Y, iter_num=self.iter_num, loss_fn=None, compute_loss=False,
+                            )
+                        kd_loss = self.distillation_loss_fn(
+                            logits, teacher_logits, Y, iter_num=self.iter_num
+                        )
+                    if self.distillation_objective == 'replace':
+                        loss = self.distillation_weight * kd_loss
+                    elif self.distillation_objective == 'add' and kd_loss is not None:
+                        loss = self.ntp_loss_weight * ntp_loss + self.distillation_weight * kd_loss
+                    else:
+                        loss = self.ntp_loss_weight * ntp_loss
+                yield loss
+
+        result = component_gradient_diagnostics(component_losses(), parameters)
+        if was_training:
+            self.model.train()
+        return {
+            'gradient_mean_squared_norm': result.mean_squared_norm,
+            'gradient_squared_mean_norm': result.squared_mean_norm,
+            'gradient_noise_variance': result.noise_variance,
+            'gradient_coherence': result.coherence,
+            'gradient_noise_scale': result.noise_scale,
+        }
+
     @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
@@ -1781,6 +1854,18 @@ class Trainer:
                     tokens_trained,
                 )
 
+            for metric_name in (
+                'gradient_mean_squared_norm',
+                'gradient_squared_mean_norm',
+                'gradient_noise_variance',
+                'gradient_coherence',
+                'gradient_noise_scale',
+            ):
+                if metric_name in losses:
+                    self.writer.add_scalar(
+                        f"{target_dataset}/{metric_name}", losses[metric_name], self.iter_num
+                    )
+
             if 'top1_prob' in losses:
                 self.writer.add_scalar(f"{target_dataset}/avg_top1_prob", losses['top1_prob'], self.iter_num)
                 self.writer.add_scalar(f"{target_dataset}/avg_top1_correct", losses['top1_correct'], self.iter_num)
@@ -2194,6 +2279,23 @@ class Trainer:
 
     def run_validation_step(self, running_mfu, current_epoch, current_dataset, num_steps_with_worse_loss, live=None):
         losses = self.estimate_loss()
+        gradient_diagnostics = self._run_fixed_gradient_diagnostics()
+        losses.update(gradient_diagnostics)
+        if gradient_diagnostics and self.master_process:
+            diagnostics_path = os.path.join(self.args.out_dir, 'diagnostics.csv')
+            write_header = not os.path.exists(diagnostics_path)
+            with open(diagnostics_path, 'a', newline='') as diagnostics_file:
+                writer = csv.DictWriter(
+                    diagnostics_file,
+                    fieldnames=['iter', 'tokens_trained', *gradient_diagnostics.keys()],
+                )
+                if write_header:
+                    writer.writeheader()
+                writer.writerow({
+                    'iter': self.iter_num,
+                    'tokens_trained': self.tokens_trained,
+                    **gradient_diagnostics,
+                })
 
         ntp_val = losses.get('ntp_val_loss', losses['val'])
         kd_val = losses.get('distillation_val_loss')
@@ -2225,7 +2327,9 @@ class Trainer:
         self.latest_rankme = self._to_scalar(losses.get('rankme', float('nan')))
         self.latest_areq = self._to_scalar(losses.get('areq', float('nan')))
         self.latest_distillation_val_loss = self._to_scalar(losses.get('distillation_val_loss', float('nan')))
-        self.latest_ntp_val_loss = self._to_scalar(losses.get('ntp_val_loss', float('nan')))
+        # ``val`` is the NTP loss for ordinary training. Keep the explicit
+        # metric populated for controls as well as distillation runs.
+        self.latest_ntp_val_loss = self._to_scalar(losses.get('ntp_val_loss', losses['val']))
         self.latest_teacher_forward_kl_t1 = self._to_scalar(losses.get('teacher_forward_kl_t1', float('nan')))
 
         if self.args.gns_type is not None:
@@ -2340,7 +2444,9 @@ class Trainer:
                     chance_ratio = self._safe_better_than_chance(self.model_args['vocab_size'], self.best_val_loss.item())
                     metrics = [
                             f"{self.best_val_loss.item()}",
-                            f"{self._val_bits_per_byte(self.best_val_loss, self.args.dataset):.6f}",
+                            # Bits/byte is defined from NTP NLL, not a KD or
+                            # mixed objective selected for checkpointing.
+                            f"{self._val_bits_per_byte(self.latest_ntp_val_loss, self.args.dataset):.6f}",
                             f"{self.iter_num}",
                             f"{self.best_tokens}",
                             f"{self.model.num_param}",

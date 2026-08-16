@@ -316,6 +316,12 @@ def parse_args():
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)
     training_group.add_argument('--batch_size', default=64, type=int)
     training_group.add_argument("--seed", default=1337, type=int)
+    training_group.add_argument('--diagnostic_seed', default=7331, type=int,
+                                help='Seed used only to construct fixed diagnostic batches.')
+    training_group.add_argument('--gradient_diagnostic_microbatches', default=0, type=int,
+                                help='Number of fixed validation microbatches used for component-gradient diagnostics; 0 disables.')
+    training_group.add_argument('--gradient_diagnostic_microbatch_size', default=1, type=int,
+                                help='Examples per fixed component-gradient diagnostic microbatch.')
 
     # Multicontext Training Dataset args
     model_group.add_argument('--numerical_multicontext', default=False, action=argparse.BooleanOptionalAction,
