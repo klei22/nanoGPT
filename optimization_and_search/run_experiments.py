@@ -621,10 +621,10 @@ def read_metrics(out_dir: str) -> dict:
     casts = [
         float,
         float,
+        int,
+        int,
+        int,
         float,
-        int,
-        int,
-        int,
         float,
         float,
         float,
@@ -651,13 +651,18 @@ def read_metrics(out_dir: str) -> dict:
         raise ValueError(
             f"Metric schema mismatch: {len(base_metric_keys)} keys vs {len(casts)} casts."
         )
-    if len(parts) == len(base_metric_keys) - 2:
+    # Ten legacy weight/activation statistics follow the metrics consumed by
+    # this runner. Account for them when detecting older core schemas.
+    trailing_stat_count = 10 if len(parts) >= len(base_metric_keys) - 2 + 10 else 0
+    core_count = len(parts) - trailing_stat_count
+    if core_count == len(base_metric_keys) - 2:
         # Backward compatibility for runs created before best_val_bits_per_byte
         # and teacher_forward_kl_t1.
         parts.insert(1, "")
-    if len(parts) == len(base_metric_keys) - 1:
+        core_count += 1
+    if core_count == len(base_metric_keys) - 1:
         # Runs from the immediately preceding schema lack only common T=1 KL.
-        parts.append("")
+        parts.insert(len(base_metric_keys) - 1, "")
     if len(parts) < len(base_metric_keys):
         raise ValueError(
             f"Expected at least {len(base_metric_keys)} metrics in {path}, got {len(parts)}."
@@ -834,7 +839,8 @@ def run_experiment(
     # Read metrics (use existing or nan on failure)
     try:
         metrics = read_metrics(str(combo['out_dir']))
-    except Exception:
+    except Exception as exc:
+        print(f"[red]Unable to read metrics for {run_name}: {exc}[/]")
         metrics = {k: float("nan") for k in METRIC_KEYS}
 
     append_log(
