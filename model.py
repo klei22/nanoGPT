@@ -411,7 +411,10 @@ class GPT(nn.Module):
             return embeddings + noise
         return embeddings
 
-    def forward(self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None, dataset_idx=None, loss_fn=None):
+    def forward(
+        self, idx, targets=None, iter_num=None, token_dict=None, target_dict=None,
+        dataset_idx=None, loss_fn=None, compute_loss=True,
+    ):
         if token_dict is not None:
             token_list = list(token_dict.values())
             # If target_dict is None (typical for inference), set target_list = None
@@ -655,7 +658,9 @@ class GPT(nn.Module):
                     logits = torch.tanh(logits)
                     logits = logits * self.config.final_logit_softcapping
 
-                if loss_fn is None:
+                if not compute_loss:
+                    loss = None
+                elif loss_fn is None:
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
                 else:
                     loss = loss_fn(logits, targets, iter_num=iter_num)

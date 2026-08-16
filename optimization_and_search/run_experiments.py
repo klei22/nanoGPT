@@ -44,6 +44,7 @@ METRIC_KEYS = [
     "areq",
     "distillation_val_loss",
     "ntp_val_loss",
+    "teacher_forward_kl_t1",
     "zeus_total_energy_j",
     "zeus_total_time_s",
     "zeus_avg_power_w",
@@ -615,8 +616,10 @@ def read_metrics(out_dir: str) -> dict:
         "areq",
         "distillation_val_loss",
         "ntp_val_loss",
+        "teacher_forward_kl_t1",
     ]
     casts = [
+        float,
         float,
         float,
         int,
@@ -648,9 +651,13 @@ def read_metrics(out_dir: str) -> dict:
         raise ValueError(
             f"Metric schema mismatch: {len(base_metric_keys)} keys vs {len(casts)} casts."
         )
-    if len(parts) == len(base_metric_keys) - 1:
-        # Backward compatibility for runs created before best_val_bits_per_byte.
+    if len(parts) == len(base_metric_keys) - 2:
+        # Backward compatibility for runs created before best_val_bits_per_byte
+        # and teacher_forward_kl_t1.
         parts.insert(1, "")
+    if len(parts) == len(base_metric_keys) - 1:
+        # Runs from the immediately preceding schema lack only common T=1 KL.
+        parts.append("")
     if len(parts) < len(base_metric_keys):
         raise ValueError(
             f"Expected at least {len(base_metric_keys)} metrics in {path}, got {len(parts)}."

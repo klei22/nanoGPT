@@ -41,7 +41,7 @@ from train_variations.optimizer_variants import (
 )
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 from train_variations.loss_variants import build_loss_function
-from train_variations.distillation_loss_variants import build_distillation_loss
+from train_variations.distillation_loss_variants import build_distillation_loss, teacher_forward_kl_t1
 
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
 from utils.min_angle_graph_export import export_min_angle_graph as write_min_angle_graph_export
@@ -237,6 +237,7 @@ class Trainer:
         self.latest_distillation_loss = float('nan')
         self.latest_distillation_val_loss = float('nan')
         self.latest_ntp_val_loss = float('nan')
+        self.latest_teacher_forward_kl_t1 = float('nan')
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
         if self.distillation_objective in {"replace", "log_only"} and self.distillation_loss_fn is None:
@@ -1095,6 +1096,7 @@ class Trainer:
                 iter_num=self.iter_num,
                 dataset_idx=dataset_idx if self.args.multidataset_wte else None,
                 loss_fn=None,
+                compute_loss=False,
             )
             distill_loss = self.distillation_loss_fn(
                 logits,
@@ -1102,7 +1104,8 @@ class Trainer:
                 Y,
                 iter_num=self.iter_num,
             )
-        return distill_loss.detach().float()
+            common_kl = teacher_forward_kl_t1(logits, teacher_logits, Y)
+        return distill_loss.detach().float(), common_kl.detach().float()
 
     @torch.no_grad()
     def estimate_loss(self):
@@ -1116,6 +1119,7 @@ class Trainer:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
                 distillation_losses = torch.zeros(self.args.eval_iters) if self._distillation_metrics_enabled() else None
+                teacher_forward_kl_losses = torch.zeros(self.args.eval_iters) if self._distillation_metrics_enabled() else None
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
                 rankme_vectors = [] if compute_rankme else None
@@ -1139,7 +1143,7 @@ class Trainer:
                         dataset_losses[split][k] = loss.item()
                         if split == 'val':
                             if distillation_losses is not None:
-                                distill_loss = self._compute_distillation_loss_for_batch(
+                                distill_loss, common_kl = self._compute_distillation_loss_for_batch(
                                     logits,
                                     X,
                                     Y,
@@ -1150,6 +1154,7 @@ class Trainer:
                                     if distill_loss is not None
                                     else float('nan')
                                 )
+                                teacher_forward_kl_losses[k] = common_kl.item()
                             probs = F.softmax(logits, dim=-1)
                             top1_prob, top1_idx = probs.max(dim=-1)
                             top1_probs.append(top1_prob)
@@ -1199,6 +1204,7 @@ class Trainer:
                 if distillation_losses is not None:
                     out['datasets'][dataset]['distillation_val_loss'] = distillation_losses.mean()
                     out['datasets'][dataset]['distillation_val_loss_std'] = distillation_losses.std()
+                    out['datasets'][dataset]['teacher_forward_kl_t1'] = teacher_forward_kl_losses.mean()
                 if self._distillation_metrics_enabled() and self.args.log_ntp_val_loss_during_distillation:
                     out['datasets'][dataset]['ntp_val_loss'] = out['datasets'][dataset]['val']
                     out['datasets'][dataset]['ntp_val_loss_std'] = out['datasets'][dataset]['val_std']
@@ -1221,6 +1227,7 @@ class Trainer:
             if 'distillation_val_loss' in out['datasets'][self.args.dataset]:
                 out['distillation_val_loss'] = out['datasets'][self.args.dataset]['distillation_val_loss']
                 out['distillation_val_loss_std'] = out['datasets'][self.args.dataset]['distillation_val_loss_std']
+                out['teacher_forward_kl_t1'] = out['datasets'][self.args.dataset]['teacher_forward_kl_t1']
             if 'ntp_val_loss' in out['datasets'][self.args.dataset]:
                 out['ntp_val_loss'] = out['datasets'][self.args.dataset]['ntp_val_loss']
                 out['ntp_val_loss_std'] = out['datasets'][self.args.dataset]['ntp_val_loss_std']
@@ -1385,6 +1392,11 @@ class Trainer:
                     if split == 'val' and self._distillation_metrics_enabled()
                     else None
                 )
+                teacher_forward_kl_losses = (
+                    torch.zeros(self.args.eval_iters)
+                    if split == 'val' and self._distillation_metrics_enabled()
+                    else None
+                )
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
                 rankme_vectors = [] if compute_rankme else None
@@ -1406,7 +1418,7 @@ class Trainer:
                     losses[k] = loss.item()
                     if split == 'val':
                         if distillation_losses is not None:
-                            distill_loss = self._compute_distillation_loss_for_batch(
+                            distill_loss, common_kl = self._compute_distillation_loss_for_batch(
                                 logits,
                                 X,
                                 Y,
@@ -1417,6 +1429,7 @@ class Trainer:
                                 if distill_loss is not None
                                 else float('nan')
                             )
+                            teacher_forward_kl_losses[k] = common_kl.item()
                         probs = F.softmax(logits, dim=-1)
                         top1_prob, top1_idx = probs.max(dim=-1)
                         top1_probs.append(top1_prob)
@@ -1449,6 +1462,7 @@ class Trainer:
                     if distillation_losses is not None:
                         out['distillation_val_loss'] = distillation_losses.mean()
                         out['distillation_val_loss_std'] = distillation_losses.std()
+                        out['teacher_forward_kl_t1'] = teacher_forward_kl_losses.mean()
                     if self._distillation_metrics_enabled() and self.args.log_ntp_val_loss_during_distillation:
                         out['ntp_val_loss'] = out['val']
                         out['ntp_val_loss_std'] = out['val_std']
@@ -1749,6 +1763,21 @@ class Trainer:
                 self.writer.add_scalar(
                     f"{target_dataset}/ntp_val_loss_tokens",
                     ntp_val_loss,
+                    tokens_trained,
+                )
+
+            teacher_kl_t1 = self._to_scalar(
+                losses.get('teacher_forward_kl_t1', self.latest_teacher_forward_kl_t1)
+            )
+            if not math.isnan(teacher_kl_t1):
+                self.writer.add_scalar(
+                    f"{target_dataset}/teacher_forward_kl_t1",
+                    teacher_kl_t1,
+                    self.iter_num,
+                )
+                self.writer.add_scalar(
+                    f"{target_dataset}/teacher_forward_kl_t1_tokens",
+                    teacher_kl_t1,
                     tokens_trained,
                 )
 
@@ -2182,6 +2211,7 @@ class Trainer:
         }[self.args.checkpoint_metric]
         if checkpoint_value is None:
             raise ValueError(f"checkpoint metric '{self.args.checkpoint_metric}' requires configured distillation")
+        losses['checkpoint_value'] = checkpoint_value
 
         self.latest_top1_prob = losses.get('top1_prob', float('nan'))
         self.latest_top1_correct = losses.get('top1_correct', float('nan'))
@@ -2196,6 +2226,7 @@ class Trainer:
         self.latest_areq = self._to_scalar(losses.get('areq', float('nan')))
         self.latest_distillation_val_loss = self._to_scalar(losses.get('distillation_val_loss', float('nan')))
         self.latest_ntp_val_loss = self._to_scalar(losses.get('ntp_val_loss', float('nan')))
+        self.latest_teacher_forward_kl_t1 = self._to_scalar(losses.get('teacher_forward_kl_t1', float('nan')))
 
         if self.args.gns_type is not None:
             self.gns = self.gns_ema.get_gns()
@@ -2269,6 +2300,8 @@ class Trainer:
                 log_message+=f", distill_val_loss {self.latest_distillation_val_loss:.4f}"
             if not math.isnan(self.latest_ntp_val_loss):
                 log_message+=f", ntp_val_loss {self.latest_ntp_val_loss:.4f}"
+            if not math.isnan(self.latest_teacher_forward_kl_t1):
+                log_message+=f", teacher_kl_t1 {self.latest_teacher_forward_kl_t1:.4f}"
             log_message+=f", batch_size {self.args.batch_size}"
             log_message+=f", lr {self.lr:.4f}"
             self.console.print(log_message)
@@ -2331,6 +2364,7 @@ class Trainer:
                             f"{self.latest_areq:.6f}",
                             f"{self.latest_distillation_val_loss:.6f}",
                             f"{self.latest_ntp_val_loss:.6f}",
+                            f"{self.latest_teacher_forward_kl_t1:.6f}",
                             f"{self.latest_overall_weight_stats['stdev']:.6f}",
                             f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
                             f"{self.latest_overall_weight_stats['max']:.6f}",
@@ -2501,7 +2535,7 @@ class Trainer:
                     if self.args.patience is not None and num_steps_with_worse_loss >= self.args.patience:
                         print(f"Early Stopping: loss has not decreased in {self.args.patience + 1} steps")
                         break
-                    if losses['val'] > self.best_val_loss:
+                    if losses['checkpoint_value'] > self.best_val_loss:
                         num_steps_with_worse_loss += 1
 
                 if self.args.eval_only:
@@ -2536,6 +2570,7 @@ class Trainer:
                                 iter_num=self.iter_num,
                                 dataset_idx=idx_ds if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
+                                compute_loss=self.distillation_objective != 'replace',
                             )
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
@@ -2558,6 +2593,7 @@ class Trainer:
                                 iter_num=self.iter_num,
                                 dataset_idx=idx_ds if self.args.multidataset_wte else None,
                                 loss_fn=None,
+                                compute_loss=False,
                             )
                         distill_component = self.distillation_loss_fn(
                             logits,

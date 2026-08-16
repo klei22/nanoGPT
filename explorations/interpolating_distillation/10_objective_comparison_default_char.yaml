@@ -28,7 +28,8 @@ named_static_groups:
     checkpoint_metric: ["distillation_val_loss"]
 
 common_group:
-  distillation_source_path: ["out/shakespeare_teacher/ckpt.pt"]
+  # The first parameter group creates this checkpoint before the comparison.
+  distillation_source_path: ["out/10_objective_comparison_default_char-conventional_ce/ckpt.pt"]
   dataset: ["shakespeare_char"]
   block_size: [256]
   n_layer: [6]
@@ -39,11 +40,17 @@ common_group:
   distillation_temperature: [1.0]
   log_ntp_val_loss_during_distillation: [true]
   eval_interval: [250]
-  max_iters: [2000]
 
 parameter_groups:
+  # Build a tokenizer- and architecture-compatible teacher/baseline first.
+  - named_group_alternates:
+      - "conventional_ce"
+
+  # Then compare all objectives at a common budget.
   - named_group_alternates:
       - "conventional_ce"
       - "conventional_additive_kd"
       - "pure_forward_kl"
       - "pure_centered_logits"
+    max_sample_tokens: [256]
+    max_iters: [3500]
