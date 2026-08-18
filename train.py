@@ -262,7 +262,7 @@ class Trainer:
             self.seed_offset = self.ddp_rank
             self.args.gradient_accumulation_steps //= self.ddp_world_size
         else:
-            self.device = self.args.device
+            self.device = self.args.device if ":" in self.args.device or self.args.device == "cpu" else self.args.device + ":0"
             self.master_process = True
             self.seed_offset = 0
             self.ddp_world_size = 1
