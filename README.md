@@ -258,6 +258,102 @@ python3 view_model_stats.py run1_stats.csv run2_stats.csv
 See [documentation/Model_Stats_Table.md](documentation/Model_Stats_Table.md)
 for more details.
 
+## LM-head minimum-angle graph exports
+
+`train.py` can optionally export the same closest-neighbor graph used by the
+LM-head angle explorer's minimum-angular-distance view after each validation
+loss. The export treats each LM-head row as a token vector, streams
+row/column blocks through the selected compute device, excludes each token's
+self-distance, and records the closest non-self token by signed `0°–180°`
+angular distance. The full `vocab_size × vocab_size` angle matrix is never
+materialized.
+
+Enable the export by choosing a labelled output directory and turning on the
+per-eval flag:
+
+```bash
+python3 train.py \
+  --export_min_angle_graph_dir out/min_angle_graphs \
+  --export_min_angle_graph_each_eval \
+  --export_min_angle_graph_label shakespeare_char_baseline
+```
+
+Each validation step writes a labelled CSV and JSON sidecar whose filename
+includes the label, iteration, and validation loss:
+
+```text
+out/min_angle_graphs/shakespeare_char_baseline_iter_00000250_val_1.234567.csv
+out/min_angle_graphs/shakespeare_char_baseline_iter_00000250_val_1.234567.json
+```
+
+The CSV is an edge list with one directed nearest-neighbor edge per token:
+
+```text
+token_id,token_text_escaped,nearest_token_id,nearest_token_text_escaped,min_angle_deg,cosine,token_vector_length,nearest_token_vector_length,min_angle_rank
+```
+
+Use `--export_min_angle_graph_block_size` to tune temporary matrix multiply
+size, and `--export_min_angle_graph_device` to choose `auto`, `cpu`, or a CUDA
+device such as `cuda:0`. In `auto` mode, the export uses the LM-head tensor's
+current CUDA device when possible, otherwise streams blocks to `cuda:0` if CUDA
+is available, and falls back to CPU.
+
+To review a sequence of exports visually, open
+`analysis/min_angle_graph_plotly_viewer.html` in a browser and select the CSV
+files from one export directory. The page sorts snapshots by the iteration in
+their filenames and provides previous/next/play controls plus a slider to step
+from the first validation export to the last.
+
+### Per-token loss and vocabulary coverage
+
+Pass `--log_per_token_metrics` to produce a report after every validation in
+`<out_dir>/per_token_metrics` (or set `--per_token_metrics_dir`). The report is
+kept out of TensorBoard and contains:
+
+**TensorBoard is enabled by default. Add `--no-tensorboard_log` when running
+per-token reporting if TensorBoard is not required, especially when its optional
+TensorFlow installation is incompatible with the active NumPy version.**
+Per-token metrics themselves are never sent to TensorBoard.
+
+* `per_token_metrics.csv`: one row per vocabulary token and evaluation, with
+  its escaped decoded text (for example, `\\n`), sampled train/validation
+  cross-entropy, output-token vector L2 magnitude, minimum non-self pairwise
+  token-vector angle in degrees, evaluation sample counts,
+  and the cumulative number of times that target token was used by training;
+* `per_token_summary.csv`: mean, median, standard deviation, skew, excess
+  kurtosis, percentiles, range, coefficient of variation, and vocabulary
+  coverage for each metric; and
+* `per_token_metrics.html`: a lightweight summary-statistics index linking to
+  a separate HTML document for every Plotly graph, preventing large vocabulary
+  reports from blocking the entire viewer. The loss plots order tokens from highest to lowest
+  validation loss and sampled training loss, respectively. The coverage plot
+  orders them from lowest to highest training occurrence and overlays both loss
+  series. All show escaped token text next to the token ID and provide
+  independently selectable loss and occurrence traces on separate axes. A
+  multi-select token picker also drives historical graphs: sampled
+  train/validation loss versus evaluation iteration and versus cumulative
+  training appearances. The iteration graph also plots each selected token's
+  cumulative appearances on a right-hand y-axis. Every graph has independent
+  logarithmic-scale toggles for each available y-axis, so either, both, or
+  neither axis can use log scale. Each graph displays an explicit diagnostic
+  instead of silently showing a blank plot if Plotly fails to load or render.
+  The viewer also includes a vocabulary-wide token-vector magnitude graph and
+  a selected-token vector-magnitude-versus-iteration history graph, plus
+  equivalent minimum-pairwise-angle overview and history graphs. Five static
+  PNG dashboards stack all metrics vertically with a shared token order, sorted
+  high-to-low by frequency, validation loss, training loss, vector magnitude,
+  and minimum pairwise angle respectively. Static dashboards are retained for
+  every validation snapshot and use consistent per-metric y-axis limits across
+  iterations. Open `per_token_static_slideshow.html` to move through snapshots
+  with Previous/Next buttons or the left/right arrow keys.
+
+Per-token loss is always ordinary next-token cross-entropy, making reports
+comparable even when a custom aggregate training loss is selected. Only tokens
+sampled during evaluation have a loss value; the accompanying sample-count
+columns make sparse or unrepresentative validation estimates visible. Existing
+detail CSVs from versions before escaped token text was added are migrated
+automatically and retained when training resumes.
+
 ## TODO Section:
 
 TODO: Add links and descriptions to other Readme's and Demos.

@@ -107,6 +107,10 @@ class GPTConfig:
     ln_f_input_mixer_variant: str = "linear"
     ln_f_mixer_top_k: int = 2
 
+    # Depth-wise residual routing. "full" stores every attention/MLP output.
+    attention_residual_variant: str = "standard"
+    attention_residual_eps: float = 1e-6
+
     # Attention Variation Specific
 
     ## Flash Lobo
@@ -136,6 +140,8 @@ class GPTConfig:
     # weight tying
     n_embd_wte_scale_tying: bool = True
     wte_weight_tying: bool = True # Non-factorized wte weight tying
+    wte_fixed_norm: bool = False
+    wte_fixed_norm_value: float | None = None
 
     # wte import/export
     import_wte_freeze: bool = False
@@ -225,8 +231,8 @@ class GPTConfig:
     shared_attn_seq: int = 1
 
     # Softmax Alternatives and Options
-    softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
-    softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"
+    softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax" "ste_argmax_softmax"
+    softmax_variant_output: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax" "ste_argmax_softmax"
 
 
     ## General Options
@@ -335,6 +341,9 @@ class GPTConfig:
     use_fire_embeddings: bool = False
     shared_fire_embeddings: bool = False
     use_rotary_embeddings: bool = False
+    absolute_pos_embedding_variant: str = "learned"  # options: "learned", "cyclic"
+    cyclic_abs_pos_cycle_lengths: list[int] | None = None
+    cyclic_abs_pos_randomize_starts: bool = False
     sym_rot_num_angles: int = 512
     rope_variant: str = "rope" # options: "shortrope", "rope"
     rope_length: int = 8 # number of embeddings to use in shortrope
@@ -343,6 +352,11 @@ class GPTConfig:
     embedding_mean_init: float= 0.0
     embedding_std_init: float= 0.02
     embedding_gaussian_noise_std: float = 0.0
+    embedding_gaussian_noise_start_iter: int = 0
+    embedding_gaussian_noise_end_iter: int | None = None
+    embedding_gaussian_noise_start_std: float | None = None
+    embedding_gaussian_noise_end_std: float | None = None
+    embedding_gaussian_noise_in_eval: bool = False
 
     ## FIRE Options (Functional Interpolation for Relative Positional Encoding)
     fire_log_bias: float = 1.0
@@ -397,6 +411,12 @@ class GPTConfig:
     norm_abs_scale: float | None = None
     norm_abs_gain: bool | None = None
     norm_abs_radius_learning: bool | None = None
+
+    norm_variant_lm_head: str | None = None
+    norm_lm_head_radius: float | None = None
+    norm_lm_head_scale: float | None = None
+    norm_lm_head_gain: bool | None = None
+    norm_lm_head_radius_learning: bool | None = None
 
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     prmsnorm_pct: float = 0.0625

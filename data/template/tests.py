@@ -6,9 +6,10 @@ import sys
 import pickle
 import json
 import prepare
-from tokenizers import (
+from nanogpt_tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
+    HuggingFaceTokenizer,
     CustomTokenizer,
     ByteTokenizer,
     CharTokenizer,
@@ -184,6 +185,48 @@ class TestTokenizers(unittest.TestCase):
 
         self.assertEqual(self.sample_text, detokenized)
 
+    def test_huggingface_tokenizer(self):
+        try:
+            import transformers  # noqa: F401
+        except ImportError:
+            self.skipTest("transformers package not installed")
+
+        args = Namespace(
+            hf_tokenizer_name="gpt2",
+            hf_trust_remote_code=False,
+            hf_use_fast=True,
+            meta_output_path="meta.pkl",
+        )
+        try:
+            tokenizer = HuggingFaceTokenizer(args)
+        except Exception as exc:
+            # Offline environments or missing model files should not hard-fail
+            # the whole suite.
+            self.skipTest(f"could not load HF tokenizer 'gpt2': {exc}")
+
+        ids = tokenizer.tokenize(self.sample_text)
+        detokenized = tokenizer.detokenize(ids)
+
+        console.print("[input]Input:[/input]")
+        console.print(self.sample_text, style="input")
+        console.print("[output]Detokenized Output:[/output]")
+        console.print(detokenized, style="output")
+
+        self.assertEqual(self.sample_text, detokenized)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        self.assertEqual(meta["tokenizer"], "huggingface")
+        self.assertEqual(meta["hf_tokenizer_name"], "gpt2")
+        self.assertGreater(meta["vocab_size"], 0)
+        self.assertIn("stoi", meta)
+        self.assertIn("itos", meta)
+
+        # Clean up the snapshot directory written next to meta.pkl.
+        import shutil
+        if os.path.isdir("hf_tokenizer"):
+            shutil.rmtree("hf_tokenizer", ignore_errors=True)
+
 
     def test_custom_tokenizer(self):
         args = Namespace(tokens_file=self.tokens_file)
@@ -266,6 +309,39 @@ class TestTokenizers(unittest.TestCase):
             os.remove(meta_path)
         if os.path.exists(reuse_meta_path):
             os.remove(reuse_meta_path)
+
+
+    def test_char_bpe_incomplete_coverage_uses_byte_fallback(self):
+        corpus = "aaaaabbbbcccdde🙂🙃"
+        args = Namespace(vocab_size=260, track_token_counts=True)
+        tokenizer = CharBPETokenizerWithByteFallback(args, corpus, None)
+
+        self.assertEqual(tokenizer.vocab_size, 260)
+        self.assertEqual(len(tokenizer.char_tokens), 4)
+        self.assertEqual(tokenizer.char_tokens, ["a", "b", "c", "d"])
+
+        ids = tokenizer.tokenize(corpus)
+        detokenized = tokenizer.detokenize(ids)
+        self.assertEqual(corpus, detokenized)
+        self.assertTrue(any(token_id < 256 for token_id in ids))
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        self.assertTrue(meta["incomplete_coverage"])
+        self.assertTrue(meta["incomplete_coverage_uses_bpe"])
+        self.assertEqual(meta["vocab_size"], 260)
+        self.assertEqual(meta["unique_char_count"], len(set(corpus)))
+
+    def test_char_bpe_incomplete_coverage_can_require_complete_coverage(self):
+        corpus = "abcde"
+        args = Namespace(
+            vocab_size=260,
+            track_token_counts=False,
+            char_bpe_incomplete_coverage_uses_bpe=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "complete character coverage"):
+            CharBPETokenizerWithByteFallback(args, corpus, None)
 
     def test_custom_char_tokenizer_with_byte_fallback(self):
         args = Namespace(custom_chars_file="custom_chars.txt")

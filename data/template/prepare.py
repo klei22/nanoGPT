@@ -3,9 +3,10 @@ import json
 import os
 import argparse
 import numpy as np
-from tokenizers import (
+from nanogpt_tokenizers import (
     SentencePieceTokenizer,
     TiktokenTokenizer,
+    HuggingFaceTokenizer,
     CustomTokenizer,
     ByteTokenizer,
     CharTokenizer,
@@ -31,8 +32,35 @@ def parse_arguments():
 
     # Tokenizer selection and configuration
     parser.add_argument("--method", type=str,
-                       choices=["sentencepiece", "tiktoken", "char", "char_bpe", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave", "whisper_mel_csv"],
+                       choices=["sentencepiece", "tiktoken", "huggingface", "char", "char_bpe", "custom", "byte", "custom_char_byte_fallback", "json_byte_fallback", "python_programming", "sinewave", "whisper_mel_csv"],
                        default="tiktoken", help="Tokenization method")
+
+    # HuggingFace tokenizer arguments
+    parser.add_argument("--hf_tokenizer_name", type=str, default=None,
+                        help="HuggingFace tokenizer: a Hub repo id (e.g. 'gpt2', "
+                             "'google/gemma-3-270m', 'meta-llama/Llama-3.2-1B') or a "
+                             "local directory previously written by save_pretrained. "
+                             "Hub repos are downloaded and cached automatically.")
+    parser.add_argument("--hf_trust_remote_code", action="store_true",
+                        help="Trust remote code when loading a HuggingFace tokenizer "
+                             "(needed for some custom tokenizer classes shipped in repos)")
+    parser.add_argument("--hf_use_fast", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use the fast (Rust-based) HuggingFace tokenizer variant if available")
+    parser.add_argument("--hf_revision", type=str, default=None,
+                        help="Pin the HuggingFace repo to a specific commit SHA, branch, or tag "
+                             "for reproducibility (forwarded to from_pretrained as `revision=`)")
+    parser.add_argument("--hf_subfolder", type=str, default=None,
+                        help="Subfolder inside the HuggingFace repo that holds the tokenizer files "
+                             "(forwarded to from_pretrained as `subfolder=`)")
+    parser.add_argument("--hf_cache_dir", type=str, default=None,
+                        help="Override the HuggingFace download cache directory "
+                             "(forwarded to from_pretrained as `cache_dir=`). Default honors "
+                             "HF_HOME / HF_HUB_CACHE / ~/.cache/huggingface/hub.")
+    parser.add_argument("--hf_token", type=str, default=None,
+                        help="HuggingFace auth token for gated repos (e.g. Gemma, Llama). "
+                             "Alternatively run `huggingface-cli login` once, or set the "
+                             "HF_TOKEN environment variable. You must also accept the model's "
+                             "license at https://huggingface.co/<repo> while logged in.")
 
     # Sine wave tokenizer arguments
     parser.add_argument("--sine_period", type=float, default=1.0,
@@ -85,6 +113,8 @@ def parse_arguments():
     parser.add_argument("--reuse_chars", action="store_true", help="Reuse character list from meta.pkl")
     parser.add_argument("--char_bpe_vocab_path", type=str, default=None,
                         help="Path to a char_bpe meta.pkl to reuse its vocabulary/merges")
+    parser.add_argument("--char_bpe_incomplete_coverage_uses_bpe", action=argparse.BooleanOptionalAction, default=True,
+                        help="When char_bpe vocab_size cannot fit every observed character plus byte fallback, keep the highest-frequency characters/BPE tokens and rely on byte fallback for the rest (default: true). Use --no-char_bpe_incomplete_coverage_uses_bpe to require complete character coverage.")
 
     # Custom tokenizer arguments
     parser.add_argument("--tokens_file", type=str, default=None, help="Path to the file containing newline-separated tokens for tokenization")
@@ -126,6 +156,53 @@ def _read_input_data(path):
         return f.read()
 
 
+
+def _utf8_len(text):
+    return len(text.encode("utf-8")) if text is not None else 0
+
+def _tokenization_byte_metrics(train_data, val_data, train_ids, val_ids):
+    train_bytes = _utf8_len(train_data)
+    val_bytes = _utf8_len(val_data)
+    train_tokens = len(train_ids) if train_ids is not None else 0
+    val_tokens = len(val_ids) if val_ids is not None else 0
+    total_bytes = train_bytes + val_bytes
+    total_tokens = train_tokens + val_tokens
+    metrics = {
+        "train_utf8_bytes": train_bytes,
+        "val_utf8_bytes": val_bytes,
+        "total_utf8_bytes": total_bytes,
+        "train_token_count": train_tokens,
+        "val_token_count": val_tokens,
+        "total_token_count": total_tokens,
+    }
+    if train_bytes > 0:
+        metrics["train_tokens_per_byte"] = train_tokens / train_bytes
+        metrics["train_bytes_per_token"] = train_bytes / train_tokens if train_tokens > 0 else None
+    if val_bytes > 0:
+        metrics["val_tokens_per_byte"] = val_tokens / val_bytes
+        metrics["val_bytes_per_token"] = val_bytes / val_tokens if val_tokens > 0 else None
+    if total_bytes > 0:
+        metrics["tokens_per_byte"] = total_tokens / total_bytes
+        metrics["bytes_per_token"] = total_bytes / total_tokens if total_tokens > 0 else None
+    return metrics
+
+def _update_meta_with_byte_metrics(meta_path, byte_metrics):
+    if not byte_metrics:
+        return
+    with open(meta_path, "rb") as f:
+        meta = pickle.load(f)
+    meta["byte_metrics"] = byte_metrics
+    # Convenience aliases used by train.py. Prefer validation when available because
+    # bits-per-byte is reported for validation loss.
+    if "val_tokens_per_byte" in byte_metrics:
+        meta["tokens_per_byte"] = byte_metrics["val_tokens_per_byte"]
+        meta["bits_per_byte_split"] = "val"
+    elif "tokens_per_byte" in byte_metrics:
+        meta["tokens_per_byte"] = byte_metrics["tokens_per_byte"]
+        meta["bits_per_byte_split"] = "all"
+    with open(meta_path, "wb") as f:
+        pickle.dump(meta, f)
+
 def main():
     args = parse_arguments()
     output_dir = None
@@ -134,6 +211,9 @@ def main():
             output_dir = os.path.splitext(os.path.basename(args.json_tokens_file))[0]
         elif args.method == "sentencepiece":
             output_dir = f"sp_{args.vocab_size}"
+        elif args.method == "huggingface" and args.hf_tokenizer_name:
+            sanitized = args.hf_tokenizer_name.replace("/", "_").replace(os.sep, "_")
+            output_dir = f"hf_{sanitized}"
         else:
             output_dir = args.method
         if args.output_subdir_suffix:
@@ -168,6 +248,8 @@ def main():
         tokenizer = SentencePieceTokenizer(args, input_files=args.train_input)
     elif args.method == "tiktoken":
         tokenizer = TiktokenTokenizer(args)
+    elif args.method == "huggingface":
+        tokenizer = HuggingFaceTokenizer(args)
     elif args.method == "custom":
         tokenizer = CustomTokenizer(args)
     elif args.method == "byte":
@@ -194,8 +276,8 @@ def main():
         train_ids = tokenizer.tokenize(args.train_input)
     else:
         train_ids = tokenizer.tokenize(train_data)
-    if args.method == "tiktoken":
-        print(f"[tiktoken] Total train tokens: {tokenizer.last_token_count:,}")
+    if args.method in ("tiktoken", "huggingface"):
+        print(f"[{args.method}] Total train tokens: {tokenizer.last_token_count:,}")
     if args.method == "whisper_mel_csv" and args.val_input is None:
         split_point = int(len(train_ids) * args.percentage_train)
         val_ids = train_ids[split_point:]
@@ -209,10 +291,14 @@ def main():
             val_ids = tokenizer.tokenize(args.val_input)
         else:
             val_ids = tokenizer.tokenize(val_data)
-        if args.method == "tiktoken":
-            print(f"[tiktoken] Total val tokens: {tokenizer.last_token_count:,}")
+        if args.method in ("tiktoken", "huggingface"):
+            print(f"[{args.method}] Total val tokens: {tokenizer.last_token_count:,}")
     else:
         val_ids = None
+
+    byte_metrics = None
+    if args.method not in {"sinewave", "whisper_mel_csv"}:
+        byte_metrics = _tokenization_byte_metrics(train_data, val_data, train_ids, val_ids)
 
     # Determine dtype based on vocabulary size from meta.pkl
     if args.method == "whisper_mel_csv":
@@ -267,7 +353,7 @@ def main():
             "power": args.mel_power,
             "normalize": args.mel_normalize,
         }
-        with open("meta.pkl", "wb") as f:
+        with open(args.meta_output_path, "wb") as f:
             pickle.dump(meta, f)
 
     # Save additional metadata for tiktoken if needed
@@ -284,6 +370,9 @@ def main():
         })
         with open(args.meta_output_path, "wb") as f:
             pickle.dump(meta, f)
+
+    if byte_metrics is not None:
+        _update_meta_with_byte_metrics(args.meta_output_path, byte_metrics)
 
 if __name__ == "__main__":
     main()

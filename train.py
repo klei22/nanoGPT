@@ -11,6 +11,23 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timedelta
+from typing import Any
+
+# Some user worktrees may contain helper files named like Python stdlib modules
+# (for example copy.py). Preload stdlib modules that Rich/dataclasses need
+# before third-party imports so local helper files cannot shadow them during
+# interpreter startup.
+_repo_dir = os.path.dirname(os.path.abspath(__file__))
+_removed_sys_path_entries = []
+for _entry in ("", _repo_dir):
+    while _entry in sys.path:
+        sys.path.remove(_entry)
+        _removed_sys_path_entries.append(_entry)
+import copy as _stdlib_copy
+import dataclasses as _stdlib_dataclasses
+for _entry in reversed(_removed_sys_path_entries):
+    sys.path.insert(0, _entry)
+del _entry, _removed_sys_path_entries, _repo_dir, _stdlib_copy, _stdlib_dataclasses
 
 from rich.console import Group
 from rich.console import Console
@@ -27,6 +44,8 @@ from train_variations.loss_variants import build_loss_function
 from train_variations.distillation_loss_variants import build_distillation_loss
 
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
+from utils.min_angle_graph_export import export_min_angle_graph as write_min_angle_graph_export
+from utils.progress_bar import format_progress_metrics
 from torch.cuda import reset_peak_memory_stats, max_memory_allocated, max_memory_reserved
 
 try:
@@ -51,6 +70,7 @@ from utils.model_stats import (
     compute_activation_stats,
     print_model_stats_table,
 )
+from utils.per_token_metrics import PerTokenMetrics
 
 from sample import (
     sample_with_existing_model,
@@ -79,7 +99,6 @@ import torch.onnx
 import torch.nn.functional as F
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
 
 from variations.model_variations import model_variation_dictionary
 
@@ -136,6 +155,8 @@ class Trainer:
         self.latest_ln_f_cosine_95 = float('nan')
         self.latest_rankme = float('nan')
         self.latest_areq = float('nan')
+        self.latest_bits_per_byte = float('nan')
+        self.bits_per_byte_scales = {}
 
         # store overall statistics for weights and activations
         self.latest_overall_weight_stats = {
@@ -207,6 +228,8 @@ class Trainer:
         self.distillation_weight = getattr(self.args, "distillation_weight", 1.0)
         self.teacher_model = None
         self.latest_distillation_loss = float('nan')
+        self.latest_distillation_val_loss = float('nan')
+        self.latest_ntp_val_loss = float('nan')
         if self.distillation_loss_fn is not None and self.args.training_mode == 'multicontext':
             raise ValueError("Knowledge distillation is not supported with multicontext training mode.")
 
@@ -476,6 +499,11 @@ class Trainer:
 
         # Tensorboard
         if self.args.tensorboard_log:
+            # Import lazily so --no-tensorboard_log works even when an optional
+            # TensorBoard/TensorFlow installation is binary-incompatible with
+            # the active NumPy version.
+            from torch.utils.tensorboard import SummaryWriter
+
             # 1) Give the run a safe default name when the user did not supply one
             if self.args.tensorboard_run_name is None:
                 self.args.tensorboard_run_name = f"{timestamp_prefix}"
@@ -497,6 +525,31 @@ class Trainer:
             self.args.csv_name = wandb_run_name
             wandb.init(project=self.args.wandb_project, name=self.args.wandb_run_name, config=self.args)
         self.load_tokenizer()
+        self.per_token_metrics = None
+        if self.args.log_per_token_metrics:
+            if self.args.training_mode == 'multicontext':
+                sizes = dict(zip(self.args.multicontext_datasets, self.vocab_sizes))
+            elif self.args.dataset_list:
+                sizes = dict(zip(self.args.dataset_list, self.vocab_sizes))
+            else:
+                sizes = {self.args.dataset: int(self.model_args['vocab_size'])}
+            report_dir = (self.args.per_token_metrics_dir
+                          or os.path.join(self.args.out_dir, 'per_token_metrics'))
+            token_texts = {}
+            for dataset, vocab_size in sizes.items():
+                decode = (self.decode_dict.get(dataset, self.decode)
+                          if hasattr(self, 'decode_dict') else self.decode)
+                rendered = {}
+                for token_id in range(vocab_size):
+                    try:
+                        token_text = decode([token_id])
+                    except (KeyError, IndexError, TypeError, ValueError):
+                        token_text = ''
+                    rendered[token_id] = json.dumps(
+                        token_text, ensure_ascii=False
+                    )[1:-1]
+                token_texts[dataset] = rendered
+            self.per_token_metrics = PerTokenMetrics(report_dir, sizes, token_texts)
 
 
     def _initialize_teacher_if_needed(self):
@@ -548,9 +601,23 @@ class Trainer:
 
         if optimizer_key == "muon":
             named = list(self.model.named_parameters())
-            exclude = ("embed", "wte", "wpe", "lm_head")
-            hidden = [p for n, p in named if p.ndim >= 2 and all(e not in n for e in exclude)]
-            other = [p for n, p in named if not (p.ndim >= 2 and all(e not in n for e in exclude))]
+            exclude = tuple(self.args.muon_exclude_substrings)
+            force_include = tuple(self.args.muon_force_include_substrings)
+            muon_min_ndim = self.args.muon_min_ndim
+
+            def _use_muon_for_param(name, param):
+                if self.args.muon_include_all_weights:
+                    return True
+                if force_include and any(token in name for token in force_include):
+                    return True
+                if param.ndim < muon_min_ndim:
+                    return False
+                if exclude and any(token in name for token in exclude):
+                    return False
+                return True
+
+            hidden = [p for n, p in named if _use_muon_for_param(n, p)]
+            other = [p for n, p in named if not _use_muon_for_param(n, p)]
             param_groups = [
                 {"params": other, "use_muon": False},
                 {"params": hidden, "use_muon": True},
@@ -584,6 +651,37 @@ class Trainer:
         else:
             raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
 
+    def _bits_per_byte_scale_from_meta(self, meta):
+        if not getattr(self.args, "log_bits_per_byte", True):
+            return None
+        byte_metrics = meta.get("byte_metrics", {}) if isinstance(meta, dict) else {}
+        tokens_per_byte = byte_metrics.get("val_tokens_per_byte")
+        if tokens_per_byte is None:
+            tokens_per_byte = meta.get("tokens_per_byte")
+        if tokens_per_byte is None:
+            return None
+        try:
+            tokens_per_byte = float(tokens_per_byte)
+        except (TypeError, ValueError):
+            return None
+        if tokens_per_byte <= 0 or not math.isfinite(tokens_per_byte):
+            return None
+        return tokens_per_byte / math.log(2)
+
+    def _val_bits_per_byte(self, loss_value, target_dataset=None):
+        if not getattr(self.args, "log_bits_per_byte", True):
+            return float('nan')
+        dataset = target_dataset or self.args.dataset
+        scale = self.bits_per_byte_scales.get(dataset)
+        if scale is None:
+            scale = self.bits_per_byte_scales.get(self.args.dataset)
+        if scale is None:
+            return float('nan')
+        loss_float = self._to_scalar(loss_value)
+        if not math.isfinite(loss_float):
+            return float('nan')
+        return loss_float * scale
+
     def load_tokenizer(self):
         if self.args.dataset_list is not None and self.args.multidataset_wte:
             self.encode_dict = {}
@@ -595,6 +693,9 @@ class Trainer:
                 with open(meta_path, 'rb') as f:
                     meta = pickle.load(f)
                 encode, decode = get_tokenizer_functions(meta)
+                scale = self._bits_per_byte_scale_from_meta(meta)
+                if scale is not None:
+                    self.bits_per_byte_scales[dataset] = scale
                 self.encode_dict[dataset] = encode
                 self.decode_dict[dataset] = decode
             self.encode = self.encode_dict[self.args.dataset_list[0]]
@@ -606,6 +707,9 @@ class Trainer:
                     meta = pickle.load(f)
 
                 self.encode, self.decode = get_tokenizer_functions(meta)
+                scale = self._bits_per_byte_scale_from_meta(meta)
+                if scale is not None:
+                    self.bits_per_byte_scales[self.args.dataset] = scale
 
                 if 'tokenizer' in meta:
                     if meta['tokenizer'] == 'sentencepiece':
@@ -739,6 +843,16 @@ class Trainer:
             print(f"Error running dataset benchmarks: {e}")
 
     def load_data(self):
+        def _dataset_bin_dtype(dataset_name):
+            meta_path = os.path.join('data', dataset_name, 'meta.pkl')
+            if not os.path.exists(meta_path):
+                sys.exit(f"Error: Meta file not found at {meta_path}")
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            vocab_size = meta.get('vocab_size', None)
+            if vocab_size is None:
+                sys.exit(f"Error: 'vocab_size' key not found in {meta_path}")
+            return (np.uint32 if int(vocab_size) > np.iinfo(np.uint16).max else np.uint16), int(vocab_size)
 
         if self.args.training_mode == 'multicontext':
             # Expecting --multicontext_datasets to be provided.
@@ -747,17 +861,11 @@ class Trainer:
             self.train_data_dict = {}
             self.val_data_dict = {}
             for dataset in self.args.multicontext_datasets:
-                meta_path = os.path.join('data', dataset, 'meta.pkl')
-                if not os.path.exists(meta_path):
-                    sys.exit(f"Error: Meta file not found at {meta_path}")
-                with open(meta_path, 'rb') as f:
-                    meta = pickle.load(f)
-                    vocab_size = meta.get('vocab_size', None)
-                    print(vocab_size, dataset)
-                    self.vocab_sizes[dataset] = meta['vocab_size']
-                # Here we use np.uint16 for most datasets:
-                self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                self.val_data_dict[dataset]   = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+                dtype, vocab_size = _dataset_bin_dtype(dataset)
+                print(vocab_size, dataset)
+                self.vocab_sizes[dataset] = vocab_size
+                self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=dtype, mode='r')
+                self.val_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=dtype, mode='r')
 
             # Also store total token counts per dataset.
             self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.multicontext_datasets}
@@ -778,18 +886,10 @@ class Trainer:
             for dataset in self.args.dataset_list:
                 train_data = None
                 val_data = None
-                meta_path = os.path.join('data', dataset, 'meta.pkl')
-                if not os.path.exists(meta_path):
-                    sys.exit(f"Error: Meta file not found at {meta_path}")
-
-                with open(meta_path, 'rb') as f:
-                    meta = pickle.load(f)
-                    vocab_size = meta.get('vocab_size', None)
-                    if vocab_size:
-                        self.vocab_sizes.append(vocab_size)
+                dtype, vocab_size = _dataset_bin_dtype(dataset)
+                self.vocab_sizes.append(vocab_size)
 
                 # Load train and val data for each dataset
-                dtype = np.uint16 if vocab_size != 100277 else np.uint32
                 train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=dtype, mode='r')
                 val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=dtype, mode='r')
 
@@ -806,17 +906,11 @@ class Trainer:
             else:
                 self.model_args['vocab_size'] = max(self.vocab_sizes)
         else:
-
             if self.model_args['vocab_size'] is None:
                 sys.exit("Error: no vocab size specified")
-            elif self.model_args['vocab_size'] == 100277:
-                # cl100k_base, vocab size 100277, requires np.uint32
-                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
-                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint32, mode='r')
-            else:
-                # all other tokenations so far require only np.uint16
-                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
+            dtype = np.uint32 if int(self.model_args['vocab_size']) > np.iinfo(np.uint16).max else np.uint16
+            self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=dtype, mode='r')
+            self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=dtype, mode='r')
             # Store total token count for the single dataset.
             self.dataset_size_tokens = len(self.train_data)
 
@@ -1005,9 +1099,37 @@ class Trainer:
             x, y = x.to(self.device), y.to(self.device)
         return x, y, dataset
 
+    def _distillation_metrics_enabled(self):
+        return (
+            self.teacher_model is not None
+            and self.distillation_loss_fn is not None
+            and self.args.training_mode != 'multicontext'
+        )
+
+    def _compute_distillation_loss_for_batch(self, logits, X, Y, dataset_idx=None):
+        if not self._distillation_metrics_enabled():
+            return None
+        with torch.no_grad():
+            teacher_logits, _ = self.teacher_model(
+                X,
+                targets=Y,
+                iter_num=self.iter_num,
+                dataset_idx=dataset_idx if self.args.multidataset_wte else None,
+                loss_fn=None,
+            )
+            distill_loss = self.distillation_loss_fn(
+                logits,
+                teacher_logits,
+                Y,
+                iter_num=self.iter_num,
+            )
+        return distill_loss.detach().float()
+
     @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
+        if self.per_token_metrics is not None:
+            self.per_token_metrics.begin_evaluation()
         compute_rankme = self.args.log_rankme or self.args.log_areq
 
         self.model.eval()
@@ -1016,6 +1138,7 @@ class Trainer:
             for dataset in self.args.dataset_list:
                 print(f"Calculating loss for dataset: {dataset}")
                 dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
+                distillation_losses = torch.zeros(self.args.eval_iters) if self._distillation_metrics_enabled() else None
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
                 rankme_vectors = [] if compute_rankme else None
@@ -1035,9 +1158,23 @@ class Trainer:
                                 dataset_idx=idx if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
+                        if self.per_token_metrics is not None:
+                            self.per_token_metrics.add_evaluation_batch(dataset, split, logits, Y)
                         handle.remove()
                         dataset_losses[split][k] = loss.item()
                         if split == 'val':
+                            if distillation_losses is not None:
+                                distill_loss = self._compute_distillation_loss_for_batch(
+                                    logits,
+                                    X,
+                                    Y,
+                                    dataset_idx=idx,
+                                )
+                                distillation_losses[k] = (
+                                    distill_loss.item()
+                                    if distill_loss is not None
+                                    else float('nan')
+                                )
                             probs = F.softmax(logits, dim=-1)
                             top1_prob, top1_idx = probs.max(dim=-1)
                             top1_probs.append(top1_prob)
@@ -1084,6 +1221,12 @@ class Trainer:
                         'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
                         'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
                         }
+                if distillation_losses is not None:
+                    out['datasets'][dataset]['distillation_val_loss'] = distillation_losses.mean()
+                    out['datasets'][dataset]['distillation_val_loss_std'] = distillation_losses.std()
+                if self._distillation_metrics_enabled() and self.args.log_ntp_val_loss_during_distillation:
+                    out['datasets'][dataset]['ntp_val_loss'] = out['datasets'][dataset]['val']
+                    out['datasets'][dataset]['ntp_val_loss_std'] = out['datasets'][dataset]['val_std']
                 if compute_rankme:
                     out['datasets'][dataset]['rankme'] = rankme
                     out['datasets'][dataset]['areq'] = areq
@@ -1100,12 +1243,40 @@ class Trainer:
             out['left_prob_95'] = out['datasets'][self.args.dataset]['left_prob_95']
             out['ln_f_cosine'] = out['datasets'][self.args.dataset]['ln_f_cosine']
             out['ln_f_cosine_95'] = out['datasets'][self.args.dataset]['ln_f_cosine_95']
+            if 'distillation_val_loss' in out['datasets'][self.args.dataset]:
+                out['distillation_val_loss'] = out['datasets'][self.args.dataset]['distillation_val_loss']
+                out['distillation_val_loss_std'] = out['datasets'][self.args.dataset]['distillation_val_loss_std']
+            if 'ntp_val_loss' in out['datasets'][self.args.dataset]:
+                out['ntp_val_loss'] = out['datasets'][self.args.dataset]['ntp_val_loss']
+                out['ntp_val_loss_std'] = out['datasets'][self.args.dataset]['ntp_val_loss_std']
             if compute_rankme:
                 out['rankme'] = out['datasets'][self.args.dataset]['rankme']
                 out['areq'] = out['datasets'][self.args.dataset]['areq']
         elif self.args.training_mode == "multicontext":
             for i, dataset in enumerate(self.args.multicontext_datasets):
                 out['datasets'][dataset] = {}
+            target_metric_dataset = (
+                self.args.dataset
+                if self.args.dataset in self.args.multicontext_datasets
+                else None
+            )
+            target_metric_idx = (
+                self.args.multicontext_datasets.index(target_metric_dataset)
+                if target_metric_dataset is not None
+                else None
+            )
+            # Initialize dictionaries to store metrics per dataset
+            mc_top1_probs = {i: [] for i in range(len(self.args.multicontext_datasets))}
+            mc_top1_corrects = {i: [] for i in range(len(self.args.multicontext_datasets))}
+            mc_target_ranks = {i: [] for i in range(len(self.args.multicontext_datasets))}
+            mc_target_probs = {i: [] for i in range(len(self.args.multicontext_datasets))}
+            mc_target_left_probs = {i: [] for i in range(len(self.args.multicontext_datasets))}
+            mc_left_inclusive_probs = {i: [] for i in range(len(self.args.multicontext_datasets))}
+
+            top1_probs, top1_corrects, target_ranks = [], [], []
+            target_probs, target_left_probs, left_inclusive_probs = [], [], []
+            ln_f_cosines = []
+            rankme_vectors = [] if compute_rankme else None
             # multicontext training
             for split in ['train', 'val']:
                 losses = {}
@@ -1121,6 +1292,12 @@ class Trainer:
                 for k in range(self.args.eval_iters):
                     x_dict, y_dict, dataset_list = self.get_batch(split)
 
+                    ln_f_out: list[torch.Tensor] = []
+                    handle = None
+                    if split == 'val' and target_metric_idx is not None:
+                        handle = self.model.transformer.ln_f.register_forward_hook(
+                            lambda _m, _i, o: ln_f_out.append(o.detach())
+                        )
                     with self.ctx:
                         logits, loss_list = self.model(
                             None,
@@ -1129,8 +1306,54 @@ class Trainer:
                             iter_num=self.iter_num,
                             loss_fn=self.loss_fn,
                         )
+                    if self.per_token_metrics is not None:
+                        for i, dataset in enumerate(self.args.multicontext_datasets):
+                            self.per_token_metrics.add_evaluation_batch(
+                                dataset, split, logits[i], y_dict[dataset]
+                            )
+                    if handle is not None:
+                        handle.remove()
                     for i in range(len(self.args.multicontext_datasets)):
                         losses[f"{i}"][k] = loss_list[i]
+
+                    if split == 'val':
+                        for i, dataset in enumerate(self.args.multicontext_datasets):
+                            lane_logits = logits[i]
+                            Y = y_dict[dataset]
+                            probs = F.softmax(lane_logits, dim=-1)
+                            top1_prob, top1_idx = probs.max(dim=-1)
+                            mc_top1_probs[i].append(top1_prob)
+                            mc_top1_corrects[i].append((top1_idx == Y).float())
+                            
+                            gold_logits = lane_logits.gather(-1, Y.unsqueeze(-1)).squeeze(-1)
+                            ranks = (lane_logits > gold_logits.unsqueeze(-1)).sum(dim=-1) + 1
+                            mc_target_ranks[i].append(ranks.float())
+                            
+                            target_prob = probs.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
+                            mc_target_probs[i].append(target_prob)
+                            
+                            left_prob = (probs * (probs > target_prob.unsqueeze(-1))).sum(dim=-1).float()
+                            mc_target_left_probs[i].append(left_prob)
+                            mc_left_inclusive_probs[i].append(left_prob + target_prob)
+                            
+                            if i == target_metric_idx:
+                                top1_probs.append(top1_prob)
+                                top1_corrects.append((top1_idx == Y).float())
+                                target_ranks.append(ranks.float())
+                                target_probs.append(target_prob)
+                                target_left_probs.append(left_prob)
+                                left_inclusive_probs.append(left_prob + target_prob)
+                                if ln_f_out:
+                                    lm_head = self.model.transformer[f'lm_head_{i}']
+                                    target_vecs = lm_head.weight[Y]
+                                    cos = F.cosine_similarity(
+                                        ln_f_out[0].float(), target_vecs.float(), dim=-1
+                                    )
+                                    ln_f_cosines.append(cos)
+                                    if compute_rankme:
+                                        rankme_vectors.append(
+                                            ln_f_out[0][:, -1, :].float().detach().cpu()
+                                        )
 
                 for i, dataset in enumerate(self.args.multicontext_datasets):
                     means[f"{i}"] = losses[f"{i}"].mean()
@@ -1142,17 +1365,56 @@ class Trainer:
                 for i, dataset in enumerate(self.args.multicontext_datasets):
                     out['datasets'][dataset][split] = means[f"{i}"]
                     out['datasets'][dataset][f"{split}_std"] = std_devs[f"{i}"]
+                    if split == 'val':
+                        out['datasets'][dataset].update({
+                            'top1_prob': torch.cat(mc_top1_probs[i]).mean() if mc_top1_probs[i] else torch.tensor(float('nan')),
+                            'top1_correct': torch.cat(mc_top1_corrects[i]).mean() if mc_top1_corrects[i] else torch.tensor(float('nan')),
+                            'target_rank': torch.cat(mc_target_ranks[i]).mean() if mc_target_ranks[i] else torch.tensor(float('nan')),
+                            'target_left_prob': torch.cat(mc_target_left_probs[i]).mean() if mc_target_left_probs[i] else torch.tensor(float('nan')),
+                            'target_prob': torch.cat(mc_target_probs[i]).mean() if mc_target_probs[i] else torch.tensor(float('nan')),
+                            'target_rank_95': torch.quantile(torch.cat(mc_target_ranks[i]), 0.95) if mc_target_ranks[i] else torch.tensor(float('nan')),
+                            'left_prob_95': torch.quantile(torch.cat(mc_left_inclusive_probs[i]).float(), 0.95) if mc_left_inclusive_probs[i] else torch.tensor(float('nan')),
+                        })
 
                 # general train and val losses, as well as std dev
                 out[split] = mean_avg / len(self.args.multicontext_datasets)
                 out[split + "_std"] = loss_std / len(self.args.multicontext_datasets)
-            if compute_rankme:
+            if target_metric_dataset is not None:
+                metric_values = {
+                    'top1_prob': torch.cat(top1_probs).mean() if top1_probs else torch.tensor(float('nan')),
+                    'top1_correct': torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan')),
+                    'target_rank': torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan')),
+                    'target_left_prob': torch.cat(target_left_probs).mean() if target_left_probs else torch.tensor(float('nan')),
+                    'target_prob': torch.cat(target_probs).mean() if target_probs else torch.tensor(float('nan')),
+                    'target_rank_95': torch.quantile(torch.cat(target_ranks), 0.95) if target_ranks else torch.tensor(float('nan')),
+                    'left_prob_95': torch.quantile(torch.cat(left_inclusive_probs).float(), 0.95) if left_inclusive_probs else torch.tensor(float('nan')),
+                    'ln_f_cosine': torch.cat(ln_f_cosines).mean() if ln_f_cosines else torch.tensor(float('nan')),
+                    'ln_f_cosine_95': torch.quantile(torch.cat(ln_f_cosines), 0.05) if ln_f_cosines else torch.tensor(float('nan')),
+                }
+                out.update(metric_values)
+                out['datasets'][target_metric_dataset].update(metric_values)
+                if compute_rankme:
+                    rankme = torch.tensor(float('nan'))
+                    areq = torch.tensor(float('nan'))
+                    if rankme_vectors:
+                        features = torch.cat(rankme_vectors, dim=0)
+                        rankme, areq = self._compute_rankme_areq(features)
+                    out['rankme'] = rankme
+                    out['areq'] = areq
+                    out['datasets'][target_metric_dataset]['rankme'] = rankme
+                    out['datasets'][target_metric_dataset]['areq'] = areq
+            elif compute_rankme:
                 out['rankme'] = torch.tensor(float('nan'))
                 out['areq'] = torch.tensor(float('nan'))
         else:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
                 losses = torch.zeros(self.args.eval_iters)
+                distillation_losses = (
+                    torch.zeros(self.args.eval_iters)
+                    if split == 'val' and self._distillation_metrics_enabled()
+                    else None
+                )
                 top1_probs, top1_corrects, target_ranks, target_probs, target_left_probs, left_inclusive_probs = [], [], [], [], [], []
                 ln_f_cosines = []
                 rankme_vectors = [] if compute_rankme else None
@@ -1170,9 +1432,25 @@ class Trainer:
                             dataset_idx=0 if self.args.multidataset_wte else None,
                             loss_fn=self.loss_fn,
                         )
+                    if self.per_token_metrics is not None:
+                        self.per_token_metrics.add_evaluation_batch(
+                            self.args.dataset, split, logits, Y
+                        )
                     handle.remove()
                     losses[k] = loss.item()
                     if split == 'val':
+                        if distillation_losses is not None:
+                            distill_loss = self._compute_distillation_loss_for_batch(
+                                logits,
+                                X,
+                                Y,
+                                dataset_idx=0,
+                            )
+                            distillation_losses[k] = (
+                                distill_loss.item()
+                                if distill_loss is not None
+                                else float('nan')
+                            )
                         probs = F.softmax(logits, dim=-1)
                         top1_prob, top1_idx = probs.max(dim=-1)
                         top1_probs.append(top1_prob)
@@ -1202,6 +1480,12 @@ class Trainer:
                 out[split] = losses.mean()
                 out[split + "_std"] = losses.std()
                 if split == 'val':
+                    if distillation_losses is not None:
+                        out['distillation_val_loss'] = distillation_losses.mean()
+                        out['distillation_val_loss_std'] = distillation_losses.std()
+                    if self._distillation_metrics_enabled() and self.args.log_ntp_val_loss_during_distillation:
+                        out['ntp_val_loss'] = out['val']
+                        out['ntp_val_loss_std'] = out['val_std']
                     out['top1_prob'] = torch.cat(top1_probs).mean() if top1_probs else torch.tensor(float('nan'))
                     out['top1_correct'] = torch.cat(top1_corrects).mean() if top1_corrects else torch.tensor(float('nan'))
                     out['target_rank'] = torch.cat(target_ranks).mean() if target_ranks else torch.tensor(float('nan'))
@@ -1272,6 +1556,35 @@ class Trainer:
                             self.iter_num,
                             )
 
+        if self.per_token_metrics is not None:
+            if self.args.training_mode == 'multicontext':
+                for i, dataset in enumerate(self.args.multicontext_datasets):
+                    self.per_token_metrics.set_token_geometry(
+                        dataset, self.raw_model.transformer[f'lm_head_{i}'].weight,
+                        self.args.export_min_angle_graph_block_size,
+                        self.args.export_min_angle_graph_device,
+                    )
+            elif self.args.dataset_list and self.args.multidataset_wte:
+                for i, dataset in enumerate(self.args.dataset_list):
+                    self.per_token_metrics.set_token_geometry(
+                        dataset, self.raw_model.transformer[f'lm_head_{i}'].weight,
+                        self.args.export_min_angle_graph_block_size,
+                        self.args.export_min_angle_graph_device,
+                    )
+            elif self.args.dataset_list:
+                for dataset in self.args.dataset_list:
+                    self.per_token_metrics.set_token_geometry(
+                        dataset, self.raw_model.lm_head.weight,
+                        self.args.export_min_angle_graph_block_size,
+                        self.args.export_min_angle_graph_device,
+                    )
+            else:
+                self.per_token_metrics.set_token_geometry(
+                    self.args.dataset, self.raw_model.lm_head.weight,
+                    self.args.export_min_angle_graph_block_size,
+                    self.args.export_min_angle_graph_device,
+                )
+            self.per_token_metrics.export(self.iter_num)
         self.model.train()
         return out
 
@@ -1416,6 +1729,12 @@ class Trainer:
                     tokens_trained
                     )
 
+            bits_per_byte = self._val_bits_per_byte(losses['val'], target_dataset)
+            self.latest_bits_per_byte = bits_per_byte
+            if self.args.log_bits_per_byte and math.isfinite(bits_per_byte):
+                self.writer.add_scalar(f"{target_dataset}/bits_per_byte_iters", bits_per_byte, self.iter_num)
+                self.writer.add_scalar(f"{target_dataset}/bits_per_byte_tokens", bits_per_byte, tokens_trained)
+
             # vocab agnostic, cross tokenizer comparison
             if self.args.log_btc_train:
                 self.writer.add_scalars(
@@ -1464,6 +1783,36 @@ class Trainer:
                     f"{target_dataset}/distillation_loss",
                     self.latest_distillation_loss,
                     self.iter_num,
+                )
+
+            distillation_val_loss = self._to_scalar(
+                losses.get('distillation_val_loss', self.latest_distillation_val_loss)
+            )
+            if not math.isnan(distillation_val_loss):
+                self.writer.add_scalar(
+                    f"{target_dataset}/distillation_val_loss",
+                    distillation_val_loss,
+                    self.iter_num,
+                )
+                self.writer.add_scalar(
+                    f"{target_dataset}/distillation_val_loss_tokens",
+                    distillation_val_loss,
+                    tokens_trained,
+                )
+
+            ntp_val_loss = self._to_scalar(
+                losses.get('ntp_val_loss', self.latest_ntp_val_loss)
+            )
+            if not math.isnan(ntp_val_loss):
+                self.writer.add_scalar(
+                    f"{target_dataset}/ntp_val_loss",
+                    ntp_val_loss,
+                    self.iter_num,
+                )
+                self.writer.add_scalar(
+                    f"{target_dataset}/ntp_val_loss_tokens",
+                    ntp_val_loss,
+                    tokens_trained,
                 )
 
             if 'top1_prob' in losses:
@@ -1777,6 +2126,43 @@ class Trainer:
         abbr = ''.join([part[0] for part in parts])
         return abbr
 
+
+    def _active_training_limiters(self) -> set[str]:
+        limiters = getattr(self.args, "training_limiters", None) or ["max_iters"]
+        if isinstance(limiters, str):
+            limiters = [limiters]
+        return set(limiters)
+
+    def _selected_training_limit_reasons(self, current_epoch: float, elapsed_seconds: float) -> list[str]:
+        reasons = []
+        limiters = self._active_training_limiters()
+        if "max_iters" in limiters and self.args.max_iters is not None and self.iter_num > self.args.max_iters:
+            reasons.append(f"max_iters={self.args.max_iters}")
+        if "max_epochs" in limiters and self.args.max_epochs is not None and current_epoch >= self.args.max_epochs:
+            reasons.append(f"max_epochs={self.args.max_epochs}")
+        if "max_seconds" in limiters and self.args.max_seconds is not None and elapsed_seconds >= self.args.max_seconds:
+            reasons.append(f"max_seconds={self.args.max_seconds}")
+        if "max_tokens" in limiters and self.args.max_tokens is not None and self.tokens_trained >= self.args.max_tokens:
+            reasons.append(f"max_tokens={self.args.max_tokens}")
+        return reasons
+
+    def _estimated_limiter_iters_remaining(self, current_epoch: float) -> int:
+        batch_tokens = max(1, self.args.batch_size * self.args.block_size)
+        estimates = []
+        limiters = self._active_training_limiters()
+        if "max_iters" in limiters and self.args.max_iters is not None:
+            estimates.append(max(0, self.args.max_iters - self.iter_num))
+        if "max_tokens" in limiters and self.args.max_tokens is not None:
+            estimates.append(max(0, math.ceil((self.args.max_tokens - self.tokens_trained) / batch_tokens)))
+        if "max_epochs" in limiters and self.args.max_epochs is not None:
+            if isinstance(self.dataset_size_tokens, dict):
+                size = min(self.dataset_size_tokens.values()) if self.dataset_size_tokens else 0
+            else:
+                size = self.dataset_size_tokens
+            remaining_tokens = max(0.0, (self.args.max_epochs - current_epoch) * size)
+            estimates.append(max(0, math.ceil(remaining_tokens / batch_tokens)))
+        return min(estimates) if estimates else max(0, self.args.max_iters - self.iter_num)
+
     def save_checkpoint(self, filename):
         if self.args.never_save_checkpoint:
             return
@@ -1790,11 +2176,63 @@ class Trainer:
                 'best_iter': self.best_iter,
                 'best_tokens': self.best_tokens,
                 'config': vars(self.args),
+                'metrics': getattr(self, 'latest_checkpoint_metrics', None),
                 }
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
+    def export_min_angle_graph(self, losses):
+        """Export the current LM-head minimum-angle graph using the configured writer."""
+        export_dir = getattr(self.args, "export_min_angle_graph_dir", None)
+        if not export_dir:
+            return
+
+        weight = self.raw_model.apply_lm_head_norm(self.raw_model.lm_head.weight).detach()
+        if not hasattr(self, "_min_angle_graph_token_texts"):
+            self._min_angle_graph_token_texts = [
+                self.decode([token_id]) for token_id in range(weight.shape[0])
+            ]
+        label = getattr(self.args, "export_min_angle_graph_label", None) or "min_angle_graph"
+        val_loss = losses["val"].item() if hasattr(losses["val"], "item") else float(losses["val"])
+        csv_path, _ = write_min_angle_graph_export(
+            weight=weight,
+            export_dir=export_dir,
+            label=label,
+            iter_num=self.iter_num,
+            val_loss=val_loss,
+            block_size=getattr(self.args, "export_min_angle_graph_block_size", 2048),
+            compute_device=getattr(self.args, "export_min_angle_graph_device", "auto"),
+            token_texts=self._min_angle_graph_token_texts,
+        )
+        print(f"Minimum-angle graph exported to {csv_path}")
+
+    def get_progress_metrics(self) -> dict[str, Any]:
+        """Return raw values backing all Rich progress-bar task fields."""
+        return {
+            "best_iter": self.best_iter,
+            "best_val_loss": self.best_val_loss,
+            "best_tokens": self.best_tokens,
+            "eta": self.formatted_completion_eta,
+            "time_remaining_ms": self.time_remaining_ms,
+            "total_time_est_ms": self.total_time_est_ms,
+            "iter_latency_avg": self.iter_latency_avg,
+            "peak_torch_allocated": self.peak_torch_allocated,
+            "latest_top1_prob": self.latest_top1_prob,
+            "latest_top1_correct": self.latest_top1_correct,
+            "latest_target_rank": self.latest_target_rank,
+            "latest_target_prob": self.latest_target_prob,
+            "latest_target_left_prob": self.latest_target_left_prob,
+            "latest_rank_95": self.latest_rank_95,
+            "latest_left_prob_95": self.latest_left_prob_95,
+            "latest_ln_f_cosine": self.latest_ln_f_cosine,
+            "latest_ln_f_cosine_95": self.latest_ln_f_cosine_95,
+        }
+
     def run_validation_step(self, running_mfu, current_epoch, current_dataset, num_steps_with_worse_loss, live=None):
         losses = self.estimate_loss()
+        self.latest_checkpoint_metrics = {
+            'train_loss': self._to_scalar(losses.get('train', float('nan'))),
+            'val_loss': self._to_scalar(losses.get('val', float('nan'))),
+        }
 
         self.latest_top1_prob = losses.get('top1_prob', float('nan'))
         self.latest_top1_correct = losses.get('top1_correct', float('nan'))
@@ -1807,6 +2245,8 @@ class Trainer:
         self.latest_ln_f_cosine_95 = losses.get('ln_f_cosine_95', float('nan'))
         self.latest_rankme = self._to_scalar(losses.get('rankme', float('nan')))
         self.latest_areq = self._to_scalar(losses.get('areq', float('nan')))
+        self.latest_distillation_val_loss = self._to_scalar(losses.get('distillation_val_loss', float('nan')))
+        self.latest_ntp_val_loss = self._to_scalar(losses.get('ntp_val_loss', float('nan')))
 
         if self.args.gns_type is not None:
             self.gns = self.gns_ema.get_gns()
@@ -1855,6 +2295,8 @@ class Trainer:
                 log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
                 log_message+=f", val loss {dataset_losses['val']:.4f}"
                 log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
+                if 'top1_correct' in dataset_losses and not math.isnan(dataset_losses['top1_correct']):
+                    log_message+=f", val acc {dataset_losses['top1_correct']:.4f}"
                 if self.args.gns_type is not None:
                     log_message+=f", gns {self.gns:.2f}"
                 log_message+=f", lr {self.lr:.4f}"
@@ -1874,6 +2316,10 @@ class Trainer:
             log_message+=f", val_stdev {losses['val_std']:.4f}"
             if self.args.gns_type is not None:
                 log_message+=f", gns {self.gns:.2f}"
+            if not math.isnan(self.latest_distillation_val_loss):
+                log_message+=f", distill_val_loss {self.latest_distillation_val_loss:.4f}"
+            if not math.isnan(self.latest_ntp_val_loss):
+                log_message+=f", ntp_val_loss {self.latest_ntp_val_loss:.4f}"
             log_message+=f", batch_size {self.args.batch_size}"
             log_message+=f", lr {self.lr:.4f}"
             self.console.print(log_message)
@@ -1883,6 +2329,13 @@ class Trainer:
             with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
                 print("Exiting with nan")
                 file.write(str(self.iter_num))
+
+        if self.args.export_min_angle_graph_each_eval:
+            if live:
+                live.stop()
+            self.export_min_angle_graph(losses)
+            if live:
+                live.start()
 
         if (not self.args.never_save_checkpoint and
             self.args.save_major_ckpt_interval is not None):
@@ -1905,6 +2358,7 @@ class Trainer:
                     chance_ratio = self._safe_better_than_chance(self.model_args['vocab_size'], self.best_val_loss.item())
                     metrics = [
                             f"{self.best_val_loss.item()}",
+                            f"{self._val_bits_per_byte(self.best_val_loss, self.args.dataset):.6f}",
                             f"{self.iter_num}",
                             f"{self.best_tokens}",
                             f"{self.model.num_param}",
@@ -1926,6 +2380,8 @@ class Trainer:
                             f"{self.latest_ln_f_cosine_95:.6f}",
                             f"{self.latest_rankme:.6f}",
                             f"{self.latest_areq:.6f}",
+                            f"{self.latest_distillation_val_loss:.6f}",
+                            f"{self.latest_ntp_val_loss:.6f}",
                             f"{self.latest_overall_weight_stats['stdev']:.6f}",
                             f"{self.latest_overall_weight_stats['kurtosis']:.6f}",
                             f"{self.latest_overall_weight_stats['max']:.6f}",
@@ -2029,13 +2485,13 @@ class Trainer:
             self.mc_btc_train = {}
         else:
             self.X, self.Y, current_dataset = self.get_batch('train')
-        self.X, self.Y, current_dataset = self.get_batch('train')
         t_start = time.time()
         t0 = t_start
         local_iter_num = 0
         running_mfu = -1.0
         current_epoch = 0.0
-        self.evaluations_remaining = (self.args.max_iters - self.iter_num) // self.args.eval_interval + 1
+        estimated_iters_remaining = self._estimated_limiter_iters_remaining(current_epoch)
+        self.evaluations_remaining = estimated_iters_remaining // self.args.eval_interval + 1
         self.eta = build_eta_estimator(self.args, t_start, self.evaluations_remaining, self.formatted_completion_eta)
         num_steps_with_worse_loss = 0
         losses = {"val": float("inf")}
@@ -2075,26 +2531,8 @@ class Trainer:
         with Live(Group(progress.get_renderable(), cli_text), console=self.console, refresh_per_second=10) as live:
             task_id = progress.add_task(
                     "[green]Training...",
-                    total=((self.args.max_iters - self.iter_num) + self.evaluations_remaining * self.args.eval_iters),
-                    eta=self.formatted_completion_eta,
-                    total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
-                    total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
-                    hour=f"{int((self.time_remaining_ms // (1000*3600)) % 24):02d}",
-                    min=f"{int((self.time_remaining_ms // 60000) % 60):02d}",
-                    best_val_loss=f"{self.best_val_loss:.3f}",
-                    best_iter=f"{self.best_iter}",
-                    best_tokens=f"{self.best_tokens}",
-                    iter_latency=f"{self.iter_latency_avg:.1f}",
-                    peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
-                    t1p=f"{self.latest_top1_prob:.6f}",
-                    t1c=f"{self.latest_top1_correct:.6f}",
-                    tr=f"{self.latest_target_rank:.2f}",
-                    tp=f"{self.latest_target_prob:.6f}",
-                    tlp=f"{self.latest_target_left_prob:.6f}",
-                    r95=f"{self.latest_rank_95:.2f}",
-                    p95=f"{self.latest_left_prob_95:.6f}",
-                    lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
-                    lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
+                    total=(estimated_iters_remaining + self.evaluations_remaining * self.args.eval_iters),
+                    **format_progress_metrics(self.get_progress_metrics()),
                     )
 
             if self.zeus_enabled:
@@ -2141,6 +2579,11 @@ class Trainer:
                             # For multicontext training let loss = first dataset loss
                             # loss = training_losses[0]
                             loss = sum(training_losses) / len(training_losses)
+                            if self.per_token_metrics is not None:
+                                for dataset in self.args.multicontext_datasets:
+                                    self.per_token_metrics.count_training_batch(
+                                        dataset, self.Y_dict[dataset]
+                                    )
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
                             logits, loss = self.model(
@@ -2150,6 +2593,10 @@ class Trainer:
                                 dataset_idx=idx_ds if self.args.multidataset_wte else None,
                                 loss_fn=self.loss_fn,
                             )
+                            if self.per_token_metrics is not None:
+                                self.per_token_metrics.count_training_batch(
+                                    current_dataset, self.Y
+                                )
 
                     if hasattr(self.optimizer, "set_entropy") and not isinstance(logits, (list, tuple)):
                         with torch.no_grad():
@@ -2179,7 +2626,8 @@ class Trainer:
                             iter_num=self.iter_num,
                         )
                         distill_component = distill_component.to(loss.dtype)
-                        loss = loss + self.distillation_weight * distill_component
+                        if not self.args.passive_distillation_loss_log:
+                            loss = loss + self.distillation_weight * distill_component
 
                     self.latest_distillation_loss = (
                         float(distill_component.detach().float().item())
@@ -2198,12 +2646,12 @@ class Trainer:
                     else:
                         self.tokens_trained += tokens_trained_this_batch
 
-                    # Compute epoch for logging:
-                        if self.args.dataset_list:
-                            current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
-                            self.epochs_trained_dict[current_dataset] = current_epoch
-                        else:
-                            current_epoch = self.tokens_trained / self.dataset_size_tokens
+                    # Compute epoch for logging and optional max_epochs limiting.
+                    if self.args.dataset_list:
+                        current_epoch = self.tokens_trained_dict[current_dataset] / self.dataset_size_tokens[current_dataset]
+                        self.epochs_trained_dict[current_dataset] = current_epoch
+                    else:
+                        current_epoch = self.tokens_trained / self.dataset_size_tokens
 
                     self.scaler.scale(loss).backward()
 
@@ -2234,6 +2682,9 @@ class Trainer:
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                if self.model_args.get("wte_fixed_norm", False):
+                    base_model = getattr(self.raw_model, "_orig_mod", self.raw_model)
+                    base_model.reproject_token_embeddings()
                 if self.scheduler:
                     if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                         self.scheduler.step(losses["val"])
@@ -2290,30 +2741,14 @@ class Trainer:
                 progress.update(
                         task_id,
                         advance=progress_advance,
-                        eta=self.formatted_completion_eta,
-                        total_hour=f"{int(self.total_time_est_ms // 3_600_000)}",
-                        total_min=f"{int((self.total_time_est_ms // 60_000) % 60):02d}",
-                        hour=f"{int((self.time_remaining_ms // 3_600_000) % 24):02d}",
-                        min=f"{int((self.time_remaining_ms // 60_000) % 60):02d}",
-                        best_val_loss=f"{self.best_val_loss:.3f}",
-                        best_iter=f"{self.best_iter}",
-                        best_tokens=f"{self.best_tokens}",
-                        iter_latency=f"{self.iter_latency_avg:.1f}",
-                        peak_gpu_mb=f"{self.peak_torch_allocated / (1024 ** 2):.1f}",
-                        t1p=f"{self.latest_top1_prob:.6f}",
-                        t1c=f"{self.latest_top1_correct:.6f}",
-                        tr=f"{self.latest_target_rank:.2f}",
-                        tp=f"{self.latest_target_prob:.6f}",
-                        tlp=f"{self.latest_target_left_prob:.6f}",
-                        r95=f"{self.latest_rank_95:.2f}",
-                        p95=f"{self.latest_left_prob_95:.6f}",
-                        lnf_cos=f"{self.latest_ln_f_cosine:.6f}",
-                        lnf_cos95=f"{self.latest_ln_f_cosine_95:.6f}",
+                        **format_progress_metrics(self.get_progress_metrics()),
                         )
                 live.update(Group(progress.get_renderable(), cli_text))
 
                 # End of training actions
-                if self.iter_num > self.args.max_iters:
+                stop_reasons = self._selected_training_limit_reasons(current_epoch, t1 - t_start)
+                if stop_reasons:
+                    print(f"Stopping training due to: {', '.join(stop_reasons)}")
                     print(self.best_val_loss, self.best_iter, self.best_tokens)
                     if self.args.only_save_checkpoint_at_end:
                         if not self.args.never_save_checkpoint:

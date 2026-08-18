@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LM-Head Angle Explorer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">LM-head geometry</p>
+        <h1>LM-Head Angle Explorer</h1>
+        <p class="lede">Load a Hugging Face causal language model, search vocabulary tokens, compare LM-head vector angles, inspect nearest token neighborhoods, and drag recursive-group graph nodes after layout initialization.</p>
+        <p class="selection build-marker">Interactive graph build: local draggable SVG nodes with optional minimum-angle edge highlighting.</p>
+      </div>
+      <section class="status-card" aria-live="polite">
+        <span id="statusBadge" class="badge">No model loaded</span>
+        <div class="model-controls">
+          <label for="modelNameInput">Hugging Face model</label>
+          <div class="model-row">
+            <input id="modelNameInput" type="text" value="{{ model_name }}" placeholder="Qwen/Qwen3.5-0.8B-Base" autocomplete="off" spellcheck="false" />
+            <button id="loadModelButton" type="button">Load model</button>
+          </div>
+
+          <div class="model-options">
+            <div>
+              <label for="localModelSelect">Available locally</label>
+              <select id="localModelSelect">
+                <option value="">Scanning local Hugging Face cache…</option>
+              </select>
+            </div>
+            <button id="refreshLocalModelsButton" type="button">Refresh</button>
+          </div>
+
+          <div class="model-row secondary-row">
+            <div class="device-field">
+              <label for="modelDeviceInput">Device</label>
+              <input id="modelDeviceInput" type="text" value="{{ requested_device }}" placeholder="cpu, cuda:0, or auto" autocomplete="off" spellcheck="false" />
+            </div>
+            <label class="checkbox-row download-row" for="allowDownloadInput">
+              <input id="allowDownloadInput" type="checkbox" checked />
+              Download if missing
+            </label>
+          </div>
+          <p id="modelLoadMessage" class="selection">Enter a model ID, pick a cached model, then click Load model.</p>
+        </div>
+        <dl class="status-grid">
+          <div><dt>Active model</dt><dd id="statusModel">{{ model_name }}</dd></div>
+          <div><dt>Device</dt><dd id="statusDevice">{{ requested_device }}</dd></div>
+          <div><dt>Vocab</dt><dd id="statusVocab">—</dd></div>
+          <div><dt>Hidden</dt><dd id="statusHidden">—</dd></div>
+        </dl>
+      </section>
+    </header>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Pairwise angle</p>
+          <h2>Compare two vocabulary vectors</h2>
+        </div>
+        <div class="actions pairwise-actions">
+          <button id="angleButton" type="button" class="primary">Compute angle</button>
+          <label for="commonCloseThreshold" class="inline-label">Max angle from each</label>
+          <input id="commonCloseThreshold" type="number" min="0" max="180" value="35" step="0.5" />
+          <button id="commonCloseButton" type="button">Find shared close tokens</button>
+        </div>
+      </div>
+
+      <div class="picker-grid">
+        <article class="picker" data-prefix="tokenA">
+          <h3>Token A</h3>
+          <label for="tokenAQuery">Search text</label>
+          <div class="search-row">
+            <input id="tokenAQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
+            <button id="tokenASearch" type="button">Search</button>
+          </div>
+          <label for="tokenAResults">Matches</label>
+          <select id="tokenAResults" size="8"></select>
+          <div class="manual-row">
+            <label for="tokenAId">or token ID</label>
+            <input id="tokenAId" type="number" min="0" step="1" placeholder="0" />
+            <button id="tokenAUseId" type="button">Use ID</button>
+          </div>
+          <p id="tokenASelected" class="selection">No token selected.</p>
+        </article>
+
+        <article class="picker" data-prefix="tokenB">
+          <h3>Token B</h3>
+          <label for="tokenBQuery">Search text</label>
+          <div class="search-row">
+            <input id="tokenBQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
+            <button id="tokenBSearch" type="button">Search</button>
+          </div>
+          <label for="tokenBResults">Matches</label>
+          <select id="tokenBResults" size="8"></select>
+          <div class="manual-row">
+            <label for="tokenBId">or token ID</label>
+            <input id="tokenBId" type="number" min="0" step="1" placeholder="0" />
+            <button id="tokenBUseId" type="button">Use ID</button>
+          </div>
+          <p id="tokenBSelected" class="selection">No token selected.</p>
+        </article>
+      </div>
+
+      <div id="angleOutput" class="output muted">Choose two tokens, then compute their angle.</div>
+      <div class="export-actions">
+        <button id="exportAngleSummaryCsv" type="button" class="export-button hidden">Export angle summary CSV</button>
+      </div>
+
+      <section class="common-close-panel" aria-live="polite">
+        <div class="subpanel-heading">
+          <div>
+            <p class="eyebrow">Shared close tokens</p>
+            <h3>Tokens within the chosen angle of both selected tokens</h3>
+          </div>
+          <span id="commonCloseCount" class="badge subtle">No results yet</span>
+        </div>
+        <div id="commonCloseOutput" class="output muted">Set a max angle, then click Find shared close tokens.</div>
+        <div class="export-actions">
+          <button id="exportCommonCloseCsv" type="button" class="export-button hidden">Export shared-close table CSV</button>
+        </div>
+        <div class="table-wrap common-close-scroll">
+          <table id="commonCloseTable" class="hidden">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Token ID</th>
+                <th>Raw token</th>
+                <th>Display</th>
+                <th>Angle to A °</th>
+                <th>Angle to B °</th>
+                <th>Vector length</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Single-token neighborhood</p>
+          <h2>Closest tokens by angle</h2>
+        </div>
+        <div class="actions">
+          <label for="neighborhoodLimit" class="inline-label">Rows</label>
+          <input id="neighborhoodLimit" type="number" min="1" max="5000" value="500" step="10" />
+          <button id="neighborhoodButton" type="button" class="primary">Compute neighborhood</button>
+        </div>
+      </div>
+
+      <article class="picker compact" data-prefix="anchor">
+        <h3>Anchor token</h3>
+        <div class="compact-grid">
+          <div>
+            <label for="anchorQuery">Search text</label>
+            <div class="search-row">
+              <input id="anchorQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
+              <button id="anchorSearch" type="button">Search</button>
+            </div>
+          </div>
+          <div>
+            <label for="anchorResults">Matches</label>
+            <select id="anchorResults" size="6"></select>
+          </div>
+          <div>
+            <label for="anchorId">or token ID</label>
+            <div class="manual-row compact-manual">
+              <input id="anchorId" type="number" min="0" step="1" placeholder="0" />
+              <button id="anchorUseId" type="button">Use ID</button>
+            </div>
+            <p id="anchorSelected" class="selection">No anchor selected.</p>
+          </div>
+        </div>
+      </article>
+
+      <div id="neighborhoodOutput" class="output muted">Choose an anchor token, then compute its closest tokens.</div>
+      <div class="export-actions">
+        <a id="downloadCsv" class="export-button hidden" href="#">Download full sorted neighborhood CSV</a>
+        <button id="exportNeighborhoodCsv" type="button" class="export-button hidden">Export visible neighborhood table CSV</button>
+      </div>
+      <div class="table-wrap">
+        <table id="neighborhoodTable" class="hidden">
+          <thead>
+            <tr>
+              <th>Angle order</th>
+              <th>Token ID</th>
+              <th>Raw token</th>
+              <th>Display</th>
+              <th>Angle °</th>
+              <th>Magnitude</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">All-pairs angle distribution</p>
+          <h2>Angle-ordered 5° bin counts</h2>
+        </div>
+        <button id="pairwiseBinsButton" type="button" class="primary">Compute pairwise bins</button>
+      </div>
+
+      <p class="lede panel-lede">For the active model, this computes unique unordered token pairs block by block, immediately bins each block into acute-angle buckets from 0° to 90°, and never writes or caches the full pairwise matrix.</p>
+
+      <div class="analysis-controls">
+        <div>
+          <label for="pairwiseBlockSize">CUDA/CPU block size</label>
+          <input id="pairwiseBlockSize" type="number" min="1" max="16384" value="2048" step="256" />
+        </div>
+        <div>
+          <label for="pairwiseComputeDevice">Compute device</label>
+          <input id="pairwiseComputeDevice" type="text" value="auto" placeholder="auto, cuda:0, or cpu" autocomplete="off" spellcheck="false" />
+        </div>
+        <label class="checkbox-row analysis-checkbox" for="pairwiseIncludeSelf">
+          <input id="pairwiseIncludeSelf" type="checkbox" />
+          Include self-pairs
+        </label>
+        <label class="checkbox-row analysis-checkbox" for="pairwiseLogScale">
+          <input id="pairwiseLogScale" type="checkbox" checked />
+          Log-scale y-axis
+        </label>
+      </div>
+
+      <div id="pairwiseBinsOutput" class="output muted">Load a model, then compute the global pairwise angle-bin distribution. A CUDA device is used automatically when available.</div>
+
+      <div id="pairwisePlotCard" class="plot-card hidden">
+        <canvas id="pairwiseAnglePlot" width="1100" height="460" aria-label="Angle-ordered pairwise angle-bin counts plot"></canvas>
+        <div class="export-actions">
+          <button id="exportPairwisePlotPng" type="button" class="export-button">Export graph PNG</button>
+        </div>
+        <p id="pairwisePlotCaption" class="selection">Y axis uses log10(count). X axis is the 5° angle-bin range ordered from 0° to 90°.</p>
+      </div>
+
+      <div class="export-actions">
+        <button id="exportPairwiseBinsCsv" type="button" class="export-button hidden">Export angle-bin count table CSV</button>
+      </div>
+      <div class="table-wrap">
+        <table id="pairwiseBinsTable" class="hidden clickable-table">
+          <thead>
+            <tr>
+              <th>Angle order</th>
+              <th>Angle bin</th>
+              <th>Bin index</th>
+              <th>Pair count</th>
+              <th>Unique tokens</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <section id="pairwiseBinTokensPanel" class="bin-token-panel hidden" aria-live="polite">
+        <div class="subpanel-heading">
+          <div>
+            <p class="eyebrow">Selected angle bin</p>
+            <h3>Tokens in last clicked 5° bin</h3>
+          </div>
+          <span id="pairwiseBinTokensCount" class="badge subtle">No bin selected</span>
+        </div>
+        <div id="pairwiseBinTokensOutput" class="output muted">Click an angle-bin table row to show the unique tokens that participate in that bin.</div>
+        <div class="export-actions">
+          <button id="exportPairwiseBinTokensCsv" type="button" class="export-button hidden">Export selected-bin token table CSV</button>
+        </div>
+        <div class="table-wrap token-list-scroll">
+          <table id="pairwiseBinTokensTable" class="hidden">
+            <thead>
+              <tr>
+                <th>Token ID</th>
+                <th>Search label</th>
+                <th>Raw token</th>
+                <th>Display</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Minimum angular distance</p>
+          <h2>Closest non-self token for every token</h2>
+        </div>
+        <button id="minDistancesButton" type="button" class="primary">Compute minimum distances</button>
+      </div>
+
+      <p class="lede panel-lede">For each token vector, this streams blockwise dot products, excludes the token’s self-distance, keeps only the closest other token, and never writes or caches the full pairwise matrix.</p>
+
+      <div class="analysis-controls min-distance-controls">
+        <div>
+          <label for="minDistanceBlockSize">CUDA/CPU block size</label>
+          <input id="minDistanceBlockSize" type="number" min="1" max="16384" value="2048" step="256" />
+        </div>
+        <div>
+          <label for="minDistanceComputeDevice">Compute device</label>
+          <input id="minDistanceComputeDevice" type="text" value="auto" placeholder="auto, cuda:0, or cpu" autocomplete="off" spellcheck="false" />
+        </div>
+        <div>
+          <label for="minDistanceSort">Table sort</label>
+          <select id="minDistanceSort">
+            <option value="token_id" selected>Token ID order</option>
+            <option value="min_angle">Minimum angle order</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="minDistancesOutput" class="output muted">Load a model, then compute each token’s closest non-self angular neighbor. CUDA is used automatically when available.</div>
+
+      <div id="minDistancePlotCard" class="plot-card hidden">
+        <div class="analysis-controls min-distance-highlight-controls">
+          <div>
+            <label for="minDistanceHighlightStart">Highlight token ID start</label>
+            <input id="minDistanceHighlightStart" type="number" min="0" step="1" placeholder="e.g. 100" />
+          </div>
+          <div>
+            <label for="minDistanceHighlightEnd">Highlight token ID end</label>
+            <input id="minDistanceHighlightEnd" type="number" min="0" step="1" placeholder="e.g. 199" />
+          </div>
+          <div>
+            <label for="minDistanceHighlightIds">Highlight exact token IDs</label>
+            <input id="minDistanceHighlightIds" type="text" placeholder="e.g. 42, 1001, 50256" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="analysis-checkbox">
+            <button id="clearMinDistanceHighlight" type="button" class="secondary">Clear highlight</button>
+          </div>
+        </div>
+        <canvas id="minDistancePlot" width="1100" height="460" aria-label="Minimum angular distance sorted scatter plot"></canvas>
+        <div class="export-actions">
+          <button id="exportMinDistancePlotPng" type="button" class="export-button">Export graph PNG</button>
+          <button id="exportMinDistanceHighlightCsv" type="button" class="export-button hidden">Export highlighted rows CSV</button>
+        </div>
+        <p id="minDistancePlotCaption" class="selection">Y axis is the minimum non-self angle. X axis is rank after sorting tokens from lowest to highest minimum angle. Enter a token ID range or comma-separated token IDs above to overlay matching tokens as orange dots.</p>
+      </div>
+
+      <div class="export-actions">
+        <button id="exportMinDistancesCsv" type="button" class="export-button hidden">Export minimum-distance table CSV</button>
+      </div>
+      <div class="table-wrap min-distance-scroll">
+        <table id="minDistancesTable" class="hidden">
+          <thead>
+            <tr>
+              <th>Min-angle rank</th>
+              <th>Token ID</th>
+              <th>Raw token</th>
+              <th>Display</th>
+              <th>Vector length</th>
+              <th>Min angle °</th>
+              <th>Other token ID</th>
+              <th>Other raw token</th>
+              <th>Other display</th>
+              <th>Other vector length</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Recursive angle group</p>
+          <h2>Grow a connected token group by maximum angle</h2>
+        </div>
+        <button id="recursiveGroupButton" type="button" class="primary">Build recursive group</button>
+      </div>
+
+      <p class="lede panel-lede">Starting from a seed token, this repeatedly adds tokens whose signed vector angle is at or below the chosen maximum from any token already in the group. It stops when no new tokens are found or the group reaches the size limit.</p>
+
+      <article class="picker compact" data-prefix="groupSeed">
+        <h3>Seed token</h3>
+        <div class="compact-grid">
+          <div>
+            <label for="groupSeedQuery">Search text</label>
+            <div class="search-row">
+              <input id="groupSeedQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
+              <button id="groupSeedSearch" type="button">Search</button>
+            </div>
+          </div>
+          <div>
+            <label for="groupSeedResults">Matches</label>
+            <select id="groupSeedResults" size="6"></select>
+          </div>
+          <div>
+            <label for="groupSeedId">or token ID</label>
+            <div class="manual-row compact-manual">
+              <input id="groupSeedId" type="number" min="0" step="1" placeholder="0" />
+              <button id="groupSeedUseId" type="button">Use ID</button>
+            </div>
+            <p id="groupSeedSelected" class="selection">No seed selected.</p>
+          </div>
+        </div>
+      </article>
+
+      <div class="analysis-controls recursive-group-controls">
+        <div>
+          <label for="recursiveGroupLimit">Group size limit</label>
+          <input id="recursiveGroupLimit" type="number" min="1" max="1000" value="100" step="1" />
+        </div>
+        <div>
+          <label for="recursiveGroupMaxAngle">Maximum angle °</label>
+          <input id="recursiveGroupMaxAngle" type="number" min="0" max="180" value="35" step="0.5" />
+        </div>
+        <div>
+          <label for="recursiveGroupBlockSize">CUDA/CPU block size</label>
+          <input id="recursiveGroupBlockSize" type="number" min="1" max="16384" value="2048" step="256" />
+        </div>
+        <div>
+          <label for="recursiveGroupComputeDevice">Compute device</label>
+          <input id="recursiveGroupComputeDevice" type="text" value="auto" placeholder="auto, cuda:0, or cpu" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+
+      <div id="recursiveGroupOutput" class="output muted">Choose a seed token, set the group controls, then build the recursive graph.</div>
+
+      <div id="recursiveGroupGraphCard" class="plot-card graph-card hidden">
+        <div class="graph-options">
+          <label class="checkbox-row" for="recursiveGroupHighlightMinEdges">
+            <input id="recursiveGroupHighlightMinEdges" type="checkbox" />
+            Highlight lowest-angle edge from each node
+          </label>
+        </div>
+        <div id="recursiveGroupGraph" class="graph-scroll" aria-label="Interactive recursive angle group node-edge graph"></div>
+        <div class="export-actions">
+          <button id="exportRecursiveGroupGraphSvg" type="button" class="export-button">Export graph SVG</button>
+          <button id="exportRecursiveGroupGraphPng" type="button" class="export-button">Export graph PNG</button>
+        </div>
+        <p id="recursiveGroupGraphCaption" class="selection">Nodes show token ID and token string. Drag nodes to reposition them; edges are labelled with the angle between connected tokens.</p>
+      </div>
+
+      <div class="export-actions">
+        <button id="exportRecursiveGroupAdjacencyCsv" type="button" class="export-button hidden">Download adjacency matrix CSV</button>
+        <button id="exportRecursiveGroupDictionaryJson" type="button" class="export-button hidden">Download dictionary JSON</button>
+        <button id="exportRecursiveGroupListCsv" type="button" class="export-button hidden">Download token list CSV</button>
+      </div>
+      <div class="table-wrap recursive-group-scroll">
+        <table id="recursiveGroupTable" class="hidden">
+          <thead>
+            <tr>
+              <th>Token ID</th>
+              <th>Raw token</th>
+              <th>Display</th>
+              <th>Connected nodes</th>
+              <th>Vector length</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Linear token transform</p>
+          <h2>Learn from one or more token-pair examples, then transform an input token</h2>
+        </div>
+        <button id="linearTransformButton" type="button" class="primary">Run transform neighbors</button>
+      </div>
+
+      <p class="lede panel-lede">Add source→target examples by search or token ID. If you add no examples, the currently selected source and target are used as a one-pair transform, preserving the old behavior. The transformed input vector is compared against every token vector and nearest neighbors are listed by angle.</p>
+
+      <div class="picker-grid three-pickers">
+        <article class="picker" data-prefix="transformSource">
+          <h3>Example source token</h3>
+          <label for="transformSourceQuery">Search text</label>
+          <div class="search-row">
+            <input id="transformSourceQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
+            <button id="transformSourceSearch" type="button">Search</button>
+          </div>
+          <label for="transformSourceResults">Matches</label>
+          <select id="transformSourceResults" size="8"></select>
+          <div class="manual-row">
+            <label for="transformSourceId">or token ID</label>
+            <input id="transformSourceId" type="number" min="0" step="1" placeholder="0" />
+            <button id="transformSourceUseId" type="button">Use ID</button>
+          </div>
+          <p id="transformSourceSelected" class="selection">No source selected.</p>
+        </article>
+
+        <article class="picker" data-prefix="transformTarget">
+          <h3>Example target token</h3>
+          <label for="transformTargetQuery">Search text</label>
+          <div class="search-row">
+            <input id="transformTargetQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
+            <button id="transformTargetSearch" type="button">Search</button>
+          </div>
+          <label for="transformTargetResults">Matches</label>
+          <select id="transformTargetResults" size="8"></select>
+          <div class="manual-row">
+            <label for="transformTargetId">or token ID</label>
+            <input id="transformTargetId" type="number" min="0" step="1" placeholder="0" />
+            <button id="transformTargetUseId" type="button">Use ID</button>
+          </div>
+          <p id="transformTargetSelected" class="selection">No target selected.</p>
+        </article>
+
+        <article class="picker" data-prefix="transformInput">
+          <h3>Input token to transform</h3>
+          <label for="transformInputQuery">Search text</label>
+          <div class="search-row">
+            <input id="transformInputQuery" type="search" placeholder="Type token text or substring" autocomplete="off" />
+            <button id="transformInputSearch" type="button">Search</button>
+          </div>
+          <label for="transformInputResults">Matches</label>
+          <select id="transformInputResults" size="8"></select>
+          <div class="manual-row">
+            <label for="transformInputId">or token ID</label>
+            <input id="transformInputId" type="number" min="0" step="1" placeholder="0" />
+            <button id="transformInputUseId" type="button">Use ID</button>
+          </div>
+          <p id="transformInputSelected" class="selection">No input selected.</p>
+        </article>
+      </div>
+
+      <div class="transform-example-actions">
+        <button id="addLinearTransformExample" type="button">Add source→target example</button>
+        <button id="clearLinearTransformExamples" type="button">Clear examples</button>
+        <span id="linearTransformExampleCount" class="selection inline-selection">No saved examples; current source→target selection will be used.</span>
+      </div>
+      <div class="table-wrap transform-examples-scroll">
+        <table id="linearTransformExamplesTable" class="hidden">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Source ID</th>
+              <th>Source token</th>
+              <th>Target ID</th>
+              <th>Target token</th>
+              <th>Pair angle °</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="analysis-controls linear-transform-controls">
+        <div>
+          <label for="linearTransformType">Transform type</label>
+          <select id="linearTransformType">
+            <option value="closest_identity" selected>Closest-to-identity / minimum-change linear map</option>
+            <option value="rise">RISE (Rotor-Invariant Shift Estimation): Geometric geodesics on the hypersphere</option>
+            <option value="ridge" data-min-examples="2">Ridge closest-to-identity / regularized multi-pair map (2+ examples)</option>
+            <option value="orthogonal">Orthogonal-only direction map / orthonormal Procrustes</option>
+            <option value="least_squares" data-min-examples="2">Least-squares linear map: Y·pinv(X) (2+ examples)</option>
+            <option value="offset">Analogy offset / mean analogy offset: input + average(target − source)</option>
+          </select>
+          <p class="selection transform-option-hint">Options marked 2+ are disabled until two or more examples are saved.</p>
+        </div>
+        <div>
+          <label for="linearTransformRidgeLambda">Ridge λ</label>
+          <input id="linearTransformRidgeLambda" type="number" min="0.000001" value="0.001" step="0.001" />
+        </div>
+        <div>
+          <label for="linearTransformScale">Transform scale</label>
+          <input id="linearTransformScale" type="number" value="1" step="0.1" />
+          <p class="selection transform-option-hint">0 keeps the input vector, 1 applies the fitted transform, and 2.5 extrapolates to 2.5× the fitted effect.</p>
+        </div>
+        <div>
+          <label for="linearTransformLimit">Nearest-neighbor rows</label>
+          <input id="linearTransformLimit" type="number" min="1" max="5000" value="200" step="25" />
+        </div>
+      </div>
+
+      <div id="linearTransformOutput" class="output muted">Choose source, target, and input tokens, optionally add more example pairs, then run transform neighbors.</div>
+      <div class="export-actions">
+        <button id="exportLinearTransformCsv" type="button" class="export-button hidden">Export transform-neighbor table CSV</button>
+      </div>
+      <div class="table-wrap linear-transform-scroll">
+        <table id="linearTransformTable" class="hidden">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Token ID</th>
+              <th>Raw token</th>
+              <th>Display</th>
+              <th>Angle to transformed °</th>
+              <th>Original angle from input °</th>
+              <th>Cosine similarity</th>
+              <th>Vector length</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/app.js?v=transform-scale-1" defer></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+# 3D digit-token trajectory viewer
+
+This viewer follows the single-file Three.js report style in this directory,
+including OrbitControls, canvas labels, a dark explanatory panel, and keyboard
+controls. Width-3 runs show native coordinates. Higher-dimensional runs use a
+single PCA basis fitted across every token and checkpoint, rather than fitting
+each frame independently, so motion remains comparable over time.
+
+Run `demos/digits_3d_trajectory_demo.sh` from the repository root to generate
+`token_trajectories.json`. Then serve the repository with
+`python3 -m http.server 8000` and visit
+`http://localhost:8000/report/threejs/digits-3d/index.html`.
+
+Orange points are trained digit-like tokens. Blue points are configurable
+letters that exist in the vocabulary and model parameters but never occur in
+either dataset split. Use the slider, arrow keys, or Space playback to compare
+their trajectories over checkpoint time.
+
+By default embeddings remain on the radius-`sqrt(EMBEDDING_DIM)` sphere, so
+motion in model space is directional. A wireframe sphere is shown only for
+native 3D runs because PCA does not preserve individual vector norms. Run the
+demo with `WTE_FIXED_NORM=false` to produce the unconstrained view.
+
+The viewer also accepts `?data=<relative-json-path>`. The sweep demo uses this
+to keep every vocabulary-size and fixed-norm variation under `runs/` rather
+than overwriting the default trajectory.
+
+The default sweep uses 3 dimensions, 10 trained symbols, 10 held-out letters,
+and both tied and untied WTE/LM-head runs, with 10,000 iterations per
+configuration. Set `EMBEDDING_DIMS` (for example, `3 8 16 64`),
+`DIGIT_COUNTS`, `LETTER_COUNTS`, `WTE_TYING_MODES`, or `SWEEP_MAX_ITERS` to
+customize it.
+
+After the first sweep run completes, open `sweep.html` to filter and select the
+generated JSON files without editing URLs. Each trajectory includes checkpoint
+train and validation loss; the viewer plots both above the time slider and
+marks the currently selected checkpoint.
+
+The sweep rewrites `runs/manifest.json` atomically after every completed run.
+You can therefore keep the HTTP server open and refresh `sweep.html` while the
+remaining configurations continue training.
