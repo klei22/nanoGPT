@@ -1,6 +1,6 @@
-"""Add a trainable final attention-residual mixer to a frozen causal LM."""
+"""Final attention-residual adapter for SmolLM2-style causal LMs."""
 
-from typing import Any
+from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
@@ -15,10 +15,10 @@ class FinalAttentionResidual(nn.Module):
         self.query = nn.Parameter(torch.zeros(hidden_size))
         self.eps = eps
 
-    def forward(self, hidden_states: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, hidden_states: Sequence[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         if not hidden_states:
             raise ValueError("final attention residual requires hidden states")
-        values = torch.stack(hidden_states, dim=0)
+        values = torch.stack(tuple(hidden_states), dim=0)
         keys = F.rms_norm(values, (values.size(-1),), eps=self.eps)
         scores = torch.einsum("dbtc,c->dbt", keys, self.query)
         weights = scores.softmax(dim=0)
@@ -26,71 +26,65 @@ class FinalAttentionResidual(nn.Module):
         return mixture, weights
 
 
-class FinalAttentionResidualCausalLM(nn.Module):
-    """Freeze a Hugging Face causal LM and train only its final depth mixer.
+class SmolLM2FinalAttentionResidual:
+    """Patch a SmolLM2/Llama causal LM while preserving its HF generation API.
 
-    The wrapped model must accept ``output_hidden_states`` and expose
-    ``get_output_embeddings()``, as ``AutoModelForCausalLM`` models do.
+    Hooks collect the token embeddings and decoder-layer outputs. Immediately
+    before the model's final RMSNorm, the usual last-layer residual is replaced
+    by their learned depth mixture. Because the original ``PreTrainedModel`` is
+    returned unchanged, ``generate`` and lm-evaluation-harness remain usable.
     """
 
-    def __init__(self, base_model: nn.Module, eps: float = 1e-6):
-        super().__init__()
-        self.base_model = base_model
-        for parameter in self.base_model.parameters():
+    module_name = "final_attention_residual"
+
+    def __init__(self, model: nn.Module, eps: float = 1e-6):
+        decoder = self._decoder(model)
+        if hasattr(model, self.module_name):
+            raise ValueError("a final attention residual is already installed")
+        for parameter in model.parameters():
             parameter.requires_grad_(False)
 
-        hidden_size = getattr(base_model.config, "hidden_size", None)
-        if hidden_size is None:
-            hidden_size = getattr(base_model.config, "n_embd", None)
-        if hidden_size is None:
-            raise ValueError("base model config must define hidden_size or n_embd")
-        if base_model.get_output_embeddings() is None:
-            raise ValueError("base model must expose output embeddings")
-
+        hidden_size = model.config.hidden_size
+        self.model = model
+        self.sources: list[torch.Tensor] = []
+        self.last_depth_weights: torch.Tensor | None = None
         self.residual = FinalAttentionResidual(hidden_size, eps)
-        self.config = base_model.config
+        model.add_module(self.module_name, self.residual)
 
-    def train(self, mode: bool = True) -> "FinalAttentionResidualCausalLM":
-        super().train(mode)
-        # Frozen dropout must not inject noise into the residual sources.
-        self.base_model.eval()
-        self.residual.train(mode)
-        return self
+        self.handles = [decoder.embed_tokens.register_forward_hook(self._capture_embedding)]
+        self.handles.extend(layer.register_forward_hook(self._capture_layer) for layer in decoder.layers)
+        self.handles.append(decoder.norm.register_forward_pre_hook(self._mix_before_final_norm))
 
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-        labels: torch.Tensor | None = None,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        kwargs.pop("output_hidden_states", None)
-        kwargs.pop("return_dict", None)
-        with torch.no_grad():
-            outputs = self.base_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                return_dict=True,
-                **kwargs,
-            )
+    @staticmethod
+    def _decoder(model: nn.Module) -> nn.Module:
+        decoder = getattr(model, "model", None)
+        required = ("embed_tokens", "layers", "norm")
+        if decoder is None or not all(hasattr(decoder, name) for name in required):
+            raise TypeError("expected a SmolLM2/Llama-style model.model decoder")
+        return decoder
 
-        mixed, depth_weights = self.residual(tuple(outputs.hidden_states))
-        logits = self.base_model.get_output_embeddings()(mixed)
-        loss = None
-        if labels is not None:
-            loss = F.cross_entropy(
-                logits[..., :-1, :].contiguous().view(-1, logits.size(-1)),
-                labels[..., 1:].contiguous().view(-1),
-                ignore_index=-100,
-            )
-        return {
-            "loss": loss,
-            "logits": logits,
-            "depth_attention_weights": depth_weights,
-            "hidden_states": outputs.hidden_states,
-        }
+    def _capture_embedding(self, _module, _inputs, output: torch.Tensor) -> None:
+        self.sources = [output]
 
+    def _capture_layer(self, _module, _inputs, output) -> None:
+        self.sources.append(output[0] if isinstance(output, tuple) else output)
+
+    def _mix_before_final_norm(self, _module, _inputs) -> tuple[torch.Tensor]:
+        mixed, self.last_depth_weights = self.residual(self.sources)
+        return (mixed,)
+
+    def save(self, path: str) -> None:
+        torch.save(self.residual.state_dict(), path)
+
+    def load(self, path: str, map_location: str | torch.device = "cpu") -> None:
+        self.residual.load_state_dict(torch.load(path, map_location=map_location, weights_only=True))
+
+    def remove(self) -> None:
+        """Remove hooks and the registered adapter module."""
+        for handle in self.handles:
+            handle.remove()
+        delattr(self.model, self.module_name)
+
+    @property
     def trainable_parameter_names(self) -> list[str]:
-        """Return an auditable list of parameters updated by the optimizer."""
-        return [name for name, parameter in self.named_parameters() if parameter.requires_grad]
+        return [name for name, parameter in self.model.named_parameters() if parameter.requires_grad]

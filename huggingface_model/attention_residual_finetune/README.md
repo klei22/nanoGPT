@@ -1,32 +1,62 @@
-# Fine-tune the final attention residual
+# SmolLM2-135M final attention-residual experiment
 
-This experiment ports the **last** mixture from Full Attention Residuals to a
-pretrained Hugging Face causal language model. It leaves every pretrained
-parameter frozen, collects the embedding/layer hidden states, RMS-normalizes
-them as keys, applies a token-local softmax over model depth, and sends the
-weighted sum through the existing language-model head. Only one pseudo-query
-(`residual.query`) is optimized. This changes depth routing, not causal
-token-to-token attention.
+This experiment tests the **last** mixture from nanoGPT's Full Attention
+Residuals on `HuggingFaceTB/SmolLM2-135M-Instruct`. Every pretrained parameter
+is frozen. Forward hooks collect the embedding and decoder-layer outputs, a
+single learned pseudo-query applies a token-local softmax over depth, and the
+mixture replaces the input to the model's final RMSNorm. The original Hugging
+Face model object and its `generate()` method remain intact, which lets the
+lm-evaluation-harness run generative benchmarks.
 
-The zero initialization intentionally matches nanoGPT's attention-residual
-implementation: the first forward pass is an equal average over all depths.
-It therefore does **not** initially reproduce the base model's logits.
+The query is initialized to zero, matching nanoGPT: the initial adapter is an
+equal average over all depths and does not reproduce the unmodified model. Only
+`final_attention_residual.query` is optimized (576 parameters for SmolLM2-135M).
 
-## Run
+## Install
 
-Install `torch`, `transformers`, `datasets`, and `accelerate`, then run from the
-repository root:
+Use an environment with PyTorch, then install the experiment dependencies:
+
+```bash
+pip install transformers datasets accelerate "lm_eval[math]"
+```
+
+## 1. Fine-tune on GSM8K train
 
 ```bash
 python -m huggingface_model.attention_residual_finetune.train \
-  --model gpt2 --max-steps 500
+  --model HuggingFaceTB/SmolLM2-135M-Instruct \
+  --max-steps 500
 ```
 
-The command prints the trainable parameter names before training and saves the
-small mixer state dict separately as `final_attention_residual.pt`. Loading the
-original base model plus this state dict is sufficient; no frozen model weights
-are duplicated.
+Questions use the model's chat template and loss is applied only to answer
+tokens, matching the benchmark's default prompt mode. The script uses only
+GSM8K's **train** split and saves
+`out/smollm2-135m-final-attention-residual/final_attention_residual.pt`; it does
+not save a duplicate copy of the frozen 135M-parameter model.
 
-This first experiment targets decoder-only causal LMs whose output head accepts
-hidden states directly. Architectures that require an additional final norm or
-an output-head bias should get an architecture-specific adapter before use.
+## 2. Compare before and after
+
+```bash
+python -m huggingface_model.attention_residual_finetune.benchmark \
+  --adapter out/smollm2-135m-final-attention-residual/final_attention_residual.pt
+```
+
+The same model instance is evaluated first without the adapter and then with
+the trained adapter on these lm-evaluation-harness tasks:
+
+- `ifeval` for instruction following;
+- `gsm8k` for grade-school word problems; and
+- `minerva_math` for competition mathematics.
+
+Raw runs are written to `before.json` and `after.json`; the task result tables
+are collected in `comparison.json`. For a quick pipeline check before a full
+run, add `--limit 10`. A limited run is not a meaningful benchmark result.
+The instruct model's chat template is enabled by default for both runs; use
+`--no-chat-template` to explicitly compare plain benchmark prompts instead.
+
+GSM8K test examples are evaluated by the harness and are not used by the
+training script. Nevertheless, report the GSM8K result as in-domain
+fine-tuning, and use IFEval and Minerva Math to inspect transfer and regression.
+
+This adapter currently targets SmolLM2/Llama-style decoder-only models exposing
+`model.embed_tokens`, `model.layers`, and `model.norm`.

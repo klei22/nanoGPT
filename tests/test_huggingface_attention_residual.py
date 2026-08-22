@@ -3,37 +3,51 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from huggingface_model.attention_residual_finetune import FinalAttentionResidualCausalLM
+from huggingface_model.attention_residual_finetune import SmolLM2FinalAttentionResidual
+
+
+class TinyDecoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(7, 4)
+        self.layers = nn.ModuleList([nn.Linear(4, 4), nn.Linear(4, 4)])
+        self.norm = nn.RMSNorm(4)
+
+    def forward(self, input_ids):
+        hidden = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            hidden = layer(hidden)
+        return self.norm(hidden)
 
 
 class TinyCausalLM(nn.Module):
     def __init__(self):
         super().__init__()
         self.config = SimpleNamespace(hidden_size=4)
-        self.embedding = nn.Embedding(7, 4)
-        self.block = nn.Linear(4, 4)
-        self.head = nn.Linear(4, 7, bias=False)
+        self.model = TinyDecoder()
+        self.lm_head = nn.Linear(4, 7, bias=False)
 
-    def get_output_embeddings(self):
-        return self.head
-
-    def forward(self, input_ids, **kwargs):
-        first = self.embedding(input_ids)
-        second = self.block(first)
-        return SimpleNamespace(hidden_states=(first, second))
+    def forward(self, input_ids):
+        return self.lm_head(self.model(input_ids))
 
 
-def test_only_final_attention_query_trains():
-    model = FinalAttentionResidualCausalLM(TinyCausalLM())
-    model.train()
+def test_only_final_attention_query_trains_and_hooks_model():
+    model = TinyCausalLM()
+    adapter = SmolLM2FinalAttentionResidual(model)
     tokens = torch.tensor([[0, 1, 2, 3]])
-    output = model(tokens, labels=tokens)
+    logits = model(tokens)
 
-    assert model.trainable_parameter_names() == ["residual.query"]
-    assert output["logits"].shape == (1, 4, 7)
-    assert output["depth_attention_weights"].shape == (2, 1, 4)
-    torch.testing.assert_close(output["depth_attention_weights"], torch.full((2, 1, 4), 0.5))
+    assert adapter.trainable_parameter_names == ["final_attention_residual.query"]
+    assert logits.shape == (1, 4, 7)
+    assert adapter.last_depth_weights is not None
+    assert adapter.last_depth_weights.shape == (3, 1, 4)
+    torch.testing.assert_close(adapter.last_depth_weights, torch.full((3, 1, 4), 1 / 3))
 
-    output["loss"].backward()
-    assert model.residual.query.grad is not None
-    assert all(parameter.grad is None for parameter in model.base_model.parameters())
+    logits.sum().backward()
+    assert adapter.residual.query.grad is not None
+    frozen_parameters = [
+        parameter
+        for name, parameter in model.named_parameters()
+        if name != "final_attention_residual.query"
+    ]
+    assert all(parameter.grad is None for parameter in frozen_parameters)
