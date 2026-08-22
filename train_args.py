@@ -1022,6 +1022,7 @@ def parse_args():
 
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
+    model_group.add_argument("--use_gemma_qk_norm", type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies Gemma-style RMSNorm with independent zero-initialized residual gains to q and k before attn")
     model_group.add_argument("--use_qk_norm_scale",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies norm scale, preloads scale for flash attn, post qk multiplication in manual attn")
     model_group.add_argument("--use_v_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to v before attn output")
 
