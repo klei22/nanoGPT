@@ -1023,6 +1023,7 @@ def parse_args():
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
     model_group.add_argument("--use_qk_norm_scale",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies norm scale, preloads scale for flash attn, post qk multiplication in manual attn")
+    model_group.add_argument("--qk_norm_before_rope", default=False, action=argparse.BooleanOptionalAction, help="apply QK norm before RoPE instead of after RoPE")
     model_group.add_argument("--use_v_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to v before attn output")
 
     ## Flash Lobo
