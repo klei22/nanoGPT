@@ -1023,6 +1023,7 @@ def parse_args():
     ## qk_norm variations
     model_group.add_argument("--use_qk_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to q and k before attn")
     model_group.add_argument("--use_qk_norm_scale",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies norm scale, preloads scale for flash attn, post qk multiplication in manual attn")
+    model_group.add_argument("--qk_norm_scale", type=float, default=None, help="initial learned QK norm scale; defaults to log2(block_size^2 - block_size)")
     model_group.add_argument("--use_v_norm",   type=bool, default=False, action=argparse.BooleanOptionalAction, help="applies the norm to v before attn output")
 
     ## Flash Lobo
@@ -1313,6 +1314,7 @@ def parse_args():
         "polymax",
         "relumax",
         "relu2max",
+        "relu2max_line",
         "sigmoidmax",
         "vpolymax",
         "exppolymax",
@@ -1362,6 +1364,8 @@ def parse_args():
 
     ### ReLU2Max Options
     model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
+    model_group.add_argument("--relu2max_line_transition", type=float, default=4.0,
+                             help="input where relu2max_line switches to its tangent line")
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
