@@ -40,6 +40,8 @@ class TurboQuantDemoTest(unittest.TestCase):
                 "HIGH_DIM_ANGLE_STEP": "90",
                 "LOW_BIT_EM_TRIALS": "1",
                 "LOW_BIT_EM_ANGLE_STEP": "90",
+                "GROUPED_QUANT_TRIALS": "1",
+                "GROUPED_QUANT_ANGLE_STEP": "90",
             })
 
             subprocess.run(["bash", str(DEMO), str(root / "output")],
@@ -47,7 +49,7 @@ class TurboQuantDemoTest(unittest.TestCase):
                            capture_output=True, text=True)
             invocations = calls.read_text(encoding="utf-8").splitlines()
 
-        self.assertEqual(len(invocations), 16)
+        self.assertEqual(len(invocations), 17)
         self.assertEqual(sum("vector_distribution_analysis.py" in call
                              for call in invocations), 6)
         self.assertTrue(any("turboquant_angular_distortion.py" in call and
@@ -68,6 +70,9 @@ class TurboQuantDemoTest(unittest.TestCase):
         self.assertEqual(len(high_dimensional), 4)
         self.assertTrue(any("low_bit_em_comparison.py" in call and
                             "--trials 1 --angles-step 90" in call
+                            for call in invocations))
+        self.assertTrue(any("grouped_quantization_sweep.py" in call and
+                            "--dimension 2048 --trials 1" in call
                             for call in invocations))
 
 

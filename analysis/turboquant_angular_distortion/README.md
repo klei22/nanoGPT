@@ -152,6 +152,41 @@ distortion PDF at dimension 2048, and a two-panel dimension-scaling PDF over
 texture, and marker for INT, TQ, and each E/M split. Mean curves include
 standard-error bands and dimension trends include standard-error bars.
 
+## Grouped symmetric/asymmetric and power-of-two scaling sweep
+
+`grouped_quantization_sweep.py` fixes the vector dimension at 2048 and sweeps
+contiguous group sizes 16, 32, 64, 128, 256, 512, 1024, and 2048. It compares
+four INT4 quantizers:
+
+- symmetric with an exact scalar scale;
+- asymmetric with an exact scalar scale and learned integer zero point;
+- symmetric with the scale rounded upward to a power of two; and
+- asymmetric with a power-of-two scale and integer zero point.
+
+It also plots native-format reference points for:
+
+- **NVFP4**, modeled as E2M1 data, one E4M3FN scale per 16 values, and one FP32
+  tensor scale; and
+- **MXINT8**, modeled as INT8 data with one E8M0/power-of-two shared scale per
+  native 32-value block.
+
+NVFP4 and MXINT8 appear at their native block sizes rather than as artificial
+group-size sweeps. The power-of-two INT4 curve is a useful MX-style ablation but
+is not labeled MXINT4 because MXINT4 is not an OCP MX v1.0 concrete format.
+
+```bash
+bash analysis/turboquant_angular_distortion/demo_grouped_quantization.sh
+```
+
+The suite writes angle-level and summary CSVs, a four-panel angular-distortion
+PDF colored by group size, and a group-size summary PDF comparing angular MAE
+and normalized reconstruction MSE with standard-error bars. Definitions were
+cross-checked against the
+[NVIDIA Transformer Engine NVFP4 guide](https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html#nvfp4-format)
+and the [OCP MX reference implementation](https://github.com/microsoft/microxcaling),
+which specifies native MX blocks of 32 and provides MXINT8 as the concrete
+integer format.
+
 ## Angular-space evenness and dispersion
 
 `angle_space_evenness.py` complements the angle-pair distortion curves by

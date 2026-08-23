@@ -21,6 +21,8 @@ HIGH_DIM_DISTORTION_TRIALS="${HIGH_DIM_DISTORTION_TRIALS:-100}"
 HIGH_DIM_ANGLE_STEP="${HIGH_DIM_ANGLE_STEP:-5}"
 LOW_BIT_EM_TRIALS="${LOW_BIT_EM_TRIALS:-100}"
 LOW_BIT_EM_ANGLE_STEP="${LOW_BIT_EM_ANGLE_STEP:-5}"
+GROUPED_QUANT_TRIALS="${GROUPED_QUANT_TRIALS:-100}"
+GROUPED_QUANT_ANGLE_STEP="${GROUPED_QUANT_ANGLE_STEP:-5}"
 mkdir -p "$OUT_DIR"
 
 run_format() {
@@ -72,5 +74,9 @@ bash "$ANGULAR_DIR/demo_high_dimensional.sh" "$OUT_DIR/high_dimensional"
 echo "INT3/INT4 vs TQ3/TQ4 vs all-finite E/M formats"
 TRIALS="$LOW_BIT_EM_TRIALS" ANGLE_STEP="$LOW_BIT_EM_ANGLE_STEP" \
 bash "$ANGULAR_DIR/demo_low_bit_em.sh" "$OUT_DIR/low_bit_em_comparison"
+
+echo "Symmetric/asymmetric scalar and power-of-two grouped quantization"
+TRIALS="$GROUPED_QUANT_TRIALS" ANGLE_STEP="$GROUPED_QUANT_ANGLE_STEP" \
+bash "$ANGULAR_DIR/demo_grouped_quantization.sh" "$OUT_DIR/grouped_quantization_sweep"
 
 echo "Wrote the complete TurboQuant analysis suite to $OUT_DIR"
