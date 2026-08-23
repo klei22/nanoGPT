@@ -59,7 +59,9 @@ isotropic PDF can be matched to their legend entries at a glance.
 
 `isotropic_dimension_sweep.py` extends the isotropic comparison across every
 power-of-two dimension from 2 through 1024. Each trial generates one isotropic
-pair that is shared by every INT/TQ quantizer, reducing comparison noise.
+pair that is shared by every INT/TQ quantizer, reducing comparison noise. The
+default uses 100 trials per angle; plots show mean trends with standard-error
+bands or bars rather than individual noisy trials.
 
 ```bash
 bash analysis/turboquant_angular_distortion/demo_isotropic_dimension_sweep.sh
@@ -72,9 +74,11 @@ The sweep writes five artifacts:
 - `isotropic_dimension_summary.csv`: mean absolute, RMS, maximum absolute, and
   signed-bias distortion aggregated over input angles.
 - `isotropic_dimension_curves.pdf`: six bit-width panels containing INT and TQ
-  angle curves, colored by dimension.
+  mean angle curves, colored by dimension, with translucent mean standard-error
+  bands.
 - `isotropic_dimension_summary.pdf`: four dimension-scaling panels for the
-  aggregate metrics.
+  aggregate metrics; the mean-absolute-distortion panel includes standard-error
+  bars across Monte Carlo trials.
 - `isotropic_dimension_tq_advantage.pdf`: INT MAE minus TQ MAE, where positive
   values indicate lower TurboQuant distortion.
 
@@ -88,6 +92,41 @@ MIN_DIM=2 MAX_DIM=256 TRIALS=10 ANGLE_STEP=10 \
 
 The direct Python CLI additionally accepts `--bits`, `--angles-start`,
 `--angles-stop`, `--clip-sigma`, and `--seed`.
+
+### Separate high-dimensional graph sets
+
+The original HEALPix evenness analysis is specifically three-dimensional: it
+projects scalar-code triples onto S2. For dimensions 1024, 2048, 4096, and 8192,
+`high_dim_angle_space_evenness.py` replaces HEALPix occupancy with metrics that
+remain meaningful on a high-dimensional sphere:
+
+- discrepancy between the observed pair-cosine CDF and the exact uniform-sphere
+  beta-distribution CDF;
+- observed cosine standard deviation minus the uniform target `1/sqrt(d)`;
+- resultant/dipole norm; and
+- an exchangeable second-moment anisotropy estimate.
+
+Run the high-dimensional evenness metrics and separate isotropic distortion
+graphs for all four dimensions with:
+
+```bash
+bash analysis/turboquant_angular_distortion/demo_high_dimensional.sh
+```
+
+This writes one evenness CSV/PDF and one isotropic distortion PDF per dimension.
+Sampling is streamed in batches so dimension 8192 does not require retaining the
+full experiment in memory. A quick run can be requested with:
+
+```bash
+EVENNESS_SAMPLES=1000 EVENNESS_BATCH_SIZE=64 \
+DISTORTION_TRIALS=5 ANGLE_STEP=15 \
+  bash analysis/turboquant_angular_distortion/demo_high_dimensional.sh \
+  /tmp/turboquant-high-dimensional
+```
+
+The high-dimensional suite is intentionally separate from the default demo
+because its four large-dimension Monte Carlo runs are substantially more
+expensive.
 
 ## Angular-space evenness and dispersion
 

@@ -32,6 +32,11 @@ class IsotropicDimensionSweepTest(unittest.TestCase):
         self.assertEqual({row.format for row in summaries}, {"INT3", "TQ3"})
         self.assertTrue(all(np.isfinite(row.mean_distortion_deg) for row in curves))
         self.assertTrue(all(np.isfinite(row.rms_distortion_deg) for row in summaries))
+        self.assertTrue(all(np.isclose(row.sem_distortion_deg,
+                                       row.std_distortion_deg / np.sqrt(2.0))
+                            for row in curves))
+        self.assertTrue(all(row.sem_mean_absolute_distortion_deg >= 0.0
+                            for row in summaries))
 
 
 if __name__ == "__main__":

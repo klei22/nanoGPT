@@ -33,6 +33,7 @@ class CurveMetric:
     angle_deg: float
     mean_distortion_deg: float
     std_distortion_deg: float
+    sem_distortion_deg: float
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ class SummaryMetric:
     rms_distortion_deg: float
     max_absolute_distortion_deg: float
     signed_bias_deg: float
+    std_mean_absolute_distortion_deg: float
+    sem_mean_absolute_distortion_deg: float
 
 
 def power_of_two_dimensions(min_dim: int, max_dim: int) -> list[int]:
@@ -92,15 +95,19 @@ def collect_metrics(dimensions: list[int], angles: np.ndarray, bits_list: list[i
             means = np.mean(values, axis=1)
             stds = np.std(values, axis=1, ddof=1) if trials > 1 else np.zeros(len(angles))
             curve_rows.extend(
-                CurveMetric(name, bits, dim, float(angle), float(mean), float(std))
+                CurveMetric(name, bits, dim, float(angle), float(mean), float(std),
+                            float(std / math.sqrt(trials)))
                 for angle, mean, std in zip(angles, means, stds)
             )
+            trial_mae = np.mean(np.abs(values), axis=0)
             summary_rows.append(SummaryMetric(
                 name, bits, dim,
-                float(np.mean(np.abs(means))),
-                float(np.sqrt(np.mean(means ** 2))),
-                float(np.max(np.abs(means))),
-                float(np.mean(means)),
+                float(np.mean(trial_mae)),
+                float(np.mean(np.sqrt(np.mean(values ** 2, axis=0)))),
+                float(np.mean(np.max(np.abs(values), axis=0))),
+                float(np.mean(values)),
+                float(np.std(trial_mae, ddof=1)) if trials > 1 else 0.0,
+                float(np.std(trial_mae, ddof=1) / math.sqrt(trials)) if trials > 1 else 0.0,
             ))
 
     return curve_rows, summary_rows
@@ -128,10 +135,13 @@ def plot_angle_curves(path: Path, curve_rows: list[CurveMetric],
     for axis, bits in zip(axes.flat, bits_list):
         for color, dim in zip(dimension_colors, dimensions):
             for prefix, linestyle in (("INT", "-"), ("TQ", ":")):
-                values = [lookup[(f"{prefix}{bits}", dim, angle)].mean_distortion_deg
-                          for angle in angles]
+                selected = [lookup[(f"{prefix}{bits}", dim, angle)] for angle in angles]
+                values = [row.mean_distortion_deg for row in selected]
+                errors = [row.sem_distortion_deg for row in selected]
                 axis.plot(angles, values, color=color, linestyle=linestyle,
                           linewidth=1.3)
+                axis.fill_between(angles, np.asarray(values) - errors,
+                                  np.asarray(values) + errors, color=color, alpha=0.06)
         axis.axhline(0.0, color="black", linewidth=0.7)
         axis.set_title(f"{bits}-bit formats")
         axis.set_xlabel("Original angle (degrees)")
@@ -169,8 +179,15 @@ def plot_summary(path: Path, rows: list[SummaryMetric], bits_list: list[int]) ->
             for prefix, linestyle, marker in (("INT", "-", "o"), ("TQ", ":", "s")):
                 values = [getattr(lookup[(f"{prefix}{bits}", dim)], field)
                           for dim in dimensions]
-                axis.plot(dimensions, values, color=color, linestyle=linestyle,
-                          marker=marker, markersize=3, label=f"{prefix}{bits}")
+                if field == "mean_absolute_distortion_deg":
+                    errors = [lookup[(f"{prefix}{bits}", dim)].sem_mean_absolute_distortion_deg
+                              for dim in dimensions]
+                    axis.errorbar(dimensions, values, yerr=errors, color=color,
+                                  linestyle=linestyle, marker=marker, markersize=3,
+                                  capsize=2, label=f"{prefix}{bits}")
+                else:
+                    axis.plot(dimensions, values, color=color, linestyle=linestyle,
+                              marker=marker, markersize=3, label=f"{prefix}{bits}")
         axis.set_xscale("log", base=2)
         axis.set_xticks(dimensions, [str(dim) for dim in dimensions])
         axis.set_title(title)
@@ -213,7 +230,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--min-dim", type=int, default=2)
     parser.add_argument("--max-dim", type=int, default=1024)
-    parser.add_argument("--trials", type=int, default=30)
+    parser.add_argument("--trials", type=int, default=100)
     parser.add_argument("--bits", type=int, nargs="+", default=list(range(3, 9)))
     parser.add_argument("--angles-start", type=float, default=0.0)
     parser.add_argument("--angles-stop", type=float, default=90.0)
