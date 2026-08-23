@@ -39,7 +39,7 @@ python3 "$ANGULAR_DIR/turboquant_angular_distortion.py" \
 echo "Angular distortion: isotropic-pair baseline"
 python3 "$ANGULAR_DIR/turboquant_angular_distortion.py" \
   --dim "$ANGULAR_DIM" --trials "$ANGULAR_TRIALS" --angles-step "$ANGLE_STEP" \
-  --pair-mode isotropic \
+  --pair-mode isotropic --no-transformed-tq \
   --output "$OUT_DIR/turboquant_vs_int_angular_distortion_isotropic.pdf"
 
 echo "Angular-space evenness and dispersion"

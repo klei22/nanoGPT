@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -32,6 +34,19 @@ class TurboQuantAngularDistortionTest(unittest.TestCase):
         x[0] = 1.0
         transformed = MODULE.randomized_hadamard(x, np.ones(32))
         np.testing.assert_allclose(np.abs(transformed), np.full(32, 1 / np.sqrt(32)))
+
+    def test_no_transformed_tq_omits_hadamard_measurements(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            args = MODULE.build_parser().parse_args([
+                "--dim", "8", "--trials", "1", "--int-bits", "3",
+                "--tq-bits", "3", "--angles-stop", "0",
+                "--no-transformed-tq", "--output", str(Path(temporary) / "plot.pdf"),
+            ])
+            with mock.patch.object(MODULE, "mean_distortion", return_value=(0.0, 0.0)) as metric:
+                MODULE.run(args)
+
+        self.assertTrue(metric.call_args_list)
+        self.assertTrue(all(call.args[5] is False for call in metric.call_args_list))
 
 
 if __name__ == "__main__":

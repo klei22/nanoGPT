@@ -45,7 +45,8 @@ class TurboQuantDemoTest(unittest.TestCase):
         self.assertTrue(any("turboquant_angular_distortion.py" in call and
                             "--pair-mode sparse" in call for call in invocations))
         self.assertTrue(any("turboquant_angular_distortion.py" in call and
-                            "--pair-mode isotropic" in call for call in invocations))
+                            "--pair-mode isotropic" in call and
+                            "--no-transformed-tq" in call for call in invocations))
         self.assertTrue(any("angle_space_evenness.py" in call and
                             "--samples 8" in call for call in invocations))
 

@@ -142,12 +142,13 @@ def run(args: argparse.Namespace) -> None:
     tq_colors = plt.get_cmap("plasma")(np.linspace(0.05, 0.85, len(args.tq_bits)))
     for color, bits in zip(tq_colors, args.tq_bits):
         quantizer = tq_quantizer(bits, args.dim)
-        transformed = [mean_distortion(a, args.dim, args.trials, args.pair_mode,
-                                       quantizer, True, rng)[0] for a in angles]
         untransformed = [mean_distortion(a, args.dim, args.trials, args.pair_mode,
                                          quantizer, False, rng)[0] for a in angles]
-        ax.plot(angles, transformed, color=color, linewidth=2.5, linestyle="--",
-                label=f"TQ{bits} + randomized Hadamard")
+        if not args.no_transformed_tq:
+            transformed = [mean_distortion(a, args.dim, args.trials, args.pair_mode,
+                                           quantizer, True, rng)[0] for a in angles]
+            ax.plot(angles, transformed, color=color, linewidth=2.5, linestyle="--",
+                    label=f"TQ{bits} + randomized Hadamard")
         ax.plot(angles, untransformed, color=color, linewidth=2.0, linestyle=":",
                 label=f"TQ{bits} codebook only (no transform)")
 
@@ -170,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--int-bits", type=int, nargs="+", default=list(range(3, 9)))
     parser.add_argument("--tq-bits", type=int, nargs="+", default=list(range(3, 9)))
     parser.add_argument("--pair-mode", choices=["sparse", "isotropic"], default="sparse")
+    parser.add_argument("--no-transformed-tq", action="store_true",
+                        help="Omit randomized-Hadamard TQ curves (useful for the isotropic baseline).")
     parser.add_argument("--angles-start", type=float, default=0.0)
     parser.add_argument("--angles-stop", type=float, default=90.0)
     parser.add_argument("--angles-step", type=float, default=3.0)

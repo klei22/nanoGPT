@@ -73,8 +73,9 @@ NSIDE=64 bash demo_turboquant.sh /tmp/turboquant-surfaces
 
 In addition to the six interactive HEALPix surfaces, the demo writes sparse and
 isotropic angular-distortion PDFs plus the angular-space evenness CSV/PDF for
-INT3--INT8 and TQ3--TQ8. Runtime and resolution can be adjusted without editing
-the script:
+INT3--INT8 and TQ3--TQ8. The isotropic plot omits the redundant Hadamard curves,
+because isotropic inputs are already rotation invariant. Runtime and resolution
+can be adjusted without editing the script:
 
 ```sh
 NSIDE=16 \

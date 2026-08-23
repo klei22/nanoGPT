@@ -14,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import numpy as np
 
 from turboquant_angular_distortion import gaussian_lloyd_max_codebook
@@ -150,8 +151,13 @@ def write_csv(path: Path, rows: list[EvennessMetrics]) -> None:
 
 def plot_metrics(path: Path, rows: list[EvennessMetrics]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    names = [f"{row.format}\n{row.weighting}" for row in rows]
-    colors = ["#277da1" if row.format.startswith("INT") else "#f94144" for row in rows]
+    formats = list(dict.fromkeys(row.format for row in rows))
+    weightings = list(dict.fromkeys(row.weighting for row in rows))
+    row_lookup = {(row.format, row.weighting): row for row in rows}
+    x_positions = np.arange(len(formats), dtype=np.float64)
+    bar_width = 0.8 / len(weightings)
+    family_colors = {"INT": "#277da1", "TQ": "#f94144"}
+    weighting_hatches = {"codes": "", "unique": "//"}
     panels = [
         ("coverage", "HEALPix coverage", True),
         ("effective_coverage", "Entropy-effective coverage", True),
@@ -162,10 +168,28 @@ def plot_metrics(path: Path, rows: list[EvennessMetrics]) -> None:
     ]
     fig, axes = plt.subplots(2, 3, figsize=(16, 8), constrained_layout=True)
     for axis, (field, title, higher_is_better) in zip(axes.flat, panels):
-        axis.bar(names, [getattr(row, field) for row in rows], color=colors)
+        for index, weighting in enumerate(weightings):
+            offset = (index - (len(weightings) - 1) / 2.0) * bar_width
+            values = [getattr(row_lookup[(name, weighting)], field)
+                      if (name, weighting) in row_lookup else np.nan
+                      for name in formats]
+            colors = [family_colors["INT" if name.startswith("INT") else "TQ"]
+                      for name in formats]
+            axis.bar(x_positions + offset, values, width=bar_width,
+                     color=colors, hatch=weighting_hatches.get(weighting, ""),
+                     edgecolor="white", linewidth=0.6)
         axis.set_title(f"{title}\n({'higher' if higher_is_better else 'lower'} is better)")
-        axis.tick_params(axis="x", rotation=60)
+        axis.set_xticks(x_positions, formats, rotation=35, ha="right")
+        axis.tick_params(axis="x", labelsize=8)
         axis.grid(axis="y", alpha=0.25)
+    legend_handles = [
+        Patch(facecolor=family_colors["INT"], label="Integer"),
+        Patch(facecolor=family_colors["TQ"], label="TurboQuant"),
+        *(Patch(facecolor="white", edgecolor="gray",
+                hatch=weighting_hatches.get(weighting, ""), label=weighting)
+          for weighting in weightings),
+    ]
+    fig.legend(handles=legend_handles, loc="outside lower center", ncol=4)
     fig.suptitle("Angular-space evenness and dispersion")
     fig.savefig(path)
     plt.close(fig)

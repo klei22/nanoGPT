@@ -21,6 +21,7 @@ angular-distortion analysis, run:
 ```bash
 python analysis/turboquant_angular_distortion/turboquant_angular_distortion.py \
   --pair-mode isotropic \
+  --no-transformed-tq \
   --tq-bits 3 4 \
   --output outputs/turboquant_isotropic_vs_int.pdf
 ```
@@ -30,7 +31,8 @@ change the input distribution. Consequently, the transformed and untransformed
 TurboQuant curves should agree up to Monte Carlo noise. The sparse mode is
 included specifically to reveal why TurboQuant performs the transform before
 scalar quantization rather than treating the Lloyd-Max codebook as a standalone
-number format.
+number format. Use `--no-transformed-tq` for isotropic plots to omit those
+statistically redundant Hadamard curves.
 
 The implementation uses Gaussian Lloyd-Max codebooks calculated for any
 requested `--tq-bits` value rather than copying a short table. The centroids are
