@@ -57,8 +57,8 @@ isotropic PDF can be matched to their legend entries at a glance.
 
 ## Isotropic dimension sweep
 
-`isotropic_dimension_sweep.py` extends the isotropic comparison across every
-power-of-two dimension from 2 through 1024. Each trial generates one isotropic
+`isotropic_dimension_sweep.py` extends the isotropic comparison across the
+power-of-two dimensions 256, 512, 1024, and 2048 by default. Each trial generates one isotropic
 pair that is shared by every INT/TQ quantizer, reducing comparison noise. The
 default uses 100 trials per angle; plots show mean trends with standard-error
 bands or bars rather than individual noisy trials.
@@ -85,7 +85,7 @@ The sweep writes five artifacts:
 Override the range or sampling cost through environment variables:
 
 ```bash
-MIN_DIM=2 MAX_DIM=256 TRIALS=10 ANGLE_STEP=10 \
+MIN_DIM=256 MAX_DIM=1024 TRIALS=10 ANGLE_STEP=10 \
   bash analysis/turboquant_angular_distortion/demo_isotropic_dimension_sweep.sh \
   /tmp/isotropic-dimension-quick
 ```
@@ -125,8 +125,10 @@ DISTORTION_TRIALS=5 ANGLE_STEP=15 \
 ```
 
 The high-dimensional suite is intentionally separate from the default demo
-because its four large-dimension Monte Carlo runs are substantially more
-expensive.
+when invoked directly, and is also included in the complete
+`vector_distribution/demo_turboquant.sh` suite. Its four large-dimension Monte
+Carlo runs are substantially more expensive, so the complete demo exposes
+separate `HIGH_DIM_*` environment controls.
 
 ## Angular-space evenness and dispersion
 

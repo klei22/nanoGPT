@@ -34,6 +34,10 @@ class TurboQuantDemoTest(unittest.TestCase):
                 "EVENNESS_CAPS": "1",
                 "DIM_SWEEP_TRIALS": "1",
                 "DIM_SWEEP_ANGLE_STEP": "90",
+                "HIGH_DIM_EVENNESS_SAMPLES": "8",
+                "HIGH_DIM_EVENNESS_BATCH_SIZE": "4",
+                "HIGH_DIM_DISTORTION_TRIALS": "1",
+                "HIGH_DIM_ANGLE_STEP": "90",
             })
 
             subprocess.run(["bash", str(DEMO), str(root / "output")],
@@ -41,7 +45,7 @@ class TurboQuantDemoTest(unittest.TestCase):
                            capture_output=True, text=True)
             invocations = calls.read_text(encoding="utf-8").splitlines()
 
-        self.assertEqual(len(invocations), 10)
+        self.assertEqual(len(invocations), 15)
         self.assertEqual(sum("vector_distribution_analysis.py" in call
                              for call in invocations), 6)
         self.assertTrue(any("turboquant_angular_distortion.py" in call and
@@ -52,8 +56,14 @@ class TurboQuantDemoTest(unittest.TestCase):
         self.assertTrue(any("angle_space_evenness.py" in call and
                             "--samples 8" in call for call in invocations))
         self.assertTrue(any("isotropic_dimension_sweep.py" in call and
-                            "--min-dim 2 --max-dim 1024" in call and
+                            "--min-dim 256 --max-dim 2048" in call and
                             "--trials 1" in call for call in invocations))
+        self.assertTrue(any("high_dim_angle_space_evenness.py" in call and
+                            "--samples 8 --batch-size 4" in call
+                            for call in invocations))
+        high_dimensional = [call for call in invocations
+                            if "isotropic_distortion_d" in call]
+        self.assertEqual(len(high_dimensional), 4)
 
 
 if __name__ == "__main__":

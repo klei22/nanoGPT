@@ -16,9 +16,9 @@ SPEC.loader.exec_module(MODULE)
 
 
 class IsotropicDimensionSweepTest(unittest.TestCase):
-    def test_default_dimension_range_uses_every_power_of_two(self):
-        self.assertEqual(MODULE.power_of_two_dimensions(2, 1024),
-                         [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024])
+    def test_target_dimension_range_uses_every_power_of_two(self):
+        self.assertEqual(MODULE.power_of_two_dimensions(256, 2048),
+                         [256, 512, 1024, 2048])
 
     def test_range_selects_only_contained_powers(self):
         self.assertEqual(MODULE.power_of_two_dimensions(5, 33), [8, 16, 32])

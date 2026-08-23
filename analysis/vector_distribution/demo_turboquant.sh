@@ -15,6 +15,10 @@ EVENNESS_SAMPLES="${EVENNESS_SAMPLES:-100000}"
 EVENNESS_CAPS="${EVENNESS_CAPS:-256}"
 DIM_SWEEP_TRIALS="${DIM_SWEEP_TRIALS:-100}"
 DIM_SWEEP_ANGLE_STEP="${DIM_SWEEP_ANGLE_STEP:-5}"
+HIGH_DIM_EVENNESS_SAMPLES="${HIGH_DIM_EVENNESS_SAMPLES:-10000}"
+HIGH_DIM_EVENNESS_BATCH_SIZE="${HIGH_DIM_EVENNESS_BATCH_SIZE:-256}"
+HIGH_DIM_DISTORTION_TRIALS="${HIGH_DIM_DISTORTION_TRIALS:-100}"
+HIGH_DIM_ANGLE_STEP="${HIGH_DIM_ANGLE_STEP:-5}"
 mkdir -p "$OUT_DIR"
 
 run_format() {
@@ -50,10 +54,17 @@ python3 "$ANGULAR_DIR/angle_space_evenness.py" \
   --csv "$OUT_DIR/angle_space_evenness.csv" \
   --output "$OUT_DIR/angle_space_evenness.pdf"
 
-echo "Isotropic dimension sweep: d=2 through d=1024"
+echo "Isotropic dimension sweep: d=256 through d=2048"
 python3 "$ANGULAR_DIR/isotropic_dimension_sweep.py" \
-  --min-dim 2 --max-dim 1024 --trials "$DIM_SWEEP_TRIALS" \
+  --min-dim 256 --max-dim 2048 --trials "$DIM_SWEEP_TRIALS" \
   --angles-step "$DIM_SWEEP_ANGLE_STEP" \
   --output-dir "$OUT_DIR/isotropic_dimension_sweep"
+
+echo "Separate high-dimensional evenness and distortion graph sets"
+EVENNESS_SAMPLES="$HIGH_DIM_EVENNESS_SAMPLES" \
+EVENNESS_BATCH_SIZE="$HIGH_DIM_EVENNESS_BATCH_SIZE" \
+DISTORTION_TRIALS="$HIGH_DIM_DISTORTION_TRIALS" \
+ANGLE_STEP="$HIGH_DIM_ANGLE_STEP" \
+bash "$ANGULAR_DIR/demo_high_dimensional.sh" "$OUT_DIR/high_dimensional"
 
 echo "Wrote the complete TurboQuant analysis suite to $OUT_DIR"

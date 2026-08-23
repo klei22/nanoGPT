@@ -228,8 +228,8 @@ def plot_tq_advantage(path: Path, rows: list[SummaryMetric], bits_list: list[int
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--min-dim", type=int, default=2)
-    parser.add_argument("--max-dim", type=int, default=1024)
+    parser.add_argument("--min-dim", type=int, default=256)
+    parser.add_argument("--max-dim", type=int, default=2048)
     parser.add_argument("--trials", type=int, default=100)
     parser.add_argument("--bits", type=int, nargs="+", default=list(range(3, 9)))
     parser.add_argument("--angles-start", type=float, default=0.0)
