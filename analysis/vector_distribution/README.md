@@ -84,6 +84,7 @@ EVENNESS_SAMPLES=20000 EVENNESS_CAPS=64 \
 DIM_SWEEP_TRIALS=10 DIM_SWEEP_ANGLE_STEP=10 \
 HIGH_DIM_EVENNESS_SAMPLES=1000 HIGH_DIM_EVENNESS_BATCH_SIZE=64 \
 HIGH_DIM_DISTORTION_TRIALS=5 HIGH_DIM_ANGLE_STEP=15 \
+LOW_BIT_EM_TRIALS=10 LOW_BIT_EM_ANGLE_STEP=10 \
 bash demo_turboquant.sh /tmp/turboquant-quick
 ```
 
@@ -97,6 +98,8 @@ The default generated analysis files are:
   for dimensions 256, 512, 1024, and 2048.
 - `high_dimensional/`, containing separate evenness CSV/PDF pairs and isotropic
   distortion PDFs at dimensions 1024, 2048, 4096, and 8192.
+- `low_bit_em_comparison/`, containing new 3/4-bit INT vs TQ vs all-finite E/M
+  curve and dimension-scaling graphs plus their CSV data.
 
 The visualizations enumerate scalar-codebook triples before normalization. They
 therefore show the directional geometry of one fixed rotated basis, rather than

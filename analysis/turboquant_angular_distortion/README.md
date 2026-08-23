@@ -130,6 +130,28 @@ when invoked directly, and is also included in the complete
 Carlo runs are substantially more expensive, so the complete demo exposes
 separate `HIGH_DIM_*` environment controls.
 
+## Three- and four-bit all-finite E/M comparison
+
+`low_bit_em_comparison.py` adds naive floating-point baselines without NaN or
+infinity encodings. Total width includes one sign bit, so every legal split is:
+
+- 3-bit: E1M1 and E2M0;
+- 4-bit: E1M2, E2M1, and E3M0.
+
+Every exponent bit pattern represents a finite number. Exponent zero provides
+zero/subnormal values and all other exponent patterns are normal finite values.
+Run the new comparison without replacing any existing graphs:
+
+```bash
+bash analysis/turboquant_angular_distortion/demo_low_bit_em.sh
+```
+
+The output contains curve and summary CSVs, a two-panel 3/4-bit angular
+distortion PDF at dimension 2048, and a two-panel dimension-scaling PDF over
+256, 512, 1024, and 2048. Each bit-level panel uses a consistent color, line
+texture, and marker for INT, TQ, and each E/M split. Mean curves include
+standard-error bands and dimension trends include standard-error bars.
+
 ## Angular-space evenness and dispersion
 
 `angle_space_evenness.py` complements the angle-pair distortion curves by
