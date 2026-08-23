@@ -15,6 +15,11 @@ SPEC.loader.exec_module(MODULE)
 
 
 class TurboQuantAngularDistortionTest(unittest.TestCase):
+    def test_tq_lines_use_distinct_categorical_colors(self):
+        colors = MODULE.tq_line_colors(6)
+        self.assertEqual(colors, list(MODULE.TQ_LINE_COLORS))
+        self.assertEqual(len(set(colors)), 6)
+
     def test_lloyd_max_matches_paper_two_bit_example(self):
         actual = MODULE.gaussian_lloyd_max_codebook(2)
         np.testing.assert_allclose(actual, [-1.5104, -0.4528, 0.4528, 1.5104], atol=5e-4)

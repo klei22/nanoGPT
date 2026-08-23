@@ -50,6 +50,11 @@ Useful options:
 - `--trials 30`: Monte Carlo trials per angle and curve.
 - `--angles-step 3`: angular sampling interval in degrees.
 
+INT curves use a sequential Viridis palette, while TQ curves use a categorical
+red/orange/purple/pink/brown/cyan palette. The categorical TQ colors are
+deliberately separated in hue so the dotted codebook-only curves in the
+isotropic PDF can be matched to their legend entries at a glance.
+
 ## Angular-space evenness and dispersion
 
 `angle_space_evenness.py` complements the angle-pair distortion curves by

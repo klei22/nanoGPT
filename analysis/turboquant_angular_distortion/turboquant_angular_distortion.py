@@ -22,6 +22,28 @@ from scipy.special import ndtr
 from scipy.stats import norm
 
 
+# A categorical palette makes adjacent low-bit TQ curves much faster to match
+# to their legend entries than a sequential lightness ramp.
+TQ_LINE_COLORS = (
+    "#d62728",  # red
+    "#ff7f0e",  # orange
+    "#9467bd",  # purple
+    "#e377c2",  # pink
+    "#8c564b",  # brown
+    "#17becf",  # cyan
+)
+
+
+def tq_line_colors(count: int) -> list[str]:
+    """Return visually distinct categorical colors for TurboQuant curves."""
+    if count < 0:
+        raise ValueError("Color count cannot be negative.")
+    if count <= len(TQ_LINE_COLORS):
+        return list(TQ_LINE_COLORS[:count])
+    return [matplotlib.colors.to_hex(color)
+            for color in plt.get_cmap("tab20")(np.linspace(0.0, 1.0, count))]
+
+
 def gaussian_lloyd_max_codebook(bits: int, max_iter: int = 10_000,
                                 tolerance: float = 1e-12) -> np.ndarray:
     """Return the 2**bits MSE-optimal centroids for N(0, 1)."""
@@ -139,7 +161,7 @@ def run(args: argparse.Namespace) -> None:
                                  quantizer, False, rng)[0] for a in angles]
         ax.plot(angles, means, color=color, linewidth=1.5, label=f"INT{bits}")
 
-    tq_colors = plt.get_cmap("plasma")(np.linspace(0.05, 0.85, len(args.tq_bits)))
+    tq_colors = tq_line_colors(len(args.tq_bits))
     for color, bits in zip(tq_colors, args.tq_bits):
         quantizer = tq_quantizer(bits, args.dim)
         untransformed = [mean_distortion(a, args.dim, args.trials, args.pair_mode,
