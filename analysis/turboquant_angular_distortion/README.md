@@ -65,7 +65,10 @@ samples the same number of code triples for every format, projects them to the
 unit sphere, and reports both code-frequency-weighted (`codes`) and deduplicated
 angular-support (`unique`) rows. The latter asks how evenly the distinct sampled
 directions are placed, while the former also captures directional multiplicity.
-The metrics are:
+Within every panel, formats are ordered by descending bit width, with the four
+direct comparisons adjacent: INT code-frequency, INT unique-support, TQ
+code-frequency, and TQ unique-support. Subtle vertical dividers separate bit
+widths. The metrics are:
 
 - **HEALPix coverage**: fraction of equal-area target cells reached.
 - **Normalized Shannon entropy**: occupancy entropy divided by the entropy of a

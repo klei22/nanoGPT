@@ -149,9 +149,22 @@ def write_csv(path: Path, rows: list[EvennessMetrics]) -> None:
         writer.writerows(asdict(row) for row in rows)
 
 
+def ordered_formats(rows: list[EvennessMetrics]) -> list[str]:
+    """Order formats by descending bits, with INT immediately before TQ."""
+    formats = set(row.format for row in rows)
+
+    def sort_key(name: str) -> tuple[int, int, str]:
+        prefix = "INT" if name.startswith("INT") else "TQ"
+        bit_text = name.removeprefix(prefix)
+        bits = int(bit_text) if bit_text.isdigit() else -1
+        return -bits, 0 if prefix == "INT" else 1, name
+
+    return sorted(formats, key=sort_key)
+
+
 def plot_metrics(path: Path, rows: list[EvennessMetrics]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    formats = list(dict.fromkeys(row.format for row in rows))
+    formats = ordered_formats(rows)
     weightings = list(dict.fromkeys(row.weighting for row in rows))
     row_lookup = {(row.format, row.weighting): row for row in rows}
     x_positions = np.arange(len(formats), dtype=np.float64)
@@ -182,6 +195,11 @@ def plot_metrics(path: Path, rows: list[EvennessMetrics]) -> None:
         axis.set_xticks(x_positions, formats, rotation=35, ha="right")
         axis.tick_params(axis="x", labelsize=8)
         axis.grid(axis="y", alpha=0.25)
+        for position in range(1, len(formats)):
+            previous_bits = ''.join(filter(str.isdigit, formats[position - 1]))
+            current_bits = ''.join(filter(str.isdigit, formats[position]))
+            if previous_bits != current_bits:
+                axis.axvline(position - 0.5, color="gray", alpha=0.2, linewidth=0.8)
     legend_handles = [
         Patch(facecolor=family_colors["INT"], label="Integer"),
         Patch(facecolor=family_colors["TQ"], label="TurboQuant"),

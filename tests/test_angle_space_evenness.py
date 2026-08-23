@@ -47,6 +47,16 @@ class AngleSpaceEvennessTest(unittest.TestCase):
         self.assertEqual(rows[0].samples, 512)
         self.assertLessEqual(rows[1].samples, rows[0].samples)
 
+    def test_plot_order_groups_families_by_descending_bit_width(self):
+        rows = [
+            MODULE.EvennessMetrics(name, weighting, 1, 1, 1.0, 1.0, 1.0,
+                                   0.0, 0.0, 0.0, 0.0, 0.0)
+            for name in ("INT3", "INT8", "TQ3", "TQ8", "INT7", "TQ7")
+            for weighting in ("codes", "unique")
+        ]
+        self.assertEqual(MODULE.ordered_formats(rows),
+                         ["INT8", "TQ8", "INT7", "TQ7", "INT3", "TQ3"])
+
 
 if __name__ == "__main__":
     unittest.main()
