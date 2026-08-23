@@ -59,8 +59,7 @@ randomly rotates a vector, then represents each rotated coordinate with one of
 standard-normal centroid tables. Their common dimension-dependent scale is
 omitted because it cannot change a vector's direction on the sphere.
 
-Generate side-by-side input sets for INT3, INT4, small floating-point formats,
-and the 3- and 4-bit TurboQuant codebooks with:
+Generate the complete comparison suite with:
 
 ```sh
 bash demo_turboquant.sh
@@ -71,6 +70,25 @@ Set `NSIDE` to change the HEALPix resolution or pass an output directory:
 ```sh
 NSIDE=64 bash demo_turboquant.sh /tmp/turboquant-surfaces
 ```
+
+In addition to the six interactive HEALPix surfaces, the demo writes sparse and
+isotropic angular-distortion PDFs plus the angular-space evenness CSV/PDF for
+INT3--INT8 and TQ3--TQ8. Runtime and resolution can be adjusted without editing
+the script:
+
+```sh
+NSIDE=16 \
+ANGULAR_DIM=1024 ANGULAR_TRIALS=10 ANGLE_STEP=5 \
+EVENNESS_SAMPLES=20000 EVENNESS_CAPS=64 \
+bash demo_turboquant.sh /tmp/turboquant-quick
+```
+
+The default generated analysis files are:
+
+- `turboquant_vs_int_angular_distortion_sparse.pdf`
+- `turboquant_vs_int_angular_distortion_isotropic.pdf`
+- `angle_space_evenness.csv`
+- `angle_space_evenness.pdf`
 
 The visualizations enumerate scalar-codebook triples before normalization. They
 therefore show the directional geometry of one fixed rotated basis, rather than
