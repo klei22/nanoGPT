@@ -41,8 +41,8 @@ python -m huggingface_model.attention_residual_finetune.benchmark \
   --adapter out/smollm2-135m-final-attention-residual/final_attention_residual.pt
 ```
 
-The same model instance is evaluated first without the adapter and then with
-the trained adapter on these lm-evaluation-harness tasks:
+Two clean copies of the same model revision are evaluated—one without the
+adapter and one with the trained adapter—on these lm-evaluation-harness tasks:
 
 - `ifeval` for instruction following;
 - `gsm8k` for grade-school word problems; and

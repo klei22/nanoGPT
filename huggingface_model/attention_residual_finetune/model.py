@@ -48,7 +48,11 @@ class SmolLM2FinalAttentionResidual:
         self.model = model
         self.sources: list[torch.Tensor] = []
         self.last_depth_weights: torch.Tensor | None = None
-        self.residual = FinalAttentionResidual(hidden_size, eps)
+        embedding_weight = decoder.embed_tokens.weight
+        self.residual = FinalAttentionResidual(hidden_size, eps).to(
+            device=embedding_weight.device,
+            dtype=embedding_weight.dtype,
+        )
         model.add_module(self.module_name, self.residual)
 
         self.handles = [decoder.embed_tokens.register_forward_hook(self._capture_embedding)]

@@ -6,9 +6,8 @@ from pathlib import Path
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
+from .constants import DEFAULT_MODEL
 from .model import SmolLM2FinalAttentionResidual
-
-DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-135M-Instruct"
 
 
 def parse_args() -> argparse.Namespace:

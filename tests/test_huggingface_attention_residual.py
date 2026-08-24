@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from huggingface_model.attention_residual_finetune import SmolLM2FinalAttentionResidual
+from huggingface_model.attention_residual_finetune.benchmark import build_harness_model
 
 
 class TinyDecoder(nn.Module):
@@ -51,3 +52,25 @@ def test_only_final_attention_query_trains_and_hooks_model():
         if name != "final_attention_residual.query"
     ]
     assert all(parameter.grad is None for parameter in frozen_parameters)
+
+
+def test_benchmark_loads_harness_from_model_identifier():
+    args = SimpleNamespace(
+        model="HuggingFaceTB/SmolLM2-135M-Instruct",
+        batch_size="auto",
+        device="cpu",
+    )
+    received = {}
+
+    def fake_hflm(**kwargs):
+        received.update(kwargs)
+        return object()
+
+    build_harness_model(args, model_factory=fake_hflm)
+
+    assert received == {
+        "pretrained": "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "tokenizer": "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "batch_size": "auto",
+        "device": "cpu",
+    }
