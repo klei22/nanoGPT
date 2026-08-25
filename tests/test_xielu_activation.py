@@ -36,6 +36,21 @@ def test_xielu_matches_reference_equation_and_trains_coefficients():
     assert 0.5 + F.softplus(activation.alpha_n) > 0.5
 
 
+def test_xielu_unused_branch_does_not_create_nan_gradients():
+    activation = activation_dictionary["xielu"](make_config()).half()
+    # Squaring this value overflows float16. The negative xIELU branch itself
+    # remains representable, so the inactive positive branch must not poison it.
+    x = torch.tensor([-300.0], dtype=torch.float16, requires_grad=True)
+
+    output = activation(x)
+    output.sum().backward()
+
+    assert torch.isfinite(output).all()
+    assert torch.isfinite(x.grad).all()
+    assert torch.isfinite(activation.alpha_p.grad).all()
+    assert torch.isfinite(activation.alpha_n.grad).all()
+
+
 @pytest.mark.parametrize(
     ("override", "message"),
     [

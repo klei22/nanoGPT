@@ -45,9 +45,21 @@ class xIELU(nn.Module):
     def forward(self, x):
         alpha_p = F.softplus(self.alpha_p)
         alpha_n = self.beta + F.softplus(self.alpha_n)
-        positive = alpha_p * x.square() + self.beta * x
-        negative = alpha_n * torch.expm1(torch.clamp_max(x, -self.eps)) \
-            - alpha_n * x + self.beta * x
+
+        # Mask before evaluating either branch.  ``torch.where`` evaluates both
+        # expressions eagerly, so squaring a large negative half-precision
+        # value in the unused positive branch can overflow.  Its zero-masked
+        # backward contribution then becomes ``0 * inf == nan`` and poisons
+        # alpha_p (and subsequently the whole model).
+        positive_x = torch.clamp_min(x, 0)
+        negative_x = torch.clamp_max(x, 0)
+        positive = alpha_p * positive_x.square() + self.beta * positive_x
+        negative_exp_x = torch.clamp_max(negative_x, -self.eps)
+        negative = (
+            alpha_n * torch.expm1(negative_exp_x)
+            - alpha_n * negative_x
+            + self.beta * negative_x
+        )
         return torch.where(x > 0, positive, negative)
 
 class ReLUPower(nn.Module):
