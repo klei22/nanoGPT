@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from variations.activation_variations import activation_dictionary
+from train_args import parse_args
 
 
 def make_config(**overrides):
@@ -16,6 +17,33 @@ def make_config(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_xielu_is_selectable_and_configurable_from_cli(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "train.py",
+            "--activation_variant",
+            "xielu",
+            "--xielu_alpha_p_init",
+            "0.9",
+            "--xielu_alpha_n_init",
+            "1.0",
+            "--xielu_beta",
+            "0.4",
+            "--xielu_eps",
+            "1e-5",
+        ],
+    )
+
+    args, *_ = parse_args()
+
+    assert args.activation_variant == "xielu"
+    assert args.xielu_alpha_p_init == 0.9
+    assert args.xielu_alpha_n_init == 1.0
+    assert args.xielu_beta == 0.4
+    assert args.xielu_eps == 1e-5
 
 
 def test_xielu_matches_reference_equation_and_trains_coefficients():
