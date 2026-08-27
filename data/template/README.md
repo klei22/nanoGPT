@@ -188,6 +188,11 @@ Each directory contains its own `meta.pkl`, `train.bin`, `val.bin`,
 `-S` tag precedes the vocabulary size, so the final directory in this example
 is `char_bpe_factored_9000`.
 
+Vocabulary sizes are zero-padded to the width of the maximum so directory names
+sort numerically. For example, a maximum of 1500 and increment of 500 produces
+`char_bpe_factored_0500`, `char_bpe_factored_1000`, and
+`char_bpe_factored_1500`.
+
 #### `prepare.py` Generated File Descriptions
 
 Afterward it produces the train.bin and val.bin (and meta.pkl if not tiktoken)

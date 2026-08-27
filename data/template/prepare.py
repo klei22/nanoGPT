@@ -221,7 +221,8 @@ def _output_dir_for_args(args):
         if args.output_subdir_suffix:
             output_dir = f"{output_dir}_{args.output_subdir_suffix}"
         if args.method == "char_bpe" and args.vocab_size_increment:
-            output_dir = f"{output_dir}_{args.vocab_size}"
+            width = getattr(args, "factored_vocab_size_width", len(str(args.vocab_size)))
+            output_dir = f"{output_dir}_{args.vocab_size:0{width}d}"
     return output_dir
 
 def _prepare_one(args):
@@ -406,12 +407,14 @@ def main():
         raise ValueError("--vocab_size_increment cannot be combined with --char_bpe_vocab_path.")
 
     sizes = _factored_vocab_sizes(args.vocab_size, args.vocab_size_increment)
+    vocab_size_width = len(str(args.vocab_size))
     source_meta = None
     # Train the largest vocabulary first. Smaller variants reuse prefixes of its
     # ordered merge list, avoiding independent BPE training runs.
     for vocab_size in reversed(sizes):
         variant_args = copy.deepcopy(args)
         variant_args.vocab_size = vocab_size
+        variant_args.factored_vocab_size_width = vocab_size_width
         variant_args.char_bpe_vocab_path = source_meta
         _prepare_one(variant_args)
         if source_meta is None:

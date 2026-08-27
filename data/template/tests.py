@@ -350,6 +350,18 @@ class TestTokenizers(unittest.TestCase):
             hf_tokenizer_name=None,
         )
         self.assertEqual(prepare._output_dir_for_args(args), "char_bpe_factored_9000")
+        args.factored_vocab_size_width = len(str(1500))
+        self.assertEqual(
+            [
+                prepare._output_dir_for_args(Namespace(**{**vars(args), "vocab_size": size}))
+                for size in prepare._factored_vocab_sizes(1500, 500)
+            ],
+            [
+                "char_bpe_factored_0500",
+                "char_bpe_factored_1000",
+                "char_bpe_factored_1500",
+            ],
+        )
 
 
     def test_char_bpe_incomplete_coverage_uses_byte_fallback(self):
