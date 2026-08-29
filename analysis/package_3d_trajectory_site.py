@@ -25,9 +25,8 @@ def package_site(source_dir: Path, output_dir: Path) -> int:
         shutil.rmtree(output_dir)
     (output_dir / "runs").mkdir(parents=True)
 
-    viewer = (source_dir / "index.html").read_text(encoding="utf-8")
-    selector = (source_dir / "sweep.html").read_text(encoding="utf-8")
-    selector = selector.replace("index.html?data=", "viewer.html?data=")
+    selector = (source_dir / "index.html").read_text(encoding="utf-8")
+    viewer = (source_dir / "viewer.html").read_text(encoding="utf-8")
     (output_dir / "index.html").write_text(selector, encoding="utf-8")
     (output_dir / "viewer.html").write_text(viewer, encoding="utf-8")
     (output_dir / ".nojekyll").write_text("", encoding="utf-8")

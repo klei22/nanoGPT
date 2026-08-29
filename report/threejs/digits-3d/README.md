@@ -21,7 +21,7 @@ motion in model space is directional. A wireframe sphere is shown only for
 native 3D runs because PCA does not preserve individual vector norms. Run the
 demo with `WTE_FIXED_NORM=false` to produce the unconstrained view.
 
-The viewer also accepts `?data=<relative-json-path>`. The sweep demo uses this
+The underlying `viewer.html` also accepts `?data=<relative-json-path>`. The sweep demo uses this
 to keep every vocabulary-size and fixed-norm variation under `runs/` rather
 than overwriting the default trajectory.
 
@@ -31,13 +31,15 @@ configuration. Set `EMBEDDING_DIMS` (for example, `3 8 16 64`),
 `DIGIT_COUNTS`, `LETTER_COUNTS`, `WTE_TYING_MODES`, or `SWEEP_MAX_ITERS` to
 customize it.
 
-After the first sweep run completes, open `sweep.html` to filter and select the
-generated JSON files without editing URLs. Each trajectory includes checkpoint
+After the first sweep run completes, open `index.html` to filter and select the
+generated JSON files without editing URLs. Filters and the selected run are
+stored in the URL query string, so a configured view can be bookmarked or shared.
+Each trajectory includes checkpoint
 train and validation loss; the viewer plots both above the time slider and
 marks the currently selected checkpoint.
 
 The sweep rewrites `runs/manifest.json` atomically after every completed run.
-You can therefore keep the HTTP server open and refresh `sweep.html` while the
+You can therefore keep the HTTP server open and refresh `index.html` while the
 remaining configurations continue training.
 
 The base sweep runs 30,000 iterations. It covers sudden included-to-excluded
@@ -50,9 +52,9 @@ included segments retain the trained-token orange, including every transition
 back to the dataset.
 
 Every base-sweep schedule also compares full Muon with zero weight decay, Adam
-with weight decay 0.1, Adagrad, SGD, and RMSprop. The latter three use zero
-weight decay. Set `OPTIMIZER_MODES` to choose a subset or `ADAM_WEIGHT_DECAY`
-to change the Adam comparison. Optimizer and effective weight decay are stored
+with weight decays 0.0, 0.01, 0.05, 0.1, and 0.5, plus Adagrad, SGD, and RMSprop.
+The latter three use zero weight decay. Set `OPTIMIZER_MODES` to choose a subset
+or `ADAM_WEIGHT_DECAYS` to change the Adam sweep. Optimizer and effective weight decay are stored
 in each trajectory, displayed on the run card, and available as a selector
 filter.
 

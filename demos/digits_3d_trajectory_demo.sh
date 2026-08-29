@@ -101,7 +101,7 @@ python3 analysis/export_3d_token_trajectories.py --checkpoint-dir "${OUT_DIR}" -
 cat <<EOF
 Done. Serve the repository (fetch does not work from file://), then open:
   python3 -m http.server 8000
-  http://localhost:8000/${VIEW_DIR}/index.html?data=${TRAJECTORY_FILE#${VIEW_DIR}/}
+  http://localhost:8000/${VIEW_DIR}/viewer.html?data=${TRAJECTORY_FILE#${VIEW_DIR}/}
 The ${NUM_DIGITS} digit-like symbols are trained; ${NUM_LETTERS} letters are vocabulary-only controls.
 Embedding dimension: ${EMBEDDING_DIM} (dimensions above 3 are globally PCA-projected for viewing).
 WTE/LM-head weight tying: ${WTE_WEIGHT_TYING}.
