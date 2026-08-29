@@ -18,6 +18,7 @@ def build_dataset(
     val_repeats: int,
     num_digits: int = 10,
     num_letters: int = 10,
+    dropout_count: int = 0,
 ) -> None:
     if train_repeats < 2 or val_repeats < 2:
         raise ValueError("repeat counts must be at least 2")
@@ -26,9 +27,13 @@ def build_dataset(
         raise ValueError(f"num_digits must be between 1 and {len(TRAINED_SYMBOLS)}")
     if not 0 <= num_letters <= len(HELD_OUT_SYMBOLS):
         raise ValueError(f"num_letters must be between 0 and {len(HELD_OUT_SYMBOLS)}")
-    sequence = TRAINED_SYMBOLS[:num_digits]
+    if not 0 <= dropout_count < num_digits:
+        raise ValueError("dropout_count must be between 0 and num_digits - 1")
+    all_trained = TRAINED_SYMBOLS[:num_digits]
+    dropped_tokens = all_trained[-dropout_count:] if dropout_count else ""
+    sequence = all_trained[:-dropout_count] if dropout_count else all_trained
     held_out = HELD_OUT_SYMBOLS[:num_letters]
-    vocab = sequence + held_out
+    vocab = all_trained + held_out
 
     out_dir.mkdir(parents=True, exist_ok=True)
     stoi = {char: index for index, char in enumerate(vocab)}
@@ -49,6 +54,8 @@ def build_dataset(
         "train_tokens": len(sequence) * train_repeats,
         "val_tokens": len(sequence) * val_repeats,
         "trained_tokens": list(sequence),
+        "initial_trained_tokens": list(all_trained),
+        "dropped_tokens": list(dropped_tokens),
         "unseen_tokens": list(held_out),
         "description": f"Repeated {sequence}; {held_out or 'no symbols'} are vocabulary-only controls.",
     }
@@ -63,9 +70,10 @@ def main() -> None:
     parser.add_argument("--val-repeats", type=int, default=200)
     parser.add_argument("--num-digits", type=int, default=10, help="Number of trained symbols (0-9, then punctuation).")
     parser.add_argument("--num-letters", type=int, default=10, help="Number of held-out alphabetic vocabulary symbols.")
+    parser.add_argument("--dropout-count", type=int, default=0, help="Remove this many trailing trained symbols from both splits while retaining them in the vocabulary.")
     args = parser.parse_args()
-    build_dataset(args.out_dir, args.train_repeats, args.val_repeats, args.num_digits, args.num_letters)
-    print(f"Wrote {args.num_digits} trained and {args.num_letters} held-out symbols to {args.out_dir}")
+    build_dataset(args.out_dir, args.train_repeats, args.val_repeats, args.num_digits, args.num_letters, args.dropout_count)
+    print(f"Wrote {args.num_digits - args.dropout_count} active, {args.dropout_count} dropped, and {args.num_letters} held-out symbols to {args.out_dir}")
 
 
 if __name__ == "__main__":

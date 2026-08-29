@@ -20,6 +20,13 @@ def build_manifest(runs_dir: Path) -> dict:
             "held_out_tokens": len(payload.get("unseen_tokens", [])),
             "fixed_norm": payload.get("fixed_norm"),
             "wte_weight_tying": payload.get("wte_weight_tying", True),
+            "dropped_tokens": len(payload.get("dropped_tokens", [])),
+            "dropout_iteration": payload.get("dropout_iteration"),
+            "final_iteration": payload.get("frames", [{}])[-1].get("iteration"),
+            "transition_mode": payload.get("transition_mode"),
+            "transition_iterations": payload.get("transition_iterations", []),
+            "duty_cycle": payload.get("duty_cycle"),
+            "optimizer": payload.get("optimizer", {}),
         })
     return {"runs": entries}
 

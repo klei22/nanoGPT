@@ -41,3 +41,15 @@ def test_default_vocabulary_has_ten_trained_and_ten_held_out(tmp_path):
         meta = pickle.load(handle)
     assert len(meta["trained_tokens"]) == 10
     assert len(meta["unseen_tokens"]) == 10
+
+
+def test_dropped_symbols_remain_in_vocab_but_leave_splits(tmp_path):
+    build_dataset(tmp_path, 3, 2, num_digits=10, num_letters=2, dropout_count=3)
+    with (tmp_path / "meta.pkl").open("rb") as handle:
+        meta = pickle.load(handle)
+    train = np.fromfile(tmp_path / "train.bin", dtype=np.uint16)
+    dropped_ids = {meta["stoi"][token] for token in "789"}
+    assert meta["dropped_tokens"] == list("789")
+    assert meta["initial_trained_tokens"] == list("0123456789")
+    assert dropped_ids.isdisjoint(train)
+    assert "".join(meta["itos"][int(i)] for i in train) == "0123456" * 3

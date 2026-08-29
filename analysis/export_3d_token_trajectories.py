@@ -55,7 +55,16 @@ def finite_metric(value):
     return value if math.isfinite(value) else None
 
 
-def export(checkpoint_dir: Path, meta_path: Path, output: Path) -> None:
+def export(
+    checkpoint_dir: Path,
+    meta_path: Path,
+    output: Path,
+    dropout_iteration: int | None = None,
+    transition_mode: str | None = None,
+    transition_iterations: list[int] | None = None,
+    affected_tokens: list[str] | None = None,
+    duty_cycle: int | None = None,
+) -> None:
     with meta_path.open("rb") as handle:
         meta = pickle.load(handle)
     tokens = [meta["itos"][i] for i in range(meta["vocab_size"])]
@@ -70,9 +79,17 @@ def export(checkpoint_dir: Path, meta_path: Path, output: Path) -> None:
     seen_iterations = set()
     fixed_norm = None
     wte_weight_tying = None
+    optimizer_metadata = None
     for path in candidates:
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         model_args = checkpoint.get("model_args", {})
+        if optimizer_metadata is None:
+            config = checkpoint.get("config", {})
+            optimizer_metadata = {
+                "name": config.get("optimizer"),
+                "weight_decay": config.get("weight_decay"),
+                "muon_include_all_weights": config.get("muon_include_all_weights", False),
+            }
         if wte_weight_tying is None:
             wte_weight_tying = model_args.get("wte_weight_tying", True)
         if fixed_norm is None and model_args.get("wte_fixed_norm", False):
@@ -108,10 +125,16 @@ def export(checkpoint_dir: Path, meta_path: Path, output: Path) -> None:
 
     payload = {
         "tokens": tokens,
-        "trained_tokens": meta.get("trained_tokens", list("0123456789")),
+        "trained_tokens": meta.get("initial_trained_tokens", meta.get("trained_tokens", list("0123456789"))),
         "unseen_tokens": meta.get("unseen_tokens", list("abcd")),
+        "dropped_tokens": affected_tokens if affected_tokens is not None else meta.get("dropped_tokens", []),
+        "dropout_iteration": dropout_iteration,
+        "transition_mode": transition_mode,
+        "transition_iterations": transition_iterations or ([dropout_iteration] if dropout_iteration is not None else []),
+        "duty_cycle": duty_cycle,
         "fixed_norm": fixed_norm,
         "wte_weight_tying": wte_weight_tying,
+        "optimizer": optimizer_metadata,
         "projection": projection,
         "frames": frames,
     }
@@ -125,8 +148,18 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
     parser.add_argument("--meta", type=Path, default=Path("data/digits_3d/meta.pkl"))
     parser.add_argument("--output", type=Path, default=Path("report/threejs/digits-3d/token_trajectories.json"))
+    parser.add_argument("--dropout-iteration", type=int, default=None)
+    parser.add_argument("--transition-mode", choices=["drop", "add", "duty_cycle"], default=None)
+    parser.add_argument("--transition-iterations", type=int, nargs="*", default=None)
+    parser.add_argument("--affected-tokens", default=None, help="Characters whose availability changes.")
+    parser.add_argument("--duty-cycle", type=int, default=None)
     args = parser.parse_args()
-    export(args.checkpoint_dir, args.meta, args.output)
+    export(
+        args.checkpoint_dir, args.meta, args.output, args.dropout_iteration,
+        args.transition_mode, args.transition_iterations,
+        list(args.affected_tokens) if args.affected_tokens is not None else None,
+        args.duty_cycle,
+    )
 
 
 if __name__ == "__main__":

@@ -607,7 +607,10 @@ class Trainer:
 
             def _use_muon_for_param(name, param):
                 if self.args.muon_include_all_weights:
-                    return True
+                    # Newton-Schulz orthogonalization is defined for matrices.
+                    # "All weights" includes embeddings/heads, but leaves
+                    # scalar/vector parameters on Muon's auxiliary Adam path.
+                    return param.ndim >= muon_min_ndim
                 if force_include and any(token in name for token in force_include):
                     return True
                 if param.ndim < muon_min_ndim:

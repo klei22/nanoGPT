@@ -20,6 +20,22 @@ symbols, and 10 held-out letters. Its `EMBEDDING_DIMS`, `DIGIT_COUNTS`,
 values, so PCA widths such as `8 16 64` remain selectable. Sweep runs train for
 10,000 iterations by default; override `SWEEP_MAX_ITERS` as needed.
 
+Set `DROPOUT_PERCENT` in the single demo to regenerate the training split and
+resume training without the trailing `DROPOUT_COUNT` trained symbols at that
+percentage of the run. The symbols stay in the vocabulary and checkpointed
+model, which makes their post-dropout motion directly comparable.
+
+`SCHEDULE_MODE=add` runs the complementary experiment: affected symbols start
+absent and enter the dataset at `DROPOUT_PERCENT`. `SCHEDULE_MODE=duty_cycle`
+repeatedly includes and excludes them; `DUTY_CYCLE_PERCENT` controls their
+included fraction (20–80) within each `DUTY_PERIOD_PERCENT` period.
+
+`OPTIMIZER_MODE` selects `full_muon`, `adam`, `adagrad`, `sgd`, or `rmsprop`.
+Full Muon routes every matrix-shaped parameter (including WTE and LM head) to
+Muon with zero weight decay, while vector parameters use its auxiliary Adam.
+Adam uses `ADAM_WEIGHT_DECAY` (0.1 by default); the other comparison optimizers
+use zero weight decay.
+
 The data is generated locally and is released under the repository's license;
 there is no external source or additional dataset license.
 

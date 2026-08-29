@@ -39,3 +39,45 @@ marks the currently selected checkpoint.
 The sweep rewrites `runs/manifest.json` atomically after every completed run.
 You can therefore keep the HTTP server open and refresh `sweep.html` while the
 remaining configurations continue training.
+
+The base sweep runs 30,000 iterations. It covers sudden included-to-excluded
+and excluded-to-included transitions at 20%, 40%, 60%, and 80%, plus PWM-style
+duty cycles whose included fraction is 20%, 40%, 60%, or 80% of each period.
+`DROPOUT_COUNTS` accepts multiple counts to affect several trailing symbols at
+once; `TRANSITION_PERCENTAGES`, `DUTY_CYCLES`, and `DUTY_PERIOD_PERCENT`
+customize the schedules. Excluded points and trajectory segments are purple;
+included segments retain the trained-token orange, including every transition
+back to the dataset.
+
+Every base-sweep schedule also compares full Muon with zero weight decay, Adam
+with weight decay 0.1, Adagrad, SGD, and RMSprop. The latter three use zero
+weight decay. Set `OPTIMIZER_MODES` to choose a subset or `ADAM_WEIGHT_DECAY`
+to change the Adam comparison. Optimizer and effective weight decay are stored
+in each trajectory, displayed on the run card, and available as a selector
+filter.
+
+The sweep includes unconstrained (`free`), `sqrt_dim`, and radius `1` runs by
+default. Set `RADIUS_MODES`, for example `RADIUS_MODES="free sqrt_dim 0.5 1 2"`,
+to select any positive fixed radii. The sweep page builds its radius filter from
+the completed-run manifest and lists **Free (unconstrained)** plus every actual
+radius value present.
+
+## Package for GitHub Pages
+
+After at least one sweep run completes, build a static-site directory with:
+
+```bash
+bash demos/package_digits_3d_github_pages.sh
+```
+
+The command rebuilds the manifest, copies only completed run JSON files, makes
+the sweep selector the site root, renames the trajectory page to `viewer.html`,
+and adds `.nojekyll`. Preview `dist/digits-3d-site` locally or publish that
+directory through a `gh-pages` branch or GitHub Pages Actions artifact. Three.js
+and OrbitControls remain version-pinned CDN modules, so the deployed viewer
+requires internet access in the browser.
+
+To initialize the package as a standalone commit and force-push it to the
+repository's `gh-pages` branch, run `PUBLISH=true` with the packaging script.
+Set `REMOTE_URL` to publish elsewhere. The default packaging command never
+pushes, and the generated site remains ignored by the main working tree.
