@@ -5,6 +5,30 @@ from run_exploration_monitor import ExplorationConfigScreen, MonitorApp
 
 
 class ColumnSettingRemapTests(unittest.TestCase):
+    def setUp(self):
+        self.app = object.__new__(MonitorApp)
+        self.app.current_entries = [{"short_column_name": "abc"}]
+        self.app.auto_fit_columns = set()
+        self.app.tight_fit_columns = set()
+
+    def test_width_cycle_adds_tight_fit_smaller_than_column_heading(self):
+        column = "short_column_name"
+
+        self.assertEqual(self.app._column_width(column), len(column) + 2)
+        self.assertEqual(self.app._cycle_column_width(column), "fit to data")
+        self.assertEqual(self.app._column_width(column), len(column) + 2)
+        self.assertEqual(self.app._cycle_column_width(column), "tightly fit to data")
+        self.assertEqual(self.app._column_width(column), len("abc") + 2)
+        self.assertEqual(self.app._cycle_column_width(column), "reset")
+        self.assertEqual(self.app._column_width(column), len(column) + 2)
+
+    def test_tight_fit_still_uses_largest_visible_value(self):
+        column = "value"
+        self.app.current_entries = [{column: "a"}, {column: "longest"}]
+        self.app.tight_fit_columns.add(column)
+
+        self.assertEqual(self.app._column_width(column), len("longest") + 2)
+
     def test_title_and_exploration_config_use_log_yaml_name(self):
         app = MonitorApp(
             log_file=Path("exploration_logs/default.yaml"),

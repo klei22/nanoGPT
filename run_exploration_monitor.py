@@ -28,7 +28,7 @@ Interactive keybindings:
   c     - cycle colour-map for current column (high→low, low→high, off)
   D     - remove colour-maps from all columns
   C # # - correlation + scatter for columns (1-based indexes, e.g. C 1 2)
-  w     - toggle column width to fit largest visible cell
+  w     - cycle column width: default, fit data, tightly fit data
   u     - unsort / remove current column from the sort stack
   U     - clear *all* sorting
 
@@ -95,7 +95,7 @@ HOTKEYS_TEXT = (
     "c: cycle colour-map for current column (high→low, low→high, off)\n"
     "D: remove colour-maps from all columns\n"
     "C # #: correlation + scatter (1-based indexes, e.g. C 1 2)\n"
-    "w: toggle column width to fit largest visible cell\n"
+    "w: cycle column width (default, fit data, tightly fit data)\n"
     "u: unsort / remove current column from the sort stack\n"
     "U: clear *all* sorting\n"
 )
@@ -200,6 +200,7 @@ class MonitorApp(App):
         self.row_filters: List[tuple] = []     # (col, op, val) triples
         self.colour_columns: dict[int, str] = {}   # col index -> colour mode
         self.auto_fit_columns: set[str] = set()
+        self.tight_fit_columns: set[str] = set()
         self._bar_mode: bool = False           # are we collecting digits?
         self._bar_digits: List[int] = []       # collected numeric keys
         self._trim_mode: bool = False          # 'z' zoom-bar mode
@@ -281,6 +282,7 @@ class MonitorApp(App):
                     int(idx): str(mode) for idx, mode in raw_modes.items()
                 }
             self.auto_fit_columns = set(cfg.get("auto_fit_columns", []))
+            self.tight_fit_columns = set(cfg.get("tight_fit_columns", []))
             # Restore saved row filters
             self.row_filters = cfg.get("row_filters", [])
             self.current_entries = list(self.original_entries)
@@ -317,13 +319,27 @@ class MonitorApp(App):
 
     def _column_width(self, col: str) -> int:
         base_width = max(12, len(col) + 2)
-        if col not in self.auto_fit_columns:
+        if col not in self.auto_fit_columns and col not in self.tight_fit_columns:
             return base_width
         max_len = 0
         for entry in self.current_entries:
             text = self._format_cell(self.get_cell(entry, col))
             max_len = max(max_len, len(text))
+        if col in self.tight_fit_columns and self.current_entries:
+            return max_len + 2
         return max(base_width, max_len + 2)
+
+    def _cycle_column_width(self, col: str) -> str:
+        """Advance *col* through default, data-fit, and tight data-fit widths."""
+        if col in self.tight_fit_columns:
+            self.tight_fit_columns.remove(col)
+            return "reset"
+        if col in self.auto_fit_columns:
+            self.auto_fit_columns.remove(col)
+            self.tight_fit_columns.add(col)
+            return "tightly fit to data"
+        self.auto_fit_columns.add(col)
+        return "fit to data"
 
     def _move_column_to_edge(
         self,
@@ -817,6 +833,7 @@ class MonitorApp(App):
                 "sort_stack":  [[i, asc] for i, asc in self.sort_stack],
                 "colour_columns": self.colour_columns,
                 "auto_fit_columns": list(self.auto_fit_columns),
+                "tight_fit_columns": list(self.tight_fit_columns),
                 "row_filters": getattr(self, "row_filters", []),
             }
             self.config_file.write_text(json.dumps(cfg, indent=2))
@@ -975,12 +992,8 @@ class MonitorApp(App):
                 self._msg("No active column colours")
         elif key == "w":
             col = self.columns[c]
-            if col in self.auto_fit_columns:
-                self.auto_fit_columns.remove(col)
-                self._msg(f"Width reset for {col}")
-            else:
-                self.auto_fit_columns.add(col)
-                self._msg(f"Width fit to data for {col}")
+            mode = self._cycle_column_width(col)
+            self._msg(f"Width {mode} for {col}")
             self.refresh_table(new_cursor=c)
         elif key == "u":
             # ── remove current column from sort stack ────────────────────
