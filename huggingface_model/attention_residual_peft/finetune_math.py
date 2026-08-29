@@ -94,7 +94,10 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype).to(args.device)
+    # `dtype=` was only added to newer Transformers releases. `torch_dtype=` is
+    # accepted by both the older releases used by this repository and current
+    # releases (where it may emit a deprecation warning), so prefer compatibility.
+    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=dtype).to(args.device)
     adapter = attach_attention_residual_peft(model, args.adapter_dir)
     adapter_parameters = sum(p.numel() for p in adapter.parameters())
     base_parameters = sum(p.numel() for p in model.parameters())
