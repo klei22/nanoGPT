@@ -1,5 +1,174 @@
 # Open Source CJK Analysis Tool
 
+## Gemma 3 270M semantic factorization
+
+`semantic_factorization.py` estimates how many embedding/LM-head rows can be
+replaced by a base row plus an orthographic feature. It applies these rules:
+
+1. Replace `▁token` with `SPACE + token` when `token` exists. Gemma's tokenizer
+   normalizer uses `▁` (U+2581) for a space; the vocabulary does not store a
+   literal leading ASCII space.
+2. Replace a token beginning with an uppercase Unicode character with
+   `CAPITALIZE + lower-first(token)` when that counterpart exists. A leading
+   `▁` is ignored while identifying the first character.
+3. Replace a token whose cased characters are all uppercase with
+   `ALL_CAPS + lower(token)` when that counterpart exists.
+
+The rule sets overlap, so savings use their **union**, not their sum. The CLI
+compares these defaults: `google/gemma-3-270m`, `Qwen/Qwen3-0.6B` (the released
+model is 0.6 **billion**, not 0.6 million), and tiktoken's `o200k_base`.
+
+| Vocabulary/head | Before | Unique removed | After | Reduction |
+|---|---:|---:|---:|---:|
+| Gemma 3 270M | 262,144 | 65,035 | 197,109 | 24.81% |
+| Qwen 3 0.6B | 151,936 | 32,799 | 119,137 | 21.59% |
+| tiktoken `o200k_base` | 200,019 | 47,022 | 152,997 | 23.51% |
+
+Gemma's per-rule detail is:
+
+| Rule | Matches | Newly removed in rule order |
+|---|---:|---:|
+| Leading space | 40,893 | 40,893 |
+| Initial capital | 27,786 | 18,530 |
+| All caps | 8,859 | 5,612 |
+| **Unique total** | **65,035** | **65,035** |
+
+That reduces the estimated vocabulary/head from **262,144 to 197,109 rows**, a
+**24.81%** reduction. The estimate does not count three new feature vectors; if
+they occupy ordinary vocabulary rows, the physical total is 197,112. It also
+does not claim an immediately usable tokenizer: BPE merges referring to removed
+tokens must be rewritten, encoding must emit base-plus-feature structure, and
+the model must be trained or fine-tuned with compositional input/output heads.
+
+Install the repository requirements, accept the Gemma license on Hugging Face,
+set `HF_TOKEN`, and run all defaults:
+
+```bash
+python analysis/tokenizer_analysis/semantic_factorization.py
+```
+
+Add any number of Hugging Face models or tiktoken encodings; one inaccessible
+model produces a warning without preventing the other comparisons:
+
+```bash
+python analysis/tokenizer_analysis/semantic_factorization.py \
+  --hf-model meta-llama/Llama-3.2-1B \
+  --hf-model Qwen/Qwen3-4B \
+  --tiktoken-encoding cl100k_base
+```
+
+Use `--no-defaults` to analyze only the explicitly supplied sources. Local
+Hugging Face tokenizer JSON files can also be positional arguments:
+
+```bash
+python analysis/tokenizer_analysis/semantic_factorization.py \
+  --no-defaults /path/to/tokenizer.json
+```
+
+For Hugging Face model IDs, `config.vocab_size` defines the current head size;
+unused/padded IDs remain in the estimate and added tokenizer IDs beyond the head
+are excluded. For tiktoken, `n_vocab` defines the extent, including reserved
+holes. Invalid UTF-8 byte fragments are retained but conservatively considered
+non-factorizable. A standalone tokenizer JSON has no model config, so its
+`model.vocab` length is used.
+
+A practical implementation can represent a factored token as
+`(base_id, feature_mask)`. For input embeddings, add learned feature vectors to
+the base embedding. For the output head, score the base rows once and predict
+the three feature bits with small auxiliary heads (or score only valid
+base/feature combinations). Retokenize training data and fine-tune before using
+the smaller head; simply deleting rows changes sequence boundaries and cannot
+reproduce the original BPE model.
+
+### Other factorization candidates
+
+The same idea extends beyond space and case. The safest candidates are
+**lossless surface transformations**: the base plus its features must reconstruct
+the original token exactly, without guessing language or meaning.
+
+Recommended candidates, roughly in implementation order:
+
+1. **Layout prefixes.** Factor leading newline, tab, carriage-return/newline,
+   and repeated indentation from a token when the unprefixed token exists. This
+   generalizes `SPACE`; useful features include `NEWLINE`, `TAB`, and a small
+   indentation count. Byte-level BPE tokenizers may serialize these characters
+   with visible byte-alphabet symbols, so the tokenizer decoder—not a hard-coded
+   glyph—is the reliable way to identify them.
+2. **Punctuation affixes.** Factor common leading opening punctuation and
+   trailing closing punctuation, quotes, comma, period, colon, semicolon,
+   question mark, or exclamation mark when the stripped counterpart exists.
+   Prefix and suffix features should be separate, composable, and preserve the
+   exact punctuation character and repetition count; for example,
+   `“Hello!” = OPEN_DOUBLE_QUOTE + CAPITALIZE + hello + EXCLAMATION +
+   CLOSE_DOUBLE_QUOTE`.
+3. **General case patterns.** Extend `CAPITALIZE` and `ALL_CAPS` to
+   `TITLE_CASE`, `camelCase`, and `PascalCase`. An arbitrary per-character case
+   mask is lossless but can cost as much as it saves, so a small catalog of
+   frequent patterns is preferable. Unicode case mappings that change codepoint
+   count require an explicit exception table.
+4. **Canonical Unicode composition.** Tokens that differ only by canonically
+   equivalent NFC/NFD spelling can share a base plus a composition/combining-mark
+   feature. This must use canonical equivalence; broad accent stripping is not
+   lossless and can merge distinct words.
+5. **Width and presentation variants.** Full-width versus ASCII forms,
+   compatibility ligatures, and selected presentation forms can be factored
+   with an explicit reversible mapping. Applying NFKC blindly is unsafe because
+   compatibility normalization can erase distinctions.
+6. **Numeric formatting.** Factor a sign, currency symbol, percent suffix,
+   decimal/thousands separators, leading zeros, or a small exponent marker from
+   a digit token. This is promising for code and tabular data, but locale must be
+   retained (`1,234` and `1.234` are not universally the same representation).
+7. **Productive affixes.** Plural `-s`, possessive forms, `-ed`, `-ing`, and
+   prefixes such as `un-` or `re-` can reduce more rows. These are morphological
+   rather than purely orthographic: spelling changes (`city`/`cities`), lexical
+   exceptions, and language dependence make them a later, separately evaluated
+   experiment rather than a default rule.
+
+Layout and punctuation are the best next measurements because they are common,
+reversible, language-light, and compose naturally with the existing three
+features. Unicode canonical composition is also exact but likely yields fewer
+rows. Morphology may save more vocabulary but introduces substantially more
+modeling risk.
+
+For every proposed feature, report both its independent match count and its
+incremental count after earlier features, as the current analyzer does. Also
+measure corpus-weighted token frequency and encoded sequence length: removing
+many rare rows is less valuable than the raw vocabulary count suggests, and
+decomposing one atomic token into several time steps can make inference slower.
+The intended compact design keeps `(base_id, feature_mask)` at one sequence
+position. If features are emitted as extra tokens instead, the head is smaller
+but the context and generation length increase.
+
+Finally, an additive auxiliary feature head is an approximation to the original
+joint distribution. A higher-fidelity design predicts a base first and then
+features conditionally, or scores only the valid base/feature combinations.
+Evaluation should therefore include held-out negative log-likelihood,
+tokenization round trips, tokens per byte, and generation throughput—not only
+the number of removable rows.
+
+### Training benchmark
+
+The Hugging Face harness now defaults to 1,000 training steps over 10% of
+WikiText-2 and evaluates every 100 steps on 20 held-out batches. Install the
+runtime dependencies and run:
+
+```bash
+pip install torch transformers datasets pyyaml matplotlib
+python huggingface_model/gemma_semantic_factorization_train.py \
+  --output-dir gemma_factorization_run
+```
+
+For each validation point, `benchmark.yaml` is replaced atomically with the
+complete results collected so far. It includes validation loss, perplexity,
+parameter counts, train/evaluation throughput, and the mean loss/count for each
+observed original token. Factorized-arm token records additionally contain the
+base token ID, base spelling, and feature mask. `validation_loss.png` compares
+both arms over time, while files such as
+`factorized_token_loss_step_000100.png` show the 30 most frequent validation
+tokens at that checkpoint. Use `--steps`, `--validation-interval`,
+`--validation-batches`, `--split`, and `--validation-split` to scale the basic
+benchmark up or down.
+
 This repository contains the **Open Source CJK Analysis Tool**, a Python script (`open_source_cjk_analysis.py`) that provides detailed analysis of tokenizers with respect to Chinese (C), Japanese (J), and Korean (K) characters. The tool can analyze token coverage, symbol representation, and overlaps among these languages in tokenizer vocabularies.
 
 ## Features
