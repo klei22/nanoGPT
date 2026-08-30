@@ -23,7 +23,15 @@ SCHEDULES=()
 for percent in ${TRANSITION_PERCENTAGES}; do
   SCHEDULES+=("drop:${percent}" "add:${percent}")
 done
-for duty in ${DUTY_CYCLES}; do SCHEDULES+=("duty_cycle:${duty}"); done
+if ! [[ "${DUTY_PERIOD_PERCENT}" =~ ^[0-9]+$ ]] || [ "${DUTY_PERIOD_PERCENT}" -gt 100 ]; then
+  echo "DUTY_PERIOD_PERCENT must be an integer from 0 to 100 (0 disables duty-cycle runs)" >&2
+  exit 2
+fi
+if [ "${DUTY_PERIOD_PERCENT}" -gt 0 ]; then
+  for duty in ${DUTY_CYCLES}; do SCHEDULES+=("duty_cycle:${duty}"); done
+else
+  echo "DUTY_PERIOD_PERCENT=0; skipping duty-cycle runs"
+fi
 
 for embedding_dim in ${EMBEDDING_DIMS}; do
   for num_digits in ${DIGIT_COUNTS}; do

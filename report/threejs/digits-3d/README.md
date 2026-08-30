@@ -49,7 +49,8 @@ and excluded-to-included transitions at 20%, 40%, 60%, and 80%, plus PWM-style
 duty cycles whose included fraction is 20%, 40%, 60%, or 80% of each period.
 `DROPOUT_COUNTS` accepts multiple counts to affect several trailing symbols at
 once; `TRANSITION_PERCENTAGES`, `DUTY_CYCLES`, and `DUTY_PERIOD_PERCENT`
-customize the schedules. Excluded points and trajectory segments are purple;
+customize the schedules. Set `DUTY_PERIOD_PERCENT=0` to omit duty-cycle runs
+while retaining the one-time drop/add schedules. Excluded points and trajectory segments are purple;
 included segments retain the trained-token orange, including every transition
 back to the dataset.
 
