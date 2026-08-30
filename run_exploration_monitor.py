@@ -19,6 +19,7 @@ Interactive keybindings:
   s     - save current layout
   p     - shows help menu
   I     - view the associated exploration YAML file
+  R     - refresh runs and add fields from the associated exploration YAML
   g     - graphs first two rows
   L     - graph & connect points sharing the 3rd column value
   1–9   - graph & connect points sharing merged columns 3..(2+N)
@@ -68,6 +69,48 @@ def load_runs(log_file: Path) -> List[Dict]:
     return docs
 
 
+# Keys used by the exploration runner to compose groups, rather than arguments
+# that are ultimately written into each run's ``config`` mapping.
+EXPLORATION_SCHEMA_KEYS = {
+    "named_group",
+    "named_group_static",
+    "named_group_variations",
+    "named_group_alternates",
+}
+
+
+def load_exploration_fields(config_file: Path) -> set[str]:
+    """Return run-configuration field names declared by an exploration YAML.
+
+    Exploration files support both a flat mapping and nested group syntax.  A
+    field is therefore any mapping key whose value is not another mapping (or
+    a list of mappings), excluding the group-composition keys above.
+    """
+    if not config_file.exists():
+        return set()
+
+    fields: set[str] = set()
+
+    def visit(value) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if isinstance(child, dict) or (
+                    isinstance(child, list)
+                    and any(isinstance(item, dict) for item in child)
+                ):
+                    visit(child)
+                elif key not in EXPLORATION_SCHEMA_KEYS:
+                    fields.add(str(key))
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    with config_file.open() as f:
+        for document in yaml.safe_load_all(f):
+            visit(document)
+    return fields
+
+
 HOTKEYS_TEXT = (
     "Enter: toggle sort by column\n"
     "h/l: move column left/right\n"
@@ -87,6 +130,7 @@ HOTKEYS_TEXT = (
     "g: graph first two columns (opens a Plotly window)\n"
     "p: shows help menu\n"
     "I: view the associated exploration YAML file\n"
+    "R: refresh runs and add fields from the associated exploration YAML\n"
     "L: graph & connect points sharing the 3rd column value\n"
     "1–9: graph & connect points sharing merged columns 3..(2+N)\n"
     "q # #: multibarcharts - `q [1-9] [1-9]` - e.g. 'q 3 2' will create bar charts for columns 1 2 and 3, the next two columns (column 4 and column 5) as merged labels\n"
@@ -521,13 +565,28 @@ class MonitorApp(App):
 
 
     def refresh_table(self, new_cursor: Optional[int] = None) -> None:
-        """Reload data, apply sorting, and repopulate the DataTable."""
+        """Reload data/config fields, apply sorting, and repopulate the table."""
         if not self.table:
             return
         # Always reload the YAML log file so new runs appear
         new_original = load_runs(self.log_file)
         if new_original != self.original_entries:
             self.original_entries = new_original
+
+        # Runs can gain config values over time, and the associated exploration
+        # can be edited before those runs have completed.  Discover both sources
+        # on every refresh so new fields immediately become visible without
+        # discarding the user's existing column order or hidden-column choices.
+        discovered_keys = load_exploration_fields(self.exploration_config_file)
+        for entry in self.original_entries:
+            discovered_keys.update(entry.get("config", {}).keys())
+        new_keys = sorted(discovered_keys.difference(self.all_columns))
+        if new_keys:
+            self.param_keys = sorted(set(self.param_keys).union(new_keys))
+            self.all_columns.extend(new_keys)
+            self.columns.extend(
+                col for col in new_keys if col not in self.hidden_cols
+            )
 
         # Re-apply any active row filters
         base_entries = list(self.original_entries)
@@ -948,6 +1007,9 @@ class MonitorApp(App):
             self._msg(HOTKEYS_TEXT, timeout=10.0)
         elif key == "I":
             self.push_screen(ExplorationConfigScreen(self.exploration_config_file))
+        elif key == "R":
+            self.refresh_table(new_cursor=c)
+            self._msg("Runs and exploration fields refreshed")
         elif key == "g":
             # ── Graph using first two visible columns: col[0] ⇒ Y, col[1] ⇒ X ──
             try:
