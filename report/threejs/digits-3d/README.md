@@ -52,7 +52,8 @@ once; `TRANSITION_PERCENTAGES`, `DUTY_CYCLES`, and `DUTY_PERIOD_PERCENT`
 customize the schedules. Set `DUTY_PERIOD_PERCENT=0` to omit duty-cycle runs
 while retaining the one-time drop/add schedules. Excluded points and trajectory segments are purple;
 included segments retain the trained-token orange, including every transition
-back to the dataset.
+back to the dataset. Every schedule phase saves an end-of-phase checkpoint, so
+transitions shorter than `SWEEP_SAVE_INTERVAL` can still resume correctly.
 
 Every base-sweep schedule also compares full Muon with zero weight decay, Adam
 with weight decays 0.0, 0.01, 0.05, 0.1, and 0.5, plus Adagrad, SGD, and RMSprop.

@@ -48,6 +48,7 @@ TRAIN_ARGS=(--dataset digits_3d --out_dir "${OUT_DIR}" --device "${DEVICE}" --dt
   "${WTE_NORM_ARGS[@]}" "${WTE_TYING_ARGS[@]}" --dropout 0.0 --eval_interval "${SAVE_INTERVAL}"
   "${OPTIMIZER_ARGS[@]}"
   --eval_iters 20 --save_major_ckpt_interval "${SAVE_INTERVAL}" --always_save_checkpoint
+  --only_save_checkpoint_at_end
   --learning_rate 3e-3 --min_lr 3e-4 --warmup_iters 20 --decay_lr --no-compile)
 
 prepare_data() {
