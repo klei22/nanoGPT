@@ -11,8 +11,8 @@ package_site = MODULE["package_site"]
 
 def make_source(root):
     (root / "runs").mkdir(parents=True)
-    (root / "index.html").write_text("viewer", encoding="utf-8")
-    (root / "sweep.html").write_text("index.html?data=runs/example.json", encoding="utf-8")
+    (root / "index.html").write_text("selector using viewer.html?data=", encoding="utf-8")
+    (root / "viewer.html").write_text("viewer", encoding="utf-8")
 
 
 def test_packages_completed_runs_as_site_root(tmp_path):

@@ -21,10 +21,13 @@ def iteration(path: Path) -> int:
 def project_to_3d(frame_vectors: list[torch.Tensor]) -> tuple[list[torch.Tensor], dict]:
     """Use one global PCA basis so positions remain comparable across time."""
     embedding_dim = frame_vectors[0].shape[1]
+    if embedding_dim == 2:
+        projected = [torch.nn.functional.pad(vectors, (0, 1)) for vectors in frame_vectors]
+        return projected, {"method": "native_2d", "input_dimensions": 2}
     if embedding_dim == 3:
         return frame_vectors, {"method": "native", "input_dimensions": 3}
     if embedding_dim < 3:
-        raise ValueError(f"expected at least 3 embedding dimensions, got {embedding_dim}")
+        raise ValueError(f"expected at least 2 embedding dimensions, got {embedding_dim}")
 
     stacked = torch.cat(frame_vectors, dim=0).double()
     mean = stacked.mean(dim=0, keepdim=True)

@@ -48,6 +48,7 @@ TRAIN_ARGS=(--dataset digits_3d --out_dir "${OUT_DIR}" --device "${DEVICE}" --dt
   "${WTE_NORM_ARGS[@]}" "${WTE_TYING_ARGS[@]}" --dropout 0.0 --eval_interval "${SAVE_INTERVAL}"
   "${OPTIMIZER_ARGS[@]}"
   --eval_iters 20 --save_major_ckpt_interval "${SAVE_INTERVAL}" --always_save_checkpoint
+  --only_save_checkpoint_at_end
   --learning_rate 3e-3 --min_lr 3e-4 --warmup_iters 20 --decay_lr --no-compile)
 
 prepare_data() {
@@ -101,9 +102,9 @@ python3 analysis/export_3d_token_trajectories.py --checkpoint-dir "${OUT_DIR}" -
 cat <<EOF
 Done. Serve the repository (fetch does not work from file://), then open:
   python3 -m http.server 8000
-  http://localhost:8000/${VIEW_DIR}/index.html?data=${TRAJECTORY_FILE#${VIEW_DIR}/}
+  http://localhost:8000/${VIEW_DIR}/viewer.html?data=${TRAJECTORY_FILE#${VIEW_DIR}/}
 The ${NUM_DIGITS} digit-like symbols are trained; ${NUM_LETTERS} letters are vocabulary-only controls.
-Embedding dimension: ${EMBEDDING_DIM} (dimensions above 3 are globally PCA-projected for viewing).
+Embedding dimension: ${EMBEDDING_DIM} (2D is shown in the XY plane; dimensions above 3 are globally PCA-projected for viewing).
 WTE/LM-head weight tying: ${WTE_WEIGHT_TYING}.
 Optimizer: ${OPTIMIZER_MODE}.
 EOF

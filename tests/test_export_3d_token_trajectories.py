@@ -19,6 +19,17 @@ def test_native_three_dimensions_are_not_projected():
     assert metadata == {"method": "native", "input_dimensions": 3}
 
 
+def test_native_two_dimensions_are_padded_for_threejs():
+    frames = [torch.randn(5, 2), torch.randn(5, 2)]
+
+    projected, metadata = project_to_3d(frames)
+
+    assert [tuple(frame.shape) for frame in projected] == [(5, 3), (5, 3)]
+    assert all(torch.equal(actual[:, :2], source) for actual, source in zip(projected, frames))
+    assert all(torch.count_nonzero(actual[:, 2]) == 0 for actual in projected)
+    assert metadata == {"method": "native_2d", "input_dimensions": 2}
+
+
 @pytest.mark.parametrize("embedding_dim", [8, 16, 64])
 def test_global_pca_projects_higher_dimensions(embedding_dim):
     generator = torch.Generator().manual_seed(1234)
