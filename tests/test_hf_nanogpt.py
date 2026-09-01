@@ -12,6 +12,7 @@ from hf_model import NanoGPTConfig, NanoGPTForCausalLM
 from hf_model.modeling_nanogpt import _apply_rope
 from hf_model.triton_relu2max import TRITON_AVAILABLE, triton_relu2max
 from scripts.compare_hf_relu2max import evaluation_strategy_argument
+from scripts.compare_hf_relu2max import tokenize_dataset
 
 
 def test_direct_comparison_script_can_import_local_model():
@@ -46,6 +47,26 @@ def test_relu2max_auto_falls_back_on_cpu():
     with torch.no_grad():
         output = model(ids)
     assert torch.isfinite(output.logits).all()
+
+
+def test_pretraining_packing_appends_eos(monkeypatch):
+    from types import SimpleNamespace
+
+    class TinyTokenizer:
+        eos_token_id = 9
+
+        def __call__(self, texts, **kwargs):
+            del kwargs
+            return {"input_ids": [[int(text)] for text in texts], "attention_mask": [[1] for _ in texts]}
+
+    from datasets import Dataset, DatasetDict
+    dataset = Dataset.from_dict({"text": ["1", "2", "3", "4"]})
+    dataset_dict = DatasetDict({"train": dataset, "validation": dataset})
+    monkeypatch.setattr("scripts.compare_hf_relu2max.load_dataset", lambda *args: dataset_dict)
+    args = SimpleNamespace(dataset="unused", dataset_config=None, train_samples=0, eval_samples=0,
+                           text_column="text", pack_text=True, block_size=4, append_eos=True, seed=1)
+    train, _ = tokenize_dataset(args, TinyTokenizer())
+    assert train[0]["input_ids"] == [1, 9, 2, 9]
 
 
 @pytest.mark.skipif(not TRITON_AVAILABLE or not torch.cuda.is_available(), reason="requires CUDA and Triton")

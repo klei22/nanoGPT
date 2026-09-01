@@ -69,6 +69,34 @@ quintic Newton--Schulz Muon update, while embeddings, the LM head, and
 scalar/vector parameters use auxiliary Adam. Use `--help` for all architecture,
 optimizer, precision, and dataset controls.
 
+### A100 80GB pre-training and downstream evaluation
+
+Install `lm-evaluation-harness` (`pip install lm-eval`) and run:
+
+```bash
+bash scripts/run_hf_a100_80gb_comparison.sh
+```
+
+The preset trains each 124M-parameter variation for approximately 1.31 billion
+tokens (10,000 optimizer steps, effective batch 128, sequence length 1,024) in
+BF16 with TF32 matrix multiplication. It uses the full TinyStories training
+split, appends EOS between documents, and packs tokens into full sequences.
+After **each** variation it evaluates the in-memory model on `lambada_openai`,
+`hellaswag`, `piqa`, `winogrande`, and `arc_easy`. These cover continuation,
+commonsense completion, physical reasoning, pronoun/coreference reasoning, and
+elementary multiple-choice reasoning without selecting benchmarks that require
+instruction tuning. Results are saved per run and in the combined
+`comparison.json`.
+Intermediate checkpoints are retained every 1,000 steps (the newest two per
+variation). Add `--resume-from-checkpoint` to resume interrupted runs.
+
+The preset is deliberately a shell wrapper: append any comparison-script flags
+to override it, for example `--max-steps 20 --lm-eval-limit 20` for an end-to-end
+smoke test. Do not use `--lm-eval-limit` for reportable scores. Actual throughput
+and maximum batch size depend on the installed PyTorch/Triton versions; lower
+`--batch-size` and raise `--gradient-accumulation-steps` proportionally if the
+specific A100 environment runs out of memory.
+
 ## API use
 
 ```python
