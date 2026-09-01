@@ -1,0 +1,57 @@
+# Hugging Face nanoGPT QK-norm model
+
+This directory provides a `PreTrainedModel`/`PretrainedConfig` implementation
+of the architecture used for the repository's QK-normalized attention
+experiments. It intentionally ports the relevant path rather than wrapping the
+original training model, so checkpoints use normal Hugging Face
+`save_pretrained`/`from_pretrained` APIs.
+
+## Exact correspondence
+
+* Q and K are L2-normalized per token and head with `1e-6` added to the norm.
+* With QK-norm scaling enabled, the ordinary `1/sqrt(head_dim)` scaling is
+  replaced by one learned scalar, initialized to
+  `log2(context_length ** 2 - context_length)`.
+* RoPE rotates adjacent even/odd channels, uses base 10,000, and supports the
+  original partial `rope_length`. It is applied before QK normalization.
+* ReLU2Max is exactly `relu(attention_logits) ** 2 / divisor`, optionally also
+  divided by key sequence length. It is **not** renormalized to sum to one.
+* The model is a pre-norm causal decoder with RMSNorm, GELU MLP, tied token/LM
+  head weights, optional GQA, generation cache support, and standard shifted
+  causal-language-model loss.
+
+The implementation supports standard softmax as a control. ReLU2Max disables
+fused scaled-dot-product attention by construction, which is necessary because
+PyTorch's fused primitive always computes softmax.
+
+## Matched pre-training comparison
+
+From the repository root:
+
+```bash
+python scripts/compare_hf_relu2max.py \
+  --dataset roneneldan/TinyStories --tokenizer gpt2 \
+  --max-steps 1000 --output-dir runs/hf-normalizer-ablation
+```
+
+The script downloads/tokenizes the dataset once and runs ReLU2Max then softmax.
+It resets Python, NumPy, PyTorch, Trainer, and sampler seeds before each model,
+so model initialization, data order, architecture, Muon settings, and schedule
+match. It writes each normal Hugging Face checkpoint and a combined
+`comparison.json`.
+
+Muon follows the native training setup: matrix-shaped hidden weights use the
+quintic Newton--Schulz Muon update, while embeddings, the LM head, and
+scalar/vector parameters use auxiliary Adam. Use `--help` for all architecture,
+optimizer, precision, and dataset controls.
+
+## API use
+
+```python
+from hf_model import NanoGPTConfig, NanoGPTForCausalLM
+
+config = NanoGPTConfig(attention_normalizer="relu2max")
+model = NanoGPTForCausalLM(config)
+model.save_pretrained("my-model")
+model = NanoGPTForCausalLM.from_pretrained("my-model")
+```
