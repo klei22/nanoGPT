@@ -2,6 +2,7 @@
 """Run matched Hugging Face Trainer pre-training trials for ReLU2Max/softmax."""
 
 import argparse
+import inspect
 import json
 import random
 from pathlib import Path
@@ -111,6 +112,20 @@ def seed_everything(seed):
         torch.cuda.manual_seed_all(seed)
 
 
+def evaluation_strategy_argument():
+    """Return the evaluation keyword supported by this Transformers version.
+
+    Transformers renamed ``evaluation_strategy`` to ``eval_strategy`` and
+    eventually removed the former spelling. The repository supports both the
+    pinned 4.44 release and current releases, so select the spelling from the
+    installed constructor rather than relying on a version-number comparison.
+    """
+    parameters = inspect.signature(TrainingArguments.__init__).parameters
+    if "eval_strategy" in parameters:
+        return {"eval_strategy": "steps"}
+    return {"evaluation_strategy": "steps"}
+
+
 def main():
     args = parse_args()
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
@@ -142,9 +157,10 @@ def main():
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             learning_rate=args.learning_rate, weight_decay=args.weight_decay,
             warmup_steps=args.warmup_steps, lr_scheduler_type="cosine", logging_steps=10,
-            evaluation_strategy="steps", eval_steps=max(1, args.max_steps // 10),
+            eval_steps=max(1, args.max_steps // 10),
             save_strategy="no", seed=args.seed, data_seed=args.seed, fp16=args.fp16,
             bf16=args.bf16, report_to=args.report_to,
+            **evaluation_strategy_argument(),
         )
         # Custom attributes consumed by MuonTrainer.create_optimizer.
         training_args.muon_momentum = args.muon_momentum

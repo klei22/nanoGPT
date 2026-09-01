@@ -10,6 +10,7 @@ transformers = pytest.importorskip("transformers")
 
 from hf_model import NanoGPTConfig, NanoGPTForCausalLM
 from hf_model.modeling_nanogpt import _apply_rope
+from scripts.compare_hf_relu2max import evaluation_strategy_argument
 
 
 def test_direct_comparison_script_can_import_local_model():
@@ -22,6 +23,20 @@ def test_direct_comparison_script_can_import_local_model():
     )
     assert result.returncode == 0, result.stderr
     assert "ReLU2Max/softmax" in result.stdout
+
+
+def test_training_arguments_accept_selected_evaluation_keyword(tmp_path):
+    from transformers import TrainingArguments
+
+    arguments = TrainingArguments(
+        output_dir=str(tmp_path),
+        report_to=[],
+        **evaluation_strategy_argument(),
+    )
+    strategy = getattr(arguments, "eval_strategy", None)
+    if strategy is None:
+        strategy = arguments.evaluation_strategy
+    assert strategy.value == "steps"
 
 
 def tiny_config(**kwargs):

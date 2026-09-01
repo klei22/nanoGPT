@@ -39,6 +39,10 @@ The direct file command above and the equivalent module form
 resolves the repository root itself, so it can import `hf_model` regardless of
 the caller's current working directory.
 
+The launcher is compatible with both the repository-pinned Transformers 4.44
+API (`evaluation_strategy`) and newer releases (`eval_strategy`); it detects
+the supported `TrainingArguments` keyword at runtime.
+
 The script downloads/tokenizes the dataset once and runs ReLU2Max then softmax.
 It resets Python, NumPy, PyTorch, Trainer, and sampler seeds before each model,
 so model initialization, data order, architecture, Muon settings, and schedule
