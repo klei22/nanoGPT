@@ -6,6 +6,7 @@ pytest.importorskip("transformers")
 from huggingface_model.attention_residual_pretrain import (
     AttentionResidualConfig,
     AttentionResidualForCausalLM,
+    _token_blocks,
     make_muon_optimizer,
 )
 
@@ -53,3 +54,23 @@ def test_optimizer_routes_embeddings_head_and_rms_gains_to_adam():
     assert id(model.wte.weight) in adam_ids
     assert all(id(module.gain) in adam_ids for module in model.modules() if hasattr(module, "gain"))
     assert id(model.blocks[0].attn.qkv.weight) in muon_ids
+
+
+def test_token_blocks_drops_tokenizer_columns_before_changing_row_count():
+    datasets = pytest.importorskip("datasets")
+
+    class TokenizerWithAttentionMask:
+        def __call__(self, texts, add_special_tokens=False):
+            del add_special_tokens
+            input_ids = [[ord(char) for char in text] for text in texts]
+            return {
+                "input_ids": input_ids,
+                "attention_mask": [[1] * len(row) for row in input_ids],
+            }
+
+    source = datasets.Dataset.from_dict({"text": ["abc", "defg"]})
+    grouped = _token_blocks(source, TokenizerWithAttentionMask(), block_size=2, text_column="text")
+
+    assert grouped.column_names == ["input_ids", "labels"]
+    assert grouped["input_ids"] == [[97, 98], [99, 100], [101, 102]]
+    assert grouped["labels"] == grouped["input_ids"]

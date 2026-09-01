@@ -296,7 +296,16 @@ def _token_blocks(dataset, tokenizer, block_size: int, text_column: str):
         blocks = [joined[i : i + block_size] for i in range(0, usable, block_size)]
         return {"input_ids": blocks, "labels": [row[:] for row in blocks]}
 
-    return tokenized.map(group, batched=True)
+    # ``tokenizer`` also returns row-aligned columns such as attention_mask.
+    # Grouping changes the number of rows from documents to fixed-size token
+    # blocks, so Arrow cannot retain those original columns alongside the new
+    # blocks. Recreate the output table from the grouped columns only.
+    return tokenized.map(
+        group,
+        batched=True,
+        remove_columns=tokenized.column_names,
+        desc="Grouping tokens into fixed-length blocks",
+    )
 
 
 @torch.no_grad()
