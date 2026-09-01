@@ -10,6 +10,7 @@ transformers = pytest.importorskip("transformers")
 
 from hf_model import NanoGPTConfig, NanoGPTForCausalLM
 from hf_model.modeling_nanogpt import _apply_rope
+from hf_model.triton_relu2max import TRITON_AVAILABLE, triton_relu2max
 from scripts.compare_hf_relu2max import evaluation_strategy_argument
 
 
@@ -37,6 +38,29 @@ def test_training_arguments_accept_selected_evaluation_keyword(tmp_path):
     if strategy is None:
         strategy = arguments.evaluation_strategy
     assert strategy.value == "steps"
+
+
+def test_relu2max_auto_falls_back_on_cpu():
+    model = NanoGPTForCausalLM(tiny_config(relu2max_accelerator="auto")).eval()
+    ids = torch.randint(0, 31, (1, 4))
+    with torch.no_grad():
+        output = model(ids)
+    assert torch.isfinite(output.logits).all()
+
+
+@pytest.mark.skipif(not TRITON_AVAILABLE or not torch.cuda.is_available(), reason="requires CUDA and Triton")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_triton_relu2max_matches_torch_forward_and_backward(dtype):
+    values = torch.randn(4099, device="cuda", dtype=dtype, requires_grad=True)
+    reference_values = values.detach().clone().requires_grad_(True)
+    gradient = torch.randn_like(values)
+    actual = triton_relu2max(values, 256.0)
+    expected = torch.relu(reference_values).square() / 256.0
+    tolerance = 2e-3 if dtype != torch.float32 else 1e-5
+    torch.testing.assert_close(actual, expected, atol=tolerance, rtol=tolerance)
+    actual.backward(gradient)
+    expected.backward(gradient)
+    torch.testing.assert_close(values.grad, reference_values.grad, atol=tolerance, rtol=tolerance)
 
 
 def tiny_config(**kwargs):

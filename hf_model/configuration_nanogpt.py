@@ -41,6 +41,7 @@ class NanoGPTConfig(PretrainedConfig):
         attention_normalizer="relu2max",
         relu2max_divisor=256.0,
         relu2max_divide_by_sequence_length=False,
+        relu2max_accelerator="auto",
         initializer_range=0.02,
         use_cache=True,
         **kwargs,
@@ -57,6 +58,8 @@ class NanoGPTConfig(PretrainedConfig):
             raise ValueError("attention_normalizer must be 'softmax' or 'relu2max'")
         if relu2max_divisor <= 0:
             raise ValueError("relu2max_divisor must be positive")
+        if relu2max_accelerator not in {"auto", "torch", "triton"}:
+            raise ValueError("relu2max_accelerator must be 'auto', 'torch', or 'triton'")
         if qk_norm_scale_init is None:
             qk_norm_scale_init = math.log2(
                 max_position_embeddings * max_position_embeddings
@@ -85,6 +88,7 @@ class NanoGPTConfig(PretrainedConfig):
         self.attention_normalizer = attention_normalizer
         self.relu2max_divisor = relu2max_divisor
         self.relu2max_divide_by_sequence_length = relu2max_divide_by_sequence_length
+        self.relu2max_accelerator = relu2max_accelerator
         self.initializer_range = initializer_range
         self.use_cache = use_cache
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)

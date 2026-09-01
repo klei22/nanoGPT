@@ -24,6 +24,18 @@ The implementation supports standard softmax as a control. ReLU2Max disables
 fused scaled-dot-product attention by construction, which is necessary because
 PyTorch's fused primitive always computes softmax.
 
+### Triton acceleration
+
+On CUDA systems with Triton installed, `relu2max_accelerator="auto"` fuses the
+ReLU, square, and divisor into one elementwise kernel. A custom backward kernel
+also fuses the derivative and incoming-gradient multiplication. Masked logits
+remain zero because the causal/padding mask is applied before the kernel.
+Unsupported devices and dtypes automatically use the ordinary PyTorch path.
+Set `relu2max_accelerator="torch"` to force that reference path, or `"triton"`
+to require CUDA/Triton and receive an explicit error when unavailable. This
+accelerates the ReLU2Max transformation itself; QK and probability-value matrix
+multiplications remain PyTorch operations.
+
 ## Matched pre-training comparison
 
 From the repository root:
@@ -33,6 +45,9 @@ python scripts/compare_hf_relu2max.py \
   --dataset roneneldan/TinyStories --tokenizer gpt2 \
   --max-steps 1000 --output-dir runs/hf-normalizer-ablation
 ```
+
+Use `--relu2max-accelerator auto` (the default), `torch`, or `triton` to select
+the ReLU2Max execution path.
 
 The direct file command above and the equivalent module form
 `python -m scripts.compare_hf_relu2max` are both supported. The launcher

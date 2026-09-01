@@ -75,6 +75,7 @@ def parse_args():
     parser.add_argument("--rope-length", type=int)
     parser.add_argument("--relu2max-divisor", type=float, default=256.0)
     parser.add_argument("--relu2max-divide-by-sequence-length", action="store_true")
+    parser.add_argument("--relu2max-accelerator", choices=["auto", "torch", "triton"], default="auto")
     parser.add_argument("--muon-momentum", type=float, default=0.95)
     parser.add_argument("--muon-ns-steps", type=int, default=5)
     parser.add_argument("--fp16", action="store_true")
@@ -148,6 +149,7 @@ def main():
             num_key_value_heads=args.kv_heads, rope_length=args.rope_length,
             attention_normalizer=normalizer, relu2max_divisor=args.relu2max_divisor,
             relu2max_divide_by_sequence_length=args.relu2max_divide_by_sequence_length,
+            relu2max_accelerator=args.relu2max_accelerator,
         )
         model = NanoGPTForCausalLM(config)
         run_dir = root / normalizer

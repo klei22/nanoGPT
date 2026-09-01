@@ -10,6 +10,7 @@ from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 
 from .configuration_nanogpt import NanoGPTConfig
+from .triton_relu2max import can_use_triton_relu2max, triton_relu2max
 
 
 class NanoGPTRMSNorm(nn.Module):
@@ -95,9 +96,16 @@ class NanoGPTAttention(nn.Module):
             scores = scores.masked_fill(attention_mask[:, None, None, :key_length] == 0, torch.finfo(scores.dtype).min)
 
         if self.config.attention_normalizer == "relu2max":
-            weights = F.relu(scores).square() / self.config.relu2max_divisor
+            divisor = self.config.relu2max_divisor
             if self.config.relu2max_divide_by_sequence_length:
-                weights = weights / key_length
+                divisor *= key_length
+            use_triton = self.config.relu2max_accelerator == "triton" or (
+                self.config.relu2max_accelerator == "auto" and can_use_triton_relu2max(scores)
+            )
+            if use_triton:
+                weights = triton_relu2max(scores, divisor)
+            else:
+                weights = F.relu(scores).square() / divisor
         else:
             weights = F.softmax(scores.float(), dim=-1).to(scores.dtype)
         weights = F.dropout(weights, self.config.attention_dropout, self.training)
