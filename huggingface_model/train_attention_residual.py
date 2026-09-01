@@ -1,14 +1,15 @@
 """Train a Hugging Face-compatible nanoGPT with Full Attention Residuals.
 
-The model keeps the repository's default architectural choices (RoPE, QK RMS
-normalisation with a learned per-head scale, pre-norm, and squared ReLU MLPs),
-while making the depth router selectable between softmax and normalised ReLU.
+The model keeps the repository's default architectural choices (RoPE, QK L2
+normalisation with a learned scale, pre-norm, and squared ReLU MLPs),
+and compares regular residuals against Full Attention Residuals routed with
+softmax or shifted ReLU2Max.
 
 Example::
 
     python huggingface_model/train_attention_residual.py \
         --dataset_name wikitext --dataset_config wikitext-2-raw-v1 \
-        --tokenizer_name gpt2 --router_activation softmax
+        --tokenizer_name gpt2 --output_dir attention-residual-comparison
 
 The resulting directory is loadable with ``AttentionResidualForCausalLM``'s
 ``from_pretrained`` method.  This is intentionally a training script rather
@@ -19,7 +20,9 @@ change the dataflow between every decoder sublayer.
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import random
 from dataclasses import dataclass
 from typing import Optional
 
@@ -57,15 +60,18 @@ class AttentionResidualConfig(PretrainedConfig):
         rope_base: float = 10000.0,
         rms_norm_eps: float = 1e-6,
         qk_norm_scale_init: Optional[float] = None,
-        router_activation: str = "softmax",
+        residual_variant: str = "full_softmax",
+        relu2max_divisor: float = 256.0,
         tie_word_embeddings: bool = True,
         **kwargs,
     ):
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
         if n_embd % n_head:
             raise ValueError("n_embd must be divisible by n_head")
-        if router_activation not in {"softmax", "relu"}:
-            raise ValueError("router_activation must be 'softmax' or 'relu'")
+        if residual_variant not in {"regular", "full_softmax", "full_relu2max"}:
+            raise ValueError("unknown residual_variant")
+        if relu2max_divisor <= 0:
+            raise ValueError("relu2max_divisor must be positive")
         self.vocab_size = vocab_size
         self.block_size = block_size
         self.max_position_embeddings = block_size
@@ -78,7 +84,8 @@ class AttentionResidualConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         # Match nanoGPT's QK-norm scale initialization.
         self.qk_norm_scale_init = qk_norm_scale_init or math.log2(block_size * block_size - block_size)
-        self.router_activation = router_activation
+        self.residual_variant = residual_variant
+        self.relu2max_divisor = relu2max_divisor
 
 
 class RMSNorm(nn.Module):
@@ -158,11 +165,12 @@ class DecoderLayer(nn.Module):
 class DepthRouter(nn.Module):
     """Token-local Full Attention Residual router over previous sublayers."""
 
-    def __init__(self, destinations: int, width: int, activation: str, eps: float):
+    def __init__(self, destinations: int, width: int, activation: str, eps: float, relu2max_divisor: float = 256.0):
         super().__init__()
         self.queries = nn.Parameter(torch.zeros(destinations, width))
         self.activation = activation
         self.eps = eps
+        self.relu2max_divisor = relu2max_divisor
 
     def forward(self, sources: list[torch.Tensor], destination: int) -> torch.Tensor:
         values = torch.stack(sources, dim=0)
@@ -171,10 +179,13 @@ class DepthRouter(nn.Module):
         if self.activation == "softmax":
             weights = scores.softmax(dim=0)
         else:
-            positive = F.relu(scores)
-            denominator = positive.sum(dim=0, keepdim=True)
-            uniform = torch.full_like(positive, 1.0 / len(sources))
-            weights = torch.where(denominator > self.eps, positive / denominator.clamp_min(self.eps), uniform)
+            # Match variations.softmax_variations.ReLU2Max: relu(x)^2 divided
+            # by a fixed divisor. The positive shift is required because the
+            # router queries start at zero; sqrt(divisor / depth) makes those
+            # initial weights exactly 1/depth without introducing a softmax-
+            # style sum normalization.
+            shift = math.sqrt(self.relu2max_divisor / len(sources))
+            weights = F.relu(scores + shift).square() / self.relu2max_divisor
         return torch.einsum("dbt,dbtc->btc", weights, values)
 
 
@@ -188,7 +199,11 @@ class AttentionResidualForCausalLM(PreTrainedModel):
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.drop = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList([DecoderLayer(config) for _ in range(config.n_layer)])
-        self.router = DepthRouter(2 * config.n_layer + 1, config.n_embd, config.router_activation, config.rms_norm_eps)
+        router_activation = "relu2max" if config.residual_variant == "full_relu2max" else "softmax"
+        self.router = DepthRouter(
+            2 * config.n_layer + 1, config.n_embd, router_activation,
+            config.rms_norm_eps, config.relu2max_divisor,
+        )
         self.norm = RMSNorm(config.n_embd, config.rms_norm_eps)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.post_init()
@@ -208,16 +223,23 @@ class AttentionResidualForCausalLM(PreTrainedModel):
         self.lm_head = value
 
     def forward(self, input_ids, attention_mask=None, labels=None, **_) -> CausalLMOutput:
-        sources = [self.drop(self.wte(input_ids))]
-        destination = 0
-        for layer in self.layers:
+        x = self.drop(self.wte(input_ids))
+        if self.config.residual_variant == "regular":
+            for layer in self.layers:
+                x = x + layer.attn(layer.attn_norm(x), attention_mask)
+                x = x + layer.mlp(layer.mlp_norm(x))
+        else:
+            sources = [x]
+            destination = 0
+            for layer in self.layers:
+                x = self.router(sources, destination)
+                sources.append(layer.attn(layer.attn_norm(x), attention_mask))
+                destination += 1
+                x = self.router(sources, destination)
+                sources.append(layer.mlp(layer.mlp_norm(x)))
+                destination += 1
             x = self.router(sources, destination)
-            sources.append(layer.attn(layer.attn_norm(x), attention_mask))
-            destination += 1
-            x = self.router(sources, destination)
-            sources.append(layer.mlp(layer.mlp_norm(x)))
-            destination += 1
-        logits = self.lm_head(self.norm(self.router(sources, destination)))
+        logits = self.lm_head(self.norm(x))
         loss = None
         if labels is not None:
             loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)), labels[:, 1:].reshape(-1), ignore_index=-100)
@@ -254,19 +276,20 @@ class ScriptArguments:
     tokenizer_name: str = "gpt2"
     text_column: str = "text"
     output_dir: str = "attention-residual-hf"
-    router_activation: str = "softmax"
     block_size: int = 1024
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    num_train_epochs: float = 1.0
+    train_batch_size: int = 8
+    eval_batch_size: int = 8
+    seed: int = 1337
 
 
 def parse_args() -> ScriptArguments:
     parser = argparse.ArgumentParser(description=__doc__)
     for field in ScriptArguments.__dataclass_fields__.values():
         kwargs = {"default": field.default}
-        if field.name == "router_activation":
-            kwargs["choices"] = ("softmax", "relu")
         kwargs["type"] = type(field.default) if field.default is not None else str
         parser.add_argument(f"--{field.name}", **kwargs)
     return ScriptArguments(**vars(parser.parse_args()))
@@ -283,28 +306,52 @@ def main():
         return tokenizer(batch[args.text_column], truncation=True, max_length=args.block_size)
 
     tokenized = dataset.map(tokenize, batched=True, remove_columns=dataset["train"].column_names)
-    config = AttentionResidualConfig(
-        vocab_size=len(tokenizer), block_size=args.block_size, n_layer=args.n_layer,
-        n_head=args.n_head, n_embd=args.n_embd, router_activation=args.router_activation,
-        pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id,
-    )
-    model = AttentionResidualForCausalLM(config)
-    training_args = TrainingArguments(
-        output_dir=args.output_dir, learning_rate=3e-4, weight_decay=0.1,
-        per_device_train_batch_size=8, per_device_eval_batch_size=8,
-        num_train_epochs=1, logging_steps=10, save_strategy="epoch",
-        eval_strategy="epoch" if "validation" in tokenized else "no",
-        bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
-        report_to="none",
-    )
-    trainer = MuonTrainer(
-        model=model, args=training_args, train_dataset=tokenized["train"],
-        eval_dataset=tokenized.get("validation"),
-        data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
-    )
-    trainer.train()
-    trainer.save_model(args.output_dir)
+    if "validation" not in tokenized:
+        raise ValueError("comparison requires a dataset with a validation split")
+
+    variants = ("regular", "full_softmax", "full_relu2max")
+    results = []
+    collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+    for variant in variants:
+        # Reset every RNG immediately before construction so all three runs use
+        # identical initial decoder weights and Trainer data order.
+        random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+        run_dir = f"{args.output_dir}/{variant}"
+        config = AttentionResidualConfig(
+            vocab_size=len(tokenizer), block_size=args.block_size, n_layer=args.n_layer,
+            n_head=args.n_head, n_embd=args.n_embd, residual_variant=variant,
+            pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id,
+        )
+        model = AttentionResidualForCausalLM(config)
+        training_args = TrainingArguments(
+            output_dir=run_dir, learning_rate=3e-4, weight_decay=0.1,
+            per_device_train_batch_size=args.train_batch_size,
+            per_device_eval_batch_size=args.eval_batch_size,
+            num_train_epochs=args.num_train_epochs, logging_steps=10,
+            save_strategy="epoch", eval_strategy="epoch", seed=args.seed,
+            data_seed=args.seed,
+            bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+            report_to="none",
+        )
+        trainer = MuonTrainer(
+            model=model, args=training_args, train_dataset=tokenized["train"],
+            eval_dataset=tokenized["validation"], data_collator=collator,
+        )
+        trainer.train()
+        metrics = trainer.evaluate()
+        trainer.save_model(run_dir)
+        results.append({"residual_variant": variant, "validation_loss": metrics["eval_loss"]})
+
     tokenizer.save_pretrained(args.output_dir)
+    results.sort(key=lambda item: item["validation_loss"])
+    with open(f"{args.output_dir}/validation_loss_comparison.json", "w", encoding="utf-8") as output:
+        json.dump(results, output, indent=2)
+    print("\nValidation loss comparison (lower is better)")
+    for result in results:
+        print(f"{result['residual_variant']:>16}: {result['validation_loss']:.6f}")
 
 
 if __name__ == "__main__":
