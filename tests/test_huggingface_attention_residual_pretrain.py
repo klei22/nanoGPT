@@ -8,6 +8,7 @@ from huggingface_model.attention_residual_pretrain import (
     AttentionResidualForCausalLM,
     _token_blocks,
     make_muon_optimizer,
+    summarize_history,
 )
 
 
@@ -46,14 +47,20 @@ def test_shifted_relu2_router_is_normalized_at_zero_initialization():
 
 
 def test_optimizer_routes_embeddings_head_and_rms_gains_to_adam():
-    config = AttentionResidualConfig(vocab_size=16, block_size=4, n_layer=1, n_head=1, n_embd=4)
+    config = AttentionResidualConfig(
+        vocab_size=16, block_size=4, n_layer=1, n_head=1, n_embd=4,
+        residual_variant="full",
+    )
     model = AttentionResidualForCausalLM(config)
-    optimizer = make_muon_optimizer(model, 3e-4, 0.0)
+    optimizer = make_muon_optimizer(model, 3e-4, 0.0, muon_lr=0.02)
     adam_ids = {id(parameter) for parameter in optimizer.param_groups[0]["params"]}
     muon_ids = {id(parameter) for parameter in optimizer.param_groups[1]["params"]}
     assert id(model.wte.weight) in adam_ids
     assert all(id(module.gain) in adam_ids for module in model.modules() if hasattr(module, "gain"))
+    assert id(model.residual_router.queries) in adam_ids
     assert id(model.blocks[0].attn.qkv.weight) in muon_ids
+    assert optimizer.param_groups[0]["lr"] == 3e-4
+    assert optimizer.param_groups[1]["lr"] == 0.02
 
 
 def test_token_blocks_drops_tokenizer_columns_before_changing_row_count():
@@ -74,3 +81,18 @@ def test_token_blocks_drops_tokenizer_columns_before_changing_row_count():
     assert grouped.column_names == ["input_ids", "labels"]
     assert grouped["input_ids"] == [[97, 98], [99, 100], [101, 102]]
     assert grouped["labels"] == grouped["input_ids"]
+
+
+def test_summary_compares_final_losses_with_standard_baseline():
+    rows = [
+        {"model": "standard_residual", "step": 5, "validation_loss": 3.0},
+        {"model": "standard_residual", "step": 10, "validation_loss": 2.5},
+        {"model": "attention_residual_softmax", "step": 5, "validation_loss": 2.6},
+        {"model": "attention_residual_softmax", "step": 10, "validation_loss": 2.0},
+    ]
+    summary = summarize_history(rows)
+
+    assert summary[0]["model"] == "attention_residual_softmax"
+    assert summary[0]["best_validation_loss"] == 2.0
+    assert summary[0]["delta_vs_standard"] == -0.5
+    assert summary[0]["relative_improvement_vs_standard_pct"] == 20.0

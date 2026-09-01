@@ -262,10 +262,20 @@ class AttentionResidualForCausalLM(PreTrainedModel):
         return CausalLMOutput(loss=loss, logits=logits)
 
 
-def make_muon_optimizer(model: nn.Module, lr: float, weight_decay: float):
-    """Route decoder matrices to Muon and gains/embeddings/head to AdamW."""
+def make_muon_optimizer(
+    model: nn.Module,
+    adamw_lr: float,
+    weight_decay: float,
+    muon_lr: Optional[float] = None,
+):
+    """Use Muon only for decoder matrices and AdamW for everything else.
+
+    In particular, token embeddings, the LM head (whether tied or untied),
+    RMSNorm gains, QK scales, and residual-routing queries stay on AdamW.
+    """
 
     adam_names = {"wte.weight", "lm_head.weight"}
+    muon_lr = adamw_lr if muon_lr is None else muon_lr
     seen: set[int] = set()
     muon, adam = [], []
     for name, parameter in model.named_parameters():
@@ -273,13 +283,14 @@ def make_muon_optimizer(model: nn.Module, lr: float, weight_decay: float):
             continue
         seen.add(id(parameter))
         is_gain = name.endswith(".gain")
-        if parameter.ndim >= 2 and name not in adam_names and not is_gain:
+        is_decoder_matrix = name.startswith("blocks.") and name.endswith(".weight") and parameter.ndim == 2
+        if is_decoder_matrix and name not in adam_names and not is_gain:
             muon.append(parameter)
         else:
             adam.append(parameter)
     groups = [
-        {"params": adam, "use_muon": False, "lr": lr, "betas": (0.9, 0.95), "eps": 1e-8, "weight_decay": weight_decay},
-        {"params": muon, "use_muon": True, "lr": lr, "momentum": 0.95, "ns_steps": 5, "nesterov": True, "weight_decay": weight_decay},
+        {"params": adam, "use_muon": False, "lr": adamw_lr, "betas": (0.9, 0.95), "eps": 1e-8, "weight_decay": weight_decay},
+        {"params": muon, "use_muon": True, "lr": muon_lr, "momentum": 0.95, "ns_steps": 5, "nesterov": True, "weight_decay": weight_decay},
     ]
     return SingleDeviceMuonWithAuxAdam(groups)
 
@@ -326,7 +337,12 @@ def train_one(name, config, train_loader, val_loader, args, device):
         # Every ablation receives exactly the same shuffled example order.
         train_loader.generator.manual_seed(args.seed)
     model = AttentionResidualForCausalLM(config).to(device)
-    optimizer = make_muon_optimizer(model, args.learning_rate, args.weight_decay)
+    optimizer = make_muon_optimizer(
+        model,
+        adamw_lr=args.learning_rate,
+        weight_decay=args.weight_decay,
+        muon_lr=args.muon_learning_rate,
+    )
     model.train()
     iterator = iter(train_loader)
     history = []
@@ -351,6 +367,50 @@ def train_one(name, config, train_loader, val_loader, args, device):
     return history
 
 
+def summarize_history(rows):
+    """Return one comparable final/best-validation record per experiment."""
+
+    by_model = {}
+    for row in rows:
+        by_model.setdefault(row["model"], []).append(row)
+    if "standard_residual" not in by_model:
+        raise ValueError("summary requires the standard_residual baseline")
+    baseline = by_model["standard_residual"][-1]["validation_loss"]
+    summary = []
+    for model, model_rows in by_model.items():
+        final = model_rows[-1]
+        final_loss = final["validation_loss"]
+        summary.append(
+            {
+                "model": model,
+                "final_step": final["step"],
+                "final_validation_loss": final_loss,
+                "best_validation_loss": min(row["validation_loss"] for row in model_rows),
+                "delta_vs_standard": final_loss - baseline,
+                "relative_improvement_vs_standard_pct": 100.0 * (baseline - final_loss) / baseline,
+            }
+        )
+    return sorted(summary, key=lambda row: row["final_validation_loss"])
+
+
+def write_summary(rows, output: Path):
+    summary = summarize_history(rows)
+    with (output / "summary.json").open("w") as handle:
+        json.dump(summary, handle, indent=2)
+    with (output / "summary.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(summary[0]))
+        writer.writeheader()
+        writer.writerows(summary)
+    print("\nFinal validation-loss summary (lower is better)")
+    print(f"{'model':42} {'final':>10} {'best':>10} {'delta':>10} {'improvement':>12}")
+    for row in summary:
+        print(
+            f"{row['model']:42} {row['final_validation_loss']:10.4f} "
+            f"{row['best_validation_loss']:10.4f} {row['delta_vs_standard']:+10.4f} "
+            f"{row['relative_improvement_vs_standard_pct']:+11.2f}%"
+        )
+
+
 def parse_args(argv: Optional[Iterable[str]] = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", default="roneneldan/TinyStories")
@@ -367,6 +427,7 @@ def parse_args(argv: Optional[Iterable[str]] = None):
     parser.add_argument("--eval-interval", type=int, default=500)
     parser.add_argument("--eval-batches", type=int, default=50)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--muon-learning-rate", type=float, default=0.02)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--relu2-shift", type=float, default=1e-3)
@@ -411,6 +472,7 @@ def main(argv: Optional[Iterable[str]] = None):
         writer = csv.DictWriter(handle, fieldnames=["model", "step", "train_loss", "validation_loss"])
         writer.writeheader()
         writer.writerows(rows)
+    write_summary(rows, output)
 
 
 if __name__ == "__main__":
