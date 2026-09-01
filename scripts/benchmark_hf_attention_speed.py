@@ -135,6 +135,8 @@ def main():
     metadata = (
         f"device={torch.cuda.get_device_name()} dtype={args.dtype} shape={shape} "
         f"warmup={args.warmup_iterations} measured_iterations={args.iterations}\n"
+        f"one_materialized_score_tensor={args.batch_size * args.heads * args.sequence_length**2 * q.element_size() / 1024**3:.2f} GiB "
+        "(generic paths create/read additional score, mask, and gradient intermediates)\n"
     )
     report = metadata + table + "\n"
     print(report, end="")

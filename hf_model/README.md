@@ -114,6 +114,12 @@ table to `attention_speed_comparison.txt`. The default A100-oriented shape is
 batch 4, 12 heads, sequence length 1,024, head dimension 64, and BF16. Use the
 CLI shape flags if memory or the target architecture differs.
 
+The elementwise Triton row should not be expected to match SDPA: it still
+materializes the quadratic score matrix, while Flash Attention does not. The
+detailed design for a tiled fused forward and recompute-in-backward
+“FlashReLU2” kernel is in
+[`documentation/ReLU2Max_Triton_Fusion.md`](../documentation/ReLU2Max_Triton_Fusion.md).
+
 ## API use
 
 ```python
