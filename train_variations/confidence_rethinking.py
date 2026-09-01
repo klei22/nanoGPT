@@ -9,6 +9,23 @@ def _deferred_loss(logits, _targets, iter_num=None):
     return logits.new_zeros(())
 
 
+def decode_with_thinking_display(token_ids, decode, thinking_token_id, display="..."):
+    """Decode token spans while replacing thinking tokens with display text."""
+    parts = []
+    span = []
+    for token_id in token_ids:
+        if token_id == thinking_token_id:
+            if span:
+                parts.append(decode(span))
+                span = []
+            parts.append(display)
+        else:
+            span.append(token_id)
+    if span:
+        parts.append(decode(span))
+    return "".join(parts)
+
+
 def confidence_rethinking_forward(
     model,
     inputs,

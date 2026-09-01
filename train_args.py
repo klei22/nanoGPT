@@ -303,6 +303,8 @@ def parse_args():
                                 help='Retry target predictions below this probability in confidence_rethinking mode.')
     training_group.add_argument('--thinking_token_id', default=None, type=int,
                                 help='Token id for <thinking>; by default it is resolved from dataset meta.pkl.')
+    training_group.add_argument('--thinking_token_display', default='...', type=str,
+                                help='Text shown in generated samples in place of the <thinking> token.')
 
     # Data args
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)

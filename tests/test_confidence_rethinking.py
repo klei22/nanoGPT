@@ -3,7 +3,10 @@ import unittest
 import torch
 from torch import nn
 
-from train_variations.confidence_rethinking import confidence_rethinking_forward
+from train_variations.confidence_rethinking import (
+    confidence_rethinking_forward,
+    decode_with_thinking_display,
+)
 
 
 class ScriptedModel(nn.Module):
@@ -20,6 +23,15 @@ class ScriptedModel(nn.Module):
 
 
 class ConfidenceRethinkingTest(unittest.TestCase):
+    def test_thinking_token_has_selectable_sample_display(self):
+        decoded = decode_with_thinking_display(
+            [1, 2, 9, 3, 9],
+            lambda ids: ''.join(map(str, ids)),
+            thinking_token_id=9,
+            display='[think]',
+        )
+        self.assertEqual(decoded, '12[think]3[think]')
+
     def test_low_confidence_positions_emit_thinking_and_retry(self):
         inputs = torch.tensor([[1, 2]])
         targets = torch.tensor([[1, 1]])
