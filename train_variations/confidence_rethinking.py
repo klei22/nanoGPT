@@ -4,6 +4,11 @@ import torch
 import torch.nn.functional as F
 
 
+def _deferred_loss(logits, _targets, iter_num=None):
+    """Keep the model on its full-sequence path; loss is masked by the caller."""
+    return logits.new_zeros(())
+
+
 def confidence_rethinking_forward(
     model,
     inputs,
@@ -35,10 +40,13 @@ def confidence_rethinking_forward(
     for pass_idx in range(max_passes):
         logits, _ = model(
             retry_inputs,
-            targets=None,
+            # Supplying targets is required even though we calculate the
+            # masked loss below. GPT's targets=None inference path only
+            # returns logits for the final sequence position.
+            targets=targets,
             iter_num=iter_num,
             dataset_idx=dataset_idx,
-            loss_fn=None,
+            loss_fn=_deferred_loss,
         )
         flat_loss = F.cross_entropy(
             logits.reshape(-1, logits.size(-1)),

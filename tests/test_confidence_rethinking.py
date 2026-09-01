@@ -11,9 +11,11 @@ class ScriptedModel(nn.Module):
         super().__init__()
         self.logits_by_pass = logits_by_pass
         self.inputs = []
+        self.targets = []
 
-    def forward(self, inputs, **_kwargs):
+    def forward(self, inputs, targets=None, **_kwargs):
         self.inputs.append(inputs.clone())
+        self.targets.append(targets)
         return self.logits_by_pass[len(self.inputs) - 1], None
 
 
@@ -31,6 +33,7 @@ class ConfidenceRethinkingTest(unittest.TestCase):
         )
 
         self.assertEqual(len(model.inputs), 2)
+        self.assertTrue(all(torch.equal(seen, targets) for seen in model.targets))
         self.assertTrue(torch.equal(model.inputs[1], torch.tensor([[1, 2]])))
         self.assertIs(logits, second)
         self.assertTrue(torch.isfinite(loss))
