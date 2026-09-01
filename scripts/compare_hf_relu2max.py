@@ -5,6 +5,16 @@ import argparse
 import json
 import random
 from pathlib import Path
+import sys
+
+# When this file is invoked as documented (``python scripts/<file>.py``),
+# Python puts ``scripts/`` rather than the repository root on sys.path. Add the
+# root before importing the local ``hf_model`` and ``train_variations``
+# packages. Module execution (``python -m scripts.compare_hf_relu2max``) keeps
+# working as well.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import torch

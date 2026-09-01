@@ -34,6 +34,11 @@ python scripts/compare_hf_relu2max.py \
   --max-steps 1000 --output-dir runs/hf-normalizer-ablation
 ```
 
+The direct file command above and the equivalent module form
+`python -m scripts.compare_hf_relu2max` are both supported. The launcher
+resolves the repository root itself, so it can import `hf_model` regardless of
+the caller's current working directory.
+
 The script downloads/tokenizes the dataset once and runs ReLU2Max then softmax.
 It resets Python, NumPy, PyTorch, Trainer, and sampler seeds before each model,
 so model initialization, data order, architecture, Muon settings, and schedule

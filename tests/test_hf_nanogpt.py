@@ -1,4 +1,7 @@
 import math
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -7,6 +10,18 @@ transformers = pytest.importorskip("transformers")
 
 from hf_model import NanoGPTConfig, NanoGPTForCausalLM
 from hf_model.modeling_nanogpt import _apply_rope
+
+
+def test_direct_comparison_script_can_import_local_model():
+    repo_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "compare_hf_relu2max.py"), "--help"],
+        cwd=repo_root.parent,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ReLU2Max/softmax" in result.stdout
 
 
 def tiny_config(**kwargs):

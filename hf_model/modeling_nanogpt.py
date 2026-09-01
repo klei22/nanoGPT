@@ -1,7 +1,6 @@
 """Hugging Face causal LM matching nanoGPT's QK-norm attention path."""
 
 import math
-from typing import Optional
 
 import torch
 from torch import nn
