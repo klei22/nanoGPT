@@ -915,6 +915,7 @@ def parse_args():
             "squared_gelu",
             "tanh",
             "identity",
+            "xielu",
         ]
 
     ## DynamicActivations
@@ -930,6 +931,12 @@ def parse_args():
 
     # ACTIVATION VARIATIONS
     model_group.add_argument( "--activation_variant", type=str, default="gelu", choices=activation_variations)
+
+    ## Expanded Integral ELU (xIELU)
+    model_group.add_argument("--xielu_alpha_p_init", type=float, default=0.8)
+    model_group.add_argument("--xielu_alpha_n_init", type=float, default=0.8)
+    model_group.add_argument("--xielu_beta", type=float, default=0.5)
+    model_group.add_argument("--xielu_eps", type=float, default=1e-6)
 
     ## ReLUPower
     model_group.add_argument("--relu_power", type=float, default=2.0)

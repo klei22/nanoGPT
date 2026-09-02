@@ -21,6 +21,7 @@ activation_variation=("celu"
             "softplus"
             "softsign"
             "squared_relu"
+            "xielu"
             "tanh")
 
 n_layer="2"
