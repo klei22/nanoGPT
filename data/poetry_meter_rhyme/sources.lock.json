@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "haider",
+      "commit": "3934b28bec7177850343d452ccc4df9c6e70ae0e",
+      "url": "https://github.com/tnhaider/metrical-tagging-in-the-wild/archive/3934b28bec7177850343d452ccc4df9c6e70ae0e.tar.gz",
+      "sha256": "92c468a1027fb96c0d021ad165d32a024188a702d520e58cb48c2611459f274b",
+      "license_status": "research-only",
+      "citation": "Haider, Metrical Tagging in the Wild (LREC 2020)"
+    },
+    {
+      "name": "chicago",
+      "url": "https://github.com/sravanareddy/rhymedata/archive/ba25424061778b97b7bcb1dac5b19beac257c8c2.tar.gz",
+      "commit": "ba25424061778b97b7bcb1dac5b19beac257c8c2",
+      "sha256": "a7a5ba748aee6d4c2d06df8996ae2782d72e678d961ff09587c1d55c88abf21e",
+      "license_status": "research-only",
+      "citation": "Reddy and Knight, Unsupervised Discovery of Rhyme Schemes (ACL 2011)"
+    },
+    {
+      "name": "deepspeare",
+      "commit": "08bd93ee5b023f6097261a51845929deb86296cd",
+      "url": "https://github.com/jhlau/deepspeare/archive/08bd93ee5b023f6097261a51845929deb86296cd.tar.gz",
+      "sha256": "47ed3a164e5ea4c5ed67b368c92b1ea57eae5f9de59fb75d66712e7bc8be1205",
+      "license_status": "repository-license",
+      "background": true,
+      "citation": "Lau et al., Deep-speare (ACL 2018)"
+    }
+  ]
+}
