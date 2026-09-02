@@ -55,6 +55,8 @@ class GPT(nn.Module):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
+        if config.attention_only and config.attention_residual_variant != "standard":
+            raise ValueError("attention_only currently requires standard attention residuals")
 
         self.config = config
 

@@ -1,0 +1,58 @@
+# Parameter-matched comparison of an attention-only Simple Attention Network
+# (SAN) and a regular SwiGLU transformer on a locally prepared OPUS-100 pair.
+#
+# Prepare the desired language pair first (English-Spanish shown here):
+#   cd data/opus-100
+#   python3 get_dataset.py -f en -t es
+#   python3 prepare.py -t input.txt --method sentencepiece --vocab_size 32000
+#
+# Then launch from the repository root:
+#   python3 optimization_and_search/run_experiments.py \
+#     -c explorations/attention_only_san.yaml
+---
+common_group:
+  dataset: ["opus-100"]
+  block_size: [512]
+  n_embd: [512]
+  n_head: [8]
+  n_kv_group: [4]
+
+  # Shared SAN/transformer attention recipe.
+  use_qk_norm: [true]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  norm_variant_attn: ["rmsnorm"]
+  norm_variant_output: ["rmsnorm"]
+  use_pre_ln: [true]
+  attention_variant: ["causal"]
+  softmax_variant_attn: ["softmax"]
+  bias: [false]
+  dropout: [0.0]
+
+  # Keep data order, budget, and evaluation settings identical between arms.
+  max_iters: [10000]
+  eval_interval: [500]
+  seed: [42, 43, 44]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  compute_model_stats: [true]
+  never_save_checkpoint: [true]
+  optimizer: ["muon"]
+  weight_decay: [0.0]
+
+parameter_groups:
+  # Approximately 15.7M non-embedding block parameters: 20 attention layers.
+  # The learning-rate sweep is per arm because the paper finds that sharing a
+  # single tuned rate can bias the architecture comparison.
+  - attention_only: [true]
+    n_layer: [20]
+    learning_rate: [0.01, 0.02, 0.04]
+
+  # Approximately 15.7M non-embedding block parameters: four attention +
+  # width-2048 SwiGLU layers. This is the paper's iso-parameter control.
+  - attention_only: [false]
+    n_layer: [4]
+    mlp_variant: ["swiglu"]
+    mlp_size: [2048]
+    learning_rate: [0.02, 0.04, 0.08]

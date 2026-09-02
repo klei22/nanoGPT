@@ -62,6 +62,11 @@ class SharedParamGroupCreator:
             list of layer_blocks
         """
 
+        if layer_type == "mlp" and self.config.attention_only:
+            # Attention-only blocks do not own an MLP. Avoid constructing an
+            # otherwise unused set of feed-forward parameters here.
+            return [None] * self.config.n_layer
+
         if layer_type == "mlp":
             shared_size = self.config.shared_mlp_size
             shared_sym  = self.config.shared_mlp_sym
