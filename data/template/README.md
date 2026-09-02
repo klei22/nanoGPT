@@ -169,6 +169,29 @@ additional parameters for tokenization strategy and their parameters.
 - `input_file`: Path to the input text file.
 - `--method`: Tokenization method (`sentencepiece`, `tiktoken`, `char`). Default is `sentencepiece`.
 - `--vocab_size`: Vocabulary size for the SentencePiece model. Default is 500.
+- `--vocab_size_increment`: With `--method char_bpe`, emit vocabulary sizes at
+  this interval through `--vocab_size`. This mode requires `-s`; the largest
+  vocabulary is trained once and the smaller, factored vocabularies reuse its
+  ordered token prefixes rather than training BPE from scratch.
+
+For example, this creates `char_bpe_factored_1000` through
+`char_bpe_factored_9000` in steps of 1000 (and includes the requested maximum
+even when it is not divisible by the increment):
+
+```bash
+python3 prepare.py -t input.txt --method char_bpe --vocab_size 9000 \
+  --vocab_size_increment 1000 -T -s -S factored
+```
+
+Each directory contains its own `meta.pkl`, `train.bin`, `val.bin`,
+`char_bpe_vocab.json`, and (with `-T`) `char_bpe_token_counts.json`. The custom
+`-S` tag precedes the vocabulary size, so the final directory in this example
+is `char_bpe_factored_9000`.
+
+Vocabulary sizes are zero-padded to the width of the maximum so directory names
+sort numerically. For example, a maximum of 1500 and increment of 500 produces
+`char_bpe_factored_0500`, `char_bpe_factored_1000`, and
+`char_bpe_factored_1500`.
 
 #### `prepare.py` Generated File Descriptions
 

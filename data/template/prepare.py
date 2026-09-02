@@ -19,6 +19,7 @@ from nanogpt_tokenizers import (
 )
 from tqdm import tqdm
 import pickle
+import copy
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Tokenize text data using different methods.")
@@ -98,6 +99,8 @@ def parse_arguments():
 
     # SentencePiece arguments
     parser.add_argument("--vocab_size", type=int, default=500, help="Vocabulary size for SentencePiece model")
+    parser.add_argument("--vocab_size_increment", type=int, default=None,
+                        help="For char_bpe, emit factored vocabularies at this increment up to --vocab_size; the maximum vocabulary is trained only once")
     parser.add_argument("--spm_model_file", type=str, default=None, help="Path to the pre-trained SentencePiece model file")
     parser.add_argument("--spm_vocab_file", type=str, default=None, help="Path to the SentencePiece vocabulary file")
     parser.add_argument("--skip_tokenization", action="store_true", help="Skip creation of .bin files")
@@ -203,8 +206,7 @@ def _update_meta_with_byte_metrics(meta_path, byte_metrics):
     with open(meta_path, "wb") as f:
         pickle.dump(meta, f)
 
-def main():
-    args = parse_arguments()
+def _output_dir_for_args(args):
     output_dir = None
     if args.output_tokenization_subdir:
         if args.method == "json_byte_fallback" and args.json_tokens_file:
@@ -218,6 +220,13 @@ def main():
             output_dir = args.method
         if args.output_subdir_suffix:
             output_dir = f"{output_dir}_{args.output_subdir_suffix}"
+        if args.method == "char_bpe" and args.vocab_size_increment:
+            width = getattr(args, "factored_vocab_size_width", len(str(args.vocab_size)))
+            output_dir = f"{output_dir}_{args.vocab_size:0{width}d}"
+    return output_dir
+
+def _prepare_one(args):
+    output_dir = _output_dir_for_args(args)
     if output_dir:
         args.meta_output_path = os.path.join(output_dir, "meta.pkl")
         args.train_output = os.path.join(output_dir, os.path.basename(args.train_output))
@@ -373,6 +382,43 @@ def main():
 
     if byte_metrics is not None:
         _update_meta_with_byte_metrics(args.meta_output_path, byte_metrics)
+
+def _factored_vocab_sizes(maximum, increment):
+    if increment <= 0:
+        raise ValueError("--vocab_size_increment must be greater than zero.")
+    if maximum <= 256:
+        raise ValueError("--vocab_size must be greater than 256 for char_bpe.")
+    sizes = list(range(increment, maximum + 1, increment))
+    sizes = [size for size in sizes if size > 256]
+    if not sizes or sizes[-1] != maximum:
+        sizes.append(maximum)
+    return sizes
+
+def main():
+    args = parse_arguments()
+    if args.vocab_size_increment is None:
+        _prepare_one(args)
+        return
+    if args.method != "char_bpe":
+        raise ValueError("--vocab_size_increment is only supported with --method char_bpe.")
+    if not args.output_tokenization_subdir:
+        raise ValueError("--vocab_size_increment requires -s/--output_tokenization_subdir.")
+    if args.char_bpe_vocab_path:
+        raise ValueError("--vocab_size_increment cannot be combined with --char_bpe_vocab_path.")
+
+    sizes = _factored_vocab_sizes(args.vocab_size, args.vocab_size_increment)
+    vocab_size_width = len(str(args.vocab_size))
+    source_meta = None
+    # Train the largest vocabulary first. Smaller variants reuse prefixes of its
+    # ordered merge list, avoiding independent BPE training runs.
+    for vocab_size in reversed(sizes):
+        variant_args = copy.deepcopy(args)
+        variant_args.vocab_size = vocab_size
+        variant_args.factored_vocab_size_width = vocab_size_width
+        variant_args.char_bpe_vocab_path = source_meta
+        _prepare_one(variant_args)
+        if source_meta is None:
+            source_meta = os.path.join(_output_dir_for_args(variant_args), "meta.pkl")
 
 if __name__ == "__main__":
     main()
