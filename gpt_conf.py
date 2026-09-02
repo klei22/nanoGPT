@@ -1,6 +1,6 @@
 # gpt_conf.py
 from dataclasses import dataclass, field, asdict, fields
-from typing import List
+from typing import List, Optional
 import json
 import math
 
@@ -188,6 +188,7 @@ class GPTConfig:
     # QK Norm Options
     use_qk_norm: bool = False
     use_qk_norm_scale: bool = False
+    qk_norm_scale: Optional[float] = None
     use_v_norm: bool = False
 
     ## SSM - Attention Varient (same as Hymba)
@@ -303,6 +304,7 @@ class GPTConfig:
 
     ## ReLUMax options
     relu2max_divisor: float = 256.0
+    relu2max_line_transition: float = 4.0
 
     ## SigmoidMax options
     sigmoidmax_divisor: float = 256.0
