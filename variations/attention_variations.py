@@ -39,6 +39,45 @@ def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
         )
 
     return group_sizes, head_to_group
+
+
+class GemmaRMSNorm(nn.Module):
+    """Gemma-style RMSNorm with a zero-initialized residual gain."""
+
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.zeros(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Accumulate in fp32 for stability, then restore the activation dtype.
+        x_float = x.float()
+        normalized = x_float * torch.rsqrt(
+            x_float.pow(2).mean(dim=-1, keepdim=True) + self.eps
+        )
+        normalized = normalized * (1.0 + self.weight.float())
+        return normalized.to(dtype=x.dtype)
+
+
+def _configure_qk_norm(module: nn.Module, config, head_dim: int) -> None:
+    module.use_qk_norm = config.use_qk_norm
+    module.use_gemma_qk_norm = getattr(config, "use_gemma_qk_norm", False)
+    module.use_qk_norm_scale = config.use_qk_norm_scale
+    if module.use_qk_norm and module.use_gemma_qk_norm:
+        raise ValueError("use_qk_norm and use_gemma_qk_norm are mutually exclusive")
+    if module.use_gemma_qk_norm:
+        # Q and K have independent per-channel gains, shared across their heads.
+        module.q_norm = GemmaRMSNorm(head_dim)
+        module.k_norm = GemmaRMSNorm(head_dim)
+
+
+def _apply_qk_norm(module: nn.Module, q: torch.Tensor, k: torch.Tensor):
+    if module.use_gemma_qk_norm:
+        return module.q_norm(q), module.k_norm(k)
+    if module.use_qk_norm:
+        q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+        k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+    return q, k
 # Mamba related imports
 # if torch.cuda.is_available():
 #     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -147,8 +186,7 @@ class CausalSelfAttention(nn.Module):
         print(f"sliding window size: {self.window_size}")
 
         # qk_norm and v_norm
-        self.use_qk_norm = config.use_qk_norm
-        self.use_qk_norm_scale = config.use_qk_norm_scale
+        _configure_qk_norm(self, config, self.head_dim)
         self.use_v_norm = config.use_v_norm
 
         # Flash Lobo
@@ -328,9 +366,7 @@ class CausalSelfAttention(nn.Module):
 
         y = None
 
-        if self.use_qk_norm:
-            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_norm(self, q, k)
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -563,8 +599,7 @@ class EdgeLLMASICAttention(nn.Module):
         print(f"sliding window size: {self.window_size}")
 
         # qk_norm and v_norm
-        self.use_qk_norm = config.use_qk_norm
-        self.use_qk_norm_scale = config.use_qk_norm_scale
+        _configure_qk_norm(self, config, self.head_dim)
         self.use_v_norm = config.use_v_norm
 
         # Using flex attention
@@ -663,9 +698,7 @@ class EdgeLLMASICAttention(nn.Module):
 
         y = None
 
-        if self.use_qk_norm:
-            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_norm(self, q, k)
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -1026,8 +1059,7 @@ class InfiniteHeadAttention(nn.Module):
         self.n_cproj         = config.n_cproj
 
         # QK Norm
-        self.use_qk_norm        = config.use_qk_norm
-        self.use_qk_norm_scale  = config.use_qk_norm_scale
+        _configure_qk_norm(self, config, config.n_qk_head_dim)
         self.use_v_norm         = config.use_v_norm
 
         # Flash Lobo
@@ -1193,9 +1225,7 @@ class InfiniteHeadAttention(nn.Module):
             k = self.rotary_emb_k(k)
 
         # Apply QK Norm
-        if self.use_qk_norm:
-            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_norm(self, q, k)
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
