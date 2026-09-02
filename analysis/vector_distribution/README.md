@@ -23,7 +23,7 @@ python vector_distribution_analysis.py --format <format> [--mode exhaustive|rand
 ```
 
 ### Key Arguments
-- `--format`         : Number format. One of `int3`, `int4`, `int5`, `int6`, `int7`, `int8`, `e4m3`, `e5m2`, `fp16`.
+- `--format`         : Number format. One of `int3` through `int8`, `e4m3`, `e5m2`, `fp16`, `phi`, or `turboquant1` through `turboquant4`.
 - `--mode`           : Vector generation mode. `exhaustive` (all possible), `random` (random samples), or `gaussian` (samples from a Gaussian, then quantized). Default: `exhaustive`.
 - `--num`            : Number of samples (required for `random` and `gaussian` modes).
 - `--mean`           : Mean for Gaussian mode (default: 0.0).
@@ -49,6 +49,61 @@ python3 vector_distribution_analysis.py --format int5 --mode exhaustive --healpi
 ```sh
 python3 vector_distribution_analysis.py --format fp16 -e 3 -m 2 --mode gaussian --num 100000 --healpix --nside 128 --out3d images/fp16_e3m2_gaussian.html
 ```
+
+### TurboQuant comparison
+
+TurboQuant is not an IEEE-style scalar storage format. Its MSE variant first
+randomly rotates a vector, then represents each rotated coordinate with one of
+`2^b` Lloyd-Max centroids optimized for the coordinate distribution. The
+`turboquant1` through `turboquant4` options expose the cross-checked
+standard-normal centroid tables. Their common dimension-dependent scale is
+omitted because it cannot change a vector's direction on the sphere.
+
+Generate the complete comparison suite with:
+
+```sh
+bash demo_turboquant.sh
+```
+
+Set `NSIDE` to change the HEALPix resolution or pass an output directory:
+
+```sh
+NSIDE=64 bash demo_turboquant.sh /tmp/turboquant-surfaces
+```
+
+In addition to the six interactive HEALPix surfaces, the demo writes sparse and
+isotropic angular-distortion PDFs plus the angular-space evenness CSV/PDF for
+INT3--INT8 and TQ3--TQ8. The isotropic plot omits the redundant Hadamard curves,
+because isotropic inputs are already rotation invariant. Runtime and resolution
+can be adjusted without editing the script:
+
+```sh
+NSIDE=16 \
+ANGULAR_DIM=1024 ANGULAR_TRIALS=10 ANGLE_STEP=5 \
+EVENNESS_SAMPLES=20000 EVENNESS_CAPS=64 \
+bash demo_turboquant.sh /tmp/turboquant-quick
+```
+
+The default generated analysis files are:
+
+- `turboquant_vs_int_angular_distortion_sparse.pdf`
+- `turboquant_vs_int_angular_distortion_isotropic.pdf`
+- `angle_space_evenness.csv`
+- `angle_space_evenness.pdf`
+
+The visualizations enumerate scalar-codebook triples before normalization. They
+therefore show the directional geometry of one fixed rotated basis, rather than
+averaging over random rotation matrices. This makes the codebook directly
+comparable to the integer and floating-point plots.
+
+Implementation references used for the format definition:
+
+- [TurboQuant paper (arXiv:2504.19874)](https://arxiv.org/abs/2504.19874),
+  especially Algorithm 1 and the continuous Lloyd-Max objective in Equation 3.
+- [Open-source TurboQuant implementation](https://github.com/vivekvar-dl/turboquant),
+  which computes dimension-specific Beta-distribution codebooks.
+- [Independent reproduction and published-codebook cross-check](https://github.com/ray-ruisun/TurboQuant),
+  which records the standard-normal centroid tables used here.
 
 ### Output
 - 2D heatmaps are saved as images (e.g., PNG) showing vector density on the sphere.
@@ -120,4 +175,3 @@ space.
 - For best results, ensure the `images/` directory exists before running scripts.
 - The 3D HTML outputs are interactive and can be viewed in any modern web browser.
 - For custom floating-point formats, use `--exp` and `--mant` to specify exponent and mantissa bits.
-
