@@ -42,6 +42,10 @@ from train_variations.optimizer_variants import (
 from train_variations.eta_variants import build_eta_estimator, ETAUpdate
 from train_variations.loss_variants import build_loss_function
 from train_variations.distillation_loss_variants import build_distillation_loss
+from train_variations.confidence_rethinking import (
+    confidence_rethinking_forward,
+    decode_with_thinking_display,
+)
 
 from utils.gpu_monitoring import get_gpu_memory_info, get_process_gpu_memory_bytes
 from utils.min_angle_graph_export import export_min_angle_graph as write_min_angle_graph_export
@@ -240,6 +244,21 @@ class Trainer:
             self.args.lr_decay_iters = self.args.max_iters
 
         self.setup()
+
+        if self.args.training_mode == 'confidence_rethinking':
+            if self.args.rethinking_passes < 1:
+                raise ValueError("--rethinking_passes must be at least 1")
+            if not 0.0 <= self.args.rethinking_confidence_threshold <= 1.0:
+                raise ValueError("--rethinking_confidence_threshold must be between 0 and 1")
+            if self.args.thinking_token_id is None:
+                self.args.thinking_token_id = getattr(self, 'stoi', {}).get('<thinking>')
+            if self.args.thinking_token_id is None:
+                raise ValueError(
+                    "confidence_rethinking requires a <thinking> entry in meta.pkl's stoi "
+                    "or an explicit --thinking_token_id"
+                )
+            if not 0 <= self.args.thinking_token_id < self.model_args['vocab_size']:
+                raise ValueError("--thinking_token_id must be inside the model vocabulary")
 
         if self.args.sample_only:
             self.sample_and_print()
@@ -750,6 +769,15 @@ class Trainer:
             else:
                 encode_fn = self.encode
                 decode_fn = self.decode
+
+            if self.args.training_mode == 'confidence_rethinking':
+                base_decode = decode_fn
+                decode_fn = lambda ids, decode=base_decode: decode_with_thinking_display(
+                    ids,
+                    decode,
+                    self.args.thinking_token_id,
+                    self.args.thinking_token_display,
+                )
 
             start_ids = torch.tensor(encode_fn(self.args.sample_start_tokens), dtype=torch.long, device=self.device)[None, ...]
 
@@ -1428,13 +1456,25 @@ class Trainer:
                         lambda _m, _i, o: ln_f_out.append(o.detach())
                     )
                     with self.ctx:
-                        logits, loss = self.model(
-                            X,
-                            Y,
-                            iter_num=self.iter_num,
-                            dataset_idx=0 if self.args.multidataset_wte else None,
-                            loss_fn=self.loss_fn,
-                        )
+                        if self.args.training_mode == 'confidence_rethinking' and split == 'val':
+                            logits, loss = confidence_rethinking_forward(
+                                self.model,
+                                X,
+                                Y,
+                                thinking_token_id=self.args.thinking_token_id,
+                                confidence_threshold=self.args.rethinking_confidence_threshold,
+                                max_passes=self.args.rethinking_passes,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                            )
+                        else:
+                            logits, loss = self.model(
+                                X,
+                                Y,
+                                iter_num=self.iter_num,
+                                dataset_idx=0 if self.args.multidataset_wte else None,
+                                loss_fn=self.loss_fn,
+                            )
                     if self.per_token_metrics is not None:
                         self.per_token_metrics.add_evaluation_batch(
                             self.args.dataset, split, logits, Y
@@ -1473,7 +1513,7 @@ class Trainer:
                         )
                         target_vecs = lm_head.weight[Y]
                         cos = F.cosine_similarity(
-                            ln_f_out[0].float(), target_vecs.float(), dim=-1
+                            ln_f_out[-1].float(), target_vecs.float(), dim=-1
                         )
                         ln_f_cosines.append(cos)
                         if compute_rankme:
@@ -2589,13 +2629,25 @@ class Trainer:
                                     )
                         else:
                             idx_ds = self.args.dataset_list.index(current_dataset) if self.args.dataset_list else None
-                            logits, loss = self.model(
-                                self.X,
-                                targets=self.Y,
-                                iter_num=self.iter_num,
-                                dataset_idx=idx_ds if self.args.multidataset_wte else None,
-                                loss_fn=self.loss_fn,
-                            )
+                            if self.args.training_mode == 'confidence_rethinking':
+                                logits, loss = confidence_rethinking_forward(
+                                    self.model,
+                                    self.X,
+                                    self.Y,
+                                    thinking_token_id=self.args.thinking_token_id,
+                                    confidence_threshold=self.args.rethinking_confidence_threshold,
+                                    max_passes=self.args.rethinking_passes,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                )
+                            else:
+                                logits, loss = self.model(
+                                    self.X,
+                                    targets=self.Y,
+                                    iter_num=self.iter_num,
+                                    dataset_idx=idx_ds if self.args.multidataset_wte else None,
+                                    loss_fn=self.loss_fn,
+                                )
                             if self.per_token_metrics is not None:
                                 self.per_token_metrics.count_training_batch(
                                     current_dataset, self.Y

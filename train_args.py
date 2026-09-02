@@ -294,9 +294,17 @@ def parse_args():
     training_group.add_argument(
         '--training_mode',
         default='single',
-        choices=['single', 'multidataset', 'multicontext'],
-        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously."
+        choices=['single', 'multidataset', 'multicontext', 'confidence_rethinking'],
+        help="Training mode to use. 'confidence_rethinking' retries low-confidence targets after emitting <thinking>."
     )
+    training_group.add_argument('--rethinking_passes', default=3, type=int,
+                                help='Maximum passes per batch in confidence_rethinking mode (including the initial pass).')
+    training_group.add_argument('--rethinking_confidence_threshold', default=0.70, type=float,
+                                help='Retry target predictions below this probability in confidence_rethinking mode.')
+    training_group.add_argument('--thinking_token_id', default=None, type=int,
+                                help='Token id for <thinking>; by default it is resolved from dataset meta.pkl.')
+    training_group.add_argument('--thinking_token_display', default='...', type=str,
+                                help='Text shown in generated samples in place of the <thinking> token.')
 
     # Data args
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)
