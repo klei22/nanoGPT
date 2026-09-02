@@ -23,6 +23,29 @@ def parse_args():
     training_group = parser.add_argument_group('training_group')
     logging_group = parser.add_argument_group('logging_group')
 
+    model_group.add_argument('--predictive_width_variant', default='standard',
+                             choices=['standard', 'direct_streams', 'late_tap', 'private_moe'])
+    model_group.add_argument('--predictive_head_mode', default='standard',
+                             choices=['standard', 'direct', 'collapsed', 'bottleneck', 'merged'])
+    model_group.add_argument('--n_predictive_streams', default=1, type=int)
+    model_group.add_argument('--predictive_stream_dim', default=None, type=int)
+    model_group.add_argument('--predictive_stream_n_head', default=None, type=int)
+    model_group.add_argument('--predictive_stream_parameter_sharing', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--late_tap_dim', default=128, type=int)
+    model_group.add_argument('--late_tap_variant', default='nonlinear', choices=['linear', 'nonlinear'])
+    model_group.add_argument('--late_tap_init_scale', default=0.01, type=float)
+    model_group.add_argument('--private_moe_start_layer', default=None, type=int)
+    model_group.add_argument('--private_moe_depth', default=2, type=int)
+    model_group.add_argument('--private_dim', default=64, type=int)
+    model_group.add_argument('--private_n_experts', default=4, type=int)
+    model_group.add_argument('--private_top_k', default=1, type=int)
+    model_group.add_argument('--private_router_sticky', default=True, action=argparse.BooleanOptionalAction)
+    logging_group.add_argument('--log_predictive_width', default=False, action=argparse.BooleanOptionalAction)
+    logging_group.add_argument('--predictive_probe_interval', default=1000, type=int)
+    logging_group.add_argument('--predictive_probe_batches', default=8, type=int)
+    training_group.add_argument('--data_seed', default=None, type=int)
+    training_group.add_argument('--eval_seed', default=None, type=int)
+
     model_group.add_argument(
         '--attention_residual_variant', default='standard', choices=['standard', 'full'],
         help='Residual stream implementation: ordinary addition or full depth-wise attention.',
