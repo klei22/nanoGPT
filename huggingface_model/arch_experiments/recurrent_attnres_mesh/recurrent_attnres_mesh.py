@@ -18,9 +18,11 @@ head.
 
 The implementation packs all attention weights and all FFN weights into
 batched tensors.  Attention modules are folded into the batch dimension for
-one PyTorch SDPA call, allowing Flash Attention on an A100.  The default
-``a100-80gb`` profile is a 305M-parameter, BF16/TF32 configuration with strict
-SM80, 80 GB HBM, and Flash-SDPA checks.  It supports:
+one PyTorch SDPA call, allowing fused attention kernels on NVIDIA GPUs.  The
+default ``a100-80gb`` profile is a 305M-parameter, BF16/TF32 configuration
+with strict SM80, 80 GB HBM, and Flash-SDPA checks.  Strict profiles are also
+provided for H100 SXM/PCIe 80 GB and RTX 4090 24 GB devices, alongside a
+conservative generic-CUDA profile.  It supports:
 
   * arbitrary counts of attention and FFN modules;
   * arbitrary recurrent iterations;
@@ -54,7 +56,8 @@ The profile resolves to D=2048, 32 heads, SwiGLU width 5504, four attention
 modules, four FFN modules, six recurrent steps, sequence length 2048,
 microbatch 8, and two gradient-accumulation steps.  Explicit command-line
 values and sweep run-config values always override profile defaults.  Use
-``--hardware-profile portable`` for CPU checks or non-A100 experiments.
+``--hardware-profile cuda-generic`` on an otherwise unsupported NVIDIA GPU,
+or ``--hardware-profile portable`` for CPU checks.
 
 Sequential grid sweep on one A100:
 
@@ -131,17 +134,70 @@ A100_80GB_PROFILE: dict[str, Any] = {
     "compile_mode": "default",
     "gradient_checkpointing": True,
     "checkpoint_chunk_steps": 2,
-    "require_flash": True,
+    "sdpa_backend": "flash",
+    "require_fused_sdpa": True,
     "fused_adamw": True,
     "strict_hardware_profile": True,
     "allocator_expandable_segments": True,
     "target_peak_memory_fraction": 0.90,
     "memory_reserve_gb": 8.0,
     "throughput_warmup_steps": 1,
-    "a100_bf16_peak_tflops": 312.0,
+    "bf16_peak_tflops": 312.0,
 }
 
-PORTABLE_PROFILE: dict[str, Any] = {
+# H100 profiles deliberately retain the A100 scientific baseline and memory
+# policy so an A100/H100 comparison changes hardware rather than architecture.
+# The profile name selects the appropriate dense BF16 (non-sparse, non-FP8)
+# denominator and fused SDPA policy.
+H100_SXM_80GB_PROFILE: dict[str, Any] = {
+    **A100_80GB_PROFILE,
+    "sdpa_backend": "fused",
+    "bf16_peak_tflops": 989.0,
+}
+
+H100_PCIE_80GB_PROFILE: dict[str, Any] = {
+    **A100_80GB_PROFILE,
+    "sdpa_backend": "fused",
+    "bf16_peak_tflops": 756.0,
+}
+
+RTX4090_24GB_PROFILE: dict[str, Any] = {
+    # Sized to keep the configured working budget at about 20 GiB while still
+    # exercising the same four-attention/four-FFN mesh topology.
+    "hidden_size": 1_024,
+    "num_attention_modules": 4,
+    "num_ffn_modules": 4,
+    "num_iterations": 4,
+    "num_attention_heads": 16,
+    "intermediate_size": 2_752,
+    "max_position_embeddings": 2_048,
+    "sequence_length": 1_024,
+    "num_workers": 4,
+    "prefetch_factor": 2,
+    "persistent_workers": True,
+    "micro_batch_size": 4,
+    "gradient_accumulation_steps": 8,
+    "mixed_precision": "bf16",
+    "tf32": True,
+    "compile_model": True,
+    "compile_mode": "default",
+    "gradient_checkpointing": True,
+    "checkpoint_chunk_steps": 2,
+    "sdpa_backend": "flash",
+    "require_fused_sdpa": True,
+    "fused_adamw": True,
+    "strict_hardware_profile": True,
+    "allocator_expandable_segments": True,
+    "target_peak_memory_fraction": 0.85,
+    "memory_reserve_gb": 3.0,
+    "throughput_warmup_steps": 1,
+    "bf16_peak_tflops": 165.2,
+}
+
+CUDA_GENERIC_PROFILE: dict[str, Any] = {
+    # Broadly compatible fallback: FP16 and automatic SDPA allow PyTorch to
+    # choose an available kernel. Override dimensions/batch size and provide
+    # --bf16-peak-tflops when characterizing a known BF16-capable GPU.
     "hidden_size": 768,
     "num_attention_modules": 2,
     "num_ffn_modules": 2,
@@ -152,28 +208,102 @@ PORTABLE_PROFILE: dict[str, Any] = {
     "sequence_length": 1_024,
     "num_workers": 4,
     "prefetch_factor": 2,
-    "persistent_workers": False,
-    "micro_batch_size": 4,
-    "gradient_accumulation_steps": 8,
-    "mixed_precision": "bf16",
+    "persistent_workers": True,
+    "micro_batch_size": 2,
+    "gradient_accumulation_steps": 16,
+    "mixed_precision": "fp16",
     "tf32": True,
     "compile_model": True,
     "compile_mode": "default",
     "gradient_checkpointing": True,
     "checkpoint_chunk_steps": 2,
-    "require_flash": False,
+    "sdpa_backend": "auto",
+    "require_fused_sdpa": False,
     "fused_adamw": True,
+    "strict_hardware_profile": True,
+    "allocator_expandable_segments": True,
+    "target_peak_memory_fraction": 0.80,
+    "memory_reserve_gb": 2.0,
+    "throughput_warmup_steps": 1,
+    "bf16_peak_tflops": 0.0,
+}
+
+PORTABLE_PROFILE: dict[str, Any] = {
+    # Intentionally small and accelerator-free so inspect/benchmark checks are
+    # useful on laptops and CI runners without CUDA.
+    "hidden_size": 256,
+    "num_attention_modules": 1,
+    "num_ffn_modules": 1,
+    "num_iterations": 2,
+    "num_attention_heads": 8,
+    "intermediate_size": 688,
+    "max_position_embeddings": 512,
+    "sequence_length": 256,
+    "num_workers": 0,
+    "prefetch_factor": 2,
+    "persistent_workers": False,
+    "micro_batch_size": 1,
+    "gradient_accumulation_steps": 1,
+    "mixed_precision": "no",
+    "tf32": False,
+    "compile_model": False,
+    "compile_mode": "default",
+    "gradient_checkpointing": False,
+    "checkpoint_chunk_steps": 1,
+    "sdpa_backend": "auto",
+    "require_fused_sdpa": False,
+    "fused_adamw": False,
     "strict_hardware_profile": False,
     "allocator_expandable_segments": False,
     "target_peak_memory_fraction": 0.90,
     "memory_reserve_gb": 2.0,
     "throughput_warmup_steps": 0,
-    "a100_bf16_peak_tflops": 312.0,
+    "bf16_peak_tflops": 0.0,
 }
 
 HARDWARE_PROFILES = {
     "a100-80gb": A100_80GB_PROFILE,
+    "h100-sxm-80gb": H100_SXM_80GB_PROFILE,
+    "h100-pcie-80gb": H100_PCIE_80GB_PROFILE,
+    "rtx4090-24gb": RTX4090_24GB_PROFILE,
+    "cuda-generic": CUDA_GENERIC_PROFILE,
     "portable": PORTABLE_PROFILE,
+}
+
+# CUDA device properties do not expose the H100 PCIe-versus-SXM form factor
+# portably, so both H100 contracts validate the SKU and SM version; selecting
+# the form-factor profile also selects its dense-BF16 denominator.
+GPU_PROFILE_CONTRACTS: dict[str, dict[str, Any]] = {
+    "a100-80gb": {
+        "name_token": "A100",
+        "compute_capability": (8, 0),
+        "min_hbm_gb": 75.0,
+        "require_bf16": True,
+    },
+    "h100-sxm-80gb": {
+        "name_token": "H100",
+        "compute_capability": (9, 0),
+        "min_hbm_gb": 75.0,
+        "require_bf16": True,
+    },
+    "h100-pcie-80gb": {
+        "name_token": "H100",
+        "compute_capability": (9, 0),
+        "min_hbm_gb": 75.0,
+        "require_bf16": True,
+    },
+    "rtx4090-24gb": {
+        "name_token": "RTX 4090",
+        "compute_capability": (8, 9),
+        "min_hbm_gb": 20.0,
+        "require_bf16": True,
+    },
+    "cuda-generic": {
+        "name_token": None,
+        "compute_capability": None,
+        "min_hbm_gb": 0.0,
+        "require_bf16": False,
+    },
 }
 CUDA_OOM_EXIT_CODE = 42
 
@@ -230,7 +360,9 @@ class RecurrentAttnResConfig(PretrainedConfig):
         embedding_dropout: float = 0.0,
         initializer_range: float = 0.02,
         rms_norm_eps: float = 1e-6,
-        require_flash: bool = False,
+        sdpa_backend: str = "auto",
+        require_fused_sdpa: Optional[bool] = None,
+        require_flash: Optional[bool] = None,
         checkpoint_chunk_steps: int = 1,
         tie_word_embeddings: bool = True,
         bos_token_id: Optional[int] = 1,
@@ -268,7 +400,24 @@ class RecurrentAttnResConfig(PretrainedConfig):
         self.embedding_dropout = embedding_dropout
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
-        self.require_flash = require_flash
+        # ``require_flash`` is the serialized spelling used by the original
+        # A100-only release.  Loading such a checkpoint still forces Flash;
+        # new checkpoints record the more general backend policy explicitly.
+        if require_fused_sdpa is None:
+            require_fused_sdpa = bool(require_flash)
+        if require_flash and sdpa_backend == "auto":
+            sdpa_backend = "flash"
+        elif require_fused_sdpa and sdpa_backend == "auto":
+            sdpa_backend = "fused"
+        if sdpa_backend not in {"auto", "fused", "cudnn", "flash"}:
+            raise ValueError(f"Unsupported SDPA backend policy: {sdpa_backend!r}")
+        self.sdpa_backend = sdpa_backend
+        self.require_fused_sdpa = bool(require_fused_sdpa)
+        # Compatibility field for older tooling. It describes a flash-only
+        # policy, while require_fused_sdpa also covers the H100 fused policy.
+        self.require_flash = bool(
+            self.require_fused_sdpa and sdpa_backend == "flash"
+        )
         self.checkpoint_chunk_steps = checkpoint_chunk_steps
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
@@ -453,6 +602,43 @@ def apply_rotary(
     return torch.stack((rotated_even, rotated_odd), dim=-1).flatten(-2)
 
 
+def sdpa_backend_context(
+    policy: str,
+) -> contextlib.AbstractContextManager[Any]:
+    """Restrict SDPA to the requested policy without enabling math fallback."""
+    if policy == "auto":
+        return contextlib.nullcontext()
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(
+            "This PyTorch build cannot explicitly select SDPA backends."
+        ) from exc
+
+    if policy == "flash":
+        backends = [SDPBackend.FLASH_ATTENTION]
+    elif policy == "cudnn":
+        try:
+            backends = [SDPBackend.CUDNN_ATTENTION]
+        except AttributeError as exc:
+            raise RuntimeError(
+                "This PyTorch build does not expose the cuDNN SDPA backend."
+            ) from exc
+    elif policy == "fused":
+        try:
+            backends = [
+                SDPBackend.CUDNN_ATTENTION,
+                SDPBackend.FLASH_ATTENTION,
+            ]
+        except AttributeError as exc:
+            raise RuntimeError(
+                "The fused SDPA policy needs both cuDNN and Flash backend enums."
+            ) from exc
+    else:  # Configuration and argparse validate this before model execution.
+        raise ValueError(f"Unsupported SDPA backend policy: {policy!r}")
+    return sdpa_kernel(backends)
+
+
 class BatchedCausalSelfAttention(nn.Module):
     """Distinct attention modules executed as packed batched GEMMs + one SDPA."""
 
@@ -464,7 +650,9 @@ class BatchedCausalSelfAttention(nn.Module):
         self.head_dim = config.hidden_size // config.num_attention_heads
         self.attention_dropout = config.attention_dropout
         self.residual_dropout = config.residual_dropout
-        self.require_flash = config.require_flash
+        self.sdpa_backend = config.sdpa_backend
+        self.require_fused_sdpa = config.require_fused_sdpa
+        self.require_flash = config.require_flash  # legacy inspection alias
         self.rope = RotaryEmbedding(self.head_dim, config.rope_theta)
 
         self.qkv_weight = nn.Parameter(
@@ -487,25 +675,17 @@ class BatchedCausalSelfAttention(nn.Module):
         attention_mask: Optional[torch.Tensor],
     ) -> torch.Tensor:
         dropout_p = self.attention_dropout if self.training else 0.0
-        context: contextlib.AbstractContextManager[Any]
-        if self.require_flash:
+        if self.sdpa_backend != "auto":
             if not query.is_cuda:
-                raise RuntimeError("require_flash=True, but attention is not on CUDA.")
-            try:
-                from torch.nn.attention import SDPBackend, sdpa_kernel
-
-                context = sdpa_kernel(SDPBackend.FLASH_ATTENTION)
-            except (ImportError, AttributeError) as exc:
                 raise RuntimeError(
-                    "This PyTorch build cannot explicitly require Flash SDPA."
-                ) from exc
-        else:
-            context = contextlib.nullcontext()
+                    f"SDPA backend policy {self.sdpa_backend!r} requires CUDA."
+                )
+        context = sdpa_backend_context(self.sdpa_backend)
 
-        if self.require_flash and attention_mask is not None:
+        if self.require_fused_sdpa and attention_mask is not None:
             raise RuntimeError(
-                "require_flash=True currently requires unpadded, fixed-length "
-                "batches; a custom padding mask was supplied."
+                "A required fused-SDPA policy currently needs unpadded, "
+                "fixed-length batches; a custom padding mask was supplied."
             )
 
         with context:
@@ -1531,7 +1711,8 @@ def build_config(
         embedding_dropout=args.embedding_dropout,
         initializer_range=args.initializer_range,
         rms_norm_eps=args.rms_norm_eps,
-        require_flash=args.require_flash,
+        sdpa_backend=args.sdpa_backend,
+        require_fused_sdpa=args.require_fused_sdpa,
         checkpoint_chunk_steps=args.checkpoint_chunk_steps,
         tie_word_embeddings=args.tie_word_embeddings,
         bos_token_id=bos,
@@ -1592,6 +1773,8 @@ def configure_torch(tf32: bool) -> None:
         torch.backends.cudnn.benchmark = True
         if hasattr(torch.backends.cuda, "enable_flash_sdp"):
             torch.backends.cuda.enable_flash_sdp(True)
+        if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+            torch.backends.cuda.enable_cudnn_sdp(True)
 
 
 def select_execution_device() -> torch.device:
@@ -1607,21 +1790,16 @@ def select_execution_device() -> torch.device:
 
 
 @torch.no_grad()
-def probe_flash_sdpa(
+def probe_sdpa_backend(
     device: torch.device,
     head_dim: int,
     dtype: torch.dtype,
+    policy: str,
 ) -> None:
-    """Execute the configured head shape/dtype with Flash as the only backend."""
-    try:
-        from torch.nn.attention import SDPBackend, sdpa_kernel
-    except (ImportError, AttributeError) as exc:
-        raise RuntimeError(
-            "This PyTorch build cannot explicitly require Flash SDPA."
-        ) from exc
+    """Execute the configured head shape/dtype under the selected SDPA policy."""
     with torch.cuda.device(device):
         query = torch.randn(1, 1, 64, head_dim, device=device, dtype=dtype)
-        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        with sdpa_backend_context(policy):
             output = F.scaled_dot_product_attention(
                 query, query, query, dropout_p=0.0, is_causal=True
             )
@@ -1637,10 +1815,12 @@ def validate_execution_hardware(
     device: torch.device,
     config: Optional[RecurrentAttnResConfig] = None,
 ) -> dict[str, Any]:
-    """Validate the A100 contract and return stable run metadata."""
+    """Validate the selected device contract and return stable run metadata."""
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     attention_modules = (
-        config.num_attention_modules if config is not None else args.num_attention_modules
+        config.num_attention_modules
+        if config is not None
+        else args.num_attention_modules
     )
     info: dict[str, Any] = {
         "hardware_profile": args.hardware_profile,
@@ -1652,8 +1832,17 @@ def validate_execution_hardware(
         "memory_budget_gb": 0.0,
         "torch_cuda_version": torch.version.cuda,
         "bf16_supported": False,
+        "sdpa_backend_policy": args.sdpa_backend,
+        "fused_sdpa_required": bool(
+            args.require_fused_sdpa and attention_modules > 0
+        ),
+        "sdpa_backend_probe": "not_applicable",
+        "sdpa_probe_dtype": "not_applicable",
+        # Backward-compatible A100-era fields.
         "flash_sdpa_required": bool(
-            args.require_flash and attention_modules > 0
+            args.require_fused_sdpa
+            and args.sdpa_backend == "flash"
+            and attention_modules > 0
         ),
         "flash_sdpa_probe": "not_applicable",
         "flash_sdpa_dtype": "not_applicable",
@@ -1682,28 +1871,42 @@ def validate_execution_hardware(
         )
 
     profile_errors: list[str] = []
-    if args.hardware_profile == "a100-80gb":
-        if world_size != 1:
+    contract = GPU_PROFILE_CONTRACTS.get(args.hardware_profile)
+    info["gpu_contract"] = contract
+    if contract is not None:
+        if args.hardware_profile != "cuda-generic" and world_size != 1:
             profile_errors.append(
-                f"WORLD_SIZE must be 1 for the single-A100 profile, got {world_size}"
+                "WORLD_SIZE must be 1 for a single-GPU hardware profile, "
+                f"got {world_size}"
             )
         if device.type != "cuda":
             profile_errors.append("CUDA is unavailable")
         else:
-            if "A100" not in str(info["device_name"]).upper():
+            name_token = contract["name_token"]
+            if name_token and name_token.upper() not in str(
+                info["device_name"]
+            ).upper():
                 profile_errors.append(
-                    f"device name is {info['device_name']!r}, not an A100"
+                    f"device name is {info['device_name']!r}; expected token "
+                    f"{name_token!r}"
                 )
-            if info["compute_capability"] != [8, 0]:
+            expected_capability = contract["compute_capability"]
+            if (
+                expected_capability is not None
+                and info["compute_capability"] != list(expected_capability)
+            ):
                 profile_errors.append(
                     "compute capability is "
-                    f"{info['compute_capability']}, expected [8, 0]"
+                    f"{info['compute_capability']}, expected "
+                    f"{list(expected_capability)}"
                 )
-            if info["total_memory_gb"] < 75.0:
+            min_hbm_gb = float(contract["min_hbm_gb"])
+            if info["total_memory_gb"] < min_hbm_gb:
                 profile_errors.append(
-                    f"visible HBM is {info['total_memory_gb']:.2f} GiB, expected >=75"
+                    f"visible GPU memory is {info['total_memory_gb']:.2f} GiB, "
+                    f"expected >={min_hbm_gb:g}"
                 )
-            if not info["bf16_supported"]:
+            if contract["require_bf16"] and not info["bf16_supported"]:
                 profile_errors.append("CUDA device does not report BF16 support")
             if info["memory_budget_gb"] <= 0.0:
                 profile_errors.append(
@@ -1713,7 +1916,8 @@ def validate_execution_hardware(
     info["profile_errors"] = profile_errors
     if profile_errors and args.strict_hardware_profile:
         raise RuntimeError(
-            "A100 80 GB hardware preflight failed: " + "; ".join(profile_errors)
+            f"{args.hardware_profile} hardware preflight failed: "
+            + "; ".join(profile_errors)
         )
     if profile_errors:
         warnings.warn(
@@ -1722,11 +1926,15 @@ def validate_execution_hardware(
             stacklevel=2,
         )
 
-    flash_required = bool(args.require_flash and attention_modules > 0)
-    if flash_required:
+    backend_probe_required = bool(
+        attention_modules > 0
+        and (args.require_fused_sdpa or args.sdpa_backend != "auto")
+    )
+    if backend_probe_required:
         if device.type != "cuda":
             raise RuntimeError(
-                "--require-flash needs CUDA when attention modules are enabled."
+                "The selected SDPA backend policy needs CUDA when attention "
+                "modules are enabled."
             )
         hidden_size = config.hidden_size if config is not None else args.hidden_size
         num_heads = (
@@ -1740,16 +1948,24 @@ def validate_execution_hardware(
             "fp16": torch.float16,
             "no": torch.float32,
         }[args.mixed_precision]
-        info["flash_sdpa_dtype"] = str(probe_dtype)
+        info["sdpa_probe_dtype"] = str(probe_dtype)
         try:
-            probe_flash_sdpa(device, head_dim, probe_dtype)
+            probe_sdpa_backend(
+                device,
+                head_dim,
+                probe_dtype,
+                args.sdpa_backend,
+            )
         except Exception as exc:
-            info["flash_sdpa_probe"] = "failed"
+            info["sdpa_backend_probe"] = "failed"
             raise RuntimeError(
-                "Flash-SDPA preflight failed for "
+                f"SDPA backend preflight ({args.sdpa_backend}) failed for "
                 f"head_dim={head_dim}, dtype={probe_dtype}."
             ) from exc
-        info["flash_sdpa_probe"] = "passed"
+        info["sdpa_backend_probe"] = "passed"
+        if args.sdpa_backend == "flash":
+            info["flash_sdpa_probe"] = "passed"
+            info["flash_sdpa_dtype"] = str(probe_dtype)
     return info
 
 
@@ -1792,20 +2008,35 @@ def cuda_memory_metrics(
     }
 
 
+def estimated_dense_bf16_mfu(
+    achieved_tflops: float,
+    args: argparse.Namespace,
+    hardware: dict[str, Any],
+    num_devices: int = 1,
+) -> float:
+    recorded_device = hardware.get("device")
+    if not (
+        hardware.get("profile_valid")
+        and (recorded_device is None or str(recorded_device).startswith("cuda"))
+        and args.mixed_precision == "bf16"
+        and args.bf16_peak_tflops > 0
+    ):
+        return math.nan
+    return achieved_tflops / (args.bf16_peak_tflops * num_devices)
+
+
 def estimated_a100_bf16_mfu(
     achieved_tflops: float,
     args: argparse.Namespace,
     hardware: dict[str, Any],
     num_devices: int = 1,
 ) -> float:
-    if not (
-        args.hardware_profile == "a100-80gb"
-        and hardware.get("profile_valid")
-        and args.mixed_precision == "bf16"
-        and args.a100_bf16_peak_tflops > 0
-    ):
+    """Compatibility field for A100 analyses; use the dense metric elsewhere."""
+    if args.hardware_profile != "a100-80gb":
         return math.nan
-    return achieved_tflops / (args.a100_bf16_peak_tflops * num_devices)
+    return estimated_dense_bf16_mfu(
+        achieved_tflops, args, hardware, num_devices
+    )
 
 
 def resolved_run_metadata(
@@ -1844,6 +2075,10 @@ def resolved_run_metadata(
         "compile_mode": args.compile_mode,
         "gradient_checkpointing": args.gradient_checkpointing,
         "checkpoint_chunk_steps": args.checkpoint_chunk_steps,
+        "sdpa_backend": config.sdpa_backend,
+        "require_fused_sdpa": config.require_fused_sdpa,
+        "bf16_peak_tflops": args.bf16_peak_tflops,
+        # Backward-compatible interpretation: true means flash-only policy.
         "require_flash": config.require_flash,
         "estimated_parameters": parameters,
         "estimated_fp32_adam_training_state_gb": parameters * 16 / 2**30,
@@ -1856,6 +2091,7 @@ def inspect_configuration(args: argparse.Namespace) -> dict[str, Any]:
     result.update(
         {
             "strict_hardware_profile": args.strict_hardware_profile,
+            "gpu_contract": GPU_PROFILE_CONTRACTS.get(args.hardware_profile),
             "allocator_expandable_segments": args.allocator_expandable_segments,
             "target_peak_memory_fraction": args.target_peak_memory_fraction,
             "memory_reserve_gb": args.memory_reserve_gb,
@@ -2158,14 +2394,22 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     if args.load_model:
         model = RecurrentAttnResForCausalLM.from_pretrained(args.load_model)
         config = model.config
-        # Flash enforcement and checkpoint chunking are execution policy, not
-        # learned architecture.  A saved checkpoint must obey the active A100
-        # profile instead of silently retaining an older portable setting.
-        config.require_flash = args.require_flash
+        # SDPA enforcement and checkpoint chunking are execution policy, not
+        # learned architecture. A checkpoint obeys the active device profile
+        # instead of silently retaining an older execution setting.
+        config.sdpa_backend = args.sdpa_backend
+        config.require_fused_sdpa = args.require_fused_sdpa
+        config.require_flash = bool(
+            args.require_fused_sdpa and args.sdpa_backend == "flash"
+        )
         config.checkpoint_chunk_steps = args.checkpoint_chunk_steps
         for module in model.modules():
             if isinstance(module, BatchedCausalSelfAttention):
-                module.require_flash = args.require_flash
+                module.sdpa_backend = args.sdpa_backend
+                module.require_fused_sdpa = args.require_fused_sdpa
+                module.require_flash = bool(
+                    args.require_fused_sdpa and args.sdpa_backend == "flash"
+                )
         if len(tokenizer) != config.valid_vocab_size:
             raise ValueError(
                 f"Tokenizer size {len(tokenizer)} does not match checkpoint "
@@ -2238,7 +2482,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         optimizer,
         # AcceleratedScheduler advances once per process when batches are
         # sharded, so construct the underlying schedule on its expanded step
-        # scale.  This is a no-op for the intended single-A100 setup and keeps
+        # scale. This is a no-op for the intended single-GPU profiles and keeps
         # DDP warmup/decay aligned with optimizer updates.
         num_warmup_steps=args.warmup_steps * accelerator.num_processes,
         num_training_steps=args.max_steps * accelerator.num_processes,
@@ -2304,7 +2548,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             "compile_mode": args.compile_mode,
             "gradient_checkpointing": args.gradient_checkpointing,
             "checkpoint_chunk_steps": args.checkpoint_chunk_steps,
-            "require_flash": args.require_flash,
+            "sdpa_backend": args.sdpa_backend,
+            "require_fused_sdpa": args.require_fused_sdpa,
         },
         "versions": {
             "torch": torch.__version__,
@@ -2482,7 +2727,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             optimizer.zero_grad(set_to_none=True)
 
         # Keep accumulation on device; calling float(loss) would synchronize
-        # the GPU on every microbatch and materially damage A100 throughput.
+        # the GPU on every microbatch and materially damage CUDA throughput.
         running_loss.add_(loss.detach().float())
         last_observed_loss = loss.detach()
         running_micro_batches += 1
@@ -2537,6 +2782,12 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
                 "learning_rate": scheduler.get_last_lr()[0],
                 "tokens_per_second": tokens_per_second,
                 "estimated_training_tflops": estimated_tflops,
+                "estimated_dense_bf16_mfu": estimated_dense_bf16_mfu(
+                    estimated_tflops,
+                    args,
+                    hardware,
+                    accelerator.num_processes,
+                ),
                 "estimated_a100_bf16_mfu": estimated_a100_bf16_mfu(
                     estimated_tflops,
                     args,
@@ -2632,6 +2883,12 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             "learning_rate": scheduler.get_last_lr()[0],
             "tokens_per_second": tokens_per_second,
             "estimated_training_tflops": estimated_tflops,
+            "estimated_dense_bf16_mfu": estimated_dense_bf16_mfu(
+                estimated_tflops,
+                args,
+                hardware,
+                accelerator.num_processes,
+            ),
             "estimated_a100_bf16_mfu": estimated_a100_bf16_mfu(
                 estimated_tflops,
                 args,
@@ -2719,6 +2976,10 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         "device_name": hardware["device_name"],
         "compute_capability": hardware["compute_capability"],
         "total_memory_gb": hardware["total_memory_gb"],
+        "sdpa_backend_policy": hardware["sdpa_backend_policy"],
+        "fused_sdpa_required": hardware["fused_sdpa_required"],
+        "sdpa_backend_probe": hardware["sdpa_backend_probe"],
+        "sdpa_probe_dtype": hardware["sdpa_probe_dtype"],
         "flash_sdpa_required": hardware["flash_sdpa_required"],
         "flash_sdpa_probe": hardware["flash_sdpa_probe"],
         "flash_sdpa_dtype": hardware["flash_sdpa_dtype"],
@@ -2740,6 +3001,12 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             else math.nan
         ),
         "estimated_training_tflops": aggregate_tflops,
+        "estimated_dense_bf16_mfu": estimated_dense_bf16_mfu(
+            aggregate_tflops,
+            args,
+            hardware,
+            accelerator.num_processes,
+        ),
         "estimated_a100_bf16_mfu": estimated_a100_bf16_mfu(
             aggregate_tflops,
             args,
@@ -3227,6 +3494,10 @@ def benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "device_name": hardware["device_name"],
         "compute_capability": hardware["compute_capability"],
         "total_memory_gb": hardware["total_memory_gb"],
+        "sdpa_backend_policy": hardware["sdpa_backend_policy"],
+        "fused_sdpa_required": hardware["fused_sdpa_required"],
+        "sdpa_backend_probe": hardware["sdpa_backend_probe"],
+        "sdpa_probe_dtype": hardware["sdpa_probe_dtype"],
         "flash_sdpa_required": hardware["flash_sdpa_required"],
         "flash_sdpa_probe": hardware["flash_sdpa_probe"],
         "flash_sdpa_dtype": hardware["flash_sdpa_dtype"],
@@ -3236,6 +3507,9 @@ def benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "elapsed_seconds": elapsed,
         "training_tokens_per_second": tokens / max(elapsed, 1e-9),
         "estimated_training_tflops": achieved_tflops,
+        "estimated_dense_bf16_mfu": estimated_dense_bf16_mfu(
+            achieved_tflops, args, hardware
+        ),
         "estimated_a100_bf16_mfu": estimated_a100_bf16_mfu(
             achieved_tflops, args, hardware
         ),
@@ -3508,7 +3782,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="a100-80gb",
         help=(
             "Default bundle; explicit CLI and sweep run-config values take "
-            "precedence. 'a100-80gb' is the primary target."
+            "precedence. Strict SKU profiles and generic CUDA/CPU profiles "
+            "are available."
         ),
     )
 
@@ -3604,7 +3879,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
 
-    training = parser.add_argument_group("training / A100")
+    training = parser.add_argument_group("training / device execution")
     training.add_argument("--output-dir", type=str, default="runs/recurrent_mesh")
     training.add_argument("--max-steps", type=int, default=1000)
     training.add_argument("--micro-batch-size", type=int, default=None)
@@ -3647,9 +3922,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     training.add_argument("--checkpoint-chunk-steps", type=int, default=None)
     training.add_argument(
-        "--require-flash",
+        "--sdpa-backend",
+        choices=("auto", "fused", "cudnn", "flash"),
+        default=None,
+        help=(
+            "SDPA policy. 'fused' allows cuDNN+Flash only (no math fallback); "
+            "'auto' lets PyTorch choose any available backend."
+        ),
+    )
+    training.add_argument(
+        "--require-fused-sdpa",
         action=argparse.BooleanOptionalAction,
         default=None,
+        help=(
+            "Require a CUDA fused-SDPA path and preflight it."
+        ),
+    )
+    training.add_argument(
+        "--require-flash",
+        dest="legacy_require_flash",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Legacy compatibility spelling: force flash-only SDPA when true; "
+            "prefer --sdpa-backend and --require-fused-sdpa in new commands."
+        ),
     )
     training.add_argument(
         "--fused-adamw",
@@ -3673,7 +3970,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     training.add_argument("--memory-reserve-gb", type=float, default=None)
     training.add_argument("--throughput-warmup-steps", type=int, default=None)
-    training.add_argument("--a100-bf16-peak-tflops", type=float, default=None)
+    training.add_argument(
+        "--bf16-peak-tflops",
+        "--a100-bf16-peak-tflops",
+        dest="bf16_peak_tflops",
+        type=float,
+        default=None,
+        help=(
+            "Dense BF16 peak used for estimated MFU; zero means unavailable. "
+            "The A100-prefixed spelling is a compatibility alias."
+        ),
+    )
     training.add_argument("--log-interval", type=int, default=10)
     training.add_argument("--eval-interval", type=int, default=100)
     training.add_argument("--eval-batches", type=int, default=20)
@@ -3753,6 +4060,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         requested_config_path = Path(args.run_config).resolve()
         with requested_config_path.open("r", encoding="utf-8") as handle:
             values = json.load(handle)
+        # Accept run configs emitted by the original A100-only release.
+        legacy_peak = values.pop("a100_bf16_peak_tflops", None)
+        if legacy_peak is not None and "bf16_peak_tflops" not in values:
+            values["bf16_peak_tflops"] = legacy_peak
+        legacy_flash = values.pop("require_flash", None)
+        if legacy_flash is not None and "legacy_require_flash" not in values:
+            values["legacy_require_flash"] = legacy_flash
         unknown = sorted(set(values) - set(vars(args)))
         if unknown:
             raise ValueError(f"Unknown keys in run config: {unknown}")
@@ -3762,7 +4076,41 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         # can cheaply verify a child config without allocating its model.
         args.mode = dispatch_mode
         args.run_config = str(requested_config_path)
+
+    # Preserve the original Flash-only switch exactly while keeping it
+    # separate from the modern "any fused backend" requirement. An explicit
+    # backend always wins over legacy false; legacy true specifically means
+    # Flash and therefore rejects a contradictory explicit backend.
+    legacy_require_flash = args.legacy_require_flash
+    backend_was_explicit = args.sdpa_backend is not None
+    fused_requirement_was_explicit = args.require_fused_sdpa is not None
+    if legacy_require_flash is True:
+        if backend_was_explicit and args.sdpa_backend != "flash":
+            parser.error(
+                "--require-flash conflicts with explicit "
+                f"--sdpa-backend={args.sdpa_backend}; use flash or remove one."
+            )
+        if fused_requirement_was_explicit and not args.require_fused_sdpa:
+            parser.error(
+                "--require-flash conflicts with --no-require-fused-sdpa."
+            )
+        args.sdpa_backend = "flash"
+        args.require_fused_sdpa = True
+    elif legacy_require_flash is False:
+        if not backend_was_explicit:
+            # Prevent a strict Flash profile default from undoing the legacy
+            # opt-out. Do not weaken an explicitly selected backend.
+            args.sdpa_backend = "auto"
+        if not fused_requirement_was_explicit:
+            args.require_fused_sdpa = False
+    delattr(args, "legacy_require_flash")
+
     resolve_hardware_profile(args)
+    # Requiring a fused path with an automatic policy means "any fused CUDA
+    # kernel, but never math". The separate legacy --require-flash path above
+    # has already resolved to the stricter flash-only policy.
+    if args.require_fused_sdpa and args.sdpa_backend == "auto":
+        args.sdpa_backend = "fused"
     if args.sequence_length < 2:
         parser.error("--sequence-length must be at least 2.")
     if args.hidden_size < 1:
@@ -3793,8 +4141,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         parser.error("--memory-reserve-gb cannot be negative.")
     if args.throughput_warmup_steps < 0:
         parser.error("--throughput-warmup-steps cannot be negative.")
-    if args.a100_bf16_peak_tflops <= 0:
-        parser.error("--a100-bf16-peak-tflops must be positive.")
+    if args.bf16_peak_tflops < 0:
+        parser.error("--bf16-peak-tflops cannot be negative.")
     if args.max_steps < 1:
         parser.error("--max-steps must be positive.")
     if args.warmup_steps < 0:
@@ -3843,6 +4191,8 @@ def record_cuda_oom(args: argparse.Namespace, exception: BaseException) -> None:
         "error_type": type(exception).__name__,
         "error": str(exception),
         "hardware_profile": args.hardware_profile,
+        "sdpa_backend_policy": args.sdpa_backend,
+        "fused_sdpa_required": args.require_fused_sdpa,
         "num_attention_modules": args.num_attention_modules,
         "num_ffn_modules": args.num_ffn_modules,
         "num_iterations": args.num_iterations,

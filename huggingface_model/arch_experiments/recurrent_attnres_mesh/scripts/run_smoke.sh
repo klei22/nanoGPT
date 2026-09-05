@@ -6,6 +6,7 @@ exec "$PYTHON_BIN" "$MESH_SCRIPT" \
   --mode smoke \
   --hardware-profile portable \
   --no-strict-hardware-profile \
-  --no-require-flash \
+  --no-require-fused-sdpa \
+  --sdpa-backend auto \
   --no-compile \
   "$@"
