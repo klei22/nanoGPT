@@ -24,8 +24,10 @@ def parse_args():
     logging_group = parser.add_argument_group('logging_group')
 
     model_group.add_argument(
-        '--attention_residual_variant', default='standard', choices=['standard', 'full'],
-        help='Residual stream implementation: ordinary addition or full depth-wise attention.',
+        '--attention_residual_variant', default='standard',
+        choices=['standard', 'full', 'full_with_wte'],
+        help='Residual stream implementation: ordinary addition, full depth-wise attention, '
+             'or full depth-wise attention with the WTE embedding as an additional source.',
     )
     model_group.add_argument('--attention_residual_eps', default=1e-6, type=float,
                              help='RMSNorm epsilon used for Full Attention Residual routing keys.')
