@@ -18,6 +18,66 @@ The scripts rely on `AutoModelForCausalLM.from_pretrained(...)`, so you can poin
 `--model_name` at any local checkpoint path created by `train_from_scratch.py` or
 `finetune.py`.
 
+
+## Attention-residual-only code fine-tuning
+
+`finetune_attention_residuals.py` shows how to port the `model.py` Full
+Attention Residual idea to a Hugging Face causal LM such as
+`google/gemma-3-270m`.  The wrapper freezes every original Hugging Face model
+parameter and adds one learned query vector per decoder layer.  During the
+forward pass, hooks replace each layer input with a token-local softmax mixture
+of the embedding stream plus earlier layer outputs, following the same
+depth-wise residual routing pattern implemented by `FullAttentionResidual` in
+`variations/attention_residual_variations.py`.
+
+Only the new `AttentionResidualWrapper.queries` tensor is trainable.  The script
+prints the trainable/total parameter count before training and saves the learned
+queries to `attention_residuals.pt` alongside the Trainer output.
+
+Example programming-dataset run:
+
+```bash
+python huggingface_model/gemma/270M/finetune_attention_residuals.py \
+  --model_name google/gemma-3-270m \
+  --dataset_name flytech/python-codes-25k \
+  --text_column text \
+  --train_split 'train[:95%]' \
+  --eval_split 'train[95%:]' \
+  --max_length 512 \
+  --max_steps 1000 \
+  --batch_size 2 \
+  --gradient_accumulation_steps 8 \
+  --learning_rate 1e-2 \
+  --output_dir ./gemma-3-270m-attention-residual-code
+```
+
+For another programming dataset, pass its Hugging Face dataset name and the text
+column to train on, for example `--dataset_name codeparrot/codeparrot-clean
+--text_column content`.  Keep `attn_implementation="eager"` for hook-friendly
+Gemma execution.
+
+### Reproducible comparison with LoRA
+
+The `peft_study` directory provides an end-to-end, multi-seed study rather than
+an isolated training example. It trains attention residuals and a PEFT LoRA
+control on identical dataset splits and step budgets, evaluates both with the
+Hugging Face `lm-evaluation-harness`, and produces `REPORT.md` plus
+`comparison.csv`. Install the isolated study dependencies and run:
+
+```bash
+python -m pip install -r huggingface_model/gemma/270M/peft_study/requirements.txt
+SEEDS="42 43 44" STEPS=1000 \
+  bash huggingface_model/gemma/270M/peft_study/run_study.sh ./gemma-peft-study
+```
+
+The default benchmark suite is `arc_easy,hellaswag,piqa,winogrande`. Override
+it with `TASKS=...`; use only log-likelihood/multiple-choice lm-eval tasks for
+the hook-based attention-residual model. `run_metadata.json` records parameter
+counts, wall time, training metrics, evaluation metrics, arguments, and seed for
+each run, while `evaluation.json` retains the complete lm-eval output. This
+makes accuracy, trainable-parameter efficiency, and training-time comparisons
+auditable instead of relying on copied console output.
+
 ## JL-projected LM head evaluation
 
 `jl_head_eval.py` runs a two-stage LM head evaluation:
