@@ -13,6 +13,7 @@ provided that more strongly encourage correct top-1 predictions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Callable, Dict, Iterable, List, Tuple
 
 import math
@@ -29,6 +30,104 @@ from utils.bit_usage import compute_total_bit_usage
 def cross_entropy_loss(logits: torch.Tensor, targets: torch.Tensor, *, iter_num: int | None = None) -> torch.Tensor:
     """Standard cross-entropy loss used by the original codebase."""
     return F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+
+
+def _token_nll(logits: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return per-token NLL in batch/sequence shape and its validity mask."""
+    flat_targets = targets.reshape(-1)
+    nll = F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)), flat_targets, reduction="none", ignore_index=-1
+    ).reshape_as(targets)
+    return nll, targets != -1
+
+
+def _group_values(
+    values: torch.Tensor,
+    mask: torch.Tensor,
+    aggregation: str,
+    window_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Aggregate token values and return group means plus valid group sizes."""
+    if aggregation == "token":
+        return values[mask], torch.ones_like(values[mask])
+
+    if values.ndim == 1:
+        values, mask = values.unsqueeze(0), mask.unsqueeze(0)
+    elif values.ndim != 2:
+        values, mask = values.reshape(-1, values.shape[-1]), mask.reshape(-1, mask.shape[-1])
+
+    weighted = values * mask
+    if aggregation == "sequence":
+        counts = mask.sum(dim=1)
+        valid = counts > 0
+        return weighted.sum(dim=1)[valid] / counts[valid], counts[valid]
+    if aggregation == "position":
+        counts = mask.sum(dim=0)
+        valid = counts > 0
+        return weighted.sum(dim=0)[valid] / counts[valid], counts[valid]
+    if aggregation == "window":
+        if window_size <= 0:
+            raise ValueError("loss_window_size must be positive")
+        groups, counts = [], []
+        for start in range(0, values.size(1), window_size):
+            window_mask = mask[:, start : start + window_size]
+            window_counts = window_mask.sum(dim=1)
+            valid = window_counts > 0
+            window_sum = weighted[:, start : start + window_size].sum(dim=1)
+            groups.append(window_sum[valid] / window_counts[valid])
+            counts.append(window_counts[valid])
+        return torch.cat(groups), torch.cat(counts)
+    raise ValueError(f"Unknown loss aggregation axis: {aggregation}")
+
+
+def surprise_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    iter_num: int | None = None,
+    variant: str = "second_moment_nll",
+    aggregation: str = "token",
+    window_size: int = 16,
+    surprise_lambda: float = 0.25,
+    surprise_scale: float = 1.0,
+    focal_gamma: float = 2.0,
+    focal_alpha: float = 1.0,
+    power_q: float = 2.0,
+    tail_cap: float = 4.0,
+) -> torch.Tensor:
+    """NLL objectives V1--V7 with token, sequence, position, or window aggregation."""
+    nll, mask = _token_nll(logits, targets)
+    grouped, _ = _group_values(nll, mask, aggregation, window_size)
+    if grouped.numel() == 0:
+        return logits.sum() * 0.0
+    if variant == "median_nll":
+        return grouped.median()
+    if variant == "second_moment_nll":
+        return grouped.square().mean()
+    if variant == "rms_surprise":
+        return grouped.square().mean().sqrt()
+    if variant == "hybrid_ce_squared":
+        if surprise_scale <= 0:
+            raise ValueError("surprise_scale must be positive")
+        return (grouped + (surprise_lambda / (2.0 * surprise_scale)) * grouped.square()).mean()
+    if variant == "focal":
+        return (focal_alpha * (-torch.expm1(-grouped)).pow(focal_gamma) * grouped).mean()
+    if variant == "power_surprise":
+        if power_q <= 0:
+            raise ValueError("loss_power_q must be positive")
+        return grouped.pow(power_q).mean().pow(1.0 / power_q)
+    if variant == "focal_power":
+        if power_q <= 0:
+            raise ValueError("loss_power_q must be positive")
+        return ((-torch.expm1(-grouped)).pow(focal_gamma) * grouped.pow(power_q)).mean()
+    if variant == "capped_tail":
+        if tail_cap < 0:
+            raise ValueError("loss_tail_cap must be non-negative")
+        if surprise_scale <= 0:
+            raise ValueError("surprise_scale must be positive")
+        weight = 1.0 + surprise_lambda * torch.minimum(grouped / surprise_scale, grouped.new_tensor(tail_cap))
+        return (grouped * weight).mean()
+    raise ValueError(f"Unknown surprise loss variant: {variant}")
 
 
 class BitBalancedCrossEntropy:
@@ -503,6 +602,10 @@ LOSS_VARIANTS: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] =
     "rank_distance_focal": rank_distance_focal_loss,
     "entropy_rank_distance_focal": entropy_rank_distance_focal_loss,
     "bit_balanced_cross_entropy": BitBalancedCrossEntropy(),
+    **{name: partial(surprise_loss, variant=name) for name in (
+        "median_nll", "second_moment_nll", "rms_surprise", "hybrid_ce_squared",
+        "power_surprise", "focal_power", "capped_tail",
+    )},
 }
 
 
@@ -596,14 +699,25 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
     def rank_gamma(iter_num: int | None) -> float:
         return scaler(iter_num) if scaler else base
 
+    def build_surprise(name: str):
+        return lambda l, t, *, iter_num=None: surprise_loss(
+            l, t, iter_num=iter_num, variant=name,
+            aggregation=getattr(args, "loss_aggregation", "token"),
+            window_size=getattr(args, "loss_window_size", 16),
+            surprise_lambda=getattr(args, "surprise_lambda", 0.25),
+            surprise_scale=getattr(args, "surprise_scale", 1.0),
+            focal_gamma=getattr(args, "focal_gamma", 2.0),
+            focal_alpha=getattr(args, "focal_alpha", 1.0),
+            power_q=getattr(args, "loss_power_q", 2.0),
+            tail_cap=getattr(args, "loss_tail_cap", 4.0),
+        )
+
     built_losses: Dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
         "cross_entropy": LOSS_VARIANTS["cross_entropy"],
         "label_smoothing": lambda l, t, *, iter_num=None: LOSS_VARIANTS["label_smoothing"](
             l, t, iter_num=iter_num, smoothing=getattr(args, "label_smoothing", 0.1)
         ),
-        "focal": lambda l, t, *, iter_num=None: LOSS_VARIANTS["focal"](
-            l, t, iter_num=iter_num, gamma=getattr(args, "focal_gamma", 2.0)
-        ),
+        "focal": build_surprise("focal"),
         "top1_focus": lambda l, t, *, iter_num=None: LOSS_VARIANTS["top1_focus"](
             l, t, iter_num=iter_num, alpha=getattr(args, "top1_focus_alpha", 0.5)
         ),
@@ -662,6 +776,10 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
             bit_penalty=getattr(args, "bit_loss_weight", 0.0),
             normalize_by_params=getattr(args, "bit_loss_normalize", False),
         ),
+        **{name: build_surprise(name) for name in (
+            "median_nll", "second_moment_nll", "rms_surprise", "hybrid_ce_squared",
+            "power_surprise", "focal_power", "capped_tail",
+        )},
     }
 
     if schedule_str:
@@ -670,4 +788,3 @@ def build_loss_function(args) -> Callable[[torch.Tensor, torch.Tensor], torch.Te
 
     loss_name = getattr(args, "loss_fn", "cross_entropy")
     return built_losses.get(loss_name, LOSS_VARIANTS["cross_entropy"])
-

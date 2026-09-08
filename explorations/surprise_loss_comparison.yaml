@@ -1,0 +1,47 @@
+# Compare NLL surprise objectives V0--V7 under a shared training setup.
+---
+common_group:
+  dataset: ["minipile"]
+  max_iters: [10000]
+  eval_interval: [500]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  never_save_checkpoint: [true]
+  loss_aggregation: ["token"]
+
+parameter_groups:
+  # V0 and V1
+  - loss_fn: ["cross_entropy"]
+  - loss_fn: ["median_nll"]
+
+  # V2 and its nat-scaled V2R form
+  - loss_fn: ["second_moment_nll"]
+  - loss_fn: ["rms_surprise"]
+
+  # V3 recommended initial lambda sweep (c=1).
+  - loss_fn: ["hybrid_ce_squared"]
+    surprise_lambda: [0.1, 0.25, 0.5, 1.0]
+    surprise_scale: [1.0]
+
+  # V4 recommended focal sweep.
+  - loss_fn: ["focal"]
+    focal_gamma: [0.5, 1.0, 2.0]
+
+  # V5 and V6 expose q independently from focal gamma.
+  - loss_fn: ["power_surprise"]
+    loss_power_q: [1.5, 2.0, 3.0]
+  - loss_fn: ["focal_power"]
+    focal_gamma: [0.5, 1.0, 2.0]
+    loss_power_q: [1.0, 2.0]
+
+  # V7 bounded hard-token emphasis.
+  - loss_fn: ["capped_tail"]
+    surprise_lambda: [0.1, 0.25, 0.5, 1.0]
+    surprise_scale: [1.0]
+    loss_tail_cap: [4.0]
+
+  # Compare the aggregation axes using V2 while holding its objective fixed.
+  - loss_fn: ["second_moment_nll"]
+    loss_aggregation: ["sequence", "position", "window"]
+    loss_window_size: [16]
