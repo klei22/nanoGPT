@@ -2,6 +2,23 @@
 
 This folder will hold repeatable demonstrations of features and results.
 
+## ConvRot fake-W4A4 PTQ
+
+`convrot_ptq_demo.sh` trains a tiny character-level nanoGPT model and runs an
+educational, kernel-free adaptation of ConvRot. It applies the paper's
+group-wise regular Hadamard transform to both synthetic activations and a
+checkpoint weight, verifies that the full-precision linear operation is
+unchanged, and compares naive versus rotated per-vector fake W4A4 error.
+
+```bash
+bash demos/convrot_ptq_demo.sh
+```
+
+The JSON report is written to `out_convrot_ptq_demo/convrot_report.json`.
+This demonstrates the numerical PTQ technique only: values remain floating
+point, so it does not claim the memory or Tensor Core speedups of a fused INT4
+ConvLinear4bit kernel. `GROUP_SIZE` may be any power of four (at least four).
+
 ## Shifted GELU
 
 This shows that the GELU wants to shift:
