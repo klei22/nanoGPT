@@ -7,13 +7,36 @@ import os
 import random
 import atexit
 import sys
+import signal
 from datetime import datetime
 from flask import Flask, Response, render_template_string, request, jsonify
 
 # --- App Initialization & Globals ---
 app = Flask(__name__)
+
+# Lets the launcher webpage (a different origin — same host, port 80 vs this
+# service's 5000) read /robot_stats and hit /toggle_roam via fetch() from the
+# browser. Fine on a private LAN robot; wouldn't want this wide-open on
+# anything internet-facing.
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
 current_frame = None  
 lock = threading.Lock()
+
+# 🛑 CLEAN SHUTDOWN STATE — without this, Ctrl+C / systemctl stop leaves the camera
+# thread running and the Argus session held open, which crashes the *next* launch
+# with "Failed to create CaptureSession". shutdown_event is for full process exit;
+# camera_stop_event is the same idea but for the on/off toggle below, so a single
+# long-running process can start/stop the camera repeatedly without ever leaking
+# the Argus session.
+shutdown_event = threading.Event()
+camera_stop_event = threading.Event()
+current_cap = None  # set once the camera loop opens cv2.VideoCapture; released on shutdown
+camera_active = False
+camera_thread = None
 
 # --- 🛠️ AUTOMATED OPENCV VARIANT ENVIRONMENT GUARD ---
 def check_opencv_gstreamer_support():
@@ -84,11 +107,18 @@ hardware_wake_roomba_via_cp2102()
 # --- DATASET GRID CONFIGURATION ---
 SAMPLE_SIZE = 25
 
+# 🧭 AUTONOMOUS ROAM MODE CONFIGURATION (stock-style random-bounce coverage)
+ROAM_SPEED = 200            # Forward driving speed while roaming (mm/s)
+ROAM_WANDER_MIN_SEC = 4.0   # Random open-area turn cadence lower bound (sec)
+ROAM_WANDER_MAX_SEC = 9.0   # Random open-area turn cadence upper bound (sec)
+
 # Navigation, Logging, & Stream Globals
 current_speed = 150  # Stable line tracking target velocity (mm/s)
 vacuum_on = False
 last_keys_set = set()
 auto_mode = False
+roam_mode = False  # Stock-style autonomous roam: random-bounce coverage, no line/tape needed
+roam_next_wander_time = 0.0  # Next scheduled "wander" turn even without a bump (open-area coverage)
 show_grayscale = False  # Controls if the HUD stream renders raw video or downsampled AI pixels
 current_action_label = ""  
 active_key_string = "idling"  
@@ -237,6 +267,63 @@ def draw_guidelines(img):
     cv2.line(img, right_start, right_end, (0, 255, 0), 2, cv2.LINE_AA)
     return img
 
+# --- 💾 CONTINUOUS DATASET CSV — appends across camera on/off cycles until the
+# "New CSV" button explicitly rotates it, instead of starting a fresh timestamped
+# file every time the camera is switched on. ---
+csv_lock = threading.Lock()
+
+def csv_header_line():
+    total_pixels = SAMPLE_SIZE * SAMPLE_SIZE
+    pixel_headers = ",".join([f"p{i}" for i in range(total_pixels)])
+    return f"timestamp,frame_id,action,pressed_keys,bump_left,bump_right,wheel_dropped,total_distance_mm,heading_deg,speed_mm_s,left_wheel_v,right_wheel_v,battery_percent,{pixel_headers}\n"
+
+def open_dataset_csv():
+    """Opens the single continuous dataset CSV, appending if it already has content
+    and writing the header only for a brand-new (or emptied) file. Returns
+    (output_dir, csv_path, file_handle)."""
+    documents_dir = os.path.expanduser("~/Documents")
+    output_dir = os.path.join(documents_dir, "roomba_dataset")
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, f"dataset_{SAMPLE_SIZE}x{SAMPLE_SIZE}.csv")
+
+    is_new_or_empty = (not os.path.exists(csv_path)) or os.path.getsize(csv_path) == 0
+    f = open(csv_path, 'a')
+    if is_new_or_empty:
+        f.write(csv_header_line())
+        f.flush()
+    return output_dir, csv_path, f
+
+def start_new_csv_session():
+    """Archives whatever's currently in the continuous CSV under a timestamped name
+    and opens a fresh one — the explicit, on-demand version of what used to happen
+    automatically on every camera-on. Safe to call whether the camera is on or off."""
+    global csv_file, csv_path, output_dir, frame_count
+    with csv_lock:
+        if csv_file:
+            try:
+                csv_file.flush()
+                csv_file.close()
+            except Exception as e:
+                print(f"Error closing CSV during rotation: {e}")
+
+        archived_path = None
+        if csv_path and os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
+            timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
+            base, ext = os.path.splitext(csv_path)
+            archived_path = f"{base}_{timestamp}{ext}"
+            # Clicking New CSV more than once within the same second would otherwise
+            # produce an identical archived name and silently clobber the first one
+            counter = 2
+            while os.path.exists(archived_path):
+                archived_path = f"{base}_{timestamp}_{counter}{ext}"
+                counter += 1
+            os.rename(csv_path, archived_path)
+
+        output_dir, csv_path, csv_file = open_dataset_csv()
+        frame_count = 0
+        print(f"🆕 New CSV session started at {csv_path}" + (f" (previous data archived to {archived_path})" if archived_path else ""))
+        return archived_path, csv_path
+
 # --- Playback Thread Engine ---
 def execution_playback_worker():
     global operational_mode, current_action_label, playback_index, active_key_string
@@ -297,10 +384,51 @@ def execute_closed_loop_turn(target_degrees, direction_sign):
     current_action_label = ""
     active_key_string = "idling"
 
+# --- 🧭 AUTONOMOUS ROAM MODE (stock-style random-bounce coverage) ---
+def handle_roam_mode(b_left, b_right, now):
+    """Drives forward until a bump is felt, backs off and spins away from the
+    bumped side, and occasionally throws in a random 'wander' turn in open
+    space — the same random-bounce coverage strategy stock Roomba firmware
+    uses for uncharted rooms, just driven from the Orin instead of onboard."""
+    global active_key_string, current_action_label, roam_next_wander_time
+
+    if b_left == 1 or b_right == 1:
+        active_key_string = "s"
+        current_action_label = "roam_bump_backup"
+        drive_roomba(-120, 32767)
+        time.sleep(0.4)
+
+        if b_left == 1 and b_right == 1:
+            turn_dir = random.choice([1, -1])
+            turn_deg = 140 + random.randint(-20, 20)
+        elif b_left == 1:
+            turn_dir = -1   # hit on the left -> spin toward the right
+            turn_deg = 45 + random.randint(0, 70)
+        else:
+            turn_dir = 1    # hit on the right -> spin toward the left
+            turn_deg = 45 + random.randint(0, 70)
+
+        current_action_label = "roam_bump_turn"
+        execute_closed_loop_turn(turn_deg, turn_dir)
+        roam_next_wander_time = now + random.uniform(ROAM_WANDER_MIN_SEC, ROAM_WANDER_MAX_SEC)
+        return
+
+    if now >= roam_next_wander_time:
+        current_action_label = "roam_wander_turn"
+        turn_dir = random.choice([1, -1])
+        turn_deg = random.randint(20, 90)
+        execute_closed_loop_turn(turn_deg, turn_dir)
+        roam_next_wander_time = now + random.uniform(ROAM_WANDER_MIN_SEC, ROAM_WANDER_MAX_SEC)
+        return
+
+    active_key_string = "w"
+    current_action_label = "roam_forward"
+    drive_roomba(ROAM_SPEED, 32767)
+
 # --- Background Video Stream, Line Follower, & Tracking Loop ---
 def camera_and_logic_loop():
-    global current_frame, auto_mode, show_grayscale, current_action_label, csv_file, SAMPLE_SIZE, current_speed, active_key_string, frame_count
-    global output_dir, csv_path
+    global current_frame, auto_mode, roam_mode, show_grayscale, current_action_label, csv_file, SAMPLE_SIZE, current_speed, active_key_string, frame_count
+    global output_dir, csv_path, current_cap, camera_active
     
     pipeline = (
         f"nvarguscamerasrc sensor-id=0 "
@@ -314,19 +442,13 @@ def camera_and_logic_loop():
     )
     
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-    if not cap.isOpened(): return
+    if not cap.isOpened():
+        print("⚠️ Camera failed to open — check the CSI ribbon cable and nvargus-daemon.")
+        camera_active = False
+        return
+    current_cap = cap
 
-    session_time = datetime.now().strftime("%Y_%m_%d_%H%M%S")
-    documents_dir = os.path.expanduser("~/Documents")
-    output_dir = os.path.join(documents_dir, f"roomba_dataset_{session_time}")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    csv_path = os.path.join(output_dir, f"dataset_{SAMPLE_SIZE}x{SAMPLE_SIZE}.csv")
-    csv_file = open(csv_path, 'w')
-    
-    total_pixels = SAMPLE_SIZE * SAMPLE_SIZE
-    pixel_headers = ",".join([f"p{i}" for i in range(total_pixels)])
-    csv_file.write(f"timestamp,frame_id,action,pressed_keys,bump_left,bump_right,wheel_dropped,total_distance_mm,heading_deg,speed_mm_s,left_wheel_v,right_wheel_v,battery_percent,{pixel_headers}\n")
+    output_dir, csv_path, csv_file = open_dataset_csv()
 
     last_steering_error = 0.0
     last_time = time.time()
@@ -338,6 +460,8 @@ def camera_and_logic_loop():
     hard_safety_triggered = False
 
     while True:
+        if shutdown_event.is_set() or camera_stop_event.is_set():
+            break
         ret, frame = cap.read()
         if not ret: break
 
@@ -349,8 +473,9 @@ def camera_and_logic_loop():
         pixel_str = ",".join(map(str, pixels))
 
         synced_time = time.time()
-        
-        csv_file.write(f"{synced_time},{frame_count},{current_action_label},{active_key_string},{b_left},{b_right},{w_drop},{total_distance:.1f},{current_heading:.1f},{live_speed_mms:.1f},{live_left_speed_mms},{live_right_speed_mms},{battery_pct:.1f},{pixel_str}\n")
+
+        with csv_lock:
+            csv_file.write(f"{synced_time},{frame_count},{current_action_label},{active_key_string},{b_left},{b_right},{w_drop},{total_distance:.1f},{current_heading:.1f},{live_speed_mms:.1f},{live_left_speed_mms},{live_right_speed_mms},{battery_pct:.1f},{pixel_str}\n")
         frame_count += 1
 
         if w_drop == 1:
@@ -365,6 +490,7 @@ def camera_and_logic_loop():
             current_action_label = ""
             active_key_string = "idling"
             auto_mode = False
+            roam_mode = False
 
         h, w = frame.shape[:2]
         current_time = time.time()
@@ -480,6 +606,10 @@ def camera_and_logic_loop():
                     active_key_string = "idling"
                     auto_mode = False
                     current_action_label = ""
+        elif roam_mode:
+            handle_roam_mode(b_left, b_right, current_time)
+            last_steering_error = 0.0
+            last_time = current_time
         else:
             if current_action_label == "sticky_spin_left":
                 drive_roomba(150, 1)
@@ -503,6 +633,27 @@ def camera_and_logic_loop():
             else:
                 hud_frame = frame.copy()
                 current_frame = draw_guidelines(hud_frame)
+
+    # Loop exited (EOF or shutdown signal) — release the camera so the Argus daemon
+    # frees the session for the next launch. Without this, the next start attempt
+    # crashes with "Failed to create CaptureSession".
+    try:
+        cap.release()
+        print("📷 Camera released cleanly.")
+    except Exception as e:
+        print(f"Error releasing camera: {e}")
+    current_cap = None
+    camera_active = False
+
+    with csv_lock:
+        if csv_file:
+            try:
+                csv_file.flush()
+                csv_file.close()
+                print(f"💾 Dataset CSV saved to {csv_path}")
+            except Exception as e:
+                print(f"Error closing CSV: {e}")
+            csv_file = None
 
 # --- Flask Web Server Routes ---
 @app.route('/')
@@ -557,6 +708,9 @@ def index():
                 
                 .panel-card { background: var(--bg-surface); border: 1px solid #2d2d3d; border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
                 .panel-title { font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; border-bottom: 1px solid #2d2d3d; padding-bottom: 6px; margin-bottom: 4px; font-weight: bold; text-align: left;}
+                .panel-subtext { font-size: 10px; color: var(--text-muted); margin-top: -6px; margin-bottom: 2px; line-height: 1.4; text-align: left; }
+                .speed-bar-track { height: 5px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; margin-top: 2px; }
+                .speed-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); transition: width 0.15s ease; }
                 
                 .btn-group { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
                 .btn-group-full { display: flex; flex-direction: column; gap: 8px; }
@@ -604,12 +758,49 @@ def index():
                 });
                 
                 function sendState() { fetch('/keyboard_input?keys=' + Array.from(keys).join('-')); }
-                
+
+                function toggleCamera() {
+                    let btn = document.getElementById("hud-camera-btn");
+                    btn.innerText = "📷 Camera & Logging: ...";
+                    fetch('/toggle_camera').then(res => res.json()).then(data => {
+                        if (data.camera_active) {
+                            btn.classList.add("active-tracking");
+                            btn.innerText = "📷 Camera & Logging: ON";
+                        } else {
+                            btn.classList.remove("active-tracking");
+                            btn.innerText = "📷 Camera & Logging: OFF";
+                        }
+                    });
+                }
+
+                function startNewCsv() {
+                    let btn = document.getElementById("hud-newcsv-btn");
+                    let original = btn.innerText;
+                    btn.innerText = "Starting new CSV...";
+                    fetch('/new_csv').then(res => res.json()).then(data => {
+                        btn.innerText = "✅ New CSV started";
+                        setTimeout(() => { btn.innerText = original; }, 2000);
+                    }).catch(() => {
+                        btn.innerText = "⚠️ Failed — check logs";
+                        setTimeout(() => { btn.innerText = original; }, 2000);
+                    });
+                }
+
                 function toggleAutoMode() {
                     fetch('/toggle_auto').then(res => res.text()).then(txt => { 
                         let autoBtn = document.getElementById("hud-auto-btn");
-                        if (txt.includes("ACTIVE")) { autoBtn.classList.add("active-tracking"); } 
+                        let roamBtn = document.getElementById("hud-roam-btn");
+                        if (txt.includes("ACTIVE")) { autoBtn.classList.add("active-tracking"); roamBtn.classList.remove("active-tracking"); } 
                         else { autoBtn.classList.remove("active-tracking"); }
+                    });
+                }
+
+                function toggleRoamMode() {
+                    fetch('/toggle_roam').then(res => res.text()).then(txt => {
+                        let roamBtn = document.getElementById("hud-roam-btn");
+                        let autoBtn = document.getElementById("hud-auto-btn");
+                        if (txt.includes("ACTIVE")) { roamBtn.classList.add("active-tracking"); autoBtn.classList.remove("active-tracking"); }
+                        else { roamBtn.classList.remove("active-tracking"); }
                     });
                 }
 
@@ -709,7 +900,31 @@ def index():
                             document.getElementById("hud-battery").innerText = data.battery.toFixed(1) + "%";
                             document.getElementById("hud-live-speed").innerText = data.live_speed.toFixed(1) + " mm/s";
                             document.getElementById("hud-target-speed").innerText = data.target_speed + " mm/s";
+
+                            let speedPct = Math.max(0, Math.min(100, ((data.target_speed - 50) / (600 - 50)) * 100));
+                            document.getElementById("hud-speed-bar").style.width = speedPct + "%";
+
+                            const driveModeLabels = {
+                                "manual": ["MANUAL", "var(--text-muted)"],
+                                "line_follower": ["LINE FOLLOWER", "var(--accent-cyan)"],
+                                "auto_roam": ["AUTO ROAM", "var(--accent-orange)"]
+                            };
+                            let dm = driveModeLabels[data.drive_mode] || driveModeLabels["manual"];
+                            let dmNode = document.getElementById("hud-drive-mode");
+                            dmNode.innerText = dm[0];
+                            dmNode.style.color = dm[1];
                             
+                            let camBtn = document.getElementById("hud-camera-btn");
+                            if (!camBtn.innerText.includes("...")) {
+                                if (data.camera_active) {
+                                    camBtn.classList.add("active-tracking");
+                                    camBtn.innerText = "📷 Camera & Logging: ON";
+                                } else {
+                                    camBtn.classList.remove("active-tracking");
+                                    camBtn.innerText = "📷 Camera & Logging: OFF";
+                                }
+                            }
+
                             document.getElementById("live-logged-keys").innerText = data.logged_keys.toUpperCase();
                             document.getElementById("live-frame-count").innerText = data.frame_count;
 
@@ -742,9 +957,11 @@ def index():
                         
                         <div class="hud-telemetry-box">
                             <div><span>🖥️ System:</span> <span id="hud-mode-status" class="hud-status-text">MANUAL</span></div>
+                            <div><span>🚦 Autonomy:</span> <span id="hud-drive-mode" class="hud-status-text">MANUAL</span></div>
                             <div><span>⚡ Battery:</span> <span id="hud-battery" class="hud-battery-text">100.0%</span></div>
                             <div><span>🏎️ Telemetry:</span> <span id="hud-live-speed" class="hud-speed-text">0.0 mm/s</span></div>
                             <div><span>🎯 Baseline:</span> <span id="hud-target-speed" style="color:#e2afff;">150 mm/s</span></div>
+                            <div class="speed-bar-track"><div id="hud-speed-bar" class="speed-bar-fill"></div></div>
                             <div><span>🌪️ Vacuum:</span> <span id="hud-vacuum" class="hud-vac-off">OFF</span></div>
                         </div>
                         
@@ -774,53 +991,61 @@ def index():
                             <div class="log-label">Processed Frame ID</div>
                             <div id="live-frame-count" class="log-value-frames">0</div>
                         </div>
+
+                        <button id="hud-newcsv-btn" class="dashboard-btn" style="margin-bottom:0;" onclick="startNewCsv()" title="Archives the current dataset CSV under a timestamped name and starts a fresh one — logging otherwise keeps appending to the same file across camera on/off cycles">🆕 New CSV</button>
                     </div>
                 </div>
 
                 <div class="control-grid">
                     <div class="panel-card">
                         <div class="panel-title">Navigation & Vision Modes</div>
-                        <button id="hud-auto-btn" class="dashboard-btn var(--accent-cyan)" onclick="toggleAutoMode()">🤖 Blue Line Follower</button>
-                        <button id="hud-gray-btn" class="dashboard-btn" onclick="toggleGrayscaleView()">🌓 AI Matrix View (Grayscale)</button>
+                        <div class="panel-subtext">Camera & Logging must be ON before anything below will do anything.</div>
+                        <button id="hud-camera-btn" class="dashboard-btn" onclick="toggleCamera()" title="Master switch for the camera, video feed, and dataset logging — starts a fresh logging session each time it's turned on">📷 Camera & Logging: OFF</button>
+                        <button id="hud-auto-btn" class="dashboard-btn var(--accent-cyan)" onclick="toggleAutoMode()" title="Follows blue tape on the floor using the camera">🤖 Blue Line Follower</button>
+                        <button id="hud-roam-btn" class="dashboard-btn" onclick="toggleRoamMode()" title="Drives around randomly and bounces off bumps, like stock Roomba cleaning">🧭 Auto Roam (Stock-style)</button>
+                        <button id="hud-gray-btn" class="dashboard-btn" onclick="toggleGrayscaleView()" title="Preview exactly what the AI dataset pipeline sees">🌓 AI Matrix View (Grayscale)</button>
                         <!-- 🛠️ NEW HUD TRIGGER WAKE BUTTON INJECTION -->
-                        <button class="dashboard-btn btn-orange" onclick="triggerHardwareWakePulse()">🌐 Force Hardware Wake (BRC Pin)</button>
-                        <button class="dashboard-btn" onclick="toggleFullScreen()">📺 Full Screen HUD</button>
+                        <button class="dashboard-btn btn-orange" onclick="triggerHardwareWakePulse()" title="Force-wakes a sleeping Roomba via the CP2102 RTS pin">🌐 Force Hardware Wake (BRC Pin)</button>
+                        <button id="hud-fs-btn" class="dashboard-btn" onclick="toggleFullScreen()" title="Expands the video HUD to fill your screen">📺 Full Screen HUD</button>
                     </div>
 
                     <div class="panel-card">
                         <div class="panel-title">Macro Dataset Recorder</div>
-                        <button id="hud-macro-btn" class="dashboard-btn btn-manual" onclick="advanceMacroState()">🎙️ Start Recording</button>
-                        <button id="hud-pause-btn" class="dashboard-btn btn-orange" style="display:none;" onclick="togglePlayPause()">⏸️ Pause Playback</button>
+                        <div class="panel-subtext">Record a driving sequence once, then auto-replay it.</div>
+                        <button id="hud-macro-btn" class="dashboard-btn btn-manual" onclick="advanceMacroState()" title="Cycles: start recording → stop & play back → reset">🎙️ Start Recording</button>
+                        <button id="hud-pause-btn" class="dashboard-btn btn-orange" style="display:none;" onclick="togglePlayPause()" title="Pause or resume the current playback">⏸️ Pause Playback</button>
                         <div class="btn-group">
-                            <button id="hud-dock-btn" class="dashboard-btn btn-orange" onclick="triggerDocking()">🔌 Seek Base</button>
-                            <button id="hud-cancel-dock-btn" class="dashboard-btn btn-red" onclick="triggerCancelDocking()">Cancel Dock</button>
-                            <button id="hud-dpad-toggle" class="dashboard-btn" onclick="toggleDpadVisibility()">🎮 Toggle Touch HUD</button>
+                            <button id="hud-dock-btn" class="dashboard-btn btn-orange" onclick="triggerDocking()" title="Sends the Roomba back to its charging dock">🔌 Seek Base</button>
+                            <button id="hud-cancel-dock-btn" class="dashboard-btn btn-red" onclick="triggerCancelDocking()" title="Stops docking and returns to manual control">Cancel Dock</button>
+                            <button id="hud-dpad-toggle" class="dashboard-btn" onclick="toggleDpadVisibility()" title="Shows/hides the on-screen D-pad for touchscreens">🎮 Toggle Touch HUD</button>
                         </div>
                     </div>
 
                     <div class="panel-card">
                         <div class="panel-title">Continuous Spin Utilities</div>
+                        <div class="panel-subtext">Spins non-stop until you press WASD or Space.</div>
                         <div class="btn-group-full">
-                            <button class="dashboard-btn btn-orange" onclick="triggerFullScreenMode('sticky_spin_random')">🔄 Sticky Spin Random</button>
+                            <button class="dashboard-btn btn-orange" onclick="triggerFullScreenMode('sticky_spin_random')" title="Spins in a random direction until you press a key">🔄 Sticky Spin Random</button>
                             <div class="btn-group">
-                                <button class="dashboard-btn btn-red" onclick="triggerFullScreenMode('sticky_spin_left')">🔄 Spin Left Indefinitely</button>
-                                <button class="dashboard-btn btn-green" onclick="triggerFullScreenMode('sticky_spin_right')">🔄 Spin Right Indefinitely</button>
+                                <button class="dashboard-btn btn-red" onclick="triggerFullScreenMode('sticky_spin_left')" title="Spins left until you press a key">🔄 Spin Left Indefinitely</button>
+                                <button class="dashboard-btn btn-green" onclick="triggerFullScreenMode('sticky_spin_right')" title="Spins right until you press a key">🔄 Spin Right Indefinitely</button>
                             </div>
                         </div>
                     </div>
 
                     <div class="panel-card">
                         <div class="panel-title">Hardware Actuators & Precision Steps</div>
+                        <div class="panel-subtext">One-shot moves for exact positioning.</div>
                         <div class="btn-group">
-                            <button class="dashboard-btn" onclick="triggerFixedDegreeTurn(90, 'left')">📐 Left 90°</button>
-                            <button class="dashboard-btn" onclick="triggerFixedDegreeTurn(90, 'right')">📐 Right 90°</button>
+                            <button class="dashboard-btn" onclick="triggerFixedDegreeTurn(90, 'left')" title="Turns exactly 90° left using the wheel encoders">📐 Left 90°</button>
+                            <button class="dashboard-btn" onclick="triggerFixedDegreeTurn(90, 'right')" title="Turns exactly 90° right using the wheel encoders">📐 Right 90°</button>
                         </div>
-                        <button class="dashboard-btn" style="border-color:#b5179e; color:#b5179e;" onclick="triggerFixedDegreeTurn(180, 'left')">📐 Spin Around 180°</button>
+                        <button class="dashboard-btn" style="border-color:#b5179e; color:#b5179e;" onclick="triggerFixedDegreeTurn(180, 'left')" title="Turns exactly 180° using the wheel encoders">📐 Spin Around 180°</button>
                         <div class="btn-group">
-                            <button id="hud-vac-btn" class="dashboard-btn" onclick="sendSingleAction('v')">🌪️ Vacuum Toggle</button>
+                            <button id="hud-vac-btn" class="dashboard-btn" onclick="sendSingleAction('v')" title="Turns the vacuum motor on/off">🌪️ Vacuum Toggle</button>
                             <div class="btn-group">
-                                <button class="dashboard-btn" onclick="sendSingleAction('e')">🚀 Volts +</button>
-                                <button class="dashboard-btn" onclick="sendSingleAction('q')">🐌 Volts -</button>
+                                <button class="dashboard-btn" onclick="sendSingleAction('e')" title="Increases driving speed by 50 mm/s (max 600)">🚀 Volts +</button>
+                                <button class="dashboard-btn" onclick="sendSingleAction('q')" title="Decreases driving speed by 50 mm/s (min 50)">🐌 Volts -</button>
                             </div>
                         </div>
                     </div>
@@ -841,10 +1066,14 @@ def video_feed():
     def generate():
         while True:
             with lock:
-                if current_frame is None: continue
-                ret, jpeg = cv2.imencode('.jpg', current_frame)
-            if ret: yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
-            time.sleep(0.03) 
+                if current_frame is None:
+                    frame_to_send = None
+                else:
+                    ret, jpeg = cv2.imencode('.jpg', current_frame)
+                    frame_to_send = jpeg.tobytes() if ret else None
+            if frame_to_send is not None:
+                yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame_to_send + b'\r\n')
+            time.sleep(0.03)
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 # 🛠️ NEW ENDPOINT ROUTE: Listens for dashboard button fires to safely ground the RTS line
@@ -853,15 +1082,61 @@ def trigger_hardware_wake():
     hardware_wake_roomba_via_cp2102()
     return "WAKE COMPLETED", 200
 
+@app.route('/toggle_camera')
+def toggle_camera():
+    """Master on/off switch for the camera + dataset-logging pipeline. Logging
+    appends to the same continuous CSV across on/off cycles — use /new_csv to
+    explicitly start a fresh one. Stopping releases the camera cleanly so the
+    next start doesn't collide with a still-open Argus session."""
+    global camera_active, camera_thread, current_frame
+    if camera_active:
+        camera_stop_event.set()
+        camera_active = False
+        current_frame = None  # clear the video feed rather than freezing on the last frame
+        return jsonify({"camera_active": False})
+    else:
+        camera_stop_event.clear()
+        camera_active = True
+        camera_thread = threading.Thread(target=camera_and_logic_loop, daemon=True)
+        camera_thread.start()
+        return jsonify({"camera_active": True})
+
+@app.route('/new_csv')
+def new_csv():
+    """Archives the current dataset CSV under a timestamped name and starts a
+    fresh one. Works whether the camera is on or off."""
+    archived_path, new_path = start_new_csv_session()
+    return jsonify({
+        "ok": True,
+        "new_csv_path": new_path,
+        "archived_path": archived_path
+    })
+
 @app.route('/toggle_auto')
 def toggle_auto():
-    global auto_mode, current_action_label, operational_mode, active_key_string
+    global auto_mode, roam_mode, current_action_label, operational_mode, active_key_string
     auto_mode = not auto_mode
+    if auto_mode:
+        roam_mode = False
     operational_mode = "manual"
     drive_roomba(0, 0)
     current_action_label = ""
     active_key_string = "idling"
     return "AUTO MODE ACTIVE" if auto_mode else "MANUAL MODE"
+
+@app.route('/toggle_roam')
+def toggle_roam():
+    """Toggles the stock-style autonomous roam mode on/off, mutually exclusive with the line follower."""
+    global roam_mode, auto_mode, current_action_label, operational_mode, active_key_string, roam_next_wander_time
+    roam_mode = not roam_mode
+    if roam_mode:
+        auto_mode = False
+        operational_mode = "manual"
+        roam_next_wander_time = time.time() + random.uniform(ROAM_WANDER_MIN_SEC, ROAM_WANDER_MAX_SEC)
+    drive_roomba(0, 0)
+    current_action_label = ""
+    active_key_string = "idling"
+    return "ROAM MODE ACTIVE" if roam_mode else "MANUAL MODE"
 
 @app.route('/toggle_grayscale')
 def toggle_grayscale():
@@ -959,6 +1234,12 @@ def cancel_dock():
 
 @app.route('/robot_stats')
 def robot_stats():
+    if auto_mode:
+        drive_mode = "line_follower"
+    elif roam_mode:
+        drive_mode = "auto_roam"
+    else:
+        drive_mode = "manual"
     return jsonify({
         "live_speed": abs(live_speed_mms),
         "target_speed": current_speed,
@@ -966,12 +1247,14 @@ def robot_stats():
         "vacuum": vacuum_on,
         "logged_keys": active_key_string,
         "logged_action": current_action_label,
-        "frame_count": frame_count  
+        "frame_count": frame_count,
+        "drive_mode": drive_mode,
+        "camera_active": camera_active
     })
 
 @app.route('/keyboard_input')
 def keyboard_input():
-    global current_speed, vacuum_on, last_keys_set, auto_mode, current_action_label, operational_mode, current_move_start, last_saved_keys, active_key_string
+    global current_speed, vacuum_on, last_keys_set, auto_mode, roam_mode, current_action_label, operational_mode, current_move_start, last_saved_keys, active_key_string
     raw_keys = request.args.get('keys', '')
     current_keys = set(raw_keys.split('-')) if raw_keys else set()
     
@@ -984,13 +1267,14 @@ def keyboard_input():
         
     last_keys_set = current_keys
 
-    if (operational_mode in ["playback", "paused"] or current_action_label == "docking" or "sticky" in current_action_label) and len(current_keys) > 0 and 'space' not in current_keys:
+    if (operational_mode in ["playback", "paused"] or current_action_label == "docking" or "sticky" in current_action_label or roam_mode) and len(current_keys) > 0 and 'space' not in current_keys:
         operational_mode = "manual"
+        roam_mode = False
         cancel_docking_sequence()
         current_action_label = ""
         active_key_string = "idling"
 
-    if not auto_mode and operational_mode != "playback" and operational_mode != "paused" and current_action_label != "precision_turning" and "encoder_turning" not in current_action_label and current_action_label != "docking" and "sticky" not in current_action_label:
+    if not auto_mode and not roam_mode and operational_mode != "playback" and operational_mode != "paused" and current_action_label != "precision_turning" and "encoder_turning" not in current_action_label and current_action_label != "docking" and "sticky" not in current_action_label and "roam" not in current_action_label:
         filtered_move_keys = current_keys.intersection({'w', 'a', 's', 'd', 'space'})
         
         if not filtered_move_keys:
@@ -1051,10 +1335,39 @@ def safely_close_local_session_on_exit():
 
 atexit.register(safely_close_local_session_on_exit) 
 
+# --- 🛑 SIGNAL HANDLER: releases the camera on Ctrl+C / systemctl stop ---
+# Without this, the camera thread (a daemon thread) gets killed abruptly when the
+# process exits, with no chance to call cap.release(). Jetson's Argus camera daemon
+# only allows one client session at a time, so a leaked handle here silently breaks
+# every subsequent launch attempt with "Failed to create CaptureSession".
+def handle_shutdown_signal(signum, frame):
+    print(f"\n🛑 Received shutdown signal ({signum}) — releasing camera before exit...")
+    shutdown_event.set()
+    drive_roomba(0, 0)
+    # Give the camera loop a moment to notice shutdown_event and release cv2.VideoCapture
+    # itself, rather than yanking the process out from under it.
+    for _ in range(20):  # up to ~2 seconds
+        if current_cap is None:
+            break
+        time.sleep(0.1)
+    else:
+        print("⚠️ Camera loop didn't confirm release in time — exiting anyway.")
+    if csv_file:
+        try:
+            csv_file.flush()
+            csv_file.close()
+        except Exception as e:
+            print(f"Error closing CSV: {e}")
+    os._exit(0)
+
+signal.signal(signal.SIGINT, handle_shutdown_signal)
+signal.signal(signal.SIGTERM, handle_shutdown_signal)
+
 if __name__ == '__main__':
     # Start the keep-awake heartbeat loop thread
     threading.Thread(target=keep_roomba_alive_worker, daemon=True).start()
-    
-    # Establish video stream tracking loops and Flask server handles
-    threading.Thread(target=camera_and_logic_loop, daemon=True).start()
+
+    # Camera + logging no longer auto-start here — see camera_on()/camera_off() below.
+    # The service can now sit at boot with nothing touching the camera until you flip
+    # the switch in the dashboard, so it's safe to auto-enable at boot again.
     app.run(host='0.0.0.0', port=5000, threaded=True)
