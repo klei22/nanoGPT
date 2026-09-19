@@ -1,5 +1,10 @@
 # 3D digit-token trajectory viewer
 
+An optional [two-stream clock experiment](DUAL_STREAM.md) compares free tables,
+spherical tables, great circles and learned small circles using the existing
+shared GPT backbone. Launch it with `TASK_MODE=dual_stream` and open
+`dual-stream.html`; the original experiment below is unchanged by default.
+
 This viewer follows the single-file Three.js report style in this directory,
 including OrbitControls, canvas labels, a dark explanatory panel, and keyboard
 controls. Width-2 runs are displayed natively in the XY plane, and width-3 runs

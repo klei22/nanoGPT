@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Two streams, one transformer — embedding geometry</title>
+  <link rel="stylesheet" href="dual-stream.css">
+</head>
+<body>
+  <header>
+    <a href="index.html">← Existing trajectory experiments</a>
+    <h1>Two streams, one transformer</h1>
+    <p>3 dimensions · one decoder layer · summed inputs · tied embeddings · one final RMSNorm</p>
+  </header>
+  <main>
+    <div id="error" role="alert" hidden></div>
+    <section class="time-controls" aria-label="Training iteration">
+      <div class="control-line">
+        <button id="previous" disabled aria-label="Previous saved iteration">←</button>
+        <button id="play" disabled>Play</button>
+        <button id="next" disabled aria-label="Next saved iteration">→</button>
+        <label for="iteration">Iteration <output id="iteration-label">—</output></label>
+        <span id="data-description"></span>
+      </div>
+      <input id="iteration" type="range" min="0" max="0" step="1" value="0" disabled>
+    </section>
+    <div class="views">
+      <section class="view" id="left-panel">
+        <label for="left-run">Comparison A</label><select id="left-run" disabled></select>
+        <div class="viewport"><canvas id="left-scene" aria-label="Comparison A: orbitable 3D token geometry"></canvas></div>
+        <div id="left-metrics" class="metrics" aria-live="polite"></div>
+      </section>
+      <section class="view" id="right-panel">
+        <label for="right-run">Comparison B</label><select id="right-run" disabled></select>
+        <div class="viewport"><canvas id="right-scene" aria-label="Comparison B: orbitable 3D token geometry"></canvas></div>
+        <div id="right-metrics" class="metrics" aria-live="polite"></div>
+      </section>
+    </div>
+    <div class="display-controls">
+      <span class="key digits">Digits</span><span class="key letters">Letters</span>
+      <span class="muted">Faint labels = untargeted · cubes = circle centers · diamonds = virtual points</span>
+      <label><input type="checkbox" id="circles" checked> Circle paths</label>
+      <label><input type="checkbox" id="trails" checked> Last 100 snapshots</label>
+      <label><input type="checkbox" id="sums"> Summed input vectors</label>
+    </div>
+    <section class="virtual-controls" aria-label="Continuous virtual token positions">
+      <div><label for="digit-phase">Numeric phase t <output id="digit-phase-label">0.250</output></label>
+        <input id="digit-phase" type="range" min="0" max="0.999" step="0.001" value="0.250"></div>
+      <div><label for="letter-phase">Letter phase t <output id="letter-phase-label">0.350</output></label>
+        <input id="letter-phase" type="range" min="0" max="0.999" step="0.001" value="0.350"></div>
+      <p class="muted">Virtual points are calculated directly from each circle at the selected iteration. Lookup tables have no continuous mapping.</p>
+    </section>
+    <section class="loss-panel">
+      <div class="control-line">
+        <h2>Loss over training</h2>
+        <label for="loss-kind">Metric</label>
+        <select id="loss-kind"><option value="loss">Mean of both cross-entropies</option><option value="digit_loss">Digit cross-entropy</option><option value="letter_loss">Letter cross-entropy</option><option value="joint_accuracy">Joint accuracy</option></select>
+        <span class="key comparison-a">Comparison A</span><span class="key comparison-b">Comparison B</span>
+      </div>
+      <canvas id="loss-chart" aria-label="Both runs on shared iteration and loss axes; click to select an iteration"></canvas>
+      <p class="muted">Each loss is evaluated after the displayed update over every cycle start. These repeated synthetic sequences are not a held-out generalization benchmark.</p>
+    </section>
+    <p class="muted">Drag to orbit · scroll to zoom · Space to play/pause · arrow keys to step. Sphere coordinates are native 3D, without PCA. Browser access to esm.sh is required for Three.js.</p>
+  </main>
+  <script type="module" src="dual-stream.js"></script>
+</body>
+</html>

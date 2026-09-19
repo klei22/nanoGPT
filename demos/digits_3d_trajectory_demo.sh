@@ -2,6 +2,10 @@
 # Train a width-3 model and export every saved embedding snapshot for Three.js.
 set -euo pipefail
 
+if [ "${TASK_MODE:-single}" = dual_stream ]; then
+  exec bash "$(dirname "${BASH_SOURCE[0]}")/dual_stream_clock_demo.sh" "$@"
+fi
+
 DEVICE="${DEVICE:-cpu}"
 DTYPE="${DTYPE:-float32}"
 MAX_ITERS="${MAX_ITERS:-10000}"

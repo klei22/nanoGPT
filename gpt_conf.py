@@ -49,6 +49,10 @@ class GPTConfig:
 
     # For multicontext training
     multicontext: bool = False
+    # Optional tied virtual-token circles; ordinary lookup tables remain default.
+    multicontext_embedding_variant: str = "table"
+    circle_offset_init: float = 0.5
+    circle_learn_offset: bool = True
     # Use separate embeddings/LM heads per dataset in multidataset mode
     multidataset_wte: bool = False
     vocab_sizes: List[int] = field(default_factory=lambda: []) # Used in place of vocab

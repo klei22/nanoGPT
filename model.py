@@ -48,6 +48,7 @@ from initializations.initialization_variations import init_dictionary
 from shared_param_utils import SharedParamGroupCreator
 from variations.block_variations import Block
 from variations.attention_residual_variations import FullAttentionResidual
+from variations.small_circle_embeddings import SmallCircleEmbedding
 
 class GPT(nn.Module):
 
@@ -57,6 +58,19 @@ class GPT(nn.Module):
         assert config.block_size is not None
 
         self.config = config
+
+        if config.multicontext_embedding_variant not in ("table", "small_circle"):
+            raise ValueError("unknown multicontext_embedding_variant")
+        self.uses_circle_multicontext = config.multicontext_embedding_variant == "small_circle"
+        if self.uses_circle_multicontext:
+            if (not config.multicontext or config.numerical_multicontext
+                    or config.multidataset_wte or not config.wte_weight_tying
+                    or config.n_embd_wte or config.quantize_wte
+                    or config.import_wte_npy or config.norm_variant_lm_head is not None):
+                raise ValueError("small_circle requires tied, unquantized categorical multicontext "
+                                 "without factoring, imported WTE, or separate LM-head normalization")
+            if not config.vocab_sizes:
+                raise ValueError("small_circle requires vocab_sizes")
 
         self.uses_numerical_multicontext = bool(config.numerical_multicontext)
         if self.uses_numerical_multicontext:
@@ -133,9 +147,16 @@ class GPT(nn.Module):
                 #TODO: currently multicontext is in own category, add support later for WTE factorization
                 if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                     for i, vocab_size in enumerate(self.config.vocab_sizes):
-                        embedding_layer = nn.Embedding(vocab_size, config.n_embd)
+                        if self.uses_circle_multicontext:
+                            embedding_layer = SmallCircleEmbedding(
+                                vocab_size, config.n_embd, config.wte_fixed_norm_value,
+                                config.circle_offset_init, config.circle_learn_offset)
+                        else:
+                            embedding_layer = nn.Embedding(vocab_size, config.n_embd)
                         self.transformer[f'wte_{i}'] = embedding_layer
-                        self.transformer[f'lm_head_{i}'] = nn.Linear(config.n_embd, vocab_size, bias=False)
+                        self.transformer[f'lm_head_{i}'] = (
+                            embedding_layer if self.uses_circle_multicontext else
+                            nn.Linear(config.n_embd, vocab_size, bias=False))
                 else:
                     # no factorization
                     word_embd = nn.Embedding(config.vocab_size, config.n_embd)
@@ -175,7 +196,8 @@ class GPT(nn.Module):
             #TODO: currently multicontext is in own category, add support later for WTE factorization
             if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
-                    self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
+                    if not self.uses_circle_multicontext:
+                        self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
                 self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
@@ -203,7 +225,8 @@ class GPT(nn.Module):
         if self.wte_weight_tying:
             if (config.multicontext or config.multidataset_wte) and not self.uses_numerical_multicontext:
                 for i, vocab_size in enumerate(self.config.vocab_sizes):
-                    self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
+                    if not self.uses_circle_multicontext:
+                        self.transformer[f'lm_head_{i}'].weight = self.transformer[f'wte_{i}'].weight
             else:
                 self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
 
@@ -242,6 +265,8 @@ class GPT(nn.Module):
         if (self.config.multicontext or self.config.multidataset_wte) and not self.uses_numerical_multicontext:
             embedding_names = [name for name in self.transformer if name.startswith("wte_")]
         for name in embedding_names:
+            if isinstance(self.transformer[name], SmallCircleEmbedding):
+                continue  # generated points already satisfy the radius constraint
             weight = self.transformer[name].weight
             weight.mul_(float(radius) / weight.norm(dim=-1, keepdim=True).clamp_min(1e-12))
 

@@ -37,3 +37,16 @@ def test_refuses_to_package_empty_site(tmp_path):
     make_source(source)
     with pytest.raises(ValueError, match="no completed trajectory"):
         package_site(source, tmp_path / "site")
+
+
+def test_packages_optional_dual_stream_viewer_without_legacy_runs(tmp_path):
+    source, output = tmp_path / "source", tmp_path / "site"
+    make_source(source)
+    for filename in ("dual-stream.html", "dual-stream.js", "dual-stream.css"):
+        (source / filename).write_text(filename)
+    (source / "dual-stream").mkdir()
+    (source / "dual-stream/manifest.json").write_text(json.dumps({"runs": [{"file": "small_circle-seed-0.json"}]}))
+    (source / "dual-stream/small_circle-seed-0.json").write_text('{"completed":true}')
+    assert package_site(source, output) == 1
+    assert (output / "dual-stream.js").read_text() == "dual-stream.js"
+    assert (output / "dual-stream/small_circle-seed-0.json").exists()

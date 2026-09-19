@@ -657,6 +657,14 @@ def parse_args():
     model_group.add_argument('--n_embd_wte', default=None, type=int, help="If different from n_embd, an adapter table will be automatically created")
     model_group.add_argument('--n_embd_wte_scale_tying', default=True, action=argparse.BooleanOptionalAction, help="Enable weight tying for scale up and scale down matrices, only has effects if n_embd_wte is not 'None'.")
     model_group.add_argument('--wte_weight_tying', default=True, action=argparse.BooleanOptionalAction, help="Enable weight tying for non-factorized wte")
+    model_group.add_argument('--multicontext_embedding_variant', default='table',
+                             choices=['table', 'small_circle'],
+                             help='Tied multicontext token mapping; small_circle also accepts floating phases in the model API.')
+    model_group.add_argument('--circle_offset_init', default=0.5, type=float,
+                             help='Circle center offset / sphere radius. Use 0 with --no-circle_learn_offset for a great circle.')
+    model_group.add_argument('--circle_learn_offset', default=True,
+                             action=argparse.BooleanOptionalAction,
+                             help='Learn each stream circle size independently. Sphere radius uses wte_fixed_norm_value or sqrt(n_embd).')
     model_group.add_argument(
         '--wte_fixed_norm',
         default=False,
