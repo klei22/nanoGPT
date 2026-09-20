@@ -26,7 +26,9 @@ from gpt_conf import GPTConfig
 from model import GPT
 from variations.small_circle_embeddings import SmallCircleEmbedding
 
-VARIANTS = ("table_free", "table_sphere", "great_circle", "small_circle")
+DEFAULT_VARIANTS = ("table_free", "table_sphere", "great_circle", "small_circle")
+SMALL_CIRCLE_STARTS = {"small_circle_r10": 0.10, "small_circle_r05": 0.05}
+VARIANTS = (*DEFAULT_VARIANTS, *SMALL_CIRCLE_STARTS)
 REFERENCE_COMMIT = "6cb931dcccada904e523a15a18898e609bde1fb0"
 
 
@@ -40,7 +42,9 @@ def atomic_json(path, value):
 
 
 def make_config(args, variant):
-    circle = variant in ("great_circle", "small_circle")
+    circle = variant in ("great_circle", "small_circle") or variant in SMALL_CIRCLE_STARTS
+    offset = (math.sqrt(1 - SMALL_CIRCLE_STARTS[variant] ** 2)
+              if variant in SMALL_CIRCLE_STARTS else args.circle_offset)
     return GPTConfig(
         n_embd=3, n_layer=1, n_head=args.heads, n_kv_group=args.heads,
         block_size=args.block_size, vocab_size=args.digit_slots,
@@ -51,8 +55,8 @@ def make_config(args, variant):
         norm_variant_output="rmsnorm", wte_weight_tying=True,
         wte_fixed_norm=variant != "table_free", wte_fixed_norm_value=args.radius,
         multicontext_embedding_variant="small_circle" if circle else "table",
-        circle_offset_init=0.0 if variant == "great_circle" else args.circle_offset,
-        circle_learn_offset=variant == "small_circle",
+        circle_offset_init=0.0 if variant == "great_circle" else offset,
+        circle_learn_offset=circle and variant != "great_circle",
     )
 
 
@@ -195,6 +199,9 @@ def train_run(args, variant, seed, shared_backbone, matched_weights=None):
     payload = {
         "schema_version": 1, "task": "dual_stream_clock", "name": name,
         "variant": variant, "seed": seed, "config": config,
+        "circle_initialization": ({"offset": model.config.circle_offset_init,
+                                   "radius_fraction": math.sqrt(1 - model.config.circle_offset_init ** 2)}
+                                  if model.uses_circle_multicontext else None),
         "reference_commit": REFERENCE_COMMIT,
         "backbone_initial_sha256": backbone_hash(shared_backbone),
         "tokens": digit_tokens + letter_tokens,
@@ -319,7 +326,7 @@ def write_manifest(output_dir):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS))
+    parser.add_argument("--variants", nargs="+", choices=VARIANTS, default=list(DEFAULT_VARIANTS))
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--digits", type=int, default=8, help="Number of active digit targets (0 through N-1)")

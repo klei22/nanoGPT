@@ -1,7 +1,8 @@
 // This viewer reads exported data only. Training stays in the existing Python GPT.
 const $ = (id) => document.getElementById(id);
 const variantNames = {table_free:'Free lookup table', table_sphere:'Spherical lookup table',
-  great_circle:'Great circle', small_circle:'Learned small circle'};
+  great_circle:'Great circle', small_circle:'Learned small circle',
+  small_circle_r10:'Small circle · starts at 10% radius', small_circle_r05:'Small circle · starts at 5% radius'};
 const query = new URLSearchParams(location.search);
 const manifestURL = new URL(query.get('manifest') || 'dual-stream/manifest.json', location.href);
 const state = {runs:[], selected:[null,null], views:[], iteration:0, times:[], playing:false, epoch:0};
@@ -52,6 +53,16 @@ class GeometryView {
     this.scene=new THREE.Scene();this.scene.background=new THREE.Color(0x101722);
     this.camera=new THREE.PerspectiveCamera(43,1,.01,200);
     this.controls=new OrbitControls(this.camera,this.canvas);this.controls.enableDamping=true;
+    this.controls.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.DOLLY,RIGHT:THREE.MOUSE.PAN};
+    this.controls.enableZoom=true;this.controls.zoomSpeed=.45;this.controls.zoomToCursor=false;
+    this.controls.panSpeed=.6;this.focusIndex=null;
+    this.controls.addEventListener('change',()=>this.updateZoomLabel());
+    this.canvas.addEventListener('auxclick',event=>{if(event.button===1)event.preventDefault();});
+    $(`${side}-zoom-in`).addEventListener('click',()=>this.zoomBy(1/1.2));
+    $(`${side}-zoom-out`).addEventListener('click',()=>this.zoomBy(1.2));
+    $(`${side}-reset`).addEventListener('click',()=>this.resetView());
+    $(`${side}-focus-digits`).addEventListener('click',()=>this.focusGroup(0));
+    $(`${side}-focus-letters`).addEventListener('click',()=>this.focusGroup(1));
     this.scene.add(new THREE.AmbientLight(0xffffff,2));
     this.group=new THREE.Group();this.scene.add(this.group);
     new ResizeObserver(()=>this.resize()).observe(this.canvas.parentElement);
@@ -61,12 +72,69 @@ class GeometryView {
     if(!width||!height)return;
     this.renderer.setSize(width,height,false);this.camera.aspect=width/height;this.camera.updateProjectionMatrix();
   }
+  updateZoomLabel() {
+    if(!this.homeDistance)return;
+    $(`${this.side}-zoom-level`).value=`${Math.round(100*this.homeDistance/this.controls.getDistance())}%`;
+  }
+  setZoomBounds(radius) {
+    const vertical=THREE.MathUtils.degToRad(this.camera.fov);
+    const horizontal=2*Math.atan(Math.tan(vertical/2)*this.camera.aspect);
+    const fitDistance=1.2*radius/Math.sin(Math.min(vertical,horizontal)/2);
+    this.controls.minDistance=radius*(this.focusIndex===null?1.05:.8);
+    this.controls.maxDistance=fitDistance*2.5;
+    this.camera.near=Math.max(1e-5,radius*.005);
+    this.camera.far=Math.max(200,this.extent*30);
+    this.camera.updateProjectionMatrix();
+    return fitDistance;
+  }
+  frameBounds(center,radius,direction) {
+    this.homeDistance=this.setZoomBounds(radius);
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).addScaledVector(direction.clone().normalize(),this.homeDistance);
+    this.camera.zoom=1;this.controls.saveState();
+    // First reset flushes any remaining pan/rotation damping; the second restores
+    // the exact saved pose. Resetting while a drag settles must not keep drifting.
+    const damping=this.controls.enableDamping;this.controls.enableDamping=false;
+    this.controls.reset();this.controls.reset();this.controls.enableDamping=damping;
+    this.updateZoomLabel();
+  }
+  resetView() {
+    if(!this.data)return;
+    this.focusIndex=null;
+    this.frameBounds(new THREE.Vector3(),this.extent,new THREE.Vector3(2,1.3,2.4));
+    this.updateFocusButtons();
+  }
+  groupBounds(index,frame) {
+    const circle=frame.circles[index];
+    if(circle)return {center:new THREE.Vector3(...circle.center),radius:circle.radius,
+      direction:new THREE.Vector3(...circle.n)};
+    const group=this.data.groups[index];
+    const points=frame.positions.slice(group.start,group.start+group.size).map(p=>new THREE.Vector3(...p));
+    const center=points.reduce((sum,p)=>sum.add(p),new THREE.Vector3()).divideScalar(points.length);
+    const radius=Math.max(this.data.config.radius*.02,...points.map(p=>p.distanceTo(center)));
+    return {center,radius,direction:new THREE.Vector3(2,1.3,2.4)};
+  }
+  focusGroup(index) {
+    if(!this.data)return;
+    this.focusIndex=index;
+    const bounds=this.groupBounds(index,frameAt(this.data,state.iteration).frame);
+    this.frameBounds(bounds.center,bounds.radius,bounds.direction);
+    this.updateFocusButtons();
+  }
+  updateFocusButtons() {
+    ['digits','letters'].forEach((name,i)=>$(`${this.side}-focus-${name}`).setAttribute('aria-pressed',String(i===this.focusIndex)));
+  }
+  zoomBy(factor) {
+    if(!this.data)return;
+    const offset=this.camera.position.clone().sub(this.controls.target);
+    offset.setLength(THREE.MathUtils.clamp(offset.length()*factor,this.controls.minDistance,this.controls.maxDistance));
+    this.camera.position.copy(this.controls.target).add(offset);this.controls.update();
+  }
   load(data) {
     this.data=data;disposeGroup(this.group);this.tokens=[];this.curves=[];this.centers=[];this.virtual=[];
     let extent=data.config.radius;
     for(const frame of data.frames)for(const p of frame.positions)extent=Math.max(extent,Math.hypot(...p));
-    this.extent=extent;this.camera.position.set(extent*2,extent*1.3,extent*2.4);
-    this.controls.target.set(0,0,0);this.controls.update();
+    this.extent=extent;
     const shell=new THREE.Mesh(new THREE.SphereGeometry(data.config.radius,28,18),
       new THREE.MeshBasicMaterial({color:0x72879c,wireframe:true,transparent:true,opacity:.12}));
     // For the free table this is a reference radius, not a constraint.
@@ -78,7 +146,7 @@ class GeometryView {
       const dot=new THREE.Mesh(new THREE.SphereGeometry(.045,12,8),
         new THREE.MeshBasicMaterial({color:colors[gi],wireframe:!active,transparent:true,opacity:active?1:.35}));
       const label=textSprite(data.tokens[i],colors[gi],active?1:.4), trail=makeLine(colors[gi],active?.5:.15);
-      this.group.add(dot,label,trail);this.tokens.push({dot,label,trail});
+      this.group.add(dot,label,trail);this.tokens.push({dot,label,trail,groupIndex:gi});
     }
     for(let i=0;i<2;i++){
       const line=makeLine(colors[i],.8);
@@ -87,14 +155,24 @@ class GeometryView {
       this.group.add(line,center,virtual);this.curves.push(line);this.centers.push(center);this.virtual.push(virtual);
     }
     this.sums=new THREE.Points(new THREE.BufferGeometry(),new THREE.PointsMaterial({color:0xc9d2db,size:.026,transparent:true,opacity:.55}));
-    this.group.add(this.sums);this.resize();
+    this.group.add(this.sums);this.resize();this.resetView();
+    for(const name of ['zoom-in','zoom-out','reset','focus-digits','focus-letters'])$(`${this.side}-${name}`).disabled=false;
   }
   renderFrame(iteration) {
     if(!this.data)return;
     const data=this.data, {frame,index}=frameAt(data,iteration);
+    if(this.focusIndex!==null){
+      const bounds=this.groupBounds(this.focusIndex,frame);
+      this.camera.position.add(bounds.center.clone().sub(this.controls.target));
+      this.controls.target.copy(bounds.center);
+      this.homeDistance=this.setZoomBounds(bounds.radius);this.controls.update();this.updateZoomLabel();
+    }
     this.tokens.forEach((object,i)=>{
+      const circle=frame.circles[object.groupIndex];
+      const size=circle?Math.min(1,circle.radius/(data.config.radius*.45)):1;
       const p=new THREE.Vector3(...frame.positions[i]);object.dot.position.copy(p);
-      object.label.position.copy(p).add(new THREE.Vector3(0,.11,0));
+      object.dot.scale.setScalar(size);object.label.scale.set(.30*size,.30*size,1);
+      object.label.position.copy(p).add(new THREE.Vector3(0,.11*size,0));
       object.trail.visible=$('trails').checked;
       if(object.trail.visible)setLine(object.trail,data.frames.slice(Math.max(0,index-99),index+1).map(f=>new THREE.Vector3(...f.positions[i])));
     });
@@ -103,6 +181,8 @@ class GeometryView {
       this.curves[i].visible=visible&&$('circles').checked;this.centers[i].visible=visible;
       this.virtual[i].visible=visible;
       if(geometry){
+        const size=Math.min(1,geometry.radius/(data.config.radius*.45));
+        this.centers[i].scale.setScalar(size);this.virtual[i].scale.setScalar(size);
         if(this.curves[i].visible)setLine(this.curves[i],Array.from({length:97},(_,j)=>circlePoint(geometry,j/96)));
         this.centers[i].position.fromArray(geometry.center);
         this.virtual[i].position.copy(circlePoint(geometry,Number($(i===0?'digit-phase':'letter-phase').value)));
@@ -124,7 +204,10 @@ class GeometryView {
     const lines=[`Iteration ${frame.iteration} · ${data.parameter_count} parameters · mean CE ${m.loss.toFixed(4)}`,
       `Digits: CE ${m.digit_loss.toFixed(4)} / ${(100*m.digit_accuracy).toFixed(1)}% · Letters: CE ${m.letter_loss.toFixed(4)} / ${(100*m.letter_accuracy).toFixed(1)}%`,
       `Joint accuracy ${(100*m.joint_accuracy).toFixed(1)}% · vector norms ${m.norm_min.toFixed(3)}–${m.norm_max.toFixed(3)}`];
-    if(frame.circles[0])lines.push(`Center offsets: ${frame.circles.map(g=>g.offset.toFixed(3)).join(' / ')} · numeric virtual value ${(Number($('digit-phase').value)*data.config.digit_slots).toFixed(2)}`);
+    if(frame.circles[0]){
+      lines.push(`Circle radii: ${frame.circles.map(g=>(100*g.radius/g.sphere_radius).toFixed(1)+'%').join(' / ')} of sphere radius`);
+      lines.push(`Center offsets: ${frame.circles.map(g=>g.offset.toFixed(4)).join(' / ')} · numeric virtual value ${(Number($('digit-phase').value)*data.config.digit_slots).toFixed(2)}`);
+    }
     else lines.push('Free table' + (data.fixed_norm?' directions, projected after each update.':'; sphere shows the initial reference radius.'));
     lines.forEach((text,i)=>{const p=document.createElement('p');const el=document.createElement(i===0?'strong':'span');el.textContent=text;p.appendChild(el);container.appendChild(p);});
     this.canvas.dataset.iteration=String(frame.iteration);
@@ -213,6 +296,9 @@ async function main() {
   $('previous').addEventListener('click',()=>stepBy(-1));$('next').addEventListener('click',()=>stepBy(1));
   $('play').addEventListener('click',togglePlay);
   document.addEventListener('keydown',event=>{
+    if(event.code==='KeyR'&&!/INPUT|SELECT|TEXTAREA/.test(event.target.tagName)){
+      event.preventDefault();state.views.forEach(view=>view.resetView());return;
+    }
     if(/INPUT|SELECT|TEXTAREA|BUTTON/.test(event.target.tagName)||$('iteration').disabled)return;
     if(event.code==='Space'){event.preventDefault();togglePlay();}
     if(event.code==='ArrowLeft'||event.code==='ArrowRight'){event.preventDefault();stepBy(event.code==='ArrowRight'?1:-1);}

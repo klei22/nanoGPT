@@ -1,11 +1,28 @@
 import json
 
 import torch
+import pytest
 
 from analysis.dual_stream_clock import (batches, evaluation_batch, main, make_config,
                                        parse_args, snapshot)
 from gpt_conf import GPTConfig
 from model import GPT
+
+
+@pytest.mark.parametrize("variant,radius_fraction", [("small_circle_r10", .10), ("small_circle_r05", .05)])
+def test_both_streams_start_on_independent_learnable_tiny_circles(variant, radius_fraction):
+    args = parse_args(["--variants", variant])
+    model = GPT(make_config(args, variant))
+    digit, letter = model.transformer.wte_0, model.transformer.wte_1
+    assert digit.raw_frame is not letter.raw_frame
+    for embedding in (digit, letter):
+        geometry = embedding.geometry()
+        fraction = (geometry["radius"] / geometry["sphere_radius"]).detach().item()
+        assert fraction == pytest.approx(radius_fraction, abs=2e-6)
+        assert embedding.offset_logit.requires_grad
+        assert torch.allclose(embedding.weight.norm(dim=-1), torch.full((embedding.num_embeddings,), args.radius), atol=2e-6)
+        embedding.embed_phase(torch.tensor([.1, .3])).square().sum(dim=0)[0].backward()
+        assert torch.isfinite(embedding.offset_logit.grad)
 
 
 def test_paired_next_token_targets_and_complete_default_cycle():

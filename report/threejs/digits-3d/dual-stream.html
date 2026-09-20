@@ -27,11 +27,27 @@
     <div class="views">
       <section class="view" id="left-panel">
         <label for="left-run">Comparison A</label><select id="left-run" disabled></select>
+        <div class="camera-controls" aria-label="Comparison A camera">
+          <button id="left-zoom-in" disabled aria-label="Zoom in comparison A">+</button>
+          <button id="left-zoom-out" disabled aria-label="Zoom out comparison A">−</button>
+          <button id="left-reset" disabled>Reset view</button>
+          <button id="left-focus-digits" disabled>Focus digits</button>
+          <button id="left-focus-letters" disabled>Focus letters</button>
+          <output id="left-zoom-level" aria-label="Comparison A zoom">100%</output>
+        </div>
         <div class="viewport"><canvas id="left-scene" aria-label="Comparison A: orbitable 3D token geometry"></canvas></div>
         <div id="left-metrics" class="metrics" aria-live="polite"></div>
       </section>
       <section class="view" id="right-panel">
         <label for="right-run">Comparison B</label><select id="right-run" disabled></select>
+        <div class="camera-controls" aria-label="Comparison B camera">
+          <button id="right-zoom-in" disabled aria-label="Zoom in comparison B">+</button>
+          <button id="right-zoom-out" disabled aria-label="Zoom out comparison B">−</button>
+          <button id="right-reset" disabled>Reset view</button>
+          <button id="right-focus-digits" disabled>Focus digits</button>
+          <button id="right-focus-letters" disabled>Focus letters</button>
+          <output id="right-zoom-level" aria-label="Comparison B zoom">100%</output>
+        </div>
         <div class="viewport"><canvas id="right-scene" aria-label="Comparison B: orbitable 3D token geometry"></canvas></div>
         <div id="right-metrics" class="metrics" aria-live="polite"></div>
       </section>
@@ -60,7 +76,7 @@
       <canvas id="loss-chart" aria-label="Both runs on shared iteration and loss axes; click to select an iteration"></canvas>
       <p class="muted">Each loss is evaluated after the displayed update over every cycle start. These repeated synthetic sequences are not a held-out generalization benchmark.</p>
     </section>
-    <p class="muted">Drag to orbit · scroll to zoom · Space to play/pause · arrow keys to step. Sphere coordinates are native 3D, without PCA. Browser access to esm.sh is required for Three.js.</p>
+    <p class="muted">Left-drag to orbit · mouse wheel or middle-button vertical drag to zoom · right-drag to pan · Reset view or R to recenter · Space to play/pause · arrow keys to step. On touch screens, pinch or use + / −. Sphere coordinates are native 3D, without PCA. Browser access to esm.sh is required for Three.js.</p>
   </main>
   <script type="module" src="dual-stream.js"></script>
 </body>

@@ -31,6 +31,10 @@ with the same variant and seed.
 # Extend all three seeds, preserving optimizer state and data RNG:
 MAX_ITERS=10000 SEEDS="0 1 2" bash demos/dual_stream_clock_demo.sh --resume
 
+# Add six runs with BOTH clocks starting at 10% or 5% of the sphere radius:
+EMBEDDING_MODES="small_circle_r10 small_circle_r05" MAX_ITERS=2000 SEEDS="0 1 2" \
+  bash demos/dual_stream_clock_demo.sh
+
 # Exactly an eight-position numeric clock, 0–7:
 NUM_DIGITS=8 DIGIT_SLOTS=8 DUAL_STREAM_DIR=report/threejs/digits-3d/dual-stream-8 \
   OUT_DIR=out/dual_stream_8 bash demos/dual_stream_clock_demo.sh
@@ -52,6 +56,15 @@ in the URL. Select two runs, scrub the synchronized iteration slider, choose
 mean/digit/letter loss or joint accuracy, orbit both scenes, inspect trails and
 summed inputs, and move virtual points continuously around each learned clock.
 The virtual point controls visualize the mapping, not network predictions.
+
+Use the wheel or hold the **middle mouse button and drag vertically** to zoom.
+Zoom speed is reduced and camera distance is bounded. Each panel also has **+ / −**
+buttons and **Reset view**; press **R** outside an input/select to reset both.
+Reset restores the position, orbit target and zoom, including after panning.
+**Focus digits** and **Focus letters** fit that family to the view and follow its
+center as you scrub training. This makes very small starting circles inspectable;
+Reset view returns to the whole sphere. Left-drag orbits, right-drag pans, and
+touch supports pinch zoom. The percentage readout is relative to the fitted view.
 
 ## Precisely what is trained
 
@@ -106,6 +119,18 @@ displayed post-update weights.
 | `table_sphere` | Independent learned rows | Reproject rows after every update |
 | `great_circle` | Learned orthonormal frame | Center offset fixed at zero |
 | `small_circle` | Learned orthonormal frame and offset | Every virtual token has norm R |
+| `small_circle_r10` | Same as `small_circle` | Both clocks initially have circle radius 0.10R |
+| `small_circle_r05` | Same as `small_circle` | Both clocks initially have circle radius 0.05R |
+
+The two tiny-start presets are opt-in; the default demo still runs the original
+four variants. They initialize the center offset at `a = sqrt(1 - (r/R)^2)`:
+about 0.9949874 for 10% and 0.9987492 for 5%. These are **initial** sizes, not
+fixed circle radii. Digit and letter frames and offsets remain independently
+learned, and every token stays on the sphere of radius R. The default
+`small_circle` starts with offset 0.5, giving circle radius about 0.866R.
+The two presets override `--circle-offset`; use `small_circle --circle-offset A`
+for a custom initial offset. Exports record the effective initialization in
+`circle_initialization` and display both measured radii at each iteration.
 
 Each stream independently uses:
 
