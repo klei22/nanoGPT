@@ -232,6 +232,9 @@ def main() -> None:
             best_val_loss=checkpoint.get("best_val_loss", float("inf")),
             best_iter=checkpoint.get("best_iter", 0),
         )
+        if args.reset_best_val_loss_on_resume:
+            state.best_val_loss = float("inf")
+            state.best_iter = 0
     else:
         raise ValueError(f"Unsupported init_from value: {args.init_from}")
 

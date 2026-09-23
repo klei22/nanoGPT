@@ -1,0 +1,80 @@
+# Compare recurrent latent mixing with genuinely parallel mini-batches.
+# The first stage creates a compatible character model; the second stage
+# sweeps batch size and latent mode while sampling at every evaluation.
+---
+named_static_groups:
+  - named_group: "small_char_model"
+    n_layer: [4]
+    n_head: [4]
+    n_embd: [128]
+    block_size: [64]
+    dropout: [0.0]
+
+named_group_static: ["small_char_model"]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  device: ["cuda:0"]
+  dtype: ["bfloat16"]
+  learning_rate: [0.001]
+  gradient_accumulation_steps: [2]
+  eval_interval: [50]
+  eval_iters: [20]
+  log_interval: [10]
+  max_sample_tokens: [120]
+  sample_each_eval: [true]
+  sample_start_tokens: ["\n"]
+  sample_file: ["recurrent_samples.txt"]
+  always_save_checkpoint: [true]
+  compile: [true]
+
+parameter_groups:
+  - run_name_override: ["recurrent_char_direct_bs{batch_size}"]
+    batch_size: [8, 16, 32]
+    training_sequence:
+      - stage_name: "pretrain"
+        script: "train.py"
+        init_from: "scratch"
+        max_iters: 250
+      - stage_name: "recurrent_direct"
+        script: "train_recurrent.py"
+        max_iters: 200
+        latent_steps: 1
+        latent_mix_mode: "direct"
+        resume_from_previous: true
+        reset_optim: true
+        reset_best_val_loss_on_resume: true
+
+  - run_name_override: ["recurrent_char_slerp_bs{batch_size}"]
+    batch_size: [8, 16, 32]
+    training_sequence:
+      - stage_name: "pretrain"
+        script: "train.py"
+        init_from: "scratch"
+        max_iters: 250
+      - stage_name: "recurrent_slerp"
+        script: "train_recurrent.py"
+        max_iters: 200
+        latent_steps: 1
+        latent_mix_mode: "slerp"
+        latent_mix_alpha: 0.5
+        learn_latent_mix_alpha: true
+        resume_from_previous: true
+        reset_optim: true
+        reset_best_val_loss_on_resume: true
+
+  - run_name_override: ["recurrent_char_add_norm_bs{batch_size}"]
+    batch_size: [8, 16, 32]
+    training_sequence:
+      - stage_name: "pretrain"
+        script: "train.py"
+        init_from: "scratch"
+        max_iters: 250
+      - stage_name: "recurrent_add_norm"
+        script: "train_recurrent.py"
+        max_iters: 200
+        latent_steps: 1
+        latent_mix_mode: "add_norm"
+        resume_from_previous: true
+        reset_optim: true
+        reset_best_val_loss_on_resume: true
