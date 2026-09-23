@@ -961,6 +961,7 @@ def parse_args():
                           "causal",
                           "edgellm_asic_attn",
                           "linear",
+                          "kimi_delta",
                           "ssm",
                           "identity",
                           "infinite",

@@ -1,0 +1,43 @@
+# Compare Kimi-Delta-inspired recurrent linear attention against the existing
+# Infinite Head Attention baseline on MiniPile with matched small-model settings.
+---
+common_group:
+  dataset: ["minipile"]
+  n_layer: [6]
+  n_embd: [384]
+  n_head: [6]
+  n_qk_head_dim: [64]
+  n_v_head_dim: [64]
+  block_size: [256]
+  batch_size: [32]
+  max_iters: [10000]
+  eval_interval: [1000]
+  eval_iters: [100]
+  learning_rate: [0.0006]
+  min_lr: [0.00006]
+  warmup_iters: [100]
+  lr_decay_iters: [10000]
+  dropout: [0.0]
+  bias: [false]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  use_pre_ln: [true]
+  use_peri_ln: [true]
+  use_post_ln: [false]
+  norm_variant_attn: ["rmsnorm"]
+  norm_variant_mlp: ["rmsnorm"]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  - tensorboard_run_name: ["minipile_infinite_attention_baseline"]
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+    n_kv_group: [1]
+    softmax_variant_attn: ["softmax"]
+
+  - tensorboard_run_name: ["minipile_kimi_delta_attention"]
+    attention_variant: ["kimi_delta"]
+    softmax_variant_attn: ["softmax"]
