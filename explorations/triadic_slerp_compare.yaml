@@ -1,0 +1,59 @@
+# Compare conventional causal attention against triadic_slerp.
+# Uses the compact named-group structure from explorations/default_inf.yaml.
+---
+
+named_static_groups:
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  - named_group: "causal_mha"
+    attention_variant: ["causal"]
+
+  # Third head C controls a signed spherical interpolation amount.  Positive
+  # values move A toward B; negative values move A away from B along the same
+  # great-circle direction.  The output is one slerped vector per A/B/C triple.
+  - named_group: "triadic_slerp"
+    attention_variant: ["triadic_slerp"]
+    trislerp_n_triplets: [1]
+    trislerp_t_max: [1.0]
+    trislerp_amount_gain_init: [0.0]
+    trislerp_require_distinct_values: [true]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  n_head: [3]
+  n_kv_group: [3]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "causal_mha"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "triadic_slerp"

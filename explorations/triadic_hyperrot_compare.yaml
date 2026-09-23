@@ -1,0 +1,77 @@
+# Compare conventional causal attention against triadic_hyperrot.
+# Uses the compact named-group structure from explorations/default_inf.yaml.
+---
+
+named_static_groups:
+  # Shared normalization/positioning choices for the first comparison pass.
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "softmax"
+    softmax_variant_attn: ["softmax"]
+
+  # Baseline: ordinary causal MHA at the same n_head/n_kv_group width.
+  - named_group: "causal_mha"
+    attention_variant: ["causal"]
+
+  # Recommended first triadic experiment: preserves full MHA c_proj width and
+  # starts exactly at ordinary attention when trirot_angle_gain_init is zero.
+  - named_group: "trirot_replace_a"
+    attention_variant: ["triadic_hyperrot"]
+    trirot_n_triplets: [1]
+    trirot_output_mode: ["replace_a"]
+    trirot_theta_max_deg: [30.0]
+    trirot_angle_gain_init: [0.0]
+    trirot_require_distinct_values: [true]
+
+  # Follow-up bottleneck: literal one-output-per-three-heads mechanism.
+  - named_group: "trirot_triad_only"
+    attention_variant: ["triadic_hyperrot"]
+    trirot_n_triplets: [1]
+    trirot_output_mode: ["triad_only"]
+    trirot_theta_max_deg: [30.0]
+    trirot_angle_gain_init: [0.0]
+    trirot_require_distinct_values: [true]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  n_head: [3]
+  n_kv_group: [3]
+
+parameter_groups:
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "causal_mha"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "trirot_replace_a"
+
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "softmax"
+      - "trirot_triad_only"
