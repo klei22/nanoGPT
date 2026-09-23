@@ -100,6 +100,8 @@ def parallel_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
 
+    block.last_residual_outputs = [attn_out, mlp_out]
+
     # Skip Connection
     combined = attn_out + mlp_out
     x = block._combine_resid("attn", x, combined)
@@ -132,6 +134,8 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     if block.attn_resid_scaler is not None:
         attn_out = block.attn_resid_scaler(attn_out)
 
+    block.last_residual_outputs = [attn_out]
+
     # Attn Skip Connection
     x = block._combine_resid("attn", x, attn_out)
 
@@ -156,6 +160,8 @@ def attn_then_mlp_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor
     # MLP Output Scaling
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
+
+    block.last_residual_outputs.append(mlp_out)
 
     # MLP Skip Connection
     x = block._combine_resid("mlp", x, mlp_out)
@@ -203,6 +209,8 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     if block.attn_resid_scaler is not None:
         attn_out = block.attn_resid_scaler(attn_out)
 
+    block.last_residual_outputs = [attn_out]
+
     # Attn Skip Connection -- Note that we skip connect here to the quantized residual
     x_quantized_residual = attn_out + x_quantized_residual
 
@@ -230,6 +238,8 @@ def edgellm_asic_forward(block, x: torch.Tensor, iter_num: int) -> torch.Tensor:
     # MLP Output Scaling
     if block.mlp_resid_scaler is not None:
         mlp_out = block.mlp_resid_scaler(mlp_out)
+
+    block.last_residual_outputs.append(mlp_out)
 
     chip_output = mlp_out + x_quantized_residual
 
@@ -468,8 +478,13 @@ class Block(nn.Module):
             "mlp": residual_combine_dict[self.mlp_resid_type],
         }
 
+        self.last_residual_outputs = []
+
         # Gradient checkpointing
-        self.use_gradient_checkpointing = getattr(config, "use_gradient_checkpointing", False)
+        self.use_gradient_checkpointing = (
+            getattr(config, "use_gradient_checkpointing", False)
+            and not getattr(config, "use_final_residual_attention", False)
+        )
 
     def forward(self, x: torch.Tensor, iter_num: int):
         if self.use_gradient_checkpointing and x.requires_grad:

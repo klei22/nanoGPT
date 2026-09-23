@@ -98,6 +98,16 @@ class GPTConfig:
     n_cproj: int = None
     use_concat_heads: bool = False
 
+    # Final residual-stream attention over saved block unit outputs
+    use_final_residual_attention: bool = False
+    final_residual_attention_n_head: int | None = None
+    final_residual_attention_n_qk_head_dim: int | None = None
+    final_residual_attention_n_v_head_dim: int | None = None
+    final_residual_attention_use_qk_norm: bool | None = None
+    final_residual_attention_use_qk_norm_scale: bool | None = None
+    final_residual_attention_softmax_variant: str | None = None
+    final_residual_attention_norm_variant: str = "rmsnorm"
+
     # Softcapping params
     attn_logit_softcapping: float | None = None
     final_logit_softcapping: float | None = None
