@@ -12,6 +12,8 @@ from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from variations.position_encoding_variations import (
     FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
 from variations.softmax_variations import softmax_dictionary
+from variations.relu2max_attention import (
+    FusedReLU2MaxAttention, flex_relu2max_available)
 from variations.triadic_modulation_variations import mod_fn_dict
 
 
@@ -120,6 +122,21 @@ class CausalSelfAttention(nn.Module):
         self.gate = config.gate
         self.use_fire_embeddings = None
         self.disable_flash_attention = config.disable_flash_attention
+        self.use_fused_relu2max = (
+            getattr(config, "use_fused_relu2max", True)
+            and config.softmax_variant_attn == "relu2max"
+            and flex_relu2max_available()
+            and config.dropout == 0
+            and config.window_size is None
+            and not config.use_fire_embeddings
+            and not config.use_qk_norm_scale
+            and config.attn_logit_softcapping is None
+            and not config.quantize_attn_act
+        )
+        if self.use_fused_relu2max:
+            self.fused_relu2max = FusedReLU2MaxAttention(
+                config.relu2max_divisor, config.div_by_seq_len
+            )
         if config.use_fire_embeddings:
             self.use_fire_embeddings = config.use_fire_embeddings
             if fire_pos_enc is not None:
@@ -336,7 +353,12 @@ class CausalSelfAttention(nn.Module):
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
+        if self.use_fused_relu2max and q.is_cuda:
+            # FlexAttention fuses QK, ReLU-square, causal masking, and PV just
+            # like SDPA. CPU and unsupported configurations retain the exact
+            # eager implementation below.
+            y = self.fused_relu2max(q, self._expand_kv(k), self._expand_kv(v))
+        elif self.flash:
 
             k_attn = self._expand_kv(k)
             v_attn = self._expand_kv(v)
