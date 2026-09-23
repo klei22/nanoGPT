@@ -125,6 +125,8 @@ def load_configurations(path: str, fmt: str) -> list[dict]:
 
 RUN_NAME_VAR = "${RUN_NAME}"
 DISTILLATION_SOURCE_VAR = "${DISTILLATION_SOURCE}"
+
+
 RESERVED_CONFIG_KEYS = {
     "distillation_source_path",
     "distillation_source_run_name",
@@ -570,7 +572,10 @@ def format_run_name(
             continue
         if isinstance(v, str) and (RUN_NAME_VAR in v or DISTILLATION_SOURCE_VAR in v):
             continue
-        parts.append(str(v))
+        if v is None:
+            parts.append("default")
+        else:
+            parts.append(str(v))
 
     base_name = f"{prefix}{base}"
     return f"{base_name}-{'-'.join(parts)}" if parts else base_name
@@ -726,7 +731,7 @@ def build_command(combo: dict) -> list[str]:
     """
     cmd = ['python3', 'train.py']
     for k, v in combo.items():
-        if k.startswith('_') or k in RESERVED_CONFIG_KEYS:
+        if k.startswith('_') or k in RESERVED_CONFIG_KEYS or v is None:
             continue
         # A YAML null means that the Python setting should retain its None
         # default. Omitting the CLI option is the only type-safe way to convey
@@ -736,9 +741,10 @@ def build_command(combo: dict) -> list[str]:
         if isinstance(v, bool):
             cmd.append(f"--{'' if v else 'no-'}{k}")
         elif isinstance(v, list):
-            if v:
+            values = [x for x in v if x is not None]
+            if values:
                 cmd.append(f"--{k}")
-                cmd.extend([str(x) for x in v])
+                cmd.extend(str(x) for x in values)
             else:
                 cmd.append(f"--{k}")
         else:
@@ -769,6 +775,9 @@ def run_experiment(
     )
     if combo.get("run_name_override"):
         run_name = f"{args.prefix}{combo['run_name_override']}"
+
+    combo = {k: v for k, v in combo.items() if v is not None}
+
     log_file = LOG_DIR / f"{base}.yaml"
     if run_name in completed_runs(log_file):
         print(f"[yellow]Skipping already-run:[/] {run_name}")
