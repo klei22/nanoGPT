@@ -12,6 +12,7 @@ from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
 from variations.position_encoding_variations import (
     FIRE, RotaryEmbedding, SymmetricalOverlapAngularPositions)
 from variations.softmax_variations import softmax_dictionary
+from variations.cayley_variations import CayleyLinear
 from variations.triadic_modulation_variations import mod_fn_dict
 
 
@@ -1029,6 +1030,9 @@ class InfiniteHeadAttention(nn.Module):
         self.use_qk_norm        = config.use_qk_norm
         self.use_qk_norm_scale  = config.use_qk_norm_scale
         self.use_v_norm         = config.use_v_norm
+        self.infinite_cayley_value = getattr(config, "infinite_cayley_value", False)
+        if self.infinite_cayley_value and (self.use_concat_heads or self.n_v_head_dim != self.n_embd):
+            raise ValueError("infinite_cayley_value requires use_concat_heads=False and n_v_head_dim == n_embd so Wo can be identity")
 
         # Flash Lobo
         self.use_flash_lobo          = config.use_flash_lobo
@@ -1068,7 +1072,20 @@ class InfiniteHeadAttention(nn.Module):
         # TODO: no reason for qk and v to have same dimension
         self.c_attn_q = self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_kv_group * self.n_qk_head_dim, config, bias=config.bias)
-        self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
+        if self.infinite_cayley_value:
+            if self.n_kv_group != 1:
+                raise ValueError("infinite_cayley_value currently requires n_kv_group == 1 so one Cayley Wv feeds all heads")
+            self.c_attn_v = CayleyLinear(
+                self.n_embd,
+                self.n_v_head_dim,
+                bias=config.bias,
+                mode=config.cayley_mode,
+                ns_steps=config.cayley_ns_steps,
+                init_scale=config.cayley_init_scale,
+                max_skew_norm=config.cayley_max_skew_norm,
+            )
+        else:
+            self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_kv_group * self.n_v_head_dim, config, bias=config.bias)
 
         self.q_norm_dim = 1 if self.l2_norm_attn_q_dim == "embed" else 0
         self.k_norm_dim = 1 if self.l2_norm_attn_k_dim == "embed" else 0
@@ -1081,6 +1098,9 @@ class InfiniteHeadAttention(nn.Module):
             self.c_proj = self.linear_variant_attn_proj(
                 self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias
             )
+        elif self.infinite_cayley_value:
+            print("use Cayley Wv with identity c_proj")
+            self.c_proj = nn.Identity()
         elif self.n_cproj==1:
             print("use n_cproj 1", self.n_v_head_dim, self.n_embd)
             self.c_proj = self.linear_variant_attn_proj(self.n_v_head_dim, self.n_embd, config, bias=config.bias)
@@ -1282,7 +1302,9 @@ class InfiniteHeadAttention(nn.Module):
             # (B, nh, T, v_dim) → (B, T, nh*v_dim); avoid extra .contiguous()
             # flatten heads → (B, T, n_head * n_v_head_dim)
             y = y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
-            if self.l2_norm_attn_cproj:
+            if self.infinite_cayley_value:
+                y = self.c_proj(y)
+            elif self.l2_norm_attn_cproj:
                 cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
                 y = F.linear(y, cproj_weight, self.c_proj.bias)
             else:
@@ -1290,7 +1312,9 @@ class InfiniteHeadAttention(nn.Module):
         elif self.n_cproj == 1:
             # Sum heads first: (B, nh, T, v_dim) → (B, T, v_dim)
             y = y.sum(dim=1)
-            if self.l2_norm_attn_cproj:
+            if self.infinite_cayley_value:
+                y = self.c_proj(y)
+            elif self.l2_norm_attn_cproj:
                 cproj_weight = F.normalize(self.c_proj.weight, p=2, dim=self.cproj_norm_dim)
                 y = F.linear(y, cproj_weight, self.c_proj.bias)
             else:

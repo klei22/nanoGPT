@@ -1,0 +1,77 @@
+# cayley_ns_orthogonal_layers.yaml
+---
+# Compare matmul-only Newton-Schulz Cayley layers against conventional nanoGPT
+# runs at a similar non-embedding parameter scale. Use compute_model_stats to
+# verify exact counts for your vocab/dataset before launching a long sweep.
+
+named_static_groups:
+  - named_group: "conventional_nanogpt"
+    attention_variant: ["causal"]
+    mlp_variant: ["mlp"]
+    n_embd: [32]
+    n_head: [1]
+    mlp_size: [128]
+
+  - named_group: "inf_cayley_wv_identity_wo"
+    attention_variant: ["infinite"]
+    infinite_cayley_value: [true]
+    cayley_mode: ["ns"]
+    cayley_ns_steps: [8, 12]
+    cayley_max_skew_norm: [2.0]
+    use_concat_heads: [false]
+    n_embd: [32]
+    n_head: [1]
+    n_kv_group: [1]
+    n_qk_head_dim: [32]
+    n_v_head_dim: [32]
+    n_cproj: [1]
+    mlp_variant: ["mlp"]
+    # Smaller MLP keeps total non-embedding params close to the conventional
+    # baseline after Wv/Wo are replaced by one n_embd x n_embd Cayley parameter.
+    mlp_size: [96]
+
+  - named_group: "single_cayley_mlp"
+    attention_variant: ["causal"]
+    mlp_variant: ["cayley"]
+    cayley_mode: ["ns"]
+    cayley_ns_steps: [8, 12]
+    cayley_max_skew_norm: [2.0]
+    n_embd: [32]
+    n_head: [1]
+
+  - named_group: "mixture_cayley_mlp"
+    attention_variant: ["causal"]
+    mlp_variant: ["cayley_mixture"]
+    cayley_mode: ["ns"]
+    cayley_ns_steps: [8, 12]
+    cayley_max_skew_norm: [2.0]
+    cayley_mixture_size: [2, 4]
+    n_embd: [32]
+    n_head: [1]
+
+common_group:
+  dataset: ["shakespeare_char"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  max_iters: [3000]
+  eval_interval: [250]
+  eval_iters: [200]
+  batch_size: [64]
+  block_size: [256]
+  n_layer: [1]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  bias: [false]
+  dropout: [0.0]
+  never_save_checkpoint: [true]
+  compute_model_stats: [true]
+  log_btc_per_param: [true]
+
+print_model_stats_table: ["print_stats/${RUN_NAME}.csv"]
+
+parameter_groups:
+  - named_group_static: ["conventional_nanogpt"]
+  - named_group_static: ["inf_cayley_wv_identity_wo"]
+  - named_group_static: ["single_cayley_mlp"]
+  - named_group_static: ["mixture_cayley_mlp"]

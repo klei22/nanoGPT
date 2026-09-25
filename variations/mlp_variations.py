@@ -6,6 +6,7 @@ from torch.nn import functional as F
 
 from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary, wrap_with_flashnorm
+from variations.cayley_variations import CayleyLinear
 from quantization.quantize import fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
@@ -874,6 +875,61 @@ class KanMLP(nn.Module):
 
         return x
 
+class CayleyMLP(nn.Module):
+    """A residual MLP slot replaced by one learned Cayley rotation."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.cayley = CayleyLinear(
+            config.n_embd,
+            config.n_embd,
+            bias=config.bias,
+            mode=config.cayley_mode,
+            ns_steps=config.cayley_ns_steps,
+            init_scale=config.cayley_init_scale,
+            max_skew_norm=config.cayley_max_skew_norm,
+        )
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x, iter_num=None):
+        return self.dropout(self.cayley(x))
+
+
+class CayleyMixtureMLP(nn.Module):
+    """Input-conditioned mixture of learned Cayley rotations."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.num_rotations = int(config.cayley_mixture_size)
+        if self.num_rotations <= 0:
+            raise ValueError("cayley_mixture_size must be positive")
+        self.rotations = nn.ModuleList(
+            [
+                CayleyLinear(
+                    config.n_embd,
+                    config.n_embd,
+                    bias=False,
+                    mode=config.cayley_mode,
+                    ns_steps=config.cayley_ns_steps,
+                    init_scale=config.cayley_init_scale,
+                    max_skew_norm=config.cayley_max_skew_norm,
+                )
+                for _ in range(self.num_rotations)
+            ]
+        )
+        self.router = nn.Linear(config.n_embd, self.num_rotations, bias=config.bias)
+        self.bias = nn.Parameter(torch.zeros(config.n_embd)) if config.bias else None
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x, iter_num=None):
+        gates = F.softmax(self.router(x), dim=-1)
+        rotated = torch.stack([rotation(x) for rotation in self.rotations], dim=-2)
+        x = (gates.unsqueeze(-1) * rotated).sum(dim=-2)
+        if self.bias is not None:
+            x = x + self.bias
+        return self.dropout(x)
+
+
 class MLP_Identity(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -890,7 +946,9 @@ mlp_dictionary = {
     "identity": MLP_Identity,
     "kan": KanMLP,
     "dual_path": DualPathMLP,
-    "dual_path_swiglu": DualPathSwiglu
+    "dual_path_swiglu": DualPathSwiglu,
+    "cayley": CayleyMLP,
+    "cayley_mixture": CayleyMixtureMLP,
     }
 
 def get_mlp_instance(config):
