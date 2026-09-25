@@ -577,6 +577,47 @@ class ReLU2Max(nn.Module):
         return result
 
 
+class ReLU2LineMax(nn.Module):
+    """ReLU^2 attention/output weighting with an optional smooth linear tail.
+
+    If ``relu2line_transition_point`` is unset, this runs the same numerator as
+    ReLU2Max without paying for a piecewise blend. With a positive point ``p``,
+    the numerator follows ReLU^2 up to ``p`` and the tangent line ``2px - p^2``
+    afterwards, preserving value and slope at the join.
+    """
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.relu2line_divisor = config.relu2line_divisor
+        self.div_by_seq_len = config.div_by_seq_len
+        transition_point = getattr(config, "relu2line_transition_point", None)
+        if transition_point is None:
+            self.forward = self._forward_relu2
+        elif transition_point <= 0:
+            raise ValueError("relu2line_transition_point must be positive or None")
+        else:
+            self.register_buffer("transition_point", torch.tensor(float(transition_point)))
+            self.forward = self._forward_relu2line
+
+    def _finish(self, result, x):
+        result = result / self.relu2line_divisor
+
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
+    def _forward_relu2(self, x):
+        return self._finish(torch.relu(x).square(), x)
+
+    def _forward_relu2line(self, x):
+        relu_x = torch.relu(x)
+        squared = relu_x.square()
+        linear = (2 * self.transition_point * relu_x) - self.transition_point.square()
+        return self._finish(torch.where(relu_x > self.transition_point, linear, squared), x)
+
+
 class Softplus2Max(nn.Module):
     """ Softmax variant based on arxiv 1805.10829 with added handles for base """
     def __init__(self, config, dim=-1):
@@ -870,6 +911,7 @@ softmax_dictionary = {
     "sigsoftmax": SigSoftmax,
     "relumax": ReLUMax,
     "relu2max": ReLU2Max,
+    "relu2linemax": ReLU2LineMax,
     "sigmoidmax": SigmoidMax,
     "softshrink": Softshrink,
     "gelumax": Gelumax,
