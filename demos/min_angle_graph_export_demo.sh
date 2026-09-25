@@ -14,6 +14,8 @@ PREFIX="${PREFIX:-min_angle_graph_demo_$(date +%Y%m%d_%H%M%S)_}"
 EXPORT_ROOT="${EXPORT_ROOT:-out/min_angle_graph_exports}"
 CONFIG="explorations/min_angle_graph_export.yaml"
 VIEWER="analysis/min_angle_graph_plotly_viewer.html"
+FAST_VIEWER="analysis/min_angle_graph_fast_viewer.html"
+PREPROCESSOR="utils/preprocess_min_angle_graph_csvs.py"
 
 before_csv_count="$(find "${EXPORT_ROOT}" -type f -name "${PREFIX}*.csv" 2>/dev/null | wc -l | tr -d ' ')"
 
@@ -60,9 +62,15 @@ CSV/JSON exports are written under:
 New CSV exports detected:
 $(find "${EXPORT_ROOT}" -type f -name "${PREFIX}*.csv" 2>/dev/null | sort)
 
-Open the Plotly viewer in your browser:
+For small vocabularies, open the original Plotly viewer in your browser:
   ${VIEWER}
 
-Then select one or more exported CSV files from an export directory to step
-through validation snapshots from first iteration to last.
+For large vocabularies or many snapshots, preprocess the unchanged CSV exports
+and open the fast viewer instead:
+  python3 ${PREPROCESSOR} "${EXPORT_ROOT}/<run-name>" --output_dir "${EXPORT_ROOT}/<run-name>/fast_viewer"
+  ${FAST_VIEWER}
+
+Then select the generated *.min-angle-graph.json files in the fast viewer to
+step through validation snapshots from first iteration to last with bounded
+WebGL point counts and precomputed histograms.
 EOF

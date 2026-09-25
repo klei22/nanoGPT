@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fast LM-head Minimum-Angle Graph Viewer</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; --bg:#0f172a; --panel:#111827; --panel2:#1f2937; --text:#e5e7eb; --muted:#9ca3af; --accent:#38bdf8; --border:#334155; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    header, main { max-width:1500px; margin:0 auto; padding:1rem; }
+    header h1 { margin:0 0 .35rem; font-size:1.65rem; } header p { margin:.25rem 0; color:var(--muted); line-height:1.45; }
+    code { color:#bae6fd; } .panel { background:var(--panel); border:1px solid var(--border); border-radius:.75rem; padding:1rem; margin-bottom:1rem; box-shadow:0 12px 28px rgba(0,0,0,.24); }
+    .controls { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.75rem; align-items:end; }
+    label { display:block; font-size:.85rem; color:var(--muted); margin-bottom:.25rem; } input,button,select { width:100%; box-sizing:border-box; border-radius:.45rem; border:1px solid var(--border); padding:.55rem .65rem; background:#020617; color:var(--text); }
+    input[type=range] { padding:0; accent-color:var(--accent); } button { cursor:pointer; background:#0284c7; border-color:#0284c7; font-weight:700; } button.secondary { background:#334155; border-color:#475569; } button:disabled { cursor:not-allowed; opacity:.5; }
+    .step-row { display:grid; grid-template-columns:auto auto 1fr auto; gap:.5rem; align-items:center; margin-top:.85rem; } .status { color:var(--muted); font-size:.9rem; margin-top:.75rem; min-height:1.25rem; }
+    .plots { display:grid; grid-template-columns:1.15fr .85fr; gap:1rem; } .plot { min-height:430px; } .wide { grid-column:1/-1; }
+    table { width:100%; border-collapse:collapse; font-size:.85rem; } th,td { border-bottom:1px solid var(--border); padding:.45rem; text-align:right; font-variant-numeric:tabular-nums; } th { color:var(--muted); position:sticky; top:0; background:var(--panel); } td.text { text-align:left; max-width:26rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .table-wrap { max-height:380px; overflow:auto; }
+    .hint { color:#cbd5e1; font-size:.9rem; } @media (max-width:900px) { .plots,.step-row { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Fast LM-head Minimum-Angle Graph Viewer</h1>
+  <p>This viewer is for optimized <code>*.min-angle-graph.json</code> files produced from the unchanged CSV exports by <code>utils/preprocess_min_angle_graph_csvs.py</code>.</p>
+  <p class="hint">It stays fast by loading compact column arrays, plotting bounded overview samples plus exact low-angle detail, and rendering the table only for the visible slice.</p>
+</header>
+<main>
+  <section class="panel">
+    <div class="controls">
+      <div><label for="jsonFiles">Optimized JSON snapshots</label><input id="jsonFiles" type="file" multiple accept=".json,application/json"></div>
+      <div><label for="overviewPoints">Overview point budget</label><input id="overviewPoints" type="number" min="1000" max="200000" step="1000" value="25000"></div>
+      <div><label for="detailLimit">Exact low-angle points</label><input id="detailLimit" type="number" min="100" max="100000" step="100" value="10000"></div>
+      <div><label for="angleCap">Low-angle cap (degrees)</label><input id="angleCap" type="number" min="0" max="180" step="0.1" value="10"></div>
+      <div><label for="tableRows">Table rows</label><input id="tableRows" type="number" min="10" max="5000" step="10" value="250"></div>
+      <div><label for="sortMode">Table sort</label><select id="sortMode"><option value="rank">Minimum-angle rank</option><option value="token">Token ID</option><option value="angle_desc">Largest angle</option></select></div>
+    </div>
+    <div class="step-row"><button id="prevBtn" class="secondary" disabled>Previous</button><button id="playBtn" disabled>Play</button><input id="snapshotSlider" type="range" min="0" max="0" value="0" disabled><button id="nextBtn" class="secondary" disabled>Next</button></div>
+    <div id="status" class="status">Preprocess CSVs, then choose optimized JSON files.</div>
+  </section>
+  <section class="plots"><div class="panel plot" id="angleScatter"></div><div class="panel plot" id="angleHistogram"></div><div class="panel plot wide" id="edgeMap"></div></section>
+  <section class="panel"><h2>Exact snapshot rows</h2><div class="table-wrap"><table><thead><tr><th>rank</th><th>token_id</th><th>token_text_escaped</th><th>nearest_token_id</th><th>nearest_token_text_escaped</th><th>min_angle_deg / magnitudes</th><th>cosine</th></tr></thead><tbody id="rowsBody"></tbody></table></div></section>
+</main>
+<script>
+const state={snapshots:[],currentIndex:0,playTimer:null};
+const $=(id)=>document.getElementById(id); const files=$('jsonFiles'), statusBox=$('status'), slider=$('snapshotSlider'), prevBtn=$('prevBtn'), nextBtn=$('nextBtn'), playBtn=$('playBtn'), rowsBody=$('rowsBody');
+const commonLayout={paper_bgcolor:'#111827',plot_bgcolor:'#0f172a',font:{color:'#e5e7eb'},margin:{l:60,r:20,t:45,b:55}};
+function parseName(name){const i=name.match(/(?:^|_)iter_(\d+)/), v=name.match(/(?:^|_)val_([0-9.]+)/); return {iter:i?+i[1]:NaN,valLoss:v?parseFloat(v[1]):NaN};}
+function readJson(file){return new Promise((res,rej)=>{const r=new FileReader(); r.onload=()=>res(JSON.parse(String(r.result))); r.onerror=()=>rej(r.error); r.readAsText(file);});}
+function esc(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');}
+function format(v,d=6){v=Number(v); return Number.isFinite(v)?v.toFixed(d):'';}
+function enable(on){slider.disabled=prevBtn.disabled=nextBtn.disabled=playBtn.disabled=!on;}
+function rowAt(s, idx){const c=s.columns; return {token_id:c.token_id[idx], token_text_escaped:c.token_text_escaped?.[idx]||'', nearest_token_id:c.nearest_token_id[idx], nearest_token_text_escaped:c.nearest_token_text_escaped?.[idx]||'', min_angle_deg:c.min_angle_deg[idx], cosine:c.cosine[idx], token_vector_length:c.token_vector_length[idx], nearest_token_vector_length:c.nearest_token_vector_length[idx], min_angle_rank:c.min_angle_rank[idx]};}
+function hover(s, idx){const r=rowAt(s,idx); return [`rank=${r.min_angle_rank}`,`angle=${format(r.min_angle_deg)}°`,`token=${esc(r.token_id)} (${esc(r.token_text_escaped||'[missing]')})`,`nearest=${esc(r.nearest_token_id)} (${esc(r.nearest_token_text_escaped||'[missing]')})`,`magnitudes=${format(r.token_vector_length)} → ${format(r.nearest_token_vector_length)}`,`cosine=${format(r.cosine)}`].join('<br>');}
+function sampledIndices(s){const n=s.row_count, budget=Math.max(1,Number($('overviewPoints').value||25000)), step=Math.max(1,Math.ceil(n/budget)), out=[]; for(let i=0;i<n;i+=step) out.push(i); return out;}
+function lowAngleIndices(s){const cap=Number($('angleCap').value||10), limit=Number($('detailLimit').value||10000), byRank=s.indices.by_rank||[]; const out=[]; for(const idx of byRank){ if(s.columns.min_angle_deg[idx] <= cap && out.length < limit) out.push(idx); else if(s.columns.min_angle_deg[idx] > cap) break; } return out;}
+function tableIndices(s){let idx; const mode=$('sortMode').value; if(mode==='token') idx=s.indices.by_token; else if(mode==='angle_desc') idx=s.indices.by_angle_desc; else idx=s.indices.by_rank; return idx.slice(0,Number($('tableRows').value||250));}
+async function plot(){if(!state.snapshots.length)return; const s=state.snapshots[state.currentIndex]; const overview=sampledIndices(s), detail=lowAngleIndices(s); const xRank=(idxs)=>idxs.map(i=>s.columns.min_angle_rank[i]); const yAng=(idxs)=>idxs.map(i=>s.columns.min_angle_deg[i]); const texts=(idxs)=>idxs.map(i=>hover(s,i));
+Plotly.react('angleScatter',[{name:'overview sample',type:'scattergl',mode:'markers',x:xRank(overview),y:yAng(overview),marker:{size:4,color:'#38bdf8',opacity:.45},text:texts(overview),hovertemplate:'%{text}<extra></extra>'},{name:'exact low-angle detail',type:'scattergl',mode:'markers',x:xRank(detail),y:yAng(detail),marker:{size:6,color:'#f97316',opacity:.9},text:texts(detail),hovertemplate:'%{text}<extra></extra>'}],{...commonLayout,title:'Minimum angle by sorted rank (sample + exact low-angle detail)',xaxis:{title:'minimum-angle rank'},yaxis:{title:'minimum angle (degrees)'}},{responsive:true});
+const h=s.histogram||{}; Plotly.react('angleHistogram',[{type:'bar',x:h.centers||[],y:h.counts||[],width:h.bin_width,marker:{color:'#34d399'},hovertemplate:'angle=%{x}<br>count=%{y}<extra></extra>'}],{...commonLayout,title:'Precomputed minimum-angle distribution',xaxis:{title:'minimum angle (degrees)'},yaxis:{title:'token count',type:'log',autorange:true}},{responsive:true});
+const edgeIdx=[...new Set([...overview,...detail])]; Plotly.react('edgeMap',[{type:'scattergl',mode:'markers',x:edgeIdx.map(i=>s.columns.token_id[i]),y:edgeIdx.map(i=>s.columns.nearest_token_id[i]),marker:{size:4,color:edgeIdx.map(i=>s.columns.min_angle_deg[i]),colorscale:'Viridis',colorbar:{title:'angle°'},opacity:.65},text:texts(edgeIdx),hovertemplate:'%{text}<extra></extra>'}],{...commonLayout,title:'Nearest-neighbor edge map (bounded sample + exact low-angle detail)',xaxis:{title:'token_id'},yaxis:{title:'nearest_token_id'}},{responsive:true});
+rowsBody.innerHTML=tableIndices(s).map(i=>{const r=rowAt(s,i); return `<tr><td>${r.min_angle_rank}</td><td>${r.token_id}</td><td class="text">${esc(r.token_text_escaped||'[missing]')}</td><td>${r.nearest_token_id}</td><td class="text">${esc(r.nearest_token_text_escaped||'[missing]')}</td><td>${format(r.min_angle_deg)}° / ${format(r.token_vector_length)} → ${format(r.nearest_token_vector_length)}</td><td>${format(r.cosine)}</td></tr>`}).join('');
+slider.value=state.currentIndex; statusBox.textContent=`Snapshot ${state.currentIndex+1}/${state.snapshots.length}: ${s.name} | iteration=${Number.isFinite(s.iter)?s.iter:'unknown'}, val_loss=${Number.isFinite(s.valLoss)?s.valLoss.toFixed(6):'unknown'}, rows=${s.row_count}, plotted=${overview.length}+${detail.length}`;}
+async function load(list){if(!list.length)return; stop(); statusBox.textContent='Loading optimized snapshots...'; const snaps=[]; for(const f of [...list]){const data=await readJson(f); const meta=data.metadata||{}; const parsed=parseName(f.name); snaps.push({...data,name:f.name,iter:Number.isFinite(meta.iter_num)?meta.iter_num:parsed.iter,valLoss:Number.isFinite(meta.val_loss)?meta.val_loss:parsed.valLoss});} snaps.sort((a,b)=>(Number.isFinite(a.iter)?a.iter:1e99)-(Number.isFinite(b.iter)?b.iter:1e99)||a.name.localeCompare(b.name)); state.snapshots=snaps; state.currentIndex=0; slider.max=Math.max(0,snaps.length-1); enable(true); await plot();}
+async function step(d){state.currentIndex=Math.max(0,Math.min(state.snapshots.length-1,state.currentIndex+d)); await plot();} function stop(){if(state.playTimer){clearInterval(state.playTimer); state.playTimer=null;} playBtn.textContent='Play';}
+async function toggle(){if(state.playTimer){stop();return;} if(!state.snapshots.length)return; if(state.currentIndex>=state.snapshots.length-1){state.currentIndex=0; await plot();} playBtn.textContent='Pause'; state.playTimer=setInterval(()=>{if(state.currentIndex>=state.snapshots.length-1){stop();return;} step(1);},700);}
+files.addEventListener('change',e=>load(e.target.files).catch(err=>{console.error(err); statusBox.textContent=`Failed to load: ${err}`; enable(false);})); prevBtn.onclick=()=>step(-1); nextBtn.onclick=()=>step(1); playBtn.onclick=toggle; slider.oninput=()=>{state.currentIndex=Number(slider.value); plot();}; ['overviewPoints','detailLimit','angleCap','tableRows','sortMode'].forEach(id=>$(id).addEventListener('input',plot)); $('sortMode').addEventListener('change',plot);
+</script>
+</body>
+</html>
