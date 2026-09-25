@@ -1,0 +1,11 @@
+# Baseline exploration for the Isotropic Random-Distractor Model.
+seed: 7
+trials: 2500
+M: 128
+s: 5.2
+g: 3.0
+dims: [16, 32, 64, 128, 256, 512]
+margin_values: [-4, -2, 0, 2, 4]
+quantization_variances: [0.0, 0.0025, 0.01, 0.04]
+architecture_gamma_values: [1, 2, 3]
+data_beta: 0.3333333333

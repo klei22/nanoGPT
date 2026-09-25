@@ -1,0 +1,11 @@
+# Larger-M case where softplus(-m + g^2/(2d)) should track the finite-M theorem closely.
+seed: 19
+trials: 500
+M: 2048
+s: 8.0
+g: 2.5
+dims: [32, 64, 128, 256, 512, 1024]
+margin_values: [-4, -2, 0, 2, 4]
+quantization_variances: [0.0, 0.001, 0.004, 0.016]
+architecture_gamma_values: [1, 2, 3]
+data_beta: 0.3333333333

@@ -1,0 +1,11 @@
+# Small-M / high-noise case where the Jensen gap and finite-M correction are visible.
+seed: 11
+trials: 4000
+M: 8
+s: 2.0
+g: 5.0
+dims: [16, 32, 64, 128, 256]
+margin_values: [-3, -1, 0, 1, 3]
+quantization_variances: [0.0, 0.01, 0.04, 0.09]
+architecture_gamma_values: [2, 3]
+data_beta: 0.2849
