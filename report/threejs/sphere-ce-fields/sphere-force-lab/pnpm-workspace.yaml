@@ -1,0 +1,8 @@
+# Reproducible, project-local dependency installation.
+minimumReleaseAge: 10080
+minimumReleaseAgeIgnoreMissingTime: false
+trustLockfile: false
+strictDepBuilds: true
+allowBuilds:
+  core-js@3.29.1: false
+  esbuild: true
