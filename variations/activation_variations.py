@@ -18,12 +18,42 @@ class ReLUPower(nn.Module):
     def forward(self, x):
         return torch.pow(torch.relu(x), self.power)
 
+class ReLU2Line(nn.Module):
+    """Squared ReLU that can smoothly become linear after a configured point.
+
+    When ``relu2line_transition_point`` is ``None`` this is exactly ReLU^2 and
+    avoids the ``torch.where`` blend used by the piecewise linear tail. When a
+    positive transition point ``p`` is supplied, values above ``p`` use the
+    tangent line ``2px - p^2``, making the function C1-continuous at ``p``.
+    """
+    def __init__(self, config):
+        super().__init__()
+        transition_point = getattr(config, "relu2line_transition_point", None)
+        if transition_point is None:
+            self.forward = self._forward_relu2
+        elif transition_point <= 0:
+            raise ValueError("relu2line_transition_point must be positive or None")
+        else:
+            self.register_buffer("transition_point", torch.tensor(float(transition_point)))
+            self.forward = self._forward_relu2line
+
+    def _forward_relu2(self, x):
+        return torch.relu(x).square()
+
+    def _forward_relu2line(self, x):
+        relu_x = torch.relu(x)
+        squared = relu_x.square()
+        linear = (2 * self.transition_point * relu_x) - self.transition_point.square()
+        return torch.where(relu_x > self.transition_point, linear, squared)
+
+
 class Disco(nn.Module):
     def __init__(self, config):
         super().__init__()
 
     def forward(self, x):
         return x * torch.abs(x)
+
 class SquaredGELU(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -365,6 +395,7 @@ activation_dictionary = {
     "softsign": Softsign_Config,
     "softshrink": Softshrink_Config,
     "relu_power": ReLUPower,
+    "relu2line": ReLU2Line,
     "squared_relu": SquaredReLU,
     "squared_gelu": SquaredGELU,
     "tanh": Tanh_Config,
