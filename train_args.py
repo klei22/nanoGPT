@@ -1325,6 +1325,7 @@ def parse_args():
         "polymax",
         "relumax",
         "relu2max",
+        "polynomialmax",
         "sigmoidmax",
         "vpolymax",
         "exppolymax",
@@ -1374,6 +1375,10 @@ def parse_args():
 
     ### ReLU2Max Options
     model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
+
+    ### PolynomialMax Options
+    model_group.add_argument("--polynomialmax_power", type=float, default=2.0)
+    model_group.add_argument("--polynomialmax_divisor", type=float, default=256.0)
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
