@@ -1,0 +1,34 @@
+# Exploration for the Isotropic Random-Distractor Model demo.
+# This file is consumed by analysis/isotropic_random_distractor/run_experiments.py,
+# not by the model-training sweep runner. It keeps the same explorations/ convention
+# used elsewhere in this repository for reproducible experiment settings.
+seed: 20260715
+samples_per_point: 600
+base:
+  # M is the number of incorrect-token distractors; V = M + 1.
+  M: 64
+  # Effective margin m = s - log(M). If s is omitted, the script sets s=log(M)+m.
+  m: 0.0
+  # Distractor logit scale g in z_j = g h^T w_j.
+  g: 2.0
+# Dimensions for testing inverse-dimension loss and spherical moments.
+dimensions: [8, 12, 16, 24, 32, 48, 64, 96, 128]
+# Margins used to test easy, boundary, and hard contexts.
+margin_sweep: [-4, -2, 0, 2, 4]
+# Larger k concentrates readout covariance along the context axis, reducing d_eff.
+anisotropy_k: [1, 2, 4, 8]
+# [number_of_shifted_distractors, additive_logit_shift] cases for hard-negative tails.
+hard_negative_cases:
+  - [0, 0.0]
+  - [1, 1.5]
+  - [4, 1.5]
+  - [8, 2.0]
+# g(d) = g_base * (d / min(dimensions))^r; r >= 1/2 should break the decaying-variance story.
+g_scaling_exponents: [0.0, 0.25, 0.5, 0.75]
+# Independent zero-mean distractor-only logit-noise variance, modeling local quantization noise.
+noise_variances: [0.0, 0.0025, 0.005, 0.01, 0.02, 0.04]
+# Conditional architecture paths N proportional to d^gamma.
+architecture_gammas: [1, 2, 3]
+# Inputs for the conditional compute-optimal algebra in the report.
+model_alpha: 0.3333333333333333
+data_beta: 0.3333333333333333

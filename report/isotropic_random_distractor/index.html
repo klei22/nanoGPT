@@ -1,0 +1,669 @@
+<!doctype html><meta charset='utf-8'><title>Isotropic Random-Distractor Report</title>
+<script src='https://cdn.plot.ly/plotly-2.35.2.min.js'></script>
+<style>body{font-family:system-ui,Arial,sans-serif;max-width:1100px;margin:32px auto;line-height:1.45}code,pre{background:#f4f4f5;padding:2px 4px}section{border-top:1px solid #ddd;padding-top:24px;margin-top:24px}.card{background:#f8fafc;border:1px solid #e2e8f0;padding:12px;border-radius:10px}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 7px}.plot{width:100%;height:430px}</style>
+<h1>Isotropic Random-Distractor Model: Demo Report</h1>
+<p class='card'><b>Overall finite-vocabulary test:</b> PASS. Fitted penalty slope versus 1/d is 1.047; theory predicts 0.9922; R²=0.9999.</p>
+<section><h2>1. Spherical moments and finite-vocabulary loss law</h2><p>How to read: solid points/lines are Monte Carlo estimates; dashed lines are analytic predictions. The x-axis is 1/d, so a straight line supports the inverse-dimension term. The mean-field curve should usually sit above the exact finite-M prediction because it replaces a random partition sum by its mean.</p><div id='loss_inv_d' class='plot'></div><script>Plotly.newPlot('loss_inv_d', [{"x": [0.125, 0.08333333333333333, 0.0625, 0.041666666666666664, 0.03125, 0.020833333333333332, 0.015625, 0.010416666666666666, 0.0078125], "y": [0.8231868734930536, 0.7787539525437925, 0.7580003911509051, 0.7360177998405962, 0.724781930487257, 0.7132456555760548, 0.7081924343665688, 0.7034850444214891, 0.7005293874611198], "type": "scatter", "mode": "lines+markers", "name": "loss_mc", "line": {"dash": "solid"}}, {"x": [0.125, 0.08333333333333333, 0.0625, 0.041666666666666664, 0.03125, 0.020833333333333332, 0.015625, 0.010416666666666666, 0.0078125], "y": [0.8171706180599453, 0.7758294722266119, 0.7551588993099453, 0.7344883263932787, 0.7241530399349453, 0.7138177534766119, 0.7086501102474453, 0.7034824670182787, 0.7008986454036953], "type": "scatter", "mode": "lines+markers", "name": "loss_finite", "line": {"dash": "dash"}}, {"x": [0.125, 0.08333333333333333, 0.0625, 0.041666666666666664, 0.03125, 0.020833333333333332, 0.015625, 0.010416666666666666, 0.0078125], "y": [0.8259394198788436, 0.7799487247663041, 0.7575990353171691, 0.7356816517249078, 0.7248853823577754, 0.7141975120856415, 0.7088942459057149, 0.7036180997177162, 0.7009901978276345], "type": "scatter", "mode": "lines+markers", "name": "loss_meanfield", "line": {"dash": "dash"}}], {"title": "Expected loss vs inverse dimension", "xaxis": {"title": "1/d"}, "yaxis": {"title": "loss"}, "legend": {"orientation": "h"}, "margin": {"t": 60, "l": 70, "r": 30, "b": 60}}, {responsive:true, displaylogo:false});</script></section>
+<section><h2>2. Angular moment checks</h2><p>How to read: dashed theory curves show E[u²]=1/d and E[u⁴]=3/(d(d+2)). Agreement checks the isotropic sphere sampler before testing softmax claims.</p><div id='moments' class='plot'></div><script>Plotly.newPlot('moments', [{"x": [8, 12, 16, 24, 32, 48, 64, 96, 128], "y": [0.1279708251874729, 0.0881901735687045, 0.06593626864253768, 0.040904767587249286, 0.03174591601368341, 0.01903362777813391, 0.016408640571613776, 0.009357199831575796, 0.007853489725482346], "type": "scatter", "mode": "lines+markers", "name": "E_u2", "line": {"dash": "solid"}}, {"x": [8, 12, 16, 24, 32, 48, 64, 96, 128], "y": [0.125, 0.08333333333333333, 0.0625, 0.041666666666666664, 0.03125, 0.020833333333333332, 0.015625, 0.010416666666666666, 0.0078125], "type": "scatter", "mode": "lines+markers", "name": "theory_u2", "line": {"dash": "dash"}}, {"x": [8, 12, 16, 24, 32, 48, 64, 96, 128], "y": [0.039077765673551666, 0.01886960349071308, 0.01054394995238561, 0.004651306910036149, 0.002701968011244101, 0.001112732812410993, 0.0007381178938068697, 0.0002557608127491068, 0.00018570560989727], "type": "scatter", "mode": "lines+markers", "name": "E_u4", "line": {"dash": "solid"}}, {"x": [8, 12, 16, 24, 32, 48, 64, 96, 128], "y": [0.0375, 0.017857142857142856, 0.010416666666666666, 0.004807692307692308, 0.0027573529411764708, 0.00125, 0.0007102272727272727, 0.00031887755102040814, 0.00018028846153846155], "type": "scatter", "mode": "lines+markers", "name": "theory_u4", "line": {"dash": "dash"}}], {"title": "Spherical moment identities", "xaxis": {"title": "d", "type": "log"}, "yaxis": {"title": "moment", "type": "log"}, "legend": {"orientation": "h"}, "margin": {"t": 60, "l": 70, "r": 30, "b": 60}}, {responsive:true, displaylogo:false});</script></section>
+<section><h2>3. Partition concentration</h2><p>How to read: lower CV² means the random partition sum is concentrated and the mean-field closure is safer. Dashed theory is the Gaussian closure value (exp(g²/d)-1)/M.</p><div id='partition' class='plot'></div><script>Plotly.newPlot('partition', [{"x": [8, 12, 16, 24, 32, 48, 64, 96, 128], "y": [0.008657314810576574, 0.005457333582851949, 0.004214312217525491, 0.0028423668143957503, 0.002127321308597479, 0.0013775833456264042, 0.0010150826157216217, 0.000553657083210611, 0.00044096879070394256], "type": "scatter", "mode": "lines+markers", "name": "partition_cv2_mc", "line": {"dash": "solid"}}, {"x": [8, 12, 16, 24, 32, 48, 64, 96, 128], "y": [0.010136269854689503, 0.006181444141970149, 0.004437897135745959, 0.0028337564510257165, 0.0020804445791691613, 0.001357875773769203, 0.0010077259205915519, 0.0006647953935936153, 0.0004959907421734806], "type": "scatter", "mode": "lines+markers", "name": "partition_cv2_gaussian", "line": {"dash": "solid"}}], {"title": "Partition-sum concentration", "xaxis": {"title": "d", "type": "log"}, "yaxis": {"title": "CV\u00b2", "type": "log"}, "legend": {"orientation": "h"}, "margin": {"t": 60, "l": 70, "r": 30, "b": 60}}, {responsive:true, displaylogo:false});</script></section>
+<section><h2>4. Context margin regimes</h2><p>How to read: the penalty is small for easy contexts (large positive m, small P₀) and large for hard contexts (negative m, P₀≈1). Dashed line is the local finite-vocabulary prediction.</p><div id='margins' class='plot'></div><script>Plotly.newPlot('margins', [{"x": [-4.0, -2.0, 0.0, 2.0, 4.0], "y": [0.013967476639662024, 0.012163833536499524, 0.007654457638767376, 0.001827435475866973, 0.0002940592908599153], "type": "scatter", "mode": "lines+markers", "name": "loss_penalty_mc", "line": {"dash": "solid"}}, {"x": [-4.0, -2.0, 0.0, 2.0, 4.0], "y": [0.01510852819301795, 0.01357304919385012, 0.00775146484375, 0.0018590765802726835, 0.00028095555025025855], "type": "scatter", "mode": "lines+markers", "name": "loss_penalty_theory", "line": {"dash": "dash"}}], {"title": "Margin-dependent variance penalty", "xaxis": {"title": "m = s - log M"}, "yaxis": {"title": "loss penalty"}, "legend": {"orientation": "h"}, "margin": {"t": 60, "l": 70, "r": 30, "b": 60}}, {responsive:true, displaylogo:false});</script></section>
+<section><h2>5. Anisotropy and hard-negative tails</h2><p>How to read: anisotropy is summarized by d_eff; when the effective-dimension correction works, the Monte Carlo loss follows the dashed d_eff prediction. Hard negatives show a failure mode: a small shifted cluster can dominate the partition, making the isotropic prediction over-optimistic.</p><div id='anisotropy' class='plot'></div><script>Plotly.newPlot('anisotropy', [{"x": [128.0, 64.5, 32.75, 16.875], "y": [0.7014372751950293, 0.7091906158781506, 0.7229458664608619, 0.7469824318817823], "type": "scatter", "mode": "lines+markers", "name": "loss_mc", "line": {"dash": "solid"}}, {"x": [128.0, 64.5, 32.75, 16.875], "y": [0.7008986454036955, 0.70852993249793, 0.723442982086663, 0.7519434768562419], "type": "scatter", "mode": "lines+markers", "name": "prediction_d_eff", "line": {"dash": "dash"}}], {"title": "Anisotropy through effective dimension", "xaxis": {"title": "d_eff"}, "yaxis": {"title": "loss"}, "legend": {"orientation": "h"}, "margin": {"t": 60, "l": 70, "r": 30, "b": 60}}, {responsive:true, displaylogo:false});</script><div id='hard_negatives' class='plot'></div><script>Plotly.newPlot('hard_negatives', [{"x": [0, 1, 4, 8], "y": [0.7008302140997049, 0.727687705117064, 0.8043825283897335, 1.0381646368218485], "type": "scatter", "mode": "lines+markers", "name": "loss_mc", "line": {"dash": "solid"}}, {"x": [0, 1, 4, 8], "y": [0.7008986454036953, 0.7008986454036953, 0.7008986454036953, 0.7008986454036953], "type": "scatter", "mode": "lines+markers", "name": "isotropic_prediction", "line": {"dash": "dash"}}, {"x": [0, 1, 4, 8], "y": [0.02336380056778435, 0.06611096456664806, 0.06867042684731674, 0.08138325854107682], "type": "scatter", "mode": "lines+markers", "name": "max_partition_share", "line": {"dash": "solid"}}], {"title": "Hard-negative tail stress test", "xaxis": {"title": "number of shifted negatives"}, "yaxis": {"title": "loss / max share"}, "legend": {"orientation": "h"}, "margin": {"t": 60, "l": 70, "r": 30, "b": 60}}, {responsive:true, displaylogo:false});</script></section>
+<section><h2>6. Logit-scale growth and added logit noise</h2><p>How to read: if g grows as d^r, the penalty should scale roughly like d^(2r-1) while the small-variance approximation remains valid. For added zero-mean noise, degradation should be smooth and near-linear in the added variance.</p><div id='noise' class='plot'></div><script>Plotly.newPlot('noise', [{"x": [0.0, 0.0025, 0.005, 0.01, 0.02, 0.04], "y": [0.7009215132566876, 0.7012314623966148, 0.7017491827539316, 0.7031260192481157, 0.7059642130466539, 0.7107258784623252], "type": "scatter", "mode": "lines+markers", "name": "loss_mc", "line": {"dash": "solid"}}, {"x": [0.0, 0.0025, 0.005, 0.01, 0.02, 0.04], "y": [0.7008986454036955, 0.7015187625911955, 0.7021388797786955, 0.7033791141536955, 0.7058595829036955, 0.7108205204036955], "type": "scatter", "mode": "lines+markers", "name": "local_prediction", "line": {"dash": "dash"}}], {"title": "Independent logit-noise degradation", "xaxis": {"title": "added noise variance"}, "yaxis": {"title": "loss"}, "legend": {"orientation": "h"}, "margin": {"t": 60, "l": 70, "r": 30, "b": 60}}, {responsive:true, displaylogo:false});</script></section>
+<section><h2>7. Conditional parameter and compute scaling</h2><p>How to read: these are algebraic implications, not Monte Carlo discoveries. The exponent alpha equals 1/gamma only after choosing an architecture path N∝d^gamma. Compute-optimal exponents require an independently supplied data exponent beta.</p><pre>{
+  &quot;parameter_rows&quot;: [
+    {
+      &quot;gamma&quot;: 1.0,
+      &quot;expected_alpha&quot;: 1.0,
+      &quot;fit_alpha&quot;: 0.9999999999999997
+    },
+    {
+      &quot;gamma&quot;: 2.0,
+      &quot;expected_alpha&quot;: 0.5,
+      &quot;fit_alpha&quot;: 0.49999999999999983
+    },
+    {
+      &quot;gamma&quot;: 3.0,
+      &quot;expected_alpha&quot;: 0.3333333333333333,
+      &quot;fit_alpha&quot;: 0.33333333333333315
+    }
+  ],
+  &quot;compute_optimal&quot;: {
+    &quot;alpha&quot;: 0.3333333333333333,
+    &quot;beta&quot;: 0.3333333333333333,
+    &quot;N_star_exponent&quot;: 0.5,
+    &quot;D_star_exponent&quot;: 0.5,
+    &quot;loss_exponent&quot;: 0.16666666666666666
+  }
+}</pre></section>
+<section><h2>Raw results</h2><pre>{
+  &quot;config&quot;: {
+    &quot;seed&quot;: 20260715,
+    &quot;samples_per_point&quot;: 600,
+    &quot;base&quot;: {
+      &quot;M&quot;: 64,
+      &quot;m&quot;: 0.0,
+      &quot;g&quot;: 2.0
+    },
+    &quot;dimensions&quot;: [
+      8,
+      12,
+      16,
+      24,
+      32,
+      48,
+      64,
+      96,
+      128
+    ],
+    &quot;margin_sweep&quot;: [
+      -4,
+      -2,
+      0,
+      2,
+      4
+    ],
+    &quot;anisotropy_k&quot;: [
+      1,
+      2,
+      4,
+      8
+    ],
+    &quot;hard_negative_cases&quot;: [
+      [
+        0,
+        0.0
+      ],
+      [
+        1,
+        1.5
+      ],
+      [
+        4,
+        1.5
+      ],
+      [
+        8,
+        2.0
+      ]
+    ],
+    &quot;g_scaling_exponents&quot;: [
+      0.0,
+      0.25,
+      0.5,
+      0.75
+    ],
+    &quot;noise_variances&quot;: [
+      0.0,
+      0.0025,
+      0.005,
+      0.01,
+      0.02,
+      0.04
+    ],
+    &quot;architecture_gammas&quot;: [
+      1,
+      2,
+      3
+    ],
+    &quot;model_alpha&quot;: 0.3333333333333333,
+    &quot;data_beta&quot;: 0.3333333333333333
+  },
+  &quot;facets&quot;: {
+    &quot;finite_vocabulary&quot;: {
+      &quot;rows&quot;: [
+        {
+          &quot;d&quot;: 8,
+          &quot;inv_d&quot;: 0.125,
+          &quot;E_u&quot;: 0.0071554109894760775,
+          &quot;E_u2&quot;: 0.1279708251874729,
+          &quot;theory_u2&quot;: 0.125,
+          &quot;E_u4&quot;: 0.039077765673551666,
+          &quot;theory_u4&quot;: 0.0375,
+          &quot;loss_mc&quot;: 0.8231868734930536,
+          &quot;loss_se&quot;: 0.002126434381122709,
+          &quot;loss_finite&quot;: 0.8171706180599453,
+          &quot;loss_meanfield&quot;: 0.8259394198788436,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.008657314810576574,
+          &quot;partition_cv2_gaussian&quot;: 0.010136269854689503,
+          &quot;max_logit_mean&quot;: 1.4888803060602356
+        },
+        {
+          &quot;d&quot;: 12,
+          &quot;inv_d&quot;: 0.08333333333333333,
+          &quot;E_u&quot;: 0.008164476259685118,
+          &quot;E_u2&quot;: 0.0881901735687045,
+          &quot;theory_u2&quot;: 0.08333333333333333,
+          &quot;E_u4&quot;: 0.01886960349071308,
+          &quot;theory_u4&quot;: 0.017857142857142856,
+          &quot;loss_mc&quot;: 0.7787539525437925,
+          &quot;loss_se&quot;: 0.0016345645023872878,
+          &quot;loss_finite&quot;: 0.7758294722266119,
+          &quot;loss_meanfield&quot;: 0.7799487247663041,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.005457333582851949,
+          &quot;partition_cv2_gaussian&quot;: 0.006181444141970149,
+          &quot;max_logit_mean&quot;: 1.2613827191093627
+        },
+        {
+          &quot;d&quot;: 16,
+          &quot;inv_d&quot;: 0.0625,
+          &quot;E_u&quot;: 0.001872474871253483,
+          &quot;E_u2&quot;: 0.06593626864253768,
+          &quot;theory_u2&quot;: 0.0625,
+          &quot;E_u4&quot;: 0.01054394995238561,
+          &quot;theory_u4&quot;: 0.010416666666666666,
+          &quot;loss_mc&quot;: 0.7580003911509051,
+          &quot;loss_se&quot;: 0.0014058930354091867,
+          &quot;loss_finite&quot;: 0.7551588993099453,
+          &quot;loss_meanfield&quot;: 0.7575990353171691,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.004214312217525491,
+          &quot;partition_cv2_gaussian&quot;: 0.004437897135745959,
+          &quot;max_logit_mean&quot;: 1.1061566347408474
+        },
+        {
+          &quot;d&quot;: 24,
+          &quot;inv_d&quot;: 0.041666666666666664,
+          &quot;E_u&quot;: -0.006784994598007466,
+          &quot;E_u2&quot;: 0.040904767587249286,
+          &quot;theory_u2&quot;: 0.041666666666666664,
+          &quot;E_u4&quot;: 0.004651306910036149,
+          &quot;theory_u4&quot;: 0.004807692307692308,
+          &quot;loss_mc&quot;: 0.7360177998405962,
+          &quot;loss_se&quot;: 0.0011295055002288619,
+          &quot;loss_finite&quot;: 0.7344883263932787,
+          &quot;loss_meanfield&quot;: 0.7356816517249078,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.0028423668143957503,
+          &quot;partition_cv2_gaussian&quot;: 0.0028337564510257165,
+          &quot;max_logit_mean&quot;: 0.9314757342125329
+        },
+        {
+          &quot;d&quot;: 32,
+          &quot;inv_d&quot;: 0.03125,
+          &quot;E_u&quot;: 0.011047211019548829,
+          &quot;E_u2&quot;: 0.03174591601368341,
+          &quot;theory_u2&quot;: 0.03125,
+          &quot;E_u4&quot;: 0.002701968011244101,
+          &quot;theory_u4&quot;: 0.0027573529411764708,
+          &quot;loss_mc&quot;: 0.724781930487257,
+          &quot;loss_se&quot;: 0.000969073482589442,
+          &quot;loss_finite&quot;: 0.7241530399349453,
+          &quot;loss_meanfield&quot;: 0.7248853823577754,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.002127321308597479,
+          &quot;partition_cv2_gaussian&quot;: 0.0020804445791691613,
+          &quot;max_logit_mean&quot;: 0.8123683307972521
+        },
+        {
+          &quot;d&quot;: 48,
+          &quot;inv_d&quot;: 0.020833333333333332,
+          &quot;E_u&quot;: -0.008236009994034132,
+          &quot;E_u2&quot;: 0.01903362777813391,
+          &quot;theory_u2&quot;: 0.020833333333333332,
+          &quot;E_u4&quot;: 0.001112732812410993,
+          &quot;theory_u4&quot;: 0.00125,
+          &quot;loss_mc&quot;: 0.7132456555760548,
+          &quot;loss_se&quot;: 0.0007725119850337987,
+          &quot;loss_finite&quot;: 0.7138177534766119,
+          &quot;loss_meanfield&quot;: 0.7141975120856415,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.0013775833456264042,
+          &quot;partition_cv2_gaussian&quot;: 0.001357875773769203,
+          &quot;max_logit_mean&quot;: 0.6626380666049545
+        },
+        {
+          &quot;d&quot;: 64,
+          &quot;inv_d&quot;: 0.015625,
+          &quot;E_u&quot;: -0.005801466519749622,
+          &quot;E_u2&quot;: 0.016408640571613776,
+          &quot;theory_u2&quot;: 0.015625,
+          &quot;E_u4&quot;: 0.0007381178938068697,
+          &quot;theory_u4&quot;: 0.0007102272727272727,
+          &quot;loss_mc&quot;: 0.7081924343665688,
+          &quot;loss_se&quot;: 0.0006597071709622888,
+          &quot;loss_finite&quot;: 0.7086501102474453,
+          &quot;loss_meanfield&quot;: 0.7088942459057149,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.0010150826157216217,
+          &quot;partition_cv2_gaussian&quot;: 0.0010077259205915519,
+          &quot;max_logit_mean&quot;: 0.5669146513865425
+        },
+        {
+          &quot;d&quot;: 96,
+          &quot;inv_d&quot;: 0.010416666666666666,
+          &quot;E_u&quot;: -0.0012640717200003305,
+          &quot;E_u2&quot;: 0.009357199831575796,
+          &quot;theory_u2&quot;: 0.010416666666666666,
+          &quot;E_u4&quot;: 0.0002557608127491068,
+          &quot;theory_u4&quot;: 0.00031887755102040814,
+          &quot;loss_mc&quot;: 0.7034850444214891,
+          &quot;loss_se&quot;: 0.0004853290626242888,
+          &quot;loss_finite&quot;: 0.7034824670182787,
+          &quot;loss_meanfield&quot;: 0.7036180997177162,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.000553657083210611,
+          &quot;partition_cv2_gaussian&quot;: 0.0006647953935936153,
+          &quot;max_logit_mean&quot;: 0.4796783472587387
+        },
+        {
+          &quot;d&quot;: 128,
+          &quot;inv_d&quot;: 0.0078125,
+          &quot;E_u&quot;: -0.0014883426949245469,
+          &quot;E_u2&quot;: 0.007853489725482346,
+          &quot;theory_u2&quot;: 0.0078125,
+          &quot;E_u4&quot;: 0.00018570560989727,
+          &quot;theory_u4&quot;: 0.00018028846153846155,
+          &quot;loss_mc&quot;: 0.7005293874611198,
+          &quot;loss_se&quot;: 0.00043191200402163747,
+          &quot;loss_finite&quot;: 0.7008986454036953,
+          &quot;loss_meanfield&quot;: 0.7009901978276345,
+          &quot;baseline&quot;: 0.6931471805599455,
+          &quot;partition_cv2_mc&quot;: 0.00044096879070394256,
+          &quot;partition_cv2_gaussian&quot;: 0.0004959907421734806,
+          &quot;max_logit_mean&quot;: 0.41390623981361013
+        }
+      ],
+      &quot;fit_intercept&quot;: -0.0010325855424121316,
+      &quot;fit_slope&quot;: 1.0469951101064447,
+      &quot;fit_r2&quot;: 0.9998891037262638,
+      &quot;theory_slope&quot;: 0.9921875,
+      &quot;pass&quot;: true
+    },
+    &quot;margin_contexts&quot;: {
+      &quot;rows&quot;: [
+        {
+          &quot;m&quot;: -4.0,
+          &quot;P0&quot;: 0.9820137900379085,
+          &quot;loss_penalty_mc&quot;: 0.013967476639662024,
+          &quot;loss_penalty_theory&quot;: 0.01510852819301795
+        },
+        {
+          &quot;m&quot;: -2.0,
+          &quot;P0&quot;: 0.8807970779778823,
+          &quot;loss_penalty_mc&quot;: 0.012163833536499524,
+          &quot;loss_penalty_theory&quot;: 0.01357304919385012
+        },
+        {
+          &quot;m&quot;: 0.0,
+          &quot;P0&quot;: 0.5,
+          &quot;loss_penalty_mc&quot;: 0.007654457638767376,
+          &quot;loss_penalty_theory&quot;: 0.00775146484375
+        },
+        {
+          &quot;m&quot;: 2.0,
+          &quot;P0&quot;: 0.11920292202211755,
+          &quot;loss_penalty_mc&quot;: 0.001827435475866973,
+          &quot;loss_penalty_theory&quot;: 0.0018590765802726835
+        },
+        {
+          &quot;m&quot;: 4.0,
+          &quot;P0&quot;: 0.017986209962091555,
+          &quot;loss_penalty_mc&quot;: 0.0002940592908599153,
+          &quot;loss_penalty_theory&quot;: 0.00028095555025025855
+        }
+      ]
+    },
+    &quot;anisotropy_and_tails&quot;: {
+      &quot;anisotropy_rows&quot;: [
+        {
+          &quot;anisotropy_k&quot;: 1.0,
+          &quot;d_eff&quot;: 128.0,
+          &quot;loss_mc&quot;: 0.7014372751950293,
+          &quot;prediction_d_eff&quot;: 0.7008986454036955
+        },
+        {
+          &quot;anisotropy_k&quot;: 2.0,
+          &quot;d_eff&quot;: 64.5,
+          &quot;loss_mc&quot;: 0.7091906158781506,
+          &quot;prediction_d_eff&quot;: 0.70852993249793
+        },
+        {
+          &quot;anisotropy_k&quot;: 4.0,
+          &quot;d_eff&quot;: 32.75,
+          &quot;loss_mc&quot;: 0.7229458664608619,
+          &quot;prediction_d_eff&quot;: 0.723442982086663
+        },
+        {
+          &quot;anisotropy_k&quot;: 8.0,
+          &quot;d_eff&quot;: 16.875,
+          &quot;loss_mc&quot;: 0.7469824318817823,
+          &quot;prediction_d_eff&quot;: 0.7519434768562419
+        }
+      ],
+      &quot;hard_negative_rows&quot;: [
+        {
+          &quot;hard_negatives&quot;: 0,
+          &quot;hard_shift&quot;: 0.0,
+          &quot;loss_mc&quot;: 0.7008302140997049,
+          &quot;max_partition_share&quot;: 0.02336380056778435,
+          &quot;isotropic_prediction&quot;: 0.7008986454036953
+        },
+        {
+          &quot;hard_negatives&quot;: 1,
+          &quot;hard_shift&quot;: 1.5,
+          &quot;loss_mc&quot;: 0.727687705117064,
+          &quot;max_partition_share&quot;: 0.06611096456664806,
+          &quot;isotropic_prediction&quot;: 0.7008986454036953
+        },
+        {
+          &quot;hard_negatives&quot;: 4,
+          &quot;hard_shift&quot;: 1.5,
+          &quot;loss_mc&quot;: 0.8043825283897335,
+          &quot;max_partition_share&quot;: 0.06867042684731674,
+          &quot;isotropic_prediction&quot;: 0.7008986454036953
+        },
+        {
+          &quot;hard_negatives&quot;: 8,
+          &quot;hard_shift&quot;: 2.0,
+          &quot;loss_mc&quot;: 1.0381646368218485,
+          &quot;max_partition_share&quot;: 0.08138325854107682,
+          &quot;isotropic_prediction&quot;: 0.7008986454036953
+        }
+      ]
+    },
+    &quot;scale_and_noise&quot;: {
+      &quot;g_scaling&quot;: [
+        {
+          &quot;r&quot;: 0.0,
+          &quot;rows&quot;: [
+            {
+              &quot;d&quot;: 8,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.12434018317104412,
+              &quot;variance_scale&quot;: 0.5
+            },
+            {
+              &quot;d&quot;: 12,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.08418175511490456,
+              &quot;variance_scale&quot;: 0.3333333333333333
+            },
+            {
+              &quot;d&quot;: 16,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.06557436687484319,
+              &quot;variance_scale&quot;: 0.25
+            },
+            {
+              &quot;d&quot;: 24,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.042287104127096686,
+              &quot;variance_scale&quot;: 0.16666666666666666
+            },
+            {
+              &quot;d&quot;: 32,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.0310544623104424,
+              &quot;variance_scale&quot;: 0.125
+            },
+            {
+              &quot;d&quot;: 48,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.021258060869564943,
+              &quot;variance_scale&quot;: 0.08333333333333333
+            },
+            {
+              &quot;d&quot;: 64,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.018543263128523724,
+              &quot;variance_scale&quot;: 0.0625
+            },
+            {
+              &quot;d&quot;: 96,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.010334815055700997,
+              &quot;variance_scale&quot;: 0.041666666666666664
+            },
+            {
+              &quot;d&quot;: 128,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.008581341834492995,
+              &quot;variance_scale&quot;: 0.03125
+            }
+          ],
+          &quot;penalty_loglog_slope&quot;: -0.9723707855310819
+        },
+        {
+          &quot;r&quot;: 0.25,
+          &quot;rows&quot;: [
+            {
+              &quot;d&quot;: 8,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.12408843416767801,
+              &quot;variance_scale&quot;: 0.5
+            },
+            {
+              &quot;d&quot;: 12,
+              &quot;g_d&quot;: 2.213363839400643,
+              &quot;penalty&quot;: 0.1087605982708254,
+              &quot;variance_scale&quot;: 0.4082482904638629
+            },
+            {
+              &quot;d&quot;: 16,
+              &quot;g_d&quot;: 2.378414230005442,
+              &quot;penalty&quot;: 0.08758164261930401,
+              &quot;variance_scale&quot;: 0.35355339059327373
+            },
+            {
+              &quot;d&quot;: 24,
+              &quot;g_d&quot;: 2.6321480259049848,
+              &quot;penalty&quot;: 0.07061052001905888,
+              &quot;variance_scale&quot;: 0.2886751345948128
+            },
+            {
+              &quot;d&quot;: 32,
+              &quot;g_d&quot;: 2.8284271247461903,
+              &quot;penalty&quot;: 0.06474733229151775,
+              &quot;variance_scale&quot;: 0.25000000000000006
+            },
+            {
+              &quot;d&quot;: 48,
+              &quot;g_d&quot;: 3.1301691601465746,
+              &quot;penalty&quot;: 0.04774817231018469,
+              &quot;variance_scale&quot;: 0.20412414523193154
+            },
+            {
+              &quot;d&quot;: 64,
+              &quot;g_d&quot;: 3.363585661014858,
+              &quot;penalty&quot;: 0.04547160540490425,
+              &quot;variance_scale&quot;: 0.17677669529663687
+            },
+            {
+              &quot;d&quot;: 96,
+              &quot;g_d&quot;: 3.7224194364083982,
+              &quot;penalty&quot;: 0.03358391631273927,
+              &quot;variance_scale&quot;: 0.14433756729740643
+            },
+            {
+              &quot;d&quot;: 128,
+              &quot;g_d&quot;: 4.0,
+              &quot;penalty&quot;: 0.032647068916537236,
+              &quot;variance_scale&quot;: 0.125
+            }
+          ],
+          &quot;penalty_loglog_slope&quot;: -0.5089954141613374
+        },
+        {
+          &quot;r&quot;: 0.5,
+          &quot;rows&quot;: [
+            {
+              &quot;d&quot;: 8,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.13044891740324427,
+              &quot;variance_scale&quot;: 0.5
+            },
+            {
+              &quot;d&quot;: 12,
+              &quot;g_d&quot;: 2.449489742783178,
+              &quot;penalty&quot;: 0.1291655113841793,
+              &quot;variance_scale&quot;: 0.49999999999999994
+            },
+            {
+              &quot;d&quot;: 16,
+              &quot;g_d&quot;: 2.8284271247461903,
+              &quot;penalty&quot;: 0.12674895925516438,
+              &quot;variance_scale&quot;: 0.5000000000000001
+            },
+            {
+              &quot;d&quot;: 24,
+              &quot;g_d&quot;: 3.4641016151377544,
+              &quot;penalty&quot;: 0.13388474239021264,
+              &quot;variance_scale&quot;: 0.49999999999999994
+            },
+            {
+              &quot;d&quot;: 32,
+              &quot;g_d&quot;: 4.0,
+              &quot;penalty&quot;: 0.12811255090028695,
+              &quot;variance_scale&quot;: 0.5
+            },
+            {
+              &quot;d&quot;: 48,
+              &quot;g_d&quot;: 4.898979485566356,
+              &quot;penalty&quot;: 0.13308082190506654,
+              &quot;variance_scale&quot;: 0.49999999999999994
+            },
+            {
+              &quot;d&quot;: 64,
+              &quot;g_d&quot;: 5.656854249492381,
+              &quot;penalty&quot;: 0.1330100395946624,
+              &quot;variance_scale&quot;: 0.5000000000000001
+            },
+            {
+              &quot;d&quot;: 96,
+              &quot;g_d&quot;: 6.928203230275509,
+              &quot;penalty&quot;: 0.13646557943517634,
+              &quot;variance_scale&quot;: 0.49999999999999994
+            },
+            {
+              &quot;d&quot;: 128,
+              &quot;g_d&quot;: 8.0,
+              &quot;penalty&quot;: 0.13003160965054927,
+              &quot;variance_scale&quot;: 0.5
+            }
+          ],
+          &quot;penalty_loglog_slope&quot;: 0.012129773564149323
+        },
+        {
+          &quot;r&quot;: 0.75,
+          &quot;rows&quot;: [
+            {
+              &quot;d&quot;: 8,
+              &quot;g_d&quot;: 2.0,
+              &quot;penalty&quot;: 0.12626907046631997,
+              &quot;variance_scale&quot;: 0.5
+            },
+            {
+              &quot;d&quot;: 12,
+              &quot;g_d&quot;: 2.7108060108295344,
+              &quot;penalty&quot;: 0.153388796184588,
+              &quot;variance_scale&quot;: 0.6123724356957945
+            },
+            {
+              &quot;d&quot;: 16,
+              &quot;g_d&quot;: 3.363585661014858,
+              &quot;penalty&quot;: 0.19134389595137546,
+              &quot;variance_scale&quot;: 0.7071067811865475
+            },
+            {
+              &quot;d&quot;: 24,
+              &quot;g_d&quot;: 4.559014113909555,
+              &quot;penalty&quot;: 0.22323753139337965,
+              &quot;variance_scale&quot;: 0.8660254037844385
+            },
+            {
+              &quot;d&quot;: 32,
+              &quot;g_d&quot;: 5.656854249492381,
+              &quot;penalty&quot;: 0.27523932892487846,
+              &quot;variance_scale&quot;: 1.0000000000000002
+            },
+            {
+              &quot;d&quot;: 48,
+              &quot;g_d&quot;: 7.66731725095527,
+              &quot;penalty&quot;: 0.3508777976218348,
+              &quot;variance_scale&quot;: 1.2247448713915892
+            },
+            {
+              &quot;d&quot;: 64,
+              &quot;g_d&quot;: 9.513656920021768,
+              &quot;penalty&quot;: 0.4060498441038828,
+              &quot;variance_scale&quot;: 1.414213562373095
+            },
+            {
+              &quot;d&quot;: 96,
+              &quot;g_d&quot;: 12.894839181882503,
+              &quot;penalty&quot;: 0.5209561567197264,
+              &quot;variance_scale&quot;: 1.7320508075688774
+            },
+            {
+              &quot;d&quot;: 128,
+              &quot;g_d&quot;: 16.0,
+              &quot;penalty&quot;: 0.5966567467428395,
+              &quot;variance_scale&quot;: 2.0
+            }
+          ],
+          &quot;penalty_loglog_slope&quot;: 0.5689428030419219
+        }
+      ],
+      &quot;quantization_noise&quot;: [
+        {
+          &quot;noise_var&quot;: 0.0,
+          &quot;loss_mc&quot;: 0.7009215132566876,
+          &quot;local_prediction&quot;: 0.7008986454036955
+        },
+        {
+          &quot;noise_var&quot;: 0.0025,
+          &quot;loss_mc&quot;: 0.7012314623966148,
+          &quot;local_prediction&quot;: 0.7015187625911955
+        },
+        {
+          &quot;noise_var&quot;: 0.005,
+          &quot;loss_mc&quot;: 0.7017491827539316,
+          &quot;local_prediction&quot;: 0.7021388797786955
+        },
+        {
+          &quot;noise_var&quot;: 0.01,
+          &quot;loss_mc&quot;: 0.7031260192481157,
+          &quot;local_prediction&quot;: 0.7033791141536955
+        },
+        {
+          &quot;noise_var&quot;: 0.02,
+          &quot;loss_mc&quot;: 0.7059642130466539,
+          &quot;local_prediction&quot;: 0.7058595829036955
+        },
+        {
+          &quot;noise_var&quot;: 0.04,
+          &quot;loss_mc&quot;: 0.7107258784623252,
+          &quot;local_prediction&quot;: 0.7108205204036955
+        }
+      ]
+    },
+    &quot;scaling_laws&quot;: {
+      &quot;parameter_rows&quot;: [
+        {
+          &quot;gamma&quot;: 1.0,
+          &quot;expected_alpha&quot;: 1.0,
+          &quot;fit_alpha&quot;: 0.9999999999999997
+        },
+        {
+          &quot;gamma&quot;: 2.0,
+          &quot;expected_alpha&quot;: 0.5,
+          &quot;fit_alpha&quot;: 0.49999999999999983
+        },
+        {
+          &quot;gamma&quot;: 3.0,
+          &quot;expected_alpha&quot;: 0.3333333333333333,
+          &quot;fit_alpha&quot;: 0.33333333333333315
+        }
+      ],
+      &quot;compute_optimal&quot;: {
+        &quot;alpha&quot;: 0.3333333333333333,
+        &quot;beta&quot;: 0.3333333333333333,
+        &quot;N_star_exponent&quot;: 0.5,
+        &quot;D_star_exponent&quot;: 0.5,
+        &quot;loss_exponent&quot;: 0.16666666666666666
+      }
+    }
+  }
+}</pre></section>
