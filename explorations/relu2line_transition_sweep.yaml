@@ -1,0 +1,100 @@
+# ReLU2Line transition sweep
+#
+# Compares the existing ReLU^2 choices against the new smooth linear-tail
+# variants in isolation and together:
+#   - activation baseline: activation_variant=squared_relu
+#   - softmax baseline:    softmax_variant_attn=relu2max
+#   - activation sweep:    activation_variant=relu2line + relu2max
+#   - softmax sweep:       squared_relu + softmax_variant_attn=relu2linemax
+#   - combined sweep:      relu2line + relu2linemax
+#
+# relu2line_transition_point is shared by relu2line and relu2linemax. Baseline
+# ReLU^2 variants ignore it, so the exact baseline is listed once without the
+# sweep to avoid duplicated runs.
+---
+
+named_static_groups:
+  - named_group: "qk_norm"
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+  - named_group: "peri_ln"
+    use_pre_ln: [true]
+    use_peri_ln: [true]
+    use_post_ln: [false]
+
+  - named_group: "rotary"
+    use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+  - named_group: "rmsnorm_wte"
+    norm_variant_wte: ["rmsnorm"]
+
+  - named_group: "infinite_attn"
+    attention_variant: ["infinite"]
+    use_concat_heads: [true]
+    n_qk_head_dim: [200]
+    n_v_head_dim: [200]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [1000]
+  eval_iters: [200]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  use_gradient_checkpointing: [true]
+  log_rankme: [true]
+  log_areq: [true]
+  n_head: [3]
+  n_embd: [768]
+  n_layer: [18]
+  relu2max_divisor: [256.0]
+  relu2line_divisor: [256.0]
+
+parameter_groups:
+  # Exact ReLU^2 baseline for both the MLP activation and attention weighting.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite_attn"
+    activation_variant: ["squared_relu"]
+    softmax_variant_attn: ["relu2max"]
+
+  # Activation-only sweep: ReLU^2 activation smoothly turns linear; attention
+  # stays on the existing ReLU2Max baseline.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite_attn"
+    activation_variant: ["relu2line"]
+    softmax_variant_attn: ["relu2max"]
+    relu2line_transition_point: [0.5, 1.0, 2.0, 4.0, 8.0]
+
+  # Softmax-only sweep: attention/output weights get the smooth linear tail;
+  # MLP activation stays on the existing squared ReLU baseline.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite_attn"
+    activation_variant: ["squared_relu"]
+    softmax_variant_attn: ["relu2linemax"]
+    relu2line_transition_point: [0.5, 1.0, 2.0, 4.0, 8.0]
+
+  # Combined sweep: both the MLP activation and attention weighting use the
+  # same transition point for a matched ReLU^2-to-linear shape.
+  - named_group_static:
+      - "qk_norm"
+      - "peri_ln"
+      - "rotary"
+      - "rmsnorm_wte"
+      - "infinite_attn"
+    activation_variant: ["relu2line"]
+    softmax_variant_attn: ["relu2linemax"]
+    relu2line_transition_point: [0.5, 1.0, 2.0, 4.0, 8.0]
