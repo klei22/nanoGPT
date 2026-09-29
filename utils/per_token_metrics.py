@@ -23,10 +23,11 @@ class PerTokenMetrics:
     )
     EVALUATION_CHUNK_SIZE = 256
 
-    def __init__(self, output_dir, vocab_sizes, token_texts=None):
+    def __init__(self, output_dir, vocab_sizes, token_texts=None, counting_started_at=0):
         self.output_dir = output_dir
         self.vocab_sizes = dict(vocab_sizes)
         self.token_texts = token_texts or {}
+        self.counting_started_at = counting_started_at
         self.seen = {
             name: np.zeros(size, dtype=np.int64) for name, size in self.vocab_sizes.items()
         }
@@ -38,6 +39,38 @@ class PerTokenMetrics:
         self.summary_path = os.path.join(output_dir, "per_token_summary.csv")
         self.plot_path = os.path.join(output_dir, "per_token_metrics.html")
         self._ensure_detail_schema()
+
+    def state_dict(self):
+        """Save counters at the same training boundary as the model checkpoint."""
+        return {
+            'version': 1,
+            'vocab_sizes': dict(self.vocab_sizes),
+            'counting_started_at': self.counting_started_at,
+            # CPU tensors remain compatible with torch.load(weights_only=True).
+            'seen': {name: torch.from_numpy(counts.copy())
+                     for name, counts in self.seen.items()},
+        }
+
+    def load_state_dict(self, state):
+        """Restore validated counters without retaining aliases to the checkpoint."""
+        if state.get('version') != 1:
+            raise ValueError('Unsupported per-token checkpoint state version')
+        if state.get('vocab_sizes') != self.vocab_sizes:
+            raise ValueError('Per-token checkpoint datasets/vocabulary sizes do not match')
+        if set(state.get('seen', {})) != set(self.vocab_sizes):
+            raise ValueError('Per-token checkpoint counters do not match datasets')
+        started_at = state.get('counting_started_at')
+        if type(started_at) is not int or started_at < 0:
+            raise ValueError('Invalid per-token counting start iteration')
+        restored = {}
+        for name, size in self.vocab_sizes.items():
+            counts = state['seen'][name]
+            if (not isinstance(counts, torch.Tensor) or counts.dtype != torch.int64
+                    or tuple(counts.shape) != (size,) or torch.any(counts < 0)):
+                raise ValueError(f'Invalid per-token checkpoint counters for {name}')
+            restored[name] = counts.detach().cpu().numpy().copy()
+        self.seen = restored
+        self.counting_started_at = started_at
 
     def _ensure_detail_schema(self):
         """Upgrade detail CSVs written before escaped token text was added."""
@@ -293,4 +326,7 @@ class PerTokenMetrics:
 
     def _write_plot(self, latest_rows, summaries, iteration):
         """Write a lightweight index and isolated graph pages."""
-        write_per_token_pages(self.output_dir, latest_rows, summaries, iteration)
+        write_per_token_pages(
+            self.output_dir, latest_rows, summaries, iteration,
+            counting_started_at=self.counting_started_at,
+        )

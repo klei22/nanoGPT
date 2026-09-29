@@ -120,7 +120,7 @@ ds.onchange=fill;tokens.onchange=draw;left.onchange=draw;{'right.onchange=draw;'
     _write(os.path.join(output_dir, filename), _shell(title, payload, controls, script))
 
 
-def write_per_token_pages(output_dir, rows, summaries, iteration):
+def write_per_token_pages(output_dir, rows, summaries, iteration, counting_started_at=0):
     """Write an index plus isolated pages with only the data each graph needs."""
     # Import the static renderer only when the explicitly enabled reporter
     # reaches an export step, keeping report-only code off the startup path.
@@ -157,4 +157,6 @@ def write_per_token_pages(output_dir, rows, summaries, iteration):
     png_links = "".join(f"<li><a href='{os.path.basename(path)}'>{html.escape(os.path.basename(path))}</a></li>" for path in png_paths)
     fields = ("dataset", "metric", "populated_tokens", "vocab_size", "mean", "median", "std", "skew", "excess_kurtosis", "min", "max", "p10", "p90", "coefficient_of_variation")
     table = "<table border='1'><tr>" + "".join(f"<th>{f}</th>" for f in fields) + "</tr>" + "".join("<tr>" + "".join(f"<td>{html.escape(str(s.get(f, '')))}</td>" for f in fields) + "</tr>" for s in summaries) + "</table>"
-    _write(os.path.join(output_dir, "per_token_metrics.html"), f"<!doctype html><meta charset='utf-8'><title>Per-token metrics</title><h1>Per-token metrics</h1><h2>Interactive graphs</h2><ul>{links}</ul><h2>Static PNG dashboards</h2><ul>{png_links}</ul><h2>Summary statistics</h2>{table}")
+    count_note = (f"<p>Training occurrence counts start at iteration "
+                  f"{html.escape(str(counting_started_at))}.</p>")
+    _write(os.path.join(output_dir, "per_token_metrics.html"), f"<!doctype html><meta charset='utf-8'><title>Per-token metrics</title><h1>Per-token metrics</h1>{count_note}<h2>Interactive graphs</h2><ul>{links}</ul><h2>Static PNG dashboards</h2><ul>{png_links}</ul><h2>Summary statistics</h2>{table}")

@@ -315,6 +315,24 @@ per-token reporting if TensorBoard is not required, especially when its optional
 TensorFlow installation is incompatible with the active NumPy version.**
 Per-token metrics themselves are never sent to TensorBoard.
 
+Reporting supports single-process categorical training, including multicontext
+streams with different vocabularies. Each stream uses its own tokenizer for
+report labels. For multicontext training, set `--dataset` to the primary stream
+as well as supplying `--multicontext_datasets`. Numerical multicontext regression
+and DDP reporting are rejected with a clear error; use `--no-log_per_token_metrics`
+for those modes.
+
+New checkpoints save the cumulative per-token training counts. `--init_from resume`
+restores the counts from that exact checkpoint and writes reports in a new
+`resume_<iteration>_<unique suffix>` subdirectory of the report directory. Earlier
+reports stay intact, so resuming an older checkpoint never mixes future CSV rows
+into the resumed history. A checkpoint without counters emits a warning and starts
+counting at the resumed iteration. The report index and `per_token_metadata.json`
+record where counting began; these counts do not include earlier, unrecorded
+training. `--init_from prev_run` starts a new run with zero counters; use a new
+output/report directory for new runs. Validation samples do not increment training
+occurrence counts.
+
 * `per_token_metrics.csv`: one row per vocabulary token and evaluation, with
   its escaped decoded text (for example, `\\n`), sampled train/validation
   cross-entropy, output-token vector L2 magnitude, minimum non-self pairwise

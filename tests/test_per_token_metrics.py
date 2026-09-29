@@ -13,6 +13,44 @@ from utils.per_token_metrics import PerTokenMetrics
 from train_args import parse_args
 
 
+def test_counter_checkpoint_round_trip_is_weights_only_safe_and_independent(tmp_path):
+    tracker = PerTokenMetrics(tmp_path / 'original', {'a': 3, 'b': 5}, counting_started_at=7)
+    tracker.count_training_batch('a', torch.tensor([[0, 1, 1, -1]]))
+    tracker.count_training_batch('b', torch.tensor([[4, 4, 2]]))
+    state = tracker.state_dict()
+    tracker.count_training_batch('a', torch.tensor([[2]]))
+    assert state['seen']['a'].tolist() == [1, 2, 0]
+    path = tmp_path / 'counts.pt'
+    torch.save(state, path)
+    loaded = torch.load(path, weights_only=True)
+    resumed = PerTokenMetrics(tmp_path / 'resumed', {'a': 3, 'b': 5})
+    resumed.load_state_dict(loaded)
+    resumed.count_training_batch('a', torch.tensor([[1, 2]]))
+    assert resumed.seen['a'].tolist() == [1, 3, 1]
+    assert resumed.seen['b'].tolist() == [0, 0, 1, 0, 2]
+    assert loaded['seen']['a'].tolist() == [1, 2, 0]
+    assert resumed.counting_started_at == 7
+
+
+@pytest.mark.parametrize('bad_state', [
+    {'version': 2},
+    {'vocab_sizes': {'other': 3}},
+    {'seen': {}},
+    {'seen': {'tiny': torch.tensor([1, 2])}},
+    {'seen': {'tiny': torch.tensor([1.0, 2.0, 3.0])}},
+    {'seen': {'tiny': torch.tensor([1, -1, 3])}},
+    {'counting_started_at': -1},
+])
+def test_invalid_counter_checkpoint_does_not_change_live_counts(tmp_path, bad_state):
+    tracker = PerTokenMetrics(tmp_path, {'tiny': 3})
+    tracker.count_training_batch('tiny', torch.tensor([2]))
+    state = tracker.state_dict()
+    state.update(bad_state)
+    with pytest.raises(ValueError, match='[Pp]er-token'):
+        tracker.load_state_dict(state)
+    assert tracker.seen['tiny'].tolist() == [0, 0, 1]
+
+
 def test_tensorboard_default_and_eval_interval(monkeypatch):
     monkeypatch.setattr("sys.argv", ["train.py", "--eval_interval", "50"])
     args, *_ = parse_args()
