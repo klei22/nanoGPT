@@ -1,56 +1,85 @@
 #!/usr/bin/env python3
-"""Write a small static HTML report for mel_mc_int continuation runs."""
-from __future__ import annotations
-
+"""Static, safely quoted report for a completed mel continuation run."""
 import argparse
 import html
+import json
 from pathlib import Path
 
-p = argparse.ArgumentParser()
-p.add_argument('--output_dir', required=True)
-p.add_argument('--input_audio', required=True)
-p.add_argument('--cutoff_s', required=True)
-args = p.parse_args()
-out = Path(args.output_dir)
-body = f'''<!doctype html>
-<meta charset="utf-8">
-<title>Mel MC continuation viewer</title>
-<style>
-body{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:2rem;max-width:960px;line-height:1.45}}
-audio{{width:100%}} .card{{border:1px solid #ddd;border-radius:10px;padding:1rem;margin:1rem 0}}
-code,pre{{background:#f6f8fa;border-radius:6px;padding:.15rem .35rem}} pre{{padding:1rem;overflow:auto}}
-label{{display:block;margin:.5rem 0}}
-</style>
-<h1>Mel multicontext audio continuation</h1>
-<p>Source: <code>{html.escape(str(args.input_audio))}</code>; cutoff: <strong>{html.escape(str(args.cutoff_s))}s</strong>.</p>
-<div class="card"><h2>Reconstructed inference / continuation</h2><audio controls src="generated.wav"></audio></div>
-<div class="card"><h2>Generated artifacts</h2><p><a href="generated.csv">generated.csv</a> · <a href="generated.mel.csv">self-describing mel CSV</a></p></div>
-<div class="card">
-  <h2>Select the next input audio and cutoff</h2>
-  <p>This viewer is static, so it cannot run Python by itself. Use it to audition a local file, choose the cutoff, then copy the command below into the repo shell.</p>
-  <label>Audio file <input id="file" type="file" accept="audio/*"></label>
-  <audio id="preview" controls></audio>
-  <label>Cutoff seconds <input id="cutoff" type="number" min="0" step="0.01" value="{html.escape(str(args.cutoff_s))}"></label>
-  <label>Run output directory <input id="outdir" value="out/mel_mc_int"></label>
-  <label>Max new mel frames <input id="frames" type="number" min="1" step="1" value="200"></label>
-  <pre id="cmd">bash data/mel_mc_int/demo_infer.sh out/mel_mc_int path/to/audio.wav {html.escape(str(args.cutoff_s))} 200</pre>
-</div>
-<script>
-const file = document.getElementById('file'), preview = document.getElementById('preview');
-const cutoff = document.getElementById('cutoff'), outdir = document.getElementById('outdir'), frames = document.getElementById('frames'), cmd = document.getElementById('cmd');
-let name = 'path/to/audio.wav';
-function q(s) {{ return '"' + String(s).replaceAll('"', '\\"') + '"'; }}
-function update() {{ cmd.textContent = `bash data/mel_mc_int/demo_infer.sh ${{q(outdir.value)}} ${{q(name)}} ${{q(cutoff.value)}} ${{q(frames.value)}}`; }}
-file.addEventListener('change', () => {{
-  const f = file.files && file.files[0];
-  if (!f) return;
-  name = f.name;
-  preview.src = URL.createObjectURL(f);
-  update();
-}});
-for (const el of [cutoff, outdir, frames]) el.addEventListener('input', update);
-update();
-</script>
+# Kept as literal JavaScript, outside Python interpolation/escape processing.
+COMMAND_JS = r'''
+function shellQuote(value) {
+  return "'" + String(value).replaceAll("'", "'\\''") + "'";
+}
+function commandFor(s) {
+  const cutoff = Number(s.cutoff_s), frames = Number(s.max_new_tokens);
+  const temperature = Number(s.temperature), topk = Number(s.top_k), seed = Number(s.seed);
+  if (!Number.isFinite(cutoff) || cutoff <= 0 || !Number.isInteger(frames) || frames < 1 ||
+      !Number.isFinite(temperature) || temperature <= 0 || !Number.isInteger(topk) || topk < 1 ||
+      !Number.isInteger(seed) || !s.input_audio.trim()) throw new Error('Check the path and numeric fields.');
+  return ['env', 'MEL_MC_DEVICE=' + s.device, 'MEL_MC_DTYPE=' + s.dtype,
+          'MEL_MC_TEMPERATURE=' + temperature, 'MEL_MC_TOP_K=' + topk, 'MEL_MC_SEED=' + seed,
+          'bash', 'data/mel_mc_int/demo_infer.sh', s.out_dir, s.input_audio,
+          cutoff, frames, '--manifest', s.manifest].map(shellQuote).join(' ');
+}
 '''
-(out / 'index.html').write_text(body, encoding='utf-8')
-print(out / 'index.html')
+
+
+def build_viewer(output_dir, settings):
+    output_dir = Path(output_dir)
+    prompt = settings.get('prompt', {})
+    boundary = prompt.get('generation_start_s', 0.)
+    fields = [('input_audio', 'Audio filesystem path'), ('out_dir', 'Checkpoint directory'),
+              ('manifest', 'Dataset manifest'), ('cutoff_s', 'Cutoff seconds'),
+              ('max_new_tokens', 'New mel frames'), ('device', 'Device'), ('dtype', 'Dtype'),
+              ('temperature', 'Temperature'), ('top_k', 'Top-k (1 is greedy)'), ('seed', 'Seed')]
+    inputs = ''.join(f'<label>{label}<input id="{key}" value="{html.escape(str(settings.get(key, "")), quote=True)}"></label>'
+                     for key, label in fields)
+    data = json.dumps(settings, ensure_ascii=True).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+    document = '''<!doctype html><meta charset="utf-8"><title>Mel continuation</title>
+<style>body{font:16px system-ui;max-width:960px;margin:2rem;line-height:1.5}audio,input{width:100%}
+section{border:1px solid #ccc;padding:1rem;margin:1rem 0}label{display:block;margin:.5rem 0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eee;padding:1rem}</style>
+<h1>Mel audio continuation</h1>
+<section><h2>Original decoded audio prefix</h2><audio controls src="original_prefix.wav"></audio></section>
+<section><h2>Codec-only prompt reconstruction</h2><audio controls src="codec_prompt.wav"></audio></section>
+<section><h2>Reconstructed prompt plus generated continuation</h2><audio controls src="generated.wav"></audio>
+<p>Generated mel frames begin at ''' + html.escape(f'{boundary:.3f}') + ''' seconds. Overlapping inverse windows can blend audio around that frame boundary.</p></section>
+<section><h2>Continuation-only audition</h2><audio controls src="continuation.wav"></audio></section>
+<p>Conditioned frames: ''' + html.escape(str(settings.get('conditioned_frames', 'unknown'))) + '''. Model context: ''' + html.escape(str(settings.get('context_seconds', 'unknown'))) + ''' seconds.</p>
+<p><a href="generated.csv">Generated states</a> · <a href="generated.mel.csv">Mel container</a> · <a href="run.json">Run settings</a></p>
+<section><h2>Next run</h2><p>Paste the generated command into a shell at the repository root.
+A browser picker cannot expose your filesystem path; enter that path explicitly below.</p>
+<label>Audition a local file <input id="file" type="file" accept="audio/*"></label><audio id="preview" controls></audio>''' + inputs + '''<pre id="command"></pre></section>
+<script>const initial = ''' + data + ';\n' + COMMAND_JS + r'''
+const keys = ['input_audio','out_dir','manifest','cutoff_s','max_new_tokens','device','dtype','temperature','top_k','seed'];
+const command = document.getElementById('command');
+function update() {
+  const values = Object.fromEntries(keys.map(key => [key, document.getElementById(key).value]));
+  try { command.textContent = commandFor(values); }
+  catch (error) { command.textContent = error.message; }
+}
+let objectURL;
+document.getElementById('file').addEventListener('change', event => {
+  const file = event.target.files[0]; if (!file) return;
+  if (objectURL) URL.revokeObjectURL(objectURL);
+  objectURL = URL.createObjectURL(file); document.getElementById('preview').src = objectURL;
+});
+for (const key of keys) document.getElementById(key).addEventListener('input', update);
+update();
+</script>'''
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir/'index.html').write_text(document, encoding='utf-8')
+    return output_dir/'index.html'
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output_dir', required=True)
+    parser.add_argument('--run_json', help='Defaults to OUTPUT_DIR/run.json')
+    args = parser.parse_args()
+    settings = json.loads(Path(args.run_json or Path(args.output_dir)/'run.json').read_text())
+    print(build_viewer(args.output_dir, settings))
+
+
+if __name__ == '__main__':
+    main()

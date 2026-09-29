@@ -1,30 +1,18 @@
-#!/bin/bash
-
-# Define the input file name variable
-INPUT_FILE="input.wav"
-
-# Check if the file actually exists
-if [ ! -f "$INPUT_FILE" ]; then
-    echo "Error: File '$INPUT_FILE' not found."
-    exit 1
-fi
-
-# 1. Get the total duration in seconds using ffprobe
-TOTAL_DURATION=$(ffprobe -v error -show_entries format=duration \
-    -of default=noprint_wrappers=1:nocut=1 -of csv=p=0 "$INPUT_FILE")
-
-# 2. Use bc to calculate the exact 1/10th duration (with 4 decimal precision)
-SEGMENT_TIME=$(echo "scale=4; $TOTAL_DURATION / 10" | bc -l)
-
-# Extract filename without extension for clean output naming
-BASE_NAME="${INPUT_FILE%.*}"
-
-echo "Total Duration: $TOTAL_DURATION seconds"
-echo "Splitting into 10 pieces of ${SEGMENT_TIME}s each..."
-
-# 3. Split the file using ffmpeg without re-encoding
-ffmpeg -v warning -i "$INPUT_FILE" -f segment -segment_time "$SEGMENT_TIME" \
-    -c copy "${BASE_NAME}_part_%02d.wav"
-
-echo "Done! Check your folder for ${BASE_NAME}_part_00.wav to ${BASE_NAME}_part_09.wav"
-
+#!/usr/bin/env bash
+# Usage: bash split_wav.sh INPUT_WAV [OUTPUT_PREFIX]
+# FFmpeg segments at packet boundaries, so segment counts/durations are approximate.
+set -euo pipefail
+INPUT_FILE="${1:?Usage: bash split_wav.sh INPUT_WAV [OUTPUT_PREFIX]}"
+PREFIX="${2:-${INPUT_FILE%.*}}"
+TOTAL_DURATION="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$INPUT_FILE")"
+SEGMENT_TIME="$(python3 - "$TOTAL_DURATION" <<'PY'
+import math,sys
+seconds=float(sys.argv[1])
+if not math.isfinite(seconds) or seconds <= 0:
+    raise SystemExit('Input duration must be positive and finite')
+print(format(seconds/10, '.12g'))
+PY
+)"
+ffmpeg -nostdin -v warning -n -i "$INPUT_FILE" -f segment -segment_time "$SEGMENT_TIME" \
+  -c copy "${PREFIX}_part_%02d.wav"
+echo "Completed segments with prefix: $PREFIX"

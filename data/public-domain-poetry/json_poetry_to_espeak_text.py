@@ -453,6 +453,7 @@ def make_parser() -> argparse.ArgumentParser:
             "as 10MB or 10MiB; 0 disables sharding (default: 10MB)"
         ),
     )
+    parser.add_argument("--allow-empty", action="store_true", help="Allow a corpus with no accepted records")
     parser.add_argument("--author-key", default="Author")
     parser.add_argument("--title-key", default="Title")
     parser.add_argument("--text-key", default="text")
@@ -597,6 +598,8 @@ def run(args: argparse.Namespace) -> int:
                 f"Outputs: {output.output_paths[0]} through {output.output_paths[-1]}",
                 file=sys.stderr,
             )
+    if not totals['records_written'] and not args.allow_empty:
+        raise ValueError("No records accepted; inspect the input schema/reject report or pass --allow-empty")
     return 0
 
 
@@ -611,5 +614,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
