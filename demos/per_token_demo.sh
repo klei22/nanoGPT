@@ -28,3 +28,5 @@ MPLBACKEND=Agg python train.py \
   --no-wandb_log \
   --no-csv_log \
   --no-print_model_info
+
+echo "next open: $RUN_DIR/per_token_metrics/per_token_metrics.html"
