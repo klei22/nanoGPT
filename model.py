@@ -145,7 +145,7 @@ class GPT(nn.Module):
         self.transformer['drop'] = nn.Dropout(config.dropout)
         self.transformer['h'] = nn.ModuleList([Block(config, mlp=shared_mlp_array[i], attn=shared_attn_array[i]) for i in range(config.n_layer)])
         self.attention_residual_variant = config.attention_residual_variant
-        if self.attention_residual_variant == "full":
+        if self.attention_residual_variant in ("full", "full_with_wte"):
             self.attention_residual = FullAttentionResidual(
                 2 * config.n_layer + 1, config.n_embd, config.attention_residual_eps
             )
@@ -285,9 +285,11 @@ class GPT(nn.Module):
         weight = self.apply_lm_head_norm(lm_head_module.weight)
         return F.linear(x, weight, lm_head_module.bias)
 
-    def _forward_full_attention_residual(self, x, iter_num):
+    def _forward_full_attention_residual(self, x, iter_num, wte_embedding=None):
         """Run blocks while retaining each sublayer output as a depth source."""
         sources = [x]
+        if wte_embedding is not None:
+            sources.append(wte_embedding)
         destination = 0
         for block in self.transformer.h:
             attn_input = self.attention_residual(sources, destination)
@@ -467,6 +469,7 @@ class GPT(nn.Module):
             if self.config.use_embedding_scale:
                 x = x * self.embedding_scale
 
+            wte_embedding = x
             if self.config.use_abs_pos_embeddings:
                 pos_emb = self.transformer.wpe(t, device=device, training=self.training)  # (t, n_embd)
                 x = self.transformer.drop(x + pos_emb)
@@ -484,8 +487,9 @@ class GPT(nn.Module):
 
             layer_idx = 1
             blocks = self.transformer.h
-            if self.attention_residual_variant == "full":
-                x = self._forward_full_attention_residual(x, iter_num)
+            if self.attention_residual_variant in ("full", "full_with_wte"):
+                wte_source = wte_embedding if self.attention_residual_variant == "full_with_wte" else None
+                x = self._forward_full_attention_residual(x, iter_num, wte_source)
                 blocks = ()
             for block in blocks:
                 x = block(x, iter_num)
@@ -631,8 +635,9 @@ class GPT(nn.Module):
 
             layer_idx = 1
             blocks = self.transformer.h
-            if self.attention_residual_variant == "full":
-                x = self._forward_full_attention_residual(x, iter_num)
+            if self.attention_residual_variant in ("full", "full_with_wte"):
+                wte_embedding = tok_emb if self.attention_residual_variant == "full_with_wte" else None
+                x = self._forward_full_attention_residual(x, iter_num, wte_embedding)
                 blocks = ()
             for block in blocks:
                 # Propagate tokens through layers

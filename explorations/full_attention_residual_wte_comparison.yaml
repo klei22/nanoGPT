@@ -1,0 +1,28 @@
+# Compare Full Attention Residuals with and without a separate WTE source.
+---
+
+named_static_groups:
+  - named_group: "full_attention_residual"
+    attention_residual_variant: ["full"]
+
+  - named_group: "full_attention_residual_with_wte"
+    attention_residual_variant: ["full_with_wte"]
+
+named_variation_groups:
+  - named_group: "attention_residual_wte_comparison"
+    named_group_alternates:
+      - "full_attention_residual"
+      - "full_attention_residual_with_wte"
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [2500]
+  max_iters: [10000]
+  never_save_checkpoint: [true]
+  compile: [true]
+  log_rankme: [true]
+  log_areq: [true]
+
+parameter_groups:
+  - named_group_variations:
+      - "attention_residual_wte_comparison"
