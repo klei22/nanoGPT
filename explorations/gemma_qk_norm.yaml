@@ -1,0 +1,44 @@
+# Compare the existing unit-L2 QK norm and learned logit scale with
+# Gemma-style RMSNorm. RoPE remains enabled and is applied before either norm.
+---
+named_static_groups:
+  - named_group: "current_qk_norm"
+    use_qk_norm: [true]
+    use_gemma_qk_norm: [false]
+    use_qk_norm_scale: [false]
+  - named_group: "current_qk_norm_scale"
+    use_qk_norm: [true]
+    use_gemma_qk_norm: [false]
+    use_qk_norm_scale: [true]
+  - named_group: "gemma_qk_norm"
+    use_qk_norm: [false]
+    use_gemma_qk_norm: [true]
+    use_qk_norm_scale: [false]
+  - named_group: "gemma_qk_norm_scale"
+    use_qk_norm: [false]
+    use_gemma_qk_norm: [true]
+    use_qk_norm_scale: [true]
+
+parameter_groups:
+  - named_group_alternates:
+      - "current_qk_norm"
+      - "current_qk_norm_scale"
+      - "gemma_qk_norm"
+      - "gemma_qk_norm_scale"
+
+max_iters: [5000]
+eval_interval: [500]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [256]
+device: ["cuda"]
+dtype: ["float16"]
+dataset: ["shakespeare_char"]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+softmax_variant_attn: ["softmax"]
+
+compile: [true]
+never_save_checkpoint: [true]
