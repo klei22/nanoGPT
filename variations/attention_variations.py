@@ -39,6 +39,29 @@ def _compute_kv_group_distribution(n_head: int, n_kv_group: int):
         )
 
     return group_sizes, head_to_group
+
+
+def _apply_qk_norm_and_rope(q, k, rotary_emb_q, rotary_emb_k,
+                            use_qk_norm, qk_norm_before_rope):
+    """Apply QK norm and RoPE in the configured order."""
+    def apply_qk_norm(q_tensor, k_tensor):
+        if not use_qk_norm:
+            return q_tensor, k_tensor
+        q_tensor = q_tensor / (q_tensor.norm(dim=-1, keepdim=True) + 1e-6)
+        k_tensor = k_tensor / (k_tensor.norm(dim=-1, keepdim=True) + 1e-6)
+        return q_tensor, k_tensor
+
+    def apply_rope(q_tensor, k_tensor):
+        if rotary_emb_q is None or rotary_emb_k is None:
+            return q_tensor, k_tensor
+        return rotary_emb_q(q_tensor), rotary_emb_k(k_tensor)
+
+    if qk_norm_before_rope:
+        q, k = apply_qk_norm(q, k)
+        return apply_rope(q, k)
+
+    q, k = apply_rope(q, k)
+    return apply_qk_norm(q, k)
 # Mamba related imports
 # if torch.cuda.is_available():
 #     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -149,6 +172,7 @@ class CausalSelfAttention(nn.Module):
         # qk_norm and v_norm
         self.use_qk_norm = config.use_qk_norm
         self.use_qk_norm_scale = config.use_qk_norm_scale
+        self.qk_norm_before_rope = config.qk_norm_before_rope
         self.use_v_norm = config.use_v_norm
 
         # Flash Lobo
@@ -321,16 +345,11 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
         v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
 
-        # rotate q and k before evaluating with the heads
-        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
-            q = self.rotary_emb_q(q)
-            k = self.rotary_emb_k(k)
-
         y = None
-
-        if self.use_qk_norm:
-            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_norm_and_rope(
+            q, k, self.rotary_emb_q, self.rotary_emb_k,
+            self.use_qk_norm, self.qk_norm_before_rope,
+        )
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -565,6 +584,7 @@ class EdgeLLMASICAttention(nn.Module):
         # qk_norm and v_norm
         self.use_qk_norm = config.use_qk_norm
         self.use_qk_norm_scale = config.use_qk_norm_scale
+        self.qk_norm_before_rope = config.qk_norm_before_rope
         self.use_v_norm = config.use_v_norm
 
         # Using flex attention
@@ -656,16 +676,11 @@ class EdgeLLMASICAttention(nn.Module):
         k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
         v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
 
-        # rotate q and k before evaluating with the heads
-        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
-            q = self.rotary_emb_q(q)
-            k = self.rotary_emb_k(k)
-
         y = None
-
-        if self.use_qk_norm:
-            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_norm_and_rope(
+            q, k, self.rotary_emb_q, self.rotary_emb_k,
+            self.use_qk_norm, self.qk_norm_before_rope,
+        )
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
@@ -1028,6 +1043,7 @@ class InfiniteHeadAttention(nn.Module):
         # QK Norm
         self.use_qk_norm        = config.use_qk_norm
         self.use_qk_norm_scale  = config.use_qk_norm_scale
+        self.qk_norm_before_rope = config.qk_norm_before_rope
         self.use_v_norm         = config.use_v_norm
 
         # Flash Lobo
@@ -1187,15 +1203,10 @@ class InfiniteHeadAttention(nn.Module):
         k = k.view(B, T, self.n_kv_group, self.n_qk_head_dim).transpose(1, 2) # (B, n_kv, T, hs)
         v = v.view(B, T, self.n_kv_group, self.n_v_head_dim).transpose(1, 2) # (B, n_kv, T, hs)
 
-        # Apply Rotary Position Encodings
-        if (self.rotary_emb_q is not None) and (self.rotary_emb_k is not None):
-            q = self.rotary_emb_q(q)
-            k = self.rotary_emb_k(k)
-
-        # Apply QK Norm
-        if self.use_qk_norm:
-            q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
-            k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
+        q, k = _apply_qk_norm_and_rope(
+            q, k, self.rotary_emb_q, self.rotary_emb_k,
+            self.use_qk_norm, self.qk_norm_before_rope,
+        )
 
         if self.use_v_norm:
             v = v / (v.norm(dim=-1, keepdim=True) + 1e-6)
