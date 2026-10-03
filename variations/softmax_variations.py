@@ -577,6 +577,38 @@ class ReLU2Max(nn.Module):
         return result
 
 
+class ReLU2MaxLine(nn.Module):
+    """Squared ReLU whose positive tail continues along its tangent line.
+
+    At ``relu2max_line_transition`` the quadratic and linear branches have the
+    same value and first derivative, so the function is continuously
+    differentiable while avoiding quadratic growth for large attention scores.
+    """
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.relu2max_divisor = config.relu2max_divisor
+        self.transition = config.relu2max_line_transition
+        self.div_by_seq_len = config.div_by_seq_len
+
+        if self.relu2max_divisor <= 0:
+            raise ValueError("relu2max_divisor must be positive")
+        if self.transition < 0:
+            raise ValueError("relu2max_line_transition must be non-negative")
+
+    def forward(self, x):
+        positive_x = torch.relu(x)
+        quadratic = positive_x.square()
+        tangent = 2 * self.transition * positive_x - self.transition ** 2
+        result = torch.where(positive_x <= self.transition, quadratic, tangent)
+        result = result / self.relu2max_divisor
+
+        if self.div_by_seq_len:
+            result = result / x.shape[self.dim]
+
+        return result
+
+
 class Softplus2Max(nn.Module):
     """ Softmax variant based on arxiv 1805.10829 with added handles for base """
     def __init__(self, config, dim=-1):
@@ -870,6 +902,7 @@ softmax_dictionary = {
     "sigsoftmax": SigSoftmax,
     "relumax": ReLUMax,
     "relu2max": ReLU2Max,
+    "relu2max_line": ReLU2MaxLine,
     "sigmoidmax": SigmoidMax,
     "softshrink": Softshrink,
     "gelumax": Gelumax,

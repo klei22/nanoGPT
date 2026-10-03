@@ -1,0 +1,41 @@
+---
+# Compare the conventional ReLU2Max setup with a unit-divisor, tangent-tailed
+# variant while sweeping both the QK norm scale and tail transition point.
+parameter_groups:
+  - softmax_variant_attn: ["relu2max"]
+    relu2max_divisor: [256.0]
+    use_qk_norm: [false]
+    use_qk_norm_scale: [false]
+  - softmax_variant_attn: ["relu2max_line"]
+    relu2max_divisor: [1.0]
+    relu2max_line_transition: [1.0, 2.0, 4.0, 8.0]
+    use_qk_norm: [true]
+    use_qk_norm_scale: [true]
+    qk_norm_scale: [1.0, 2.0, 4.0, 8.0]
+
+# Minipile training conventions.
+n_layer: [12]
+n_head: [12]
+n_embd: [768]
+block_size: [1024]
+device: ["cuda"]
+dtype: ["bfloat16"]
+dataset: ["minipile"]
+batch_size: [16]
+max_iters: [30000]
+lr_decay_iters: [30000]
+warmup_iters: [3000]
+beta1: [0.9]
+beta2: [0.95]
+learning_rate: ["6e-4"]
+min_lr: ["6e-5"]
+decay_lr: [true]
+eval_interval: [5000]
+never_save_checkpoint: [true]
+
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+norm_variant_attn: ["rmsnorm"]
+norm_variant_output: ["rmsnorm"]
+compile: [true]
+tensorboard_run_name: ["relu2max_line_qk_norm_minipile"]

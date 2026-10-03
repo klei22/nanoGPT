@@ -198,7 +198,7 @@ class CausalSelfAttention(nn.Module):
         # qk norm factor
         if self.use_qk_norm_scale:
             L = config.block_size
-            g0 = math.log2(L*L - L)
+            g0 = config.qk_norm_scale if config.qk_norm_scale is not None else math.log2(L*L - L)
             self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
 
         self.flash = True
@@ -600,7 +600,7 @@ class EdgeLLMASICAttention(nn.Module):
         # qk norm factor
         if self.use_qk_norm_scale:
             L = config.block_size
-            g0 = math.log2(L*L - L)
+            g0 = config.qk_norm_scale if config.qk_norm_scale is not None else math.log2(L*L - L)
             self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
 
         print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
@@ -1139,7 +1139,7 @@ class InfiniteHeadAttention(nn.Module):
         # qk norm factor
         if self.use_qk_norm_scale:
             L = config.block_size
-            g0 = math.log2(L*L - L)
+            g0 = config.qk_norm_scale if config.qk_norm_scale is not None else math.log2(L*L - L)
             self.qk_norm_factor = nn.Parameter(torch.tensor(g0))
 
         # Softmax Variant Selection
