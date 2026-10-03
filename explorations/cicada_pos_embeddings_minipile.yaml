@@ -1,0 +1,110 @@
+# Compare conventional and Cicada absolute position embeddings against rotary
+# and positionless baselines on MiniPile. Each position strategy is run with
+# both AdamW and Muon, with weight decay disabled for a direct comparison.
+---
+
+named_static_groups:
+  # Position embedding strategies
+  - named_group: "conventional"
+    use_abs_pos_embeddings: [true]
+    absolute_pos_embedding_variant: ["learned"]
+    use_rotary_embeddings: [false]
+
+  - named_group: "cicada_235"
+    use_abs_pos_embeddings: [true]
+    absolute_pos_embedding_variant: ["cyclic"]
+    cyclic_abs_pos_cycle_lengths:
+      - [2, 3, 5]
+    cyclic_abs_pos_randomize_starts: [false]
+    use_rotary_embeddings: [false]
+
+  - named_group: "cicada_2357"
+    use_abs_pos_embeddings: [true]
+    absolute_pos_embedding_variant: ["cyclic"]
+    cyclic_abs_pos_cycle_lengths:
+      - [2, 3, 5, 7]
+    cyclic_abs_pos_randomize_starts: [false]
+    use_rotary_embeddings: [false]
+
+  - named_group: "cicada_235711"
+    use_abs_pos_embeddings: [true]
+    absolute_pos_embedding_variant: ["cyclic"]
+    cyclic_abs_pos_cycle_lengths:
+      - [2, 3, 5, 7, 11]
+    cyclic_abs_pos_randomize_starts: [false]
+    use_rotary_embeddings: [false]
+
+  - named_group: "cicada_23571113"
+    use_abs_pos_embeddings: [true]
+    absolute_pos_embedding_variant: ["cyclic"]
+    cyclic_abs_pos_cycle_lengths:
+      - [2, 3, 5, 7, 11, 13]
+    cyclic_abs_pos_randomize_starts: [false]
+    use_rotary_embeddings: [false]
+
+  - named_group: "rope"
+    use_abs_pos_embeddings: [false]
+    use_rotary_embeddings: [true]
+    rope_variant: ["rope"]
+
+  - named_group: "soap"
+    use_abs_pos_embeddings: [false]
+    use_rotary_embeddings: [true]
+    rope_variant: ["soap"]
+
+  - named_group: "none"
+    use_abs_pos_embeddings: [false]
+    use_rotary_embeddings: [false]
+
+  # Optimizers. AdamW and Muon read different decay arguments, so both are
+  # explicitly zeroed to keep this axis controlled and self-documenting.
+  - named_group: "adamw_no_decay"
+    optimizer: ["adamw"]
+    adamw_weight_decay: [0.0]
+    weight_decay: [0.0]
+
+  - named_group: "muon_no_decay"
+    optimizer: ["muon"]
+    adamw_weight_decay: [0.0]
+    weight_decay: [0.0]
+
+named_variation_groups:
+  - named_group: "position_strategy"
+    named_group_alternates:
+      - "conventional"
+      - "cicada_235"
+      - "cicada_2357"
+      - "cicada_235711"
+      - "cicada_23571113"
+      - "rope"
+      - "soap"
+      - "none"
+
+  - named_group: "optimizer_no_decay"
+    named_group_alternates:
+      - "adamw_no_decay"
+      - "muon_no_decay"
+
+common_group:
+  dataset: ["minipile"]
+  n_layer: [6]
+  n_head: [6]
+  n_embd: [384]
+  block_size: [256]
+  batch_size: [64]
+  max_iters: [10000]
+  eval_interval: [10000]
+  eta_variant: ["iteration"]
+  device: ["cuda"]
+  dtype: ["bfloat16"]
+  compile: [true]
+  never_save_checkpoint: [true]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  use_peri_ln: [true]
+
+parameter_groups:
+  - named_group_variations:
+      - "position_strategy"
+      - "optimizer_no_decay"
+    tensorboard_run_name: ["cicada_pos_embeddings_minipile"]
