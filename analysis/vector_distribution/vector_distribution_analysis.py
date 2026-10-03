@@ -10,6 +10,21 @@ import healpy as hp
 # Golden ratio in regular floating point
 PHI = (1.0 + np.sqrt(5.0)) / 2.0
 
+# Lloyd-Max centroids for a standard normal random variable. TurboQuant uses
+# these codebooks (scaled by 1/sqrt(d)) after a random rotation makes the
+# coordinates of a unit d-vector approximately N(0, 1/d). A common scale does
+# not change the directions visualized by this script.
+TURBOQUANT_CENTROIDS = {
+    1: [-0.797885, 0.797885],
+    2: [-1.510017, -0.4526475, 0.4526475, 1.510017],
+    3: [-2.1509, -1.34335, -0.75567, -0.244893,
+        0.244961, 0.75567, 1.34335, 2.1509],
+    4: [-2.7235756, -2.0604305, -1.6096783, -1.2484536,
+        -0.9357067, -0.6516434, -0.3848085, -0.12730813,
+        0.12730813, 0.3848085, 0.6516434, 0.9357067,
+        1.2484536, 1.6096783, 2.0604305, 2.7235756],
+}
+
 def _int_range(bits):
     """Symmetric signed integer range for a given bit width."""
     return np.arange(-(1 << (bits - 1)), 1 << (bits - 1), dtype=np.float64)
@@ -44,6 +59,9 @@ def float_subset_values(exp_bits, mant_bits):
 
 def get_values(num_format, exp_bits=None, mant_bits=None, phi_int_bits=None):
     """Return representable numbers for the given format."""
+    if num_format.startswith("turboquant"):
+        bits = int(num_format.removeprefix("turboquant"))
+        return np.asarray(TURBOQUANT_CENTROIDS[bits], dtype=np.float64)
     if num_format == "int3":
         return np.arange(-4, 4, dtype=np.float64)
     if num_format == "int4":
@@ -439,7 +457,13 @@ def plot_scatter_3d(vectors, out_html, title="3D Scatter Plot of Vectors"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Vector distribution analysis")
-    parser.add_argument('--format', choices=['int3', 'int4', 'int5', 'int6', 'int7', 'int8', 'e4m3', 'e5m2', 'fp16', 'phi'], required=True)
+    parser.add_argument(
+        '--format',
+        choices=['int3', 'int4', 'int5', 'int6', 'int7', 'int8',
+                 'e4m3', 'e5m2', 'fp16', 'phi', 'turboquant1',
+                 'turboquant2', 'turboquant3', 'turboquant4'],
+        required=True,
+    )
     parser.add_argument('--mode', choices=['exhaustive', 'random', 'gaussian'],
                         default='exhaustive')
     parser.add_argument('--num', type=int,
