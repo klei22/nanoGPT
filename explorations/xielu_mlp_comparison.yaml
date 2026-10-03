@@ -1,0 +1,26 @@
+# Compare xIELU with GELU and ReLU^2 in otherwise identical standard MLPs.
+---
+parameter_groups:
+  - mlp_variant: ["mlp"]
+    activation_variant: ["xielu", "gelu", "squared_relu"]
+
+# VRAM and checkpointing
+compile: [true]
+never_save_checkpoint: [true]
+
+# Training
+dataset: ["minipile"]
+max_iters: [10000]
+eval_interval: [1000]
+eta_variant: ["iteration"]
+warmup_iters: [1000]
+
+# Architecture and position embeddings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# Normalization
+use_peri_ln: [true]
+use_qk_norm: [true]
+use_qk_norm_scale: [true]
+norm_variant_wte: ["rmsnorm"]

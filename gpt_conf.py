@@ -443,6 +443,12 @@ class GPTConfig:
 
     activation_variant: str = "gelu"
 
+    ## Expanded Integral ELU (xIELU)
+    xielu_alpha_p_init: float = 0.8
+    xielu_alpha_n_init: float = 0.8
+    xielu_beta: float = 0.5
+    xielu_eps: float = 1e-6
+
     ## Shifted Gelu
     shifted_gelu_learnable_shift: bool = True
     shifted_gelu_initial_shift: float = 0.0

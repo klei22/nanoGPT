@@ -1,6 +1,7 @@
 # variations/activation_variations.py
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # Custom Activation Variations
 class SquaredReLU(nn.Module):
@@ -9,6 +10,57 @@ class SquaredReLU(nn.Module):
 
     def forward(self, x):
         return torch.pow(torch.relu(x), 2)
+
+
+class xIELU(nn.Module):
+    """Expanded Integral ELU from https://arxiv.org/abs/2411.13010.
+
+    The softplus parameterization preserves the paper's constraints
+    ``alpha_p > 0`` and ``alpha_n > beta`` throughout training.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        alpha_p_init = config.xielu_alpha_p_init
+        alpha_n_init = config.xielu_alpha_n_init
+        self.beta = config.xielu_beta
+        self.eps = config.xielu_eps
+
+        if alpha_p_init <= 0:
+            raise ValueError("xielu_alpha_p_init must be greater than zero")
+        if alpha_n_init <= self.beta:
+            raise ValueError("xielu_alpha_n_init must be greater than xielu_beta")
+        if self.eps <= 0:
+            raise ValueError("xielu_eps must be greater than zero")
+
+        # Store inverse-softplus values so the effective coefficients start at
+        # exactly the requested values while remaining constrained.
+        self.alpha_p = nn.Parameter(
+            torch.log(torch.expm1(torch.tensor(float(alpha_p_init))))
+        )
+        self.alpha_n = nn.Parameter(
+            torch.log(torch.expm1(torch.tensor(float(alpha_n_init - self.beta))))
+        )
+
+    def forward(self, x):
+        alpha_p = F.softplus(self.alpha_p)
+        alpha_n = self.beta + F.softplus(self.alpha_n)
+
+        # Mask before evaluating either branch.  ``torch.where`` evaluates both
+        # expressions eagerly, so squaring a large negative half-precision
+        # value in the unused positive branch can overflow.  Its zero-masked
+        # backward contribution then becomes ``0 * inf == nan`` and poisons
+        # alpha_p (and subsequently the whole model).
+        positive_x = torch.clamp_min(x, 0)
+        negative_x = torch.clamp_max(x, 0)
+        positive = alpha_p * positive_x.square() + self.beta * positive_x
+        negative_exp_x = torch.clamp_max(negative_x, -self.eps)
+        negative = (
+            alpha_n * torch.expm1(negative_exp_x)
+            - alpha_n * negative_x
+            + self.beta * negative_x
+        )
+        return torch.where(x > 0, positive, negative)
 
 class ReLUPower(nn.Module):
     def __init__(self, config):
@@ -369,4 +421,5 @@ activation_dictionary = {
     "squared_gelu": SquaredGELU,
     "tanh": Tanh_Config,
     "identity": Identity_Config,
+    "xielu": xIELU,
 }
