@@ -1,5 +1,8 @@
 # 3D digit-token trajectory viewer
 
+See [`SCRIPT_GUIDE.md`](SCRIPT_GUIDE.md) for the paths, responsibilities, and
+execution order of every script used by the trajectory sweep.
+
 This viewer follows the single-file Three.js report style in this directory,
 including OrbitControls, canvas labels, a dark explanatory panel, and keyboard
 controls. Width-2 runs are displayed natively in the XY plane, and width-3 runs
