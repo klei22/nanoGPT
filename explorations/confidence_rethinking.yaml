@@ -1,0 +1,32 @@
+---
+named_static_groups:
+  - named_group: "baseline"
+    training_mode: ["single"]
+
+  - named_group: "confidence_rethinking"
+    training_mode: ["confidence_rethinking"]
+    # Set this to the <thinking> id reserved by the dataset tokenizer.
+    thinking_token_id: [50257]
+
+common_group:
+  dataset: ["minipile"]
+  eval_interval: [500]
+  max_iters: [10000]
+  max_sample_tokens: [256]
+  sample_each_eval: [true]
+  thinking_token_display: ["..."]
+  use_rotary_embeddings: [true]
+  use_abs_pos_embeddings: [false]
+  use_qk_norm: [true]
+  use_qk_norm_scale: [true]
+  optimizer: ["muon"]
+  weight_decay: [0.0]
+  never_save_checkpoint: [true]
+  compile: [true]
+
+parameter_groups:
+  - named_group_static: ["baseline"]
+
+  - named_group_static: ["confidence_rethinking"]
+    rethinking_passes: [2, 3, 4]
+    rethinking_confidence_threshold: [0.5, 0.7, 0.9]
