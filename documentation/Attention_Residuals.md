@@ -22,3 +22,14 @@ outputs, and perform quadratic work in the number of sublayers. The current
 implementation supports sequential attention-then-MLP blocks without post-LN;
 the usual PreNorm configuration is supported. Use `standard` (the default) for
 the existing additive residual architecture and checkpoint compatibility.
+
+## WTE source variation
+
+Set `attention_residual_variant: full_with_wte` to give every depth-wise router
+an additional, explicit word-token embedding (`wte`) source. The original
+`full` variant starts its memory with the complete transformer input (after
+position embedding and dropout); `full_with_wte` starts with both that input and
+the WTE representation, followed by every earlier attention and MLP output.
+This lets the learned pseudo-query recover token identity independently of the
+position-enriched input. When embeddings are factorized, the WTE source is
+included after its projection to the model embedding dimension.
