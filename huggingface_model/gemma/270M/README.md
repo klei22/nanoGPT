@@ -120,6 +120,31 @@ python ./vocab_angle_explorer_app.py \
   --output-dir ./gemma_angle_explorer_exports
 ```
 
+
+## Interactive vocabulary dendrogram
+
+`vocab_dendrogram_app.py` samples token vectors from Gemma 270M's LM head,
+performs hierarchical clustering, and writes a standalone interactive Plotly
+dendrogram HTML file.
+
+Why sampling? Full-vocabulary clustering is expensive (`~256k` tokens), so this
+script is designed for exploratory analysis with controllable sample sizes.
+
+Run:
+
+```bash
+python huggingface_model/gemma/270M/vocab_dendrogram_app.py \
+  --model-name google/gemma-3-270m \
+  --device cpu \
+  --sample-size 512 \
+  --method average \
+  --metric cosine \
+  --output-html gemma_vocab_dendrogram.html
+```
+
+Then open `gemma_vocab_dendrogram.html` in a browser and use hover/zoom/pan to
+inspect token clusters.
+
 ## Digit-only quantization angle comparison
 
 `digit_quant_angle_comparison.py` compares pairwise angles for digits `0-9`
