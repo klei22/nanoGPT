@@ -1,0 +1,17 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.nanogpt.benchmark'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.nanogpt.benchmark'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+        externalNativeBuild { cmake { cppFlags '-std=c++17 -O3 -ffast-math' } }
+    }
+
+    externalNativeBuild { cmake { path 'src/main/cpp/CMakeLists.txt' } }
+}
